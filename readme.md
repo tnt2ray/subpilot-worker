@@ -44,14 +44,14 @@ wrangler login
 ```bash
 git clone https://github.com/tnt2ray/subpilot-worker.git
 cd subpilot-worker
-npm install
+npm install --omit=dev
 npm run setup
 ```
 
 也可以在 GitHub Releases 下载 Source code zip，解压后进入目录运行：
 
 ```bash
-npm install
+npm install --omit=dev
 npm run setup
 ```
 
@@ -61,7 +61,8 @@ npm run setup
 2. 创建或写入 `SUBPILOT_CONFIG` KV namespace。
 3. 部署 Worker 和静态管理页。
 4. 要求输入管理员 token，并生成配置加密密钥。
-5. 通过 `wrangler secret bulk` 写入 `ADMIN_TOKEN_HASH` 和 `CONFIG_ENCRYPTION_KEY`。
+5. 询问上游订阅自动获取间隔，默认每 12 小时一次。
+6. 通过 `wrangler secret bulk` 写入 `ADMIN_TOKEN_HASH` 和 `CONFIG_ENCRYPTION_KEY`。
 
 脚本会把你输入的管理员 token 转成 SHA-256 hash 写入 `ADMIN_TOKEN_HASH`。请把管理员 token 保存在密码管理器中；仓库、KV 和 Cloudflare Secret 中都不会保存它的明文。
 
@@ -77,6 +78,7 @@ npm run setup -- --force-secrets
 SUBPILOT_WORKER_NAME=my-subpilot \
 SUBPILOT_KV_NAMESPACE_ID=<existing-kv-namespace-id> \
 SUBPILOT_ADMIN_TOKEN=<your-admin-token> \
+SUBPILOT_SOURCE_REFRESH_HOURS=12 \
 npm run setup
 ```
 
@@ -89,7 +91,7 @@ npm run setup
 1. 安装依赖：
 
 ```bash
-npm install
+npm install --omit=dev
 ```
 
 2. 创建本地 Wrangler 配置：
@@ -129,6 +131,8 @@ wrangler secret put CONFIG_ENCRYPTION_KEY
 wrangler deploy
 ```
 
+默认 `wrangler.example.jsonc` 会配置每 12 小时执行一次定时任务，用于自动获取上游订阅。需要调整间隔时，可以修改 `wrangler.jsonc` 中的 `triggers.crons` 后重新部署。
+
 如需自定义域名，在 Cloudflare 中把域名接到 Worker，或在本地 `wrangler.jsonc` 中添加自己的 `routes` 配置。不要把包含真实域名和 namespace ID 的 `wrangler.jsonc` 提交到公开仓库。
 
 ## 使用方式
@@ -154,6 +158,20 @@ https://<your-domain>/sync/<read_token>/
 
 服务端只接受当前 `Managed Base URL` path 下的订阅入口；如果把 `Managed Base URL` 改成 `https://<your-domain>/sywwqnc`，则 `/sywwqnc/<read_token>/` 生效，默认 `/sync/<read_token>/` 不再作为订阅入口。
 
+## 上游订阅自动获取
+
+SubPilot 会把启用的上游订阅源定时拉取到 Workers KV 缓存中。这样客户端请求订阅配置时，可以优先使用已经缓存的上游内容；如果某个上游临时失败，系统会尽量沿用旧缓存，减少客户端拉取配置时直接失败的概率。
+
+初次运行 `npm run setup` 时，脚本会询问自动获取间隔，默认每 12 小时一次。这个间隔写入本地 `wrangler.jsonc` 的 `triggers.crons`，由 Cloudflare Workers Cron Triggers 执行。非交互安装可以通过环境变量指定：
+
+```bash
+SUBPILOT_SOURCE_REFRESH_HOURS=6 npm run setup
+```
+
+取值范围是 1 到 24 小时。已经部署后如需修改间隔，编辑 `wrangler.jsonc` 中的 `triggers.crons` 并重新运行 `wrangler deploy`。
+
+后台状态页会显示上游缓存数量、缓存覆盖情况、最近更新时间和各订阅源缓存状态。点击“强制获取”可以立即重新拉取上游订阅源。Telegram bot 的 `/status` 会显示缓存概览，`/refresh` 可以远程触发强制获取。启用 Telegram 通知后，定时获取出现失败时会发送提醒。
+
 ## 更新
 
 有新版本时，建议先阅读 GitHub Releases 中的版本说明。常规更新只需要在项目目录运行：
@@ -162,7 +180,7 @@ https://<your-domain>/sync/<read_token>/
 npm run update
 ```
 
-如果当前目录是 Git 克隆，命令会拉取当前分支最新代码；如果当前目录来自 GitHub Releases 的 Source code zip，命令会自动下载最新 Release 源码并覆盖程序文件。两种方式都会保留本地 `wrangler.jsonc`，然后安装依赖并部署到对应 Worker。
+如果当前目录是 Git 克隆，命令会拉取当前分支最新代码；如果当前目录来自 GitHub Releases 的 Source code zip，命令会自动下载最新 Release 源码并覆盖程序文件。两种方式都会保留本地 `wrangler.jsonc`，只安装运行部署所需依赖，然后部署到对应 Worker。
 
 部署后首次打开后台、拉取订阅或执行定时任务时，SubPilot 会自动补齐 KV 数据结构，不需要单独执行迁移命令。即使跳过多个版本后再更新，也会按顺序处理缺失的迁移。
 

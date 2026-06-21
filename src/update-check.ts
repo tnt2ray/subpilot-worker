@@ -98,6 +98,21 @@ function isFreshCheck(checkedAt: unknown): boolean {
 }
 
 async function fetchLatestRelease(): Promise<{ version: string; url: string }> {
+  try {
+    return await fetchLatestReleaseFromApi();
+  } catch (apiError) {
+    try {
+      return await fetchLatestReleaseFromRedirect();
+    } catch (fallbackError) {
+      throw new Error([
+        apiError instanceof Error ? apiError.message : String(apiError),
+        fallbackError instanceof Error ? fallbackError.message : String(fallbackError)
+      ].join("; "));
+    }
+  }
+}
+
+async function fetchLatestReleaseFromApi(): Promise<{ version: string; url: string }> {
   const response = await fetch(`https://api.github.com/repos/${RELEASE_REPOSITORY}/releases/latest`, {
     headers: {
       accept: "application/vnd.github+json",
@@ -115,6 +130,23 @@ async function fetchLatestRelease(): Promise<{ version: string; url: string }> {
     version,
     url: typeof body.html_url === "string" ? body.html_url : `https://github.com/${RELEASE_REPOSITORY}/releases/latest`
   };
+}
+
+async function fetchLatestReleaseFromRedirect(): Promise<{ version: string; url: string }> {
+  const response = await fetch(`https://github.com/${RELEASE_REPOSITORY}/releases/latest`, {
+    redirect: "follow",
+    headers: {
+      accept: "text/html",
+      "user-agent": `SubPilot/${APP_VERSION}`
+    }
+  });
+  await response.body?.cancel().catch(() => undefined);
+  if (!response.ok) throw new Error(`GitHub release redirect check failed: HTTP ${response.status}`);
+
+  const releaseUrl = response.url || `https://github.com/${RELEASE_REPOSITORY}/releases/latest`;
+  const version = normalizeVersion(releaseUrl.match(/\/releases\/tag\/([^/?#]+)/)?.[1]);
+  if (!version) throw new Error("GitHub release redirect has no valid tag");
+  return { version, url: releaseUrl };
 }
 
 function normalizeVersion(value: unknown): string | null {

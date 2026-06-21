@@ -4583,12 +4583,12 @@ function renderSystemStatus() {
 
 function formatUpdateStatus(update) {
   if (!update || typeof update !== "object" || !update.checkedAt) {
-    return `<div>${escapeHtml(t(state?.settings?.updateCheckEnabled ? "updateCheckNever" : "updateCheckDisabled"))}</div>`;
+    return `<div class="update-status-message neutral">${escapeHtml(t(state?.settings?.updateCheckEnabled ? "updateCheckNever" : "updateCheckDisabled"))}</div>`;
   }
   if (update.error) {
     return [
-      `<div class="status-cache-source warning">${escapeHtml(t("updateCheckFailed").replace("{error}", update.error))}</div>`,
-      `<div class="status-cache-muted">${escapeHtml(formatTimestamp(update.checkedAt))}</div>`
+      `<div class="update-status-message warning">${escapeHtml(t("updateCheckFailed").replace("{error}", update.error))}</div>`,
+      `<div class="update-status-time">${escapeHtml(formatTimestamp(update.checkedAt))}</div>`
     ].join("");
   }
   const latest = update.latestVersion || "-";
@@ -4596,11 +4596,11 @@ function formatUpdateStatus(update) {
     ? t("updateAvailable").replace("{version}", latest)
     : t("updateCurrent");
   const link = update.releaseUrl
-    ? `<a href="${escapeHtml(update.releaseUrl)}" target="_blank" rel="noreferrer">${escapeHtml(label)}</a>`
+    ? `<a class="update-status-link" href="${escapeHtml(update.releaseUrl)}" target="_blank" rel="noreferrer">${escapeHtml(label)}</a>`
     : escapeHtml(label);
   return [
-    `<div class="status-cache-source ${update.updateAvailable ? "warning" : "ready"}">${link}</div>`,
-    `<div class="status-cache-muted">${escapeHtml(formatTimestamp(update.checkedAt))}</div>`
+    `<div class="update-status-message ${update.updateAvailable ? "warning" : "ready"}">${link}</div>`,
+    `<div class="update-status-time">${escapeHtml(formatTimestamp(update.checkedAt))}</div>`
   ].join("");
 }
 

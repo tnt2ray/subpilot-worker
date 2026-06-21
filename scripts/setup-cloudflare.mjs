@@ -11,6 +11,7 @@ import { stdin as input, stdout as output } from "node:process";
 const CONFIG_PATH = "wrangler.jsonc";
 const TEMPLATE_PATH = "wrangler.example.jsonc";
 const PLACEHOLDER_KV_ID = "00000000000000000000000000000000";
+const DEFAULT_SOURCE_REFRESH_HOURS = 12;
 const args = new Set(process.argv.slice(2));
 
 function run(command, commandArgs, options = {}) {
@@ -61,6 +62,14 @@ function writeConfig(content) {
   writeFileSync(CONFIG_PATH, content);
 }
 
+function readJsonConfig() {
+  return JSON.parse(readConfig());
+}
+
+function writeJsonConfig(config) {
+  writeConfig(`${JSON.stringify(config, null, 2)}\n`);
+}
+
 function replaceWorkerName(name) {
   if (!name) return;
   const content = readConfig();
@@ -71,6 +80,45 @@ function replaceKvNamespaceId(id) {
   const content = readConfig();
   if (!content.includes(PLACEHOLDER_KV_ID)) return;
   writeConfig(content.replace(PLACEHOLDER_KV_ID, id));
+}
+
+function parseRefreshHours(value) {
+  const parsed = Number.parseInt(String(value).trim(), 10);
+  return Number.isInteger(parsed) && parsed >= 1 && parsed <= 24 ? parsed : null;
+}
+
+function refreshCronForHours(hours) {
+  return hours >= 24 ? "0 0 * * *" : `0 */${hours} * * *`;
+}
+
+async function configureSourceRefreshSchedule(createdConfig) {
+  const envHours = process.env.SUBPILOT_SOURCE_REFRESH_HOURS;
+  let hours = parseRefreshHours(envHours ?? "");
+
+  if (hours === null && createdConfig) {
+    const answer = await prompt(
+      `Auto-refresh upstream subscriptions every how many hours? [${DEFAULT_SOURCE_REFRESH_HOURS}] `,
+      String(DEFAULT_SOURCE_REFRESH_HOURS)
+    );
+    hours = parseRefreshHours(answer);
+    if (hours === null) {
+      process.stderr.write("Refresh interval must be an integer from 1 to 24 hours.\n");
+      process.exit(1);
+    }
+  }
+
+  if (hours === null) {
+    if (envHours) {
+      process.stderr.write("SUBPILOT_SOURCE_REFRESH_HOURS must be an integer from 1 to 24.\n");
+      process.exit(1);
+    }
+    return;
+  }
+
+  const config = readJsonConfig();
+  config.triggers = { ...(config.triggers ?? {}), crons: [refreshCronForHours(hours)] };
+  writeJsonConfig(config);
+  process.stdout.write(`Configured upstream auto-refresh: every ${hours} hour${hours === 1 ? "" : "s"}.\n`);
 }
 
 function extractNamespaceId(outputText) {
@@ -164,6 +212,7 @@ capture("wrangler", ["--version"]);
 const createdConfig = ensureConfigFile();
 replaceWorkerName(process.env.SUBPILOT_WORKER_NAME);
 await ensureKvNamespace();
+await configureSourceRefreshSchedule(createdConfig);
 
 const shouldWriteSecrets = !args.has("--no-secrets") && (createdConfig || args.has("--force-secrets"));
 const adminToken = shouldWriteSecrets ? await readAdminToken() : "";

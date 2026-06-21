@@ -67,7 +67,7 @@ async function downloadLatestReleaseArchive() {
   });
   if (!releaseResponse.ok) {
     process.stderr.write(`Could not read latest GitHub Release: HTTP ${releaseResponse.status}\n`);
-    process.stderr.write("Download a release archive manually, extract it over this directory, then run npm install && wrangler deploy.\n");
+    process.stderr.write("Download a release archive manually, extract it over this directory, then run npm install --omit=dev && wrangler deploy.\n");
     process.exit(1);
   }
 
@@ -131,7 +131,7 @@ if (existsSync(".git")) {
   }
 }
 
-if (!args.has("--no-install")) run(npmCommand, ["install"]);
+if (!args.has("--no-install")) run(npmCommand, ["install", "--omit=dev"]);
 if (!args.has("--no-deploy")) run(wranglerCommand, ["deploy"]);
 
 process.stdout.write("\nSubPilot update complete. KV schema updates run automatically when the Worker handles requests.\n");
