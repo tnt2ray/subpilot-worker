@@ -294,7 +294,7 @@ help - 查看命令列表
 
 后台“配置”页提供 GeoIP MMDB 上传入口，用户可上传 MaxMind DB Country 格式的 `.mmdb` 文件。上传后，IP 节点地区识别会优先使用该库。
 
-如果本机已经安装相关客户端，可直接选择它们已下载的 MMDB 文件：
+如果本机已经安装相关客户端，下面这些位置可能存在它们下载的 MMDB 文件。不同 MMDB 数据源有各自的许可协议，直接复制、上传或复用这些文件可能违反对应许可；使用前请自行确认文件来源和授权范围。
 
 - Surge macOS：`~/Library/Application Support/com.nssurge.surge-mac/GeoLite2-Country.mmdb`
 - Clash Verge Windows：`%APPDATA%\io.github.clash-verge-rev.clash-verge-rev\Country.mmdb`
