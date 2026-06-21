@@ -1,0 +1,11 @@
+__pycache__/main.cpython-313.pyc
+__pycache__/main.cpython-39.pyc
+.DS_Store
+node_modules/
+.wrangler/
+dist/
+data/geoip/
+worker-configuration.d.ts
+.dev.vars
+/wrangler.jsonc
+*.local

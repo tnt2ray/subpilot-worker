@@ -1,0 +1,2 @@
+ADMIN_TOKEN_HASH=replace-with-sha256-hex-of-your-admin-token
+CONFIG_ENCRYPTION_KEY=replace-with-a-long-random-encryption-key

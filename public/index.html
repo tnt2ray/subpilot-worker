@@ -1,0 +1,765 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>SubPilot 控制台</title>
+    <style>.hidden{display:none!important}</style>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <div id="app" class="luci-app">
+      <div class="luci-body">
+        <aside id="mainMenu" class="luci-menu hidden" aria-label="主导航">
+          <button class="menu-indicator" type="button" aria-label="展开导航">
+            <span></span>
+            <span></span>
+            <span></span>
+          </button>
+          <a class="active" href="#status" data-page="status"><span data-i18n="navStatus">状态</span></a>
+          <div class="menu-heading" data-i18n="navSystem">系统</div>
+          <a href="#settings" data-page="settings"><span data-i18n="navConfiguration">配置</span></a>
+          <a href="#groups" data-page="groups"><span data-i18n="navPolicyGroups">策略组</span></a>
+          <a href="#sources" data-page="sources"><span data-i18n="navSources">订阅源</span></a>
+          <a href="#surge" data-page="surge"><span data-i18n="navSurge">Surge</span></a>
+          <a href="#clash" data-page="clash"><span data-i18n="navClash">Clash</span></a>
+          <div class="menu-heading" data-i18n="navAccess">访问</div>
+          <a href="#tokens" data-page="tokens"><span data-i18n="navTokens">配置链接</span></a>
+        </aside>
+
+        <main class="luci-main">
+          <section id="pageHead" class="page-head hidden">
+            <div>
+              <h1 id="pageTitle">状态</h1>
+              <p id="pageDescription">查看服务状态、订阅数量和可用输出模式。</p>
+            </div>
+            <div class="apply-bar">
+              <button id="saveBtn" class="btn primary" type="button" data-state="idle" data-i18n="saveApply">保存并应用</button>
+            </div>
+          </section>
+
+          <section id="loginPanel" class="luci-box login-panel hidden">
+            <div class="box-title" data-i18n="loginTitle">管理员登录</div>
+            <div class="cbi-section">
+              <div class="cbi-row">
+                <label for="adminToken" data-i18n="adminToken">管理令牌</label>
+                <div class="field">
+                  <input id="adminToken" type="password" autocomplete="current-password" placeholder="输入管理令牌" data-i18n-placeholder="secretTokenPlaceholder">
+                  <small data-i18n="adminTokenHelp">请输入管理员令牌以进入控制台。</small>
+                </div>
+              </div>
+              <div class="form-actions">
+                <button id="loginBtn" class="btn primary" type="button" data-i18n="login">登录</button>
+              </div>
+            </div>
+          </section>
+
+          <section id="workspace" class="workspace hidden">
+            <section id="page-status" class="page-view" data-page="status">
+              <div class="status-grid">
+                <section class="luci-box mini">
+                  <div class="box-title" data-i18n="statusTitle">SubPilot 状态</div>
+                  <dl>
+                    <div><dt data-i18n="sources">订阅源</dt><dd id="summarySources">-</dd></div>
+                    <div><dt data-i18n="policyGroups">策略组</dt><dd id="summaryGroups">-</dd></div>
+                    <div>
+                      <dt data-i18n="sourceCacheStatus">上游缓存</dt>
+                      <dd class="status-cache-row">
+                        <div id="summarySourceCache" class="status-cache-detail">-</div>
+                        <button id="refreshSourceCacheBtn" class="btn compact-btn" type="button" data-i18n="refreshSourceCache">强制获取</button>
+                      </dd>
+                    </div>
+                  </dl>
+                </section>
+                <section class="luci-box mini status-fetch-box">
+                  <div class="box-title" data-i18n="fetchRecordsTitle">配置获取记录</div>
+                  <div class="status-table-wrap">
+                    <table class="status-fetch-table">
+                      <thead>
+                        <tr>
+                          <th data-i18n="fetchColumnTarget">配置</th>
+                          <th data-i18n="fetchColumnTime">最近获取</th>
+                          <th data-i18n="fetchColumnUa">客户端 UA</th>
+                          <th data-i18n="fetchColumnNetwork">IP / 位置</th>
+                        </tr>
+                      </thead>
+                      <tbody id="fetchRecordsTableBody">
+                        <tr><td class="status-empty-cell" colspan="4" data-i18n="noRecentUa">暂无获取记录</td></tr>
+                      </tbody>
+                    </table>
+                  </div>
+                  <div id="fetchRecordsPagination" class="status-fetch-pagination hidden">
+                    <span id="fetchRecordsPageInfo" class="status-fetch-page-info">-</span>
+                    <div class="status-fetch-page-actions">
+                      <button id="fetchRecordsPrevBtn" class="btn compact-btn" type="button" data-i18n="fetchRecordsPrev">上一页</button>
+                      <button id="fetchRecordsNextBtn" class="btn compact-btn" type="button" data-i18n="fetchRecordsNext">下一页</button>
+                    </div>
+                  </div>
+                </section>
+              </div>
+            </section>
+
+            <section id="page-settings" class="page-view hidden" data-page="settings">
+              <section class="luci-box">
+                <div class="box-title" data-i18n="configurationTitle">SubPilot 配置</div>
+                <div class="cbi-section">
+                  <div class="cbi-row">
+                    <label for="managedBaseUrl" data-i18n="managedBaseUrl">托管基础地址</label>
+                    <div class="field">
+                      <input id="managedBaseUrl" type="url" required>
+                      <small data-i18n="managedBaseUrlHelp">用于生成托管配置头部中的必填基础地址。初始空配置会按当前域名推导一次。</small>
+                    </div>
+                  </div>
+                  <div class="cbi-row">
+                    <label for="userAgentSurge" data-i18n="surgeUserAgent">Surge User-Agent</label>
+                    <div class="field">
+                      <input id="userAgentSurge" type="text">
+                      <small data-i18n="surgeUserAgentHelp">拉取上游订阅并生成 Surge 输出时发送。</small>
+                    </div>
+                  </div>
+                  <div class="cbi-row">
+                    <label for="userAgentClash" data-i18n="clashUserAgent">Clash User-Agent</label>
+                    <div class="field">
+                      <input id="userAgentClash" type="text">
+                      <small data-i18n="clashUserAgentHelp">拉取上游订阅并生成 Clash 输出时发送。</small>
+                    </div>
+                  </div>
+                  <div class="cbi-row">
+                    <label for="excludeKeywords" data-i18n="excludeKeywords">排除关键词</label>
+                    <div class="field">
+                      <input id="excludeKeywords" type="text">
+                      <small data-i18n="excludeKeywordsHelp">逗号分隔，节点名称包含这些关键词时会在策略组生成前移除。</small>
+                    </div>
+                  </div>
+                  <div class="cbi-row">
+                    <label for="featureTagRules" data-i18n="featureTagRules">能力标签规则</label>
+                    <div class="field">
+                      <textarea id="featureTagRules" class="line-editor" spellcheck="false"></textarea>
+                      <small data-i18n="featureTagRulesHelp">每行一个规则，格式为 标签=关键词1,关键词2。命中原始节点名后会追加标签。</small>
+                    </div>
+                  </div>
+                  <div class="cbi-row">
+                    <label data-i18n="geoIpMmdb">GeoIP MMDB</label>
+                    <div class="field">
+                      <div id="geoIpMmdbMissingNotice" class="field-notice warning" data-i18n="geoIpMmdbMissingNotice">未上传 MMDB 时，服务只能使用已有的单 IP 记录识别地区；没有记录的 IP 节点无法自动判断国家/地区，会影响 IP 节点重命名、按地区筛选和链式节点地区匹配的完整性。</div>
+                      <div class="button-row compact">
+                        <label class="btn file-button" for="geoIpMmdbFile" data-i18n="chooseGeoIpMmdb">选择 .mmdb</label>
+                        <input id="geoIpMmdbFile" class="hidden" type="file" accept=".mmdb,application/octet-stream">
+                        <button id="uploadGeoIpMmdbBtn" class="btn" type="button" data-i18n="uploadGeoIpMmdb">上传</button>
+                      </div>
+                      <div id="geoIpMmdbStatus" class="validation-messages"></div>
+                      <small data-i18n="geoIpMmdbHelp">上传 MaxMind DB Country 格式 .mmdb 后，IP 节点地区识别会优先使用该库。</small>
+                      <div class="path-help" aria-label="MMDB 文件路径参考">
+                        <div data-i18n="geoIpMmdbPathHelp">可从本机客户端选择现有文件：</div>
+                        <ul>
+                          <li><span>Surge macOS</span><code>~/Library/Application Support/com.nssurge.surge-mac/GeoLite2-Country.mmdb</code></li>
+                          <li><span>Clash Verge Windows</span><code>%APPDATA%\io.github.clash-verge-rev.clash-verge-rev\Country.mmdb</code></li>
+                          <li><span>Clash Verge macOS</span><code>~/Library/Application Support/io.github.clash-verge-rev.clash-verge-rev/Country.mmdb</code></li>
+                        </ul>
+                      </div>
+                    </div>
+                  </div>
+                  <div id="notificationTelegramConfig" class="cbi-row">
+                    <label for="notificationTelegramBotToken" data-i18n="telegramNotification">Telegram 配置</label>
+                    <div class="field">
+                      <input id="notificationTelegramBotToken" type="password" autocomplete="off" data-i18n-placeholder="telegramBotTokenPlaceholder" placeholder="Bot Token">
+                      <div class="telegram-bind-tools">
+                        <button id="telegramBindCodeBtn" class="btn compact-btn" type="button" data-i18n="telegramBindCode">生成绑定命令</button>
+                        <div id="telegramBindStatus" class="telegram-bind-status"></div>
+                      </div>
+                      <small data-i18n="telegramNotificationHelp">填写 Bot Token 即启用 Telegram 通知；清空 Bot Token 即关闭通知。生成一次性绑定命令后，把命令发送给 bot，系统会通过 webhook 自动记录 Chat ID。</small>
+                    </div>
+                  </div>
+                  <div class="cbi-row">
+                    <label for="chainExitProtocol" data-i18n="chainExitProxy">链式出口节点</label>
+                    <div class="field chain-exit-grid">
+                      <select id="chainExitProtocol" aria-label="链式出口协议">
+                        <option value="http">http</option>
+                        <option value="https">https</option>
+                        <option value="socks5">socks5</option>
+                        <option value="socks5-tls">socks5-tls</option>
+                        <option value="ss">ss</option>
+                        <option value="snell">snell</option>
+                        <option value="trojan">trojan</option>
+                        <option value="vmess">vmess</option>
+                        <option value="hysteria2">hysteria2</option>
+                        <option value="tuic">tuic</option>
+                        <option value="anytls">anytls</option>
+                        <option value="trust-tunnel">trust-tunnel</option>
+                        <option value="ssh">ssh</option>
+                      </select>
+                      <input id="chainExitServer" type="text" placeholder="服务器地址" data-i18n-placeholder="chainExitServer">
+                      <input id="chainExitPort" type="number" min="1" max="65535" placeholder="端口" data-i18n-placeholder="chainExitPort">
+                      <input id="chainExitUsername" type="text" autocomplete="off" placeholder="用户名 / UUID / 加密方法" data-i18n-placeholder="chainExitUsername">
+                      <input id="chainExitPassword" type="password" autocomplete="new-password" placeholder="密码 / token / psk" data-i18n-placeholder="chainExitPassword">
+                      <label class="chain-filter-label" for="chainFilter" data-i18n="chainFilter">链式节点过滤器</label>
+                      <input id="chainFilter" type="text" placeholder="链式节点过滤器" data-i18n-placeholder="chainFilter">
+                      <small data-i18n="chainExitProxyHelp">节点名固定为 Chain Exit，生成配置时自动使用。</small>
+                      <small data-i18n="chainFilterHelp">逗号分隔，按最终节点名、地区或能力标签筛选。命中的节点会额外生成经 Chain Exit 出口的链式节点。</small>
+                    </div>
+                  </div>
+                </div>
+              </section>
+            </section>
+
+            <section id="page-groups" class="page-view hidden" data-page="groups">
+              <section class="luci-box">
+                <div class="box-title row-title">
+                  <span data-i18n="groupsTitle">策略组</span>
+                  <button id="addGroupBtn" class="btn" type="button" data-i18n="addGroup">添加策略组</button>
+                </div>
+                <div class="table-wrap">
+                  <table class="luci-table group-table">
+                    <thead>
+                      <tr>
+                        <th data-i18n="tableName">名称</th>
+                        <th data-i18n="tableDefinition">定义</th>
+                      </tr>
+                    </thead>
+                    <tbody id="groupsBody"></tbody>
+                  </table>
+                </div>
+              </section>
+            </section>
+
+            <section id="page-sources" class="page-view hidden" data-page="sources">
+              <section class="luci-box">
+                <div class="box-title row-title source-title">
+                  <span data-i18n="sourcesTitle">订阅源</span>
+                  <button id="addSourceBtn" class="btn" type="button" data-i18n="addSource">添加订阅源</button>
+                </div>
+                <div class="table-wrap source-table-wrap">
+                  <table class="luci-table source-table">
+                    <thead>
+                      <tr>
+                        <th data-i18n="tableName">名称</th>
+                        <th data-i18n="tableFetchUserAgent">拉取 User-Agent</th>
+                        <th data-i18n="tableEnabled">启用</th>
+                        <th data-i18n="tableUrl">订阅 URL</th>
+                        <th></th>
+                      </tr>
+                    </thead>
+                    <tbody id="sourcesBody"></tbody>
+                  </table>
+                </div>
+              </section>
+            </section>
+
+            <section id="page-surge" class="page-view hidden" data-page="surge">
+              <section class="luci-box">
+                <div class="box-title" data-i18n="surgeConfigTitle">Surge 功能配置</div>
+                <div class="tabs section-tabs" role="tablist" aria-label="Surge sections">
+                  <button class="tab active" type="button" data-surge-tab="general" role="tab" aria-selected="true" data-i18n="surgeTabGeneral">General</button>
+                  <button class="tab" type="button" data-surge-tab="host" role="tab" aria-selected="false" data-i18n="surgeTabHost">Host</button>
+                  <button class="tab" type="button" data-surge-tab="urlRewrite" role="tab" aria-selected="false" data-i18n="surgeTabUrlRewrite">URL Rewrite</button>
+                  <button class="tab" type="button" data-surge-tab="script" role="tab" aria-selected="false" data-i18n="surgeTabScript">Script</button>
+                  <button class="tab" type="button" data-surge-tab="mitm" role="tab" aria-selected="false" data-i18n="surgeTabMitm">MITM</button>
+                  <button class="tab" type="button" data-surge-tab="ponte" role="tab" aria-selected="false" data-i18n="surgeTabPonte">Ponte</button>
+                  <button class="tab" type="button" data-surge-tab="rule" role="tab" aria-selected="false" data-i18n="surgeTabRule">Rule</button>
+                </div>
+                <div class="cbi-section" data-surge-panel="general">
+                  <div class="cbi-row">
+                    <label for="surgeInternetTestUrl" data-i18n="internetTestUrl">联网测试地址</label>
+                    <div class="field">
+                      <input id="surgeInternetTestUrl" type="url">
+                      <small data-i18n="internetTestUrlHelp">Surge 用这个地址判断当前网络是否可直连互联网，通常使用返回 204 的探测 URL。</small>
+                    </div>
+                  </div>
+                  <div class="cbi-row">
+                    <label for="surgeProxyTestUrl" data-i18n="proxyTestUrl">代理测试地址</label>
+                    <div class="field">
+                      <input id="surgeProxyTestUrl" type="url">
+                      <small data-i18n="proxyTestUrlHelp">Surge 用这个地址测试代理连通性，通常使用稳定返回 204 的探测 URL。</small>
+                    </div>
+                  </div>
+                  <div class="cbi-row">
+                    <label for="surgeManagedConfigIntervalSeconds" data-i18n="managedConfigInterval">主配置更新间隔</label>
+                    <div class="field">
+                      <input id="surgeManagedConfigIntervalSeconds" type="number" min="300" max="604800" step="60">
+                      <small data-i18n="managedConfigIntervalHelp">写入 #!MANAGED-CONFIG 的 interval，单位秒；默认 43200（12 小时）。</small>
+                    </div>
+                  </div>
+                  <div class="cbi-row">
+                    <label for="surgeShowErrorPageForReject" data-i18n="showErrorPageForReject">Reject 错误页</label>
+                    <div class="field checks">
+                      <label class="check"><input id="surgeShowErrorPageForReject" type="checkbox"> <span data-i18n="enabled">已启用</span></label>
+                      <small data-i18n="showErrorPageForRejectHelp">启用后，HTTP 请求命中 REJECT 规则时显示 Surge 错误页，便于识别拦截原因。</small>
+                    </div>
+                  </div>
+                  <div class="cbi-row">
+                    <label for="surgeSkipProxy" data-i18n="skipProxy">跳过代理</label>
+                    <div class="field">
+                      <input id="surgeSkipProxy" type="text">
+                      <small data-i18n="skipProxyHelp">这些主机、域名或网段不进入代理处理，通常用于本机、局域网、运营商保留地址和系统探测域名。</small>
+                    </div>
+                  </div>
+                  <div class="cbi-row">
+                    <label for="surgeTunExcludedRoutes" data-i18n="tunExcludedRoutes">TUN 排除路由</label>
+                    <div class="field">
+                      <input id="surgeTunExcludedRoutes" type="text">
+                      <small data-i18n="tunExcludedRoutesHelp">这些网段不会被 Surge TUN 接管，通常用于保留局域网、私有地址和组播发现地址的直连访问。使用逗号分隔。</small>
+                    </div>
+                  </div>
+                  <div class="cbi-row">
+                    <label for="surgeIpv6">IPv6</label>
+                    <div class="field checks">
+                      <label class="check"><input id="surgeIpv6" type="checkbox"> <span data-i18n="enabled">已启用</span></label>
+                      <small data-i18n="ipv6Help">控制 Surge 输出中是否启用 IPv6。</small>
+                    </div>
+                  </div>
+                  <div id="surgeIpv6VifRow" class="cbi-row">
+                    <label for="surgeIpv6Vif" data-i18n="ipv6Vif">IPv6 虚拟接口</label>
+                    <div class="field">
+                      <select id="surgeIpv6Vif">
+                        <option value="off">off</option>
+                        <option value="auto">auto</option>
+                        <option value="always">always</option>
+                      </select>
+                      <small data-i18n="ipv6VifHelp">控制 Surge 虚拟接口的 IPv6 行为。off 不启用 IPv6 VIF，auto 在本地网络支持 IPv6 时自动启用，always 始终启用。</small>
+                    </div>
+                  </div>
+                  <div class="cbi-row">
+                    <label for="surgeAllowWifiAccess" data-i18n="allowWifiAccess">允许 Wi-Fi 访问</label>
+                    <div class="field checks">
+                      <label class="check"><input id="surgeAllowWifiAccess" type="checkbox"> <span data-i18n="enabled">已启用</span></label>
+                      <small data-i18n="allowWifiAccessHelp">启用后，同一 Wi-Fi 网络中的其它设备可以访问本机 Surge 代理端口。</small>
+                    </div>
+                  </div>
+                  <div class="cbi-row">
+                    <label for="surgeWifiAssist" data-i18n="wifiAssist">Wi-Fi Assist</label>
+                    <div class="field checks">
+                      <label class="check"><input id="surgeWifiAssist" type="checkbox"> <span data-i18n="enabled">已启用</span></label>
+                      <small data-i18n="wifiAssistHelp">控制 Surge 是否启用 Wi-Fi Assist 网络辅助能力。</small>
+                    </div>
+                  </div>
+                  <div class="cbi-row">
+                    <label for="surgeDnsServer" data-i18n="dnsServer">DNS 服务器</label>
+                    <div class="field">
+                      <input id="surgeDnsServer" type="text">
+                      <small data-i18n="dnsServerHelp">Surge 普通 DNS 解析使用的服务器列表，按顺序尝试。使用逗号分隔。</small>
+                    </div>
+                  </div>
+                  <div class="cbi-row">
+                    <label for="surgeEncryptedDnsServer" data-i18n="encryptedDnsServer">加密 DNS 服务器</label>
+                    <div class="field">
+                      <input id="surgeEncryptedDnsServer" type="text">
+                      <small data-i18n="encryptedDnsServerHelp">Surge 使用的 DoH/DoQ 等加密 DNS 服务器列表。使用逗号分隔。</small>
+                    </div>
+                  </div>
+                  <div class="cbi-row">
+                    <label for="surgeAlwaysRealIp" data-i18n="alwaysRealIp">始终真实 IP</label>
+                    <div class="field">
+                      <input id="surgeAlwaysRealIp" type="text">
+                      <small data-i18n="alwaysRealIpHelp">匹配这些域名时始终返回真实 IP，适合游戏、STUN、语音视频等不适合 fake-ip 的服务。使用逗号分隔。</small>
+                    </div>
+                  </div>
+                  <div class="cbi-row">
+                    <label for="surgeExcludeSimpleHostnames" data-i18n="excludeSimpleHostnames">排除简单主机名</label>
+                    <div class="field checks">
+                      <label class="check"><input id="surgeExcludeSimpleHostnames" type="checkbox"> <span data-i18n="enabled">已启用</span></label>
+                      <small data-i18n="excludeSimpleHostnamesHelp">启用后，不带点号的简单主机名不会交给远端 DNS，适合保留局域网主机名解析。</small>
+                    </div>
+                  </div>
+                  <div class="cbi-row">
+                    <label for="surgeEncryptedDnsFollowOutboundMode" data-i18n="encryptedDnsFollowOutboundMode">加密 DNS 跟随出站模式</label>
+                    <div class="field checks">
+                      <label class="check"><input id="surgeEncryptedDnsFollowOutboundMode" type="checkbox"> <span data-i18n="enabled">已启用</span></label>
+                      <small data-i18n="encryptedDnsFollowOutboundModeHelp">启用后，加密 DNS 查询会跟随当前出站模式，避免 DNS 流量绕过当前策略。</small>
+                    </div>
+                  </div>
+                </div>
+                <div class="cbi-section hidden" data-surge-panel="host">
+                  <div class="cbi-row">
+                    <label data-i18n="surgeHosts">Surge Host</label>
+                    <div class="field">
+                      <div class="field-notice" data-i18n="surgeHostPonteNotice">Ponte 外部访问局域网示例：在 Host 添加 lan-device.home -&gt; 192.168.1.10，在 Ponte 页填写承载该局域网的设备名 Home-Mac，再在 Rule 中添加 DOMAIN,lan-device.home,DEVICE:Home-Mac。外部设备访问 http://lan-device.home:5000 时，会经 Ponte 设备访问 192.168.1.10:5000。</div>
+                      <div class="button-row compact">
+                        <button id="surgeHostAdvancedMode" class="btn mode-toggle" type="button" aria-pressed="false" data-i18n="surgeHostAdvancedMode">文本编辑模式</button>
+                      </div>
+                      <div id="surgeHostStructuredEditor" class="surge-host-structured">
+                        <div class="button-row compact">
+                          <button id="addSurgeHostBtn" class="btn" type="button" data-i18n="addSurgeHost">添加 Host 规则</button>
+                        </div>
+                        <div id="surgeHostRows" class="surge-host-list"></div>
+                        <small data-i18n="surgeHostEditorHelp">Host 用于 Surge 本地 DNS 映射；可把域名映射到 IP、别名域名，或为某个域名指定 DNS 服务器。</small>
+                      </div>
+                      <div id="surgeHostValidation" class="validation-messages hidden"></div>
+                      <label class="field-label" for="surgeHosts" data-i18n="surgeHostOutput">生成结果</label>
+                      <textarea id="surgeHosts" class="line-editor generated-code config-code-textarea" rows="30" spellcheck="false" readonly></textarea>
+                    </div>
+                  </div>
+                </div>
+                <div class="cbi-section hidden" data-surge-panel="urlRewrite">
+                  <div class="cbi-row surge-url-rewrite-cbi-row">
+                    <label data-i18n="surgeUrlRewrite">URL Rewrite</label>
+                    <div class="field">
+                      <div class="field-notice warning" data-i18n="surgeUrlRewriteHttpsMitmNotice">如果 URL Rewrite 匹配 https:// 请求，必须在 MITM 页启用对应主机名，否则该规则不会生效。</div>
+                      <div class="button-row compact">
+                        <button id="surgeUrlRewriteAdvancedMode" class="btn mode-toggle" type="button" aria-pressed="false" data-i18n="surgeUrlRewriteAdvancedMode">文本编辑模式</button>
+                      </div>
+                      <div id="surgeUrlRewriteStructuredEditor" class="surge-url-rewrite-structured">
+                        <div class="button-row compact">
+                          <button id="addSurgeUrlRewriteBtn" class="btn" type="button" data-i18n="addSurgeUrlRewrite">添加 URL Rewrite</button>
+                        </div>
+                        <div id="surgeUrlRewriteRows" class="surge-url-rewrite-list"></div>
+                        <small data-i18n="surgeUrlRewriteEditorHelp">URL Rewrite 用于按 URL 正则执行 header 重写、302 跳转或 reject 拒绝。HTTPS 请求需要对应主机名开启 MITM 才能命中。</small>
+                      </div>
+                      <div id="surgeUrlRewriteValidation" class="validation-messages hidden"></div>
+                      <label class="field-label" for="surgeUrlRewrite" data-i18n="surgeUrlRewriteOutput">生成结果</label>
+                      <textarea id="surgeUrlRewrite" class="line-editor generated-code config-code-textarea" rows="30" spellcheck="false" readonly></textarea>
+                    </div>
+                  </div>
+                </div>
+                <div class="cbi-section hidden" data-surge-panel="script">
+                  <div class="cbi-row">
+                    <label for="surgeScripts" data-i18n="surgeScripts">Surge 脚本</label>
+                    <div class="field">
+                      <textarea id="surgeScripts" class="line-editor generated-code config-code-textarea" rows="30" spellcheck="false"></textarea>
+                      <small data-i18n="surgeScriptsHelp">填写脚本定义，每行一条，例如：名称 = type=...,pattern=...,script-path=...。</small>
+                      <div id="surgeScriptValidation" class="validation-messages hidden"></div>
+                    </div>
+                  </div>
+                </div>
+                <div class="cbi-section hidden" data-surge-panel="mitm">
+                  <div class="cbi-row">
+                    <label data-i18n="surgeMitmOptions">MITM 选项</label>
+                    <div class="field checks">
+                      <div class="field-notice warning" data-i18n="surgeMitmCertificateNotice">MITM 解密 HTTPS 前，需要生成或导入 CA 证书，并在使用该配置的设备上安装且信任该证书。</div>
+                      <label class="check"><input id="surgeMitmSkipServerCertVerify" type="checkbox"> <span data-i18n="surgeMitmSkipServerCertVerify">跳过服务器证书验证</span></label>
+                      <label class="check"><input id="surgeMitmH2" type="checkbox"> <span data-i18n="surgeMitmH2">启用 HTTP/2 解密</span></label>
+                      <small data-i18n="surgeMitmOptionsHelp">启用证书校验跳过可以绕过上游证书异常，但也会降低连接校验强度。</small>
+                    </div>
+                  </div>
+                  <div class="cbi-row">
+                    <label for="surgeMitmHostname" data-i18n="surgeMitmHostname">MITM 主机名</label>
+                    <div class="field">
+                      <textarea id="surgeMitmHostname" class="line-editor compact-editor config-code-textarea" rows="20" spellcheck="false"></textarea>
+                      <small data-i18n="surgeMitmHostnameHelp">Surge 只会对这里列出的域名执行 HTTPS 解密。每行一个主机名，支持通配符。</small>
+                    </div>
+                  </div>
+                  <div class="cbi-row">
+                    <label data-i18n="surgeMitmCa">MITM CA</label>
+                    <div class="field">
+                      <div class="button-row compact">
+                        <button id="generateSurgeMitmCaBtn" class="btn" type="button" data-i18n="generateSurgeMitmCa">生成 CA 证书</button>
+                        <button id="generateSurgeMitmCaPassphraseBtn" class="btn" type="button" data-i18n="generateSurgeMitmCaPassphrase">生成 CA 密码</button>
+                        <label class="btn file-button" for="surgeMitmCaP12File" data-i18n="importSurgeMitmCaP12">导入 .p12</label>
+                        <input id="surgeMitmCaP12File" class="hidden" type="file" accept=".p12,.pfx,application/x-pkcs12">
+                      </div>
+                      <div id="surgeMitmCaGenerationStatus" class="validation-messages hidden"></div>
+                      <label class="field-label" for="surgeMitmCaPassphrase">CA 密码</label>
+                      <input id="surgeMitmCaPassphrase" type="password" autocomplete="new-password">
+                      <label class="field-label" for="surgeMitmCaP12">CA 证书包</label>
+                      <textarea id="surgeMitmCaP12" class="line-editor generated-code config-code-textarea" rows="30" spellcheck="false"></textarea>
+                      <small data-i18n="surgeMitmCaHelp">可在当前浏览器生成 CA 证书，或选择 .p12/.pfx 文件导入。CA 私钥会进入配置文件，请保护管理令牌和读取链接。</small>
+                    </div>
+                  </div>
+                </div>
+                <div class="cbi-section hidden" data-surge-panel="ponte">
+                  <div class="cbi-row">
+                    <label for="surgePonteDeviceNames" data-i18n="surgePonteDeviceNames">Ponte 设备名</label>
+                    <div class="field">
+                      <input id="surgePonteDeviceNames" type="text">
+                      <small data-i18n="surgePonteDeviceNamesHelp">填写 Surge Ponte 设备名，逗号分隔；保存后可在 Rule 的策略出口中选择 DEVICE:&lt;设备名&gt;。</small>
+                    </div>
+                  </div>
+                </div>
+                <div class="cbi-section hidden" data-surge-panel="rule">
+                  <div class="cbi-row surge-rule-cbi-row">
+                    <label data-i18n="surgeRules">Surge 规则</label>
+                    <div class="field">
+                      <div class="button-row compact structured-editor-actions">
+                        <button id="surgeRuleAdvancedMode" class="btn mode-toggle" type="button" aria-pressed="false" data-i18n="surgeRuleAdvancedMode">文本编辑模式</button>
+                        <span id="surgeRuleStructuredActions" class="button-row compact structured-editor-secondary-actions">
+                          <button id="addSurgeRuleBtn" class="btn" type="button" data-i18n="addSurgeRule">添加单条规则</button>
+                          <button id="addSurgeRuleSetBtn" class="btn" type="button" data-i18n="addSurgeRuleSet">添加规则集</button>
+                        </span>
+                      </div>
+                      <div id="surgeRuleStructuredEditor" class="surge-rule-structured">
+                        <div id="surgeRuleRows" class="surge-rule-list"></div>
+                        <small data-i18n="surgeRuleEditorHelp">规则集和单条规则使用不同语法；策略出口只能选择已配置策略组或 Surge 内置策略。</small>
+                      </div>
+                      <div id="surgeRuleValidation" class="validation-messages hidden"></div>
+                      <label class="field-label" for="surgeRules" data-i18n="surgeRuleOutput">生成结果</label>
+                      <textarea id="surgeRules" class="line-editor generated-code config-code-textarea" rows="30" spellcheck="false" readonly></textarea>
+                    </div>
+                  </div>
+                </div>
+              </section>
+            </section>
+
+            <section id="page-clash" class="page-view hidden" data-page="clash">
+              <section class="luci-box">
+                <div class="box-title" data-i18n="clashConfigTitle">Clash 功能配置</div>
+                <div class="tabs section-tabs" role="tablist" aria-label="Clash sections">
+                  <button class="tab active" type="button" data-clash-tab="general" role="tab" aria-selected="true" data-i18n="clashTabGeneral">General</button>
+                  <button class="tab" type="button" data-clash-tab="dns" role="tab" aria-selected="false" data-i18n="clashTabDns">DNS</button>
+                  <button class="tab" type="button" data-clash-tab="providers" role="tab" aria-selected="false" data-i18n="clashTabProviders">规则集</button>
+                  <button class="tab" type="button" data-clash-tab="rules" role="tab" aria-selected="false" data-i18n="clashTabRules">Rule</button>
+                </div>
+                <div class="cbi-section" data-clash-panel="general">
+                  <div class="cbi-row split">
+                    <label data-i18n="ports">端口</label>
+                    <div class="field three port-fields">
+                      <label class="port-field" for="clashPort">
+                        <span class="field-label" data-i18n="clashHttpPort">HTTP 代理端口</span>
+                        <input id="clashPort" type="number" min="1" max="65535" aria-label="HTTP proxy port">
+                        <small data-i18n="clashHttpPortHelp">HTTP 代理入口，供浏览器或系统 HTTP 代理使用。</small>
+                      </label>
+                      <label class="port-field" for="clashSocksPort">
+                        <span class="field-label" data-i18n="clashSocksPort">SOCKS5 代理端口</span>
+                        <input id="clashSocksPort" type="number" min="1" max="65535" aria-label="SOCKS5 proxy port">
+                        <small data-i18n="clashSocksPortHelp">SOCKS5 代理入口，供支持 SOCKS5 的应用使用。</small>
+                      </label>
+                      <label class="port-field" for="clashMixedPort">
+                        <span class="field-label" data-i18n="clashMixedPort">混合代理端口</span>
+                        <input id="clashMixedPort" type="number" min="1" max="65535" aria-label="Mixed proxy port">
+                        <small data-i18n="clashMixedPortHelp">同时接受 HTTP 和 SOCKS5，通常作为默认代理入口。</small>
+                      </label>
+                    </div>
+                  </div>
+                  <div class="cbi-row split">
+                    <label data-i18n="clashNetworkOptions">网络选项</label>
+                    <div class="field three check-cells">
+                      <label class="check-cell" for="clashAllowLan">
+                        <span class="field-label">allow-lan</span>
+                        <span class="check"><input id="clashAllowLan" type="checkbox"> <span data-i18n="enabled">已启用</span></span>
+                        <small data-i18n="clashAllowLanHelp">允许局域网其它设备访问 Clash 代理端口。</small>
+                      </label>
+                      <label class="check-cell" for="clashIpv6">
+                        <span class="field-label">IPv6</span>
+                        <span class="check"><input id="clashIpv6" type="checkbox"> <span data-i18n="enabled">已启用</span></span>
+                        <small data-i18n="clashIpv6Help">控制 Clash 输出中是否启用 IPv6 解析和连接。</small>
+                      </label>
+                      <label class="check-cell" for="clashExternalController">
+                        <span class="field-label" data-i18n="clashExternalController">external-controller</span>
+                        <input id="clashExternalController" type="text">
+                        <small data-i18n="clashExternalControllerHelp">Clash 外部控制器监听地址；0.0.0.0:9090 表示监听所有 IPv4 网络接口，不按来源地址限制访问。</small>
+                      </label>
+                    </div>
+                  </div>
+                  <div class="cbi-row split hidden">
+                    <label data-i18n="modeAndLog">模式 / 日志级别</label>
+                    <div class="field two">
+                      <select id="clashMode">
+                        <option value="Rule">Rule</option>
+                        <option value="Global">Global</option>
+                        <option value="Direct">Direct</option>
+                      </select>
+                      <select id="clashLogLevel">
+                        <option value="debug">debug</option>
+                        <option value="info">info</option>
+                        <option value="warning">warning</option>
+                        <option value="error">error</option>
+                        <option value="silent">silent</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div class="cbi-row split">
+                    <label data-i18n="clashRuntimeOptions">运行选项</label>
+                    <div class="field two check-cells">
+                      <label class="check-cell" for="clashUnifiedDelay">
+                        <span class="field-label" data-i18n="clashUnifiedDelay">unified-delay</span>
+                        <span class="check"><input id="clashUnifiedDelay" type="checkbox"> <span data-i18n="enabled">已启用</span></span>
+                        <small data-i18n="clashUnifiedDelayHelp">统一节点测速口径，减少握手差异造成的延迟偏差。</small>
+                      </label>
+                      <label class="check-cell" for="clashTcpConcurrent">
+                        <span class="field-label" data-i18n="clashTcpConcurrent">tcp-concurrent</span>
+                        <span class="check"><input id="clashTcpConcurrent" type="checkbox"> <span data-i18n="enabled">已启用</span></span>
+                        <small data-i18n="clashTcpConcurrentHelp">对同一域名解析出的多个 IP 并发连接，使用最先连通的地址。</small>
+                      </label>
+                    </div>
+                  </div>
+                  <div class="cbi-row">
+                    <label data-i18n="clashTunMode">TUN 模式</label>
+                    <div class="field checks">
+                      <label class="check"><input id="clashTunEnable" type="checkbox"> <span data-i18n="enabled">已启用</span></label>
+                      <small data-i18n="clashTunEnableHelp">通过 TUN 接管系统流量；关闭后隐藏相关设置，并从生成结果中移除 tun 配置。</small>
+                    </div>
+                  </div>
+                  <div class="cbi-row split" data-clash-tun-dependent>
+                    <label data-i18n="clashTunRouteOptions">TUN 路由 / 栈</label>
+                    <div class="field three check-cells">
+                      <label class="check-cell" for="clashTunAutoRoute">
+                        <span class="field-label" data-i18n="clashTunAutoRoute">auto-route</span>
+                        <span class="check"><input id="clashTunAutoRoute" type="checkbox"> <span data-i18n="enabled">已启用</span></span>
+                        <small data-i18n="clashTunAutoRouteHelp">自动添加系统路由，把匹配流量导入 TUN。</small>
+                      </label>
+                      <label class="check-cell" for="clashTunAutoDetectInterface">
+                        <span class="field-label" data-i18n="clashTunAutoDetectInterface">auto-detect-interface</span>
+                        <span class="check"><input id="clashTunAutoDetectInterface" type="checkbox"> <span data-i18n="enabled">已启用</span></span>
+                        <small data-i18n="clashTunAutoDetectInterfaceHelp">自动识别当前出口网卡，减少手动指定接口的需要。</small>
+                      </label>
+                      <label class="check-cell" for="clashTunStack">
+                        <span class="field-label" data-i18n="clashTunStack">stack</span>
+                        <select id="clashTunStack">
+                          <option value="system">system</option>
+                          <option value="gvisor">gvisor</option>
+                          <option value="mixed">mixed</option>
+                        </select>
+                        <small data-i18n="clashTunStackHelp">选择 TUN 网络栈实现；system 使用系统栈，gvisor 使用用户态栈，mixed 由客户端混合处理。</small>
+                      </label>
+                    </div>
+                  </div>
+                  <div class="cbi-row" data-clash-tun-dependent>
+                    <label for="clashTunSkipProxy" data-i18n="clashTunSkipProxy">skip-proxy</label>
+                    <div class="field">
+                      <textarea id="clashTunSkipProxy" class="line-editor compact-editor config-code-textarea" rows="30" spellcheck="false" data-code-editor-mode="plain"></textarea>
+                      <small data-i18n="clashTunSkipProxyHelp">TUN 开启时每行一个地址或网段；这些目标不进入 TUN 代理处理。</small>
+                    </div>
+                  </div>
+                </div>
+                <div class="cbi-section hidden" data-clash-panel="dns">
+                  <div class="cbi-row">
+                    <label data-i18n="dnsSettings">DNS 设置</label>
+                    <div class="field clash-dns-settings-grid">
+                      <label class="check-cell" for="clashDnsEnabled">
+                        <span class="field-label" data-i18n="dnsEnabled">启用 DNS</span>
+                        <span class="check"><input id="clashDnsEnabled" type="checkbox"> <span data-i18n="enabled">已启用</span></span>
+                        <small data-i18n="dnsEnabledHelp">启用 Clash 内置 DNS 服务，下面的 DNS 解析配置才会生效。</small>
+                      </label>
+                      <label class="check-cell" for="clashDnsIpv6">
+                        <span class="field-label" data-i18n="dnsIpv6">DNS IPv6</span>
+                        <span class="check"><input id="clashDnsIpv6" type="checkbox"> <span data-i18n="enabled">已启用</span></span>
+                        <small data-i18n="dnsIpv6Help">允许 DNS 返回 IPv6 结果；是否实际连接 IPv6 还受 General 中 IPv6 开关影响。</small>
+                      </label>
+                      <label class="check-cell" for="clashDnsListen">
+                        <span class="field-label" data-i18n="clashDnsListen">listen</span>
+                        <input id="clashDnsListen" type="text" aria-label="listen">
+                        <small data-i18n="clashDnsListenHelp">DNS 服务监听地址，只有启用 DNS 后生效。</small>
+                      </label>
+                    </div>
+                  </div>
+                  <div class="cbi-row split">
+                    <label data-i18n="clashDnsResolveOptions">DNS 解析方式</label>
+                    <div class="field two check-cells">
+                      <label class="check-cell" for="clashDnsEnhancedMode">
+                        <span class="field-label" data-i18n="clashDnsResolveMode">返回模式</span>
+                        <select id="clashDnsEnhancedMode">
+                          <option value="fake-ip">fake-ip</option>
+                          <option value="redir-host">redir-host</option>
+                        </select>
+                        <small data-i18n="clashDnsEnhancedModeHelp">选择 Clash DNS 如何返回解析结果：fake-ip 返回虚拟 IP，适合 TUN 和透明代理；redir-host 返回真实 IP，兼容性较高。</small>
+                      </label>
+                      <label class="check-cell" for="clashDnsFakeIpRange" data-clash-fake-ip-dependent>
+                        <span class="field-label" data-i18n="clashDnsFakeIpRange">fake-ip-range</span>
+                        <input id="clashDnsFakeIpRange" type="text">
+                        <small data-i18n="clashDnsFakeIpRangeHelp">仅返回模式为 fake-ip 时生效；用于设置 fake-ip 使用的 IPv4 地址段。</small>
+                      </label>
+                    </div>
+                  </div>
+                  <div class="cbi-row" data-clash-fake-ip-dependent>
+                    <label for="clashFakeIpFilter" data-i18n="clashFakeIpFilter">Fake-IP 过滤</label>
+                    <div class="field">
+                      <textarea id="clashFakeIpFilter" class="line-editor config-code-textarea" rows="30" spellcheck="false" data-code-editor-mode="plain"></textarea>
+                      <small data-i18n="clashFakeIpFilterHelp">仅返回模式为 fake-ip 时生效；匹配的域名返回真实解析结果，不分配 fake-ip。</small>
+                    </div>
+                  </div>
+                  <div class="cbi-row">
+                    <label for="clashDefaultNameservers" data-i18n="clashDefaultNameservers">default-nameserver</label>
+                    <div class="field">
+                      <textarea id="clashDefaultNameservers" class="line-editor compact-editor config-code-textarea" rows="30" spellcheck="false" data-code-editor-mode="plain"></textarea>
+                      <small data-i18n="clashDefaultNameserversHelp">每行一个基础 DNS，通常填写纯 IP；用于解析 DNS 服务器本身的域名。</small>
+                    </div>
+                  </div>
+                  <div class="cbi-row">
+                    <label for="clashNameservers" data-i18n="nameservers">DNS 服务器</label>
+                    <div class="field">
+                      <textarea id="clashNameservers" class="line-editor config-code-textarea" rows="30" spellcheck="false" data-code-editor-mode="plain"></textarea>
+                      <small data-i18n="nameserversHelp">每行一个上游 DNS；Clash DNS 默认优先使用这里的服务器解析域名。</small>
+                    </div>
+                  </div>
+                  <div class="cbi-row">
+                    <label for="clashFallbackNameservers" data-i18n="clashFallbackNameservers">fallback</label>
+                    <div class="field">
+                      <textarea id="clashFallbackNameservers" class="line-editor compact-editor config-code-textarea" rows="30" spellcheck="false" data-code-editor-mode="plain"></textarea>
+                      <small data-i18n="clashFallbackNameserversHelp">每行一个备用 DNS；Fallback 过滤命中时使用这里的解析结果。</small>
+                    </div>
+                  </div>
+                  <div class="cbi-row">
+                    <label data-i18n="clashFallbackFilter">fallback-filter</label>
+                    <div class="field checks">
+                      <label class="check-cell" for="clashFallbackFilterGeoip">
+                        <span class="check"><input id="clashFallbackFilterGeoip" type="checkbox"> <span>geoip</span></span>
+                        <small data-i18n="clashFallbackFilterGeoipHelp">根据 GeoIP 判断主 DNS 结果是否需要回退；命中时使用 Fallback DNS。</small>
+                      </label>
+                      <label class="field-label" for="clashFallbackFilterIpcidr">ipcidr</label>
+                      <textarea id="clashFallbackFilterIpcidr" class="line-editor compact-editor config-code-textarea" rows="30" spellcheck="false" data-code-editor-mode="plain"></textarea>
+                      <small data-i18n="clashFallbackFilterIpcidrHelp">每行一个 IP 或 CIDR；主 DNS 结果命中这些地址段时使用 Fallback DNS。</small>
+                    </div>
+                  </div>
+                </div>
+                <div class="cbi-section hidden" data-clash-panel="providers">
+                  <div class="cbi-row surge-rule-cbi-row">
+                    <label data-i18n="clashRuleProviders">rule-providers</label>
+                    <div class="field">
+                      <div class="button-row compact">
+                        <button id="clashRuleProviderAdvancedMode" class="btn mode-toggle" type="button" aria-pressed="false" data-i18n="clashRuleProviderAdvancedMode">文本编辑模式</button>
+                      </div>
+                      <div id="clashRuleProviderStructuredEditor" class="clash-rule-provider-structured">
+                        <div class="button-row compact">
+                          <button id="addClashRuleProviderBtn" class="btn" type="button" data-i18n="addClashRuleProvider">添加规则集</button>
+                        </div>
+                        <div id="clashRuleProviderRows" class="clash-rule-provider-list"></div>
+                        <small data-i18n="clashRuleProvidersStructuredHelp">结构化模式用于编辑常用字段，保存时会写入标准 Clash rule-providers YAML。</small>
+                      </div>
+                      <div id="clashRuleProviderValidation" class="validation-messages hidden"></div>
+                      <label class="field-label" for="clashRuleProviders" data-i18n="clashRuleProvidersYaml">YAML</label>
+                      <textarea id="clashRuleProviders" class="line-editor generated-code config-code-textarea" rows="30" spellcheck="false" readonly></textarea>
+                      <small data-i18n="clashRuleProvidersHelp">YAML 顶层固定为 rule-providers；每个规则集可配置 type、behavior、url、interval，path 由系统按名称生成。</small>
+                    </div>
+                  </div>
+                </div>
+                <div class="cbi-section hidden" data-clash-panel="rules">
+                  <div class="cbi-row surge-rule-cbi-row">
+                    <label data-i18n="clashRules">Clash 规则</label>
+                    <div class="field">
+                      <div class="button-row compact structured-editor-actions">
+                        <button id="clashRuleAdvancedMode" class="btn mode-toggle" type="button" aria-pressed="false" data-i18n="clashRuleAdvancedMode">文本编辑模式</button>
+                        <span id="clashRuleStructuredActions" class="button-row compact structured-editor-secondary-actions">
+                          <button id="addClashRuleBtn" class="btn" type="button" data-i18n="addClashRule">添加单条规则</button>
+                          <button id="addClashRuleSetBtn" class="btn" type="button" data-i18n="addClashRuleSet">添加规则集</button>
+                        </span>
+                      </div>
+                      <div id="clashRuleStructuredEditor" class="clash-rule-structured">
+                        <div id="clashRuleRows" class="clash-rule-list"></div>
+                        <small data-i18n="clashRuleStructuredHelp">结构化模式按顺序编辑 Clash 规则；规则从上到下匹配，命中后停止。rule-providers 中的规则集会自动补入 rules，并默认使用 Proxy。</small>
+                      </div>
+                      <div id="clashRuleValidation" class="validation-messages hidden"></div>
+                      <label class="field-label" for="clashRules" data-i18n="clashRulesYaml">YAML</label>
+                      <textarea id="clashRules" class="line-editor generated-code config-code-textarea" rows="30" spellcheck="false" readonly></textarea>
+                      <small data-i18n="clashRulesHelp">YAML 顶层固定为 rules；每一项使用标准 Clash 规则语法，例如 RULE-SET,Google,Proxy 或 MATCH,Proxy。</small>
+                    </div>
+                  </div>
+                </div>
+              </section>
+            </section>
+
+            <section id="page-tokens" class="page-view hidden" data-page="tokens">
+              <section class="luci-box">
+                <div class="box-title row-title">
+                  <span data-i18n="linksTitle">配置链接</span>
+                  <button id="rotateTokenBtn" class="btn" type="button" data-i18n="rotateReadToken">轮换访问令牌</button>
+                </div>
+                <div id="links" class="links"></div>
+              </section>
+              <section class="luci-box">
+                <div class="box-title row-title">
+                  <span data-i18n="previewTitle">配置预览</span>
+                  <div class="button-row">
+                    <button id="previewSurgeBtn" class="btn" type="button">Surge</button>
+                    <button id="previewClashBtn" class="btn" type="button">Clash</button>
+                    <button id="validateSurgeOnlineBtn" class="btn" type="button" data-i18n="validateSurgeOnline">Surge 在线验证</button>
+                  </div>
+                </div>
+                <div id="surgeOnlineValidation" class="validation-messages hidden"></div>
+                <pre id="previewOutput" data-empty="true">点击上方按钮生成预览。</pre>
+              </section>
+            </section>
+          </section>
+        </main>
+      </div>
+    </div>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

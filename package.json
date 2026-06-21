@@ -1,0 +1,33 @@
+{
+  "name": "subpilot-worker",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "setup": "node scripts/setup-cloudflare.mjs",
+    "types": "node scripts/generate-worker-types.mjs",
+    "typecheck": "tsc --noEmit",
+    "typecheck:worker": "npm run types && npm run typecheck",
+    "test": "vitest run",
+    "verify": "npm run typecheck:worker && npm test",
+    "public:scan": "node scripts/check-public-safety.mjs",
+    "dry-run": "wrangler deploy --dry-run --outdir dist"
+  },
+  "dependencies": {
+    "mmdb-lib": "^3.0.2",
+    "yaml": "^2.8.1"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.61.0",
+    "@types/node": "^25.9.3",
+    "codemirror": "^5.65.20",
+    "pkijs": "^3.4.0",
+    "typescript": "^5.8.3",
+    "vitest": "^3.2.4"
+  },
+  "overrides": {
+    "esbuild": "^0.28.1"
+  }
+}
