@@ -145,15 +145,34 @@ https://<your-domain>/sync/<read_token>/
 
 `https://<your-domain>/sync/<read_token>/` 会根据客户端 User-Agent 自动选择 Surge 或 Clash/mihomo。订阅接口不接受额外查询参数，也不接受 `/surge`、`/clash` 等显式目标路径；如果 User-Agent 无法识别，服务端会返回 401，不下发配置。客户端文件名通过响应头 `Content-Disposition` 提供。
 
-Surge 主配置会把动态节点、订阅源 Host 和策略组拆到同一 token 下的 Surge-only 外部资源端点：
+服务端只接受当前 `Managed Base URL` path 下的订阅入口；如果把 `Managed Base URL` 改成 `https://<your-domain>/sywwqnc`，则 `/sywwqnc/<read_token>/` 生效，默认 `/sync/<read_token>/` 不再作为订阅入口。
 
-```text
-https://<your-domain>/sync/<read_token>/surge-resources/
+## 更新与迁移
+
+公开源码后，建议通过 GitHub Releases 或 `main` 分支更新。更新前先阅读 release notes；如果版本说明里标注需要迁移，按本节步骤执行。
+
+常规更新流程：
+
+```bash
+git pull
+npm install
+wrangler deploy
+npm run migrate -- --url https://<your-domain> --token <admin-token>
 ```
 
-该端点只服务 Surge detached profile include 使用，使用同一套 read token 和严格路径校验，不接受查询参数。主 Surge 配置固定使用较长的托管更新间隔，外部资源使用 Surge 页面里的“外部资源更新间隔”刷新。
+`wrangler deploy` 先部署新 Worker 代码，`npm run migrate` 再调用已部署后台的管理员迁移接口，把 KV 补到当前 schema。也可以用环境变量代替命令参数：
 
-服务端只接受当前 `Managed Base URL` path 下的订阅入口；如果把 `Managed Base URL` 改成 `https://<your-domain>/sywwqnc`，则 `/sywwqnc/<read_token>/` 生效，默认 `/sync/<read_token>/` 不再作为订阅入口。
+```bash
+SUBPILOT_BASE_URL=https://<your-domain> \
+SUBPILOT_ADMIN_TOKEN=<admin-token> \
+npm run migrate
+```
+
+迁移器使用 KV 中的 `config:schemaVersion` 判断当前数据版本。即使跳过多个版本后再更新，也可以直接运行当前版本的迁移命令；迁移会按顺序补齐缺失步骤。重复运行迁移命令不会破坏已有数据。
+
+更新时不要删除本地 `wrangler.jsonc`，也不要重新运行会轮换 Secrets 的命令。尤其不要无意替换 `CONFIG_ENCRYPTION_KEY`，否则旧 KV 中已加密的订阅源 URL、Telegram Bot Token 和订阅读取 token 将无法解密。只有在你明确要重置整个部署或轮换密钥时，才使用 `npm run setup -- --force-secrets`。
+
+后台状态页会显示当前应用版本、KV schema 版本和最新版本检查结果。设置页的“版本更新检查”默认关闭；启用后，定时任务每天最多访问一次 GitHub Releases。若已绑定 Telegram，有新版本时会发送一次提醒。同一个最新版本不会重复提醒。手动点击状态页“检查更新”会立即访问 GitHub Releases。
 
 ## 规则与策略组
 
@@ -291,6 +310,7 @@ config:chain:exitProxy               共享链式出口节点
 config:surge:<field>                 Surge 功能配置
 config:clash:<field>                 Clash 功能配置
 config:updatedAt                     配置更新时间
+config:schemaVersion                 KV schema 版本，迁移器按它判断待执行步骤
 auth:read_token                      可恢复订阅读取 token，加密保存
 auth:read_token_hash                 订阅读取 token 的 SHA-256 hash
 cache:source:<hash>                  上游订阅缓存
@@ -299,28 +319,6 @@ cache:sourceMeta:index               上游缓存元数据索引
 cache:geoip:location:<ip>            客户端 IP 位置缓存
 stats:config:lastFetched:<target>    每个目标最近拉取时间
 stats:config:recentFetches           最近订阅拉取 UA 记录
+stats:updateCheck:latest             最近一次 GitHub Releases 更新检查缓存
+stats:updateCheck:notifiedVersion    已通过 Telegram 提醒过的最新版本
 ```
-
-## 开发与验证
-
-常用本地检查命令：
-
-```bash
-npm run typecheck
-npm test
-```
-
-如果改动涉及 Worker 类型、绑定、`wrangler.example.jsonc` 或生成配置相关逻辑，运行：
-
-```bash
-npm run typecheck:worker
-npm test
-```
-
-公开发布前建议额外运行：
-
-```bash
-npm run public:scan
-```
-
-`public:scan` 用于检查公开仓库中不应出现的本地生产配置、真实域名、KV namespace ID、密钥或 token。生产部署信息应保留在本地 `wrangler.jsonc`、Cloudflare Worker Secrets 和 Workers KV 中，不应提交到公开分支。

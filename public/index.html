@@ -96,6 +96,20 @@
                     </div>
                   </div>
                 </section>
+                <section class="luci-box mini">
+                  <div class="box-title" data-i18n="systemStatusTitle">版本与迁移</div>
+                  <dl>
+                    <div><dt data-i18n="currentVersion">当前版本</dt><dd id="systemCurrentVersion">-</dd></div>
+                    <div><dt data-i18n="kvSchemaVersion">KV Schema</dt><dd id="systemSchemaVersion">-</dd></div>
+                    <div>
+                      <dt data-i18n="latestVersion">最新版本</dt>
+                      <dd class="status-cache-row">
+                        <div id="systemUpdateStatus" class="status-cache-detail">-</div>
+                        <button id="checkUpdateBtn" class="btn compact-btn" type="button" data-i18n="checkUpdate">检查更新</button>
+                      </dd>
+                    </div>
+                  </dl>
+                </section>
               </div>
             </section>
 
@@ -168,6 +182,13 @@
                         <div id="telegramBindStatus" class="telegram-bind-status"></div>
                       </div>
                       <small data-i18n="telegramNotificationHelp">填写 Bot Token 即启用 Telegram 通知；清空 Bot Token 即关闭通知。生成一次性绑定命令后，把命令发送给 bot，系统会通过 webhook 自动记录 Chat ID。</small>
+                    </div>
+                  </div>
+                  <div class="cbi-row">
+                    <label for="updateCheckEnabled" data-i18n="updateCheck">版本更新检查</label>
+                    <div class="field checks">
+                      <label class="check"><input id="updateCheckEnabled" type="checkbox"> <span data-i18n="enabled">已启用</span></label>
+                      <small data-i18n="updateCheckHelp">启用后，定时任务每天最多访问一次 GitHub Releases；如果已绑定 Telegram，有新版本时只提醒一次。也可以在状态页手动检查。</small>
                     </div>
                   </div>
                   <div class="cbi-row">

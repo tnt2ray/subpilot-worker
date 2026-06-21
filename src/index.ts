@@ -1,16 +1,19 @@
 import { clearSessionCookie, createSession, getOrCreateReadToken, isAdminRequest, rotateReadToken, sessionCookie, validateAdminToken, validateReadToken } from "./auth";
+import { readKvSchemaStatus, runKvMigrations } from "./config-schema";
 import { loadConfig, normalizeTarget, saveConfig, validateManagedBaseUrl, withInferredManagedBaseUrl } from "./config-store";
 import { readConfigFetchStats, recordConfigFetch } from "./fetch-stats";
 import { generateConfig, generateForRequest, generateSurgeValidationConfig, inferTarget } from "./generator";
 import { createGeoIpCountryReader, GEOIP_MMDB_KV_KEY, GEOIP_MMDB_META_KV_KEY, resetGeoIpCountryReader } from "./geoip";
 import { LOGIN_PAGE_HTML } from "./login-page";
-import { notifySourceRefreshFailures } from "./notifications";
+import { notifySourceRefreshFailures, notifyVersionUpdateAvailable } from "./notifications";
 import { refreshSourceCache } from "./source-cache";
 import { sanitizeSurgeValidationContent } from "./surge-validation-sanitize";
 import { configFileNameForTarget, syncPathForToken } from "./target-files";
 import { validateSurgeHosts } from "./surge-hosts";
 import { SURGE_BUILT_IN_POLICIES, validateSurgeRules } from "./surge-rules";
 import { validateSurgeUrlRewrite } from "./surge-url-rewrite";
+import { readCachedUpdateStatus, getUpdateStatus } from "./update-check";
+import { APP_VERSION, RELEASE_REPOSITORY } from "./version";
 import { badRequest, forbidden, jsonResponse, notFound, randomToken, sha256Hex, textResponse, timingSafeEqualString, unauthorized } from "./util";
 
 export default {
@@ -26,6 +29,7 @@ export default {
     const config = await loadConfig(env);
     const result = await refreshSourceCache(env, config);
     await notifySourceRefreshFailures(env, config, result, "scheduled");
+    await notifyVersionUpdateAvailable(env, config);
   }
 } satisfies ExportedHandler<Env>;
 
@@ -80,6 +84,22 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
   if (url.pathname === "/api/stats" && request.method === "GET") {
     const config = await loadConfig(env);
     return jsonResponse(await readConfigFetchStats(env, config));
+  }
+  if (url.pathname === "/api/system/status" && request.method === "GET") {
+    return jsonResponse({
+      app: {
+        version: APP_VERSION,
+        releaseRepository: RELEASE_REPOSITORY
+      },
+      schema: await readKvSchemaStatus(env),
+      update: await readCachedUpdateStatus(env)
+    });
+  }
+  if (url.pathname === "/api/system/migrate" && request.method === "POST") {
+    return jsonResponse({ schema: await runKvMigrations(env) });
+  }
+  if (url.pathname === "/api/update-check" && request.method === "POST") {
+    return jsonResponse({ update: await getUpdateStatus(env, { force: true }) });
   }
   if (url.pathname === "/api/cache/source/refresh" && request.method === "POST") {
     const config = await loadConfig(env);

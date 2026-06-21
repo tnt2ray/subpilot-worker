@@ -118,6 +118,7 @@ export interface AppConfig {
     excludeKeywords: string[];
     geoipRenameEnabled: boolean;
     featureTagRules: string[];
+    updateCheckEnabled: boolean;
     notificationChannel: NotificationChannel;
     notificationTelegramChatId: string;
     notificationTelegramBotToken: string;

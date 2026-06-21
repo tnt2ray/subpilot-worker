@@ -1,4 +1,5 @@
 import { DEFAULT_CONFIG } from "./default-config";
+import { ensureKvSchema } from "./config-schema";
 import { decryptText, encryptText, sealSources, unsealSources } from "./crypto-store";
 import { getSecret, requireSecret } from "./secrets";
 import { pruneSourceCache } from "./source-cache";
@@ -37,6 +38,7 @@ const SETTING_KEYS = [
   "excludeKeywords",
   "geoipRenameEnabled",
   "featureTagRules",
+  "updateCheckEnabled",
   "notificationChannel",
   "notificationTelegramChatId"
 ] as const satisfies readonly (keyof AppConfig["settings"])[];
@@ -169,6 +171,7 @@ export function normalizeConfig(input: AppConfig): AppConfig {
       excludeKeywords: Array.isArray(input.settings?.excludeKeywords) ? input.settings.excludeKeywords : [],
       geoipRenameEnabled: input.settings?.geoipRenameEnabled !== false,
       featureTagRules: stringArray(input.settings?.featureTagRules, DEFAULT_CONFIG.settings.featureTagRules),
+      updateCheckEnabled: input.settings?.updateCheckEnabled === true,
       notificationChannel: notificationChannelFromTelegramToken(notificationTelegramBotToken),
       notificationTelegramChatId: notificationTelegramBotToken ? stringValue(input.settings?.notificationTelegramChatId, "") : "",
       notificationTelegramBotToken,
@@ -333,6 +336,7 @@ function normalizeManagedBasePath(pathname: string): string {
 }
 
 async function loadStoredConfig(env: Env): Promise<AppConfig> {
+  await ensureKvSchema(env);
   const [settings, groups, disabledGroups, sources, chain, surge, clash, updatedAt] = await Promise.all([
     loadSettings(env),
     loadGroups(env),

@@ -16,6 +16,7 @@ export const DEFAULT_CONFIG: AppConfig = {
       "HBO=hbo,max",
       "Prime=prime,amazon"
     ],
+    updateCheckEnabled: false,
     notificationChannel: "off",
     notificationTelegramChatId: "",
     notificationTelegramBotToken: "",

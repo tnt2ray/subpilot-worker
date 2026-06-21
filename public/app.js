@@ -1,6 +1,7 @@
 let state = null;
 let lastSavedState = null;
 let fetchStats = null;
+let systemStatus = null;
 let statusStatsRefreshPromise = null;
 let statusStatsRefreshVersion = 0;
 let fetchRecordsPage = 1;
@@ -417,6 +418,21 @@ const I18N = {
   sourceCacheNoNodes: "未解析到节点",
   sourceCacheSourceCached: "{name}：已缓存，{count} 个节点",
   sourceCacheSourceMissing: "{name}：未缓存",
+  systemStatusTitle: "版本与迁移",
+  currentVersion: "当前版本",
+  kvSchemaVersion: "KV Schema",
+  latestVersion: "最新版本",
+  checkUpdate: "检查更新",
+  checkingUpdate: "检查中",
+  updateCheck: "版本更新检查",
+  updateCheckHelp: "启用后，定时任务每天最多访问一次 GitHub Releases；如果已绑定 Telegram，有新版本时只提醒一次。也可以在状态页手动检查。",
+  updateCheckNever: "未检查",
+  updateAvailable: "发现新版本 {version}",
+  updateCurrent: "已是最新版本",
+  updateCheckFailed: "检查失败：{error}",
+  updateCheckDisabled: "自动检查未启用",
+  schemaMigrated: "{stored} / {current}",
+  schemaPending: "{stored} / {current}，待迁移",
   refreshSourceCache: "强制获取",
   refreshingSourceCache: "获取中",
   enabled: "已启用",
@@ -449,6 +465,7 @@ const refs = {
   geoIpMmdbStatus: $("geoIpMmdbStatus"),
   geoIpMmdbMissingNotice: $("geoIpMmdbMissingNotice"),
   notificationTelegramBotToken: $("notificationTelegramBotToken"),
+  updateCheckEnabled: $("updateCheckEnabled"),
   telegramBindStatus: $("telegramBindStatus"),
   telegramBindCodeBtn: $("telegramBindCodeBtn"),
   chainExitProtocol: $("chainExitProtocol"),
@@ -559,6 +576,10 @@ const refs = {
   summaryGroups: $("summaryGroups"),
   summarySourceCache: $("summarySourceCache"),
   refreshSourceCacheBtn: $("refreshSourceCacheBtn"),
+  systemCurrentVersion: $("systemCurrentVersion"),
+  systemSchemaVersion: $("systemSchemaVersion"),
+  systemUpdateStatus: $("systemUpdateStatus"),
+  checkUpdateBtn: $("checkUpdateBtn"),
   fetchRecordsTableBody: $("fetchRecordsTableBody"),
   fetchRecordsPagination: $("fetchRecordsPagination"),
   fetchRecordsPageInfo: $("fetchRecordsPageInfo"),
@@ -1013,16 +1034,18 @@ async function login() {
 }
 
 async function loadConfig() {
-  const [config, readToken, stats, mmdbStatus] = await Promise.all([
+  const [config, readToken, stats, mmdbStatus, system] = await Promise.all([
     request("/api/config"),
     request("/api/read-token"),
     request("/api/stats"),
-    request("/api/geoip/mmdb")
+    request("/api/geoip/mmdb"),
+    request("/api/system/status")
   ]);
   state = config;
   lastSavedState = cloneConfig(config);
   fetchStats = stats;
   geoIpMmdbStatus = mmdbStatus;
+  systemStatus = system;
   currentReadToken = readToken.token;
   render();
 }
@@ -1070,6 +1093,7 @@ function renderPage(page, options = {}) {
 
 function renderStatus() {
   renderSummary();
+  renderSystemStatus();
   renderFetchStats();
 }
 
@@ -1080,6 +1104,7 @@ function renderSettings() {
   refs.excludeKeywords.value = state.settings.excludeKeywords.join(", ");
   refs.featureTagRules.value = linesToText(state.settings.featureTagRules || []);
   refs.notificationTelegramBotToken.value = state.settings.notificationTelegramBotToken || "";
+  refs.updateCheckEnabled.checked = state.settings.updateCheckEnabled === true;
   renderTelegramBindStatus();
   renderGeoIpMmdbStatus();
   refs.chainExitProtocol.value = state.chain.exitProxy.protocol;
@@ -3901,6 +3926,7 @@ function readSettingsDraft() {
       userAgentClash: refs.userAgentClash.value.trim(),
       excludeKeywords: refs.excludeKeywords.value.split(",").map((item) => item.trim()).filter(Boolean),
       featureTagRules: textToLines(refs.featureTagRules.value),
+      updateCheckEnabled: refs.updateCheckEnabled.checked,
       notificationChannel: notificationTelegramBotToken ? "telegram" : "off",
       notificationTelegramChatId: notificationTelegramBotToken ? state.settings.notificationTelegramChatId || "" : "",
       notificationTelegramBotToken
@@ -4539,6 +4565,45 @@ function renderSummary() {
   refs.refreshSourceCacheBtn.disabled = false;
 }
 
+function renderSystemStatus() {
+  const app = systemStatus?.app || {};
+  const schema = systemStatus?.schema || {};
+  const update = systemStatus?.update || {};
+  refs.systemCurrentVersion.textContent = app.version || "-";
+  const stored = Number(schema.stored);
+  const current = Number(schema.current);
+  refs.systemSchemaVersion.textContent = Number.isFinite(stored) && Number.isFinite(current)
+    ? t(schema.pending?.length ? "schemaPending" : "schemaMigrated")
+      .replace("{stored}", String(stored))
+      .replace("{current}", String(current))
+    : "-";
+  refs.systemUpdateStatus.innerHTML = formatUpdateStatus(update);
+  refs.checkUpdateBtn.disabled = false;
+}
+
+function formatUpdateStatus(update) {
+  if (!update || typeof update !== "object" || !update.checkedAt) {
+    return `<div>${escapeHtml(t(state?.settings?.updateCheckEnabled ? "updateCheckNever" : "updateCheckDisabled"))}</div>`;
+  }
+  if (update.error) {
+    return [
+      `<div class="status-cache-source warning">${escapeHtml(t("updateCheckFailed").replace("{error}", update.error))}</div>`,
+      `<div class="status-cache-muted">${escapeHtml(formatTimestamp(update.checkedAt))}</div>`
+    ].join("");
+  }
+  const latest = update.latestVersion || "-";
+  const label = update.updateAvailable
+    ? t("updateAvailable").replace("{version}", latest)
+    : t("updateCurrent");
+  const link = update.releaseUrl
+    ? `<a href="${escapeHtml(update.releaseUrl)}" target="_blank" rel="noreferrer">${escapeHtml(label)}</a>`
+    : escapeHtml(label);
+  return [
+    `<div class="status-cache-source ${update.updateAvailable ? "warning" : "ready"}">${link}</div>`,
+    `<div class="status-cache-muted">${escapeHtml(formatTimestamp(update.checkedAt))}</div>`
+  ].join("");
+}
+
 function formatSourceCacheStatus(sourceCache) {
   if (!sourceCache || typeof sourceCache !== "object") return `<div>${escapeHtml(t("sourceCacheUnknown"))}</div>`;
   const count = Number(sourceCache.count) || 0;
@@ -4601,6 +4666,22 @@ async function refreshSourceCache() {
   } finally {
     refs.refreshSourceCacheBtn.textContent = t("refreshSourceCache");
     refs.refreshSourceCacheBtn.disabled = false;
+  }
+}
+
+async function checkForUpdates() {
+  refs.checkUpdateBtn.disabled = true;
+  refs.checkUpdateBtn.textContent = t("checkingUpdate");
+  try {
+    const result = await request("/api/update-check", { method: "POST", body: "{}" });
+    systemStatus = {
+      ...(systemStatus || {}),
+      update: result.update
+    };
+    renderSystemStatus();
+  } finally {
+    refs.checkUpdateBtn.textContent = t("checkUpdate");
+    refs.checkUpdateBtn.disabled = false;
   }
 }
 
@@ -4851,6 +4932,7 @@ refs.addGroupBtn.addEventListener("click", addGroup);
 refs.addSourceBtn.addEventListener("click", addSource);
 refs.rotateTokenBtn.addEventListener("click", rotateToken);
 refs.refreshSourceCacheBtn.addEventListener("click", refreshSourceCache);
+refs.checkUpdateBtn.addEventListener("click", checkForUpdates);
 refs.fetchRecordsPrevBtn.addEventListener("click", () => setFetchRecordsPage(fetchRecordsPage - 1));
 refs.fetchRecordsNextBtn.addEventListener("click", () => setFetchRecordsPage(fetchRecordsPage + 1));
 refs.links.addEventListener("click", copyLink);
@@ -4861,7 +4943,9 @@ refs.uploadGeoIpMmdbBtn.addEventListener("click", uploadGeoIpMmdb);
 refs.notificationTelegramBotToken.addEventListener("input", () => {
   stopTelegramBindPolling();
   renderTelegramBindStatus();
+  updateSaveAvailability();
 });
+refs.updateCheckEnabled.addEventListener("change", updateSaveAvailability);
 refs.telegramBindCodeBtn.addEventListener("click", handleTelegramBindAction);
 refs.surgeIpv6.addEventListener("change", syncSurgeIpv6VifVisibility);
 refs.clashTunEnable.addEventListener("change", syncClashTunVisibility);

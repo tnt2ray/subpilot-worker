@@ -1,5 +1,6 @@
 import type { SourceCacheRefreshResult, SourceCacheStatus } from "./source-cache";
 import type { AppConfig } from "./types";
+import { getUpdateStatus, readNotifiedUpdateVersion, storeNotifiedUpdateVersion } from "./update-check";
 
 type RefreshTrigger = "manual" | "scheduled";
 
@@ -30,6 +31,31 @@ export async function notifySourceRefreshFailures(
 
   if (config.settings.notificationChannel === "telegram") {
     delivery.telegram = await sendTelegramNotification(env, config, message, delivery.warnings);
+  }
+
+  return delivery;
+}
+
+export async function notifyVersionUpdateAvailable(env: Env, config: AppConfig): Promise<NotificationDeliveryResult> {
+  const delivery: NotificationDeliveryResult = { telegram: "disabled", warnings: [] };
+  if (!config.settings.updateCheckEnabled) return delivery;
+
+  const status = await getUpdateStatus(env);
+  if (!status.updateAvailable || !status.latestVersion) return delivery;
+  if (await readNotifiedUpdateVersion(env) === status.latestVersion) return delivery;
+
+  const message = [
+    "SubPilot 有新版本可更新",
+    `当前版本：${status.currentVersion}`,
+    `最新版本：${status.latestVersion}`,
+    status.releaseUrl ? `发布页面：${status.releaseUrl}` : "",
+    "",
+    "建议先阅读 release notes，再按 README 的更新与迁移步骤执行。"
+  ].filter(Boolean).join("\n");
+
+  if (config.settings.notificationChannel === "telegram") {
+    delivery.telegram = await sendTelegramNotification(env, config, message, delivery.warnings);
+    if (delivery.telegram === "sent") await storeNotifiedUpdateVersion(env, status.latestVersion);
   }
 
   return delivery;

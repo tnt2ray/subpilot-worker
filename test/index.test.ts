@@ -88,6 +88,30 @@ describe("asset access control", () => {
     expect(html).toContain("/app.js");
   });
 
+  it("exposes system status and explicit KV migration to authenticated admins", async () => {
+    const kv = new Map<string, string>();
+    const env = makeEnv(kv);
+    const session = await createSession(env);
+    const headers = { cookie: sessionCookie(session, true) };
+
+    const migrateResponse = await worker.fetch(new Request("https://subpilot.example.com/api/system/migrate", {
+      method: "POST",
+      headers
+    }), env, ctx);
+    const migrateBody = await migrateResponse.json<{ schema: { current: number; stored: number; pending: number[] } }>();
+
+    expect(migrateResponse.status).toBe(200);
+    expect(migrateBody.schema.stored).toBe(migrateBody.schema.current);
+    expect(migrateBody.schema.pending).toEqual([]);
+
+    const statusResponse = await worker.fetch(new Request("https://subpilot.example.com/api/system/status", { headers }), env, ctx);
+    const statusBody = await statusResponse.json<{ app: { version: string }; schema: { current: number; stored: number } }>();
+
+    expect(statusResponse.status).toBe(200);
+    expect(statusBody.app.version).toMatch(/^\d+\.\d+\.\d+/);
+    expect(statusBody.schema.stored).toBe(statusBody.schema.current);
+  });
+
   it("proxies explicit Surge online validation for authenticated admins", async () => {
     const env = makeEnv();
     const session = await createSession(env);
