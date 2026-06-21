@@ -50,7 +50,7 @@ export async function notifyVersionUpdateAvailable(env: Env, config: AppConfig):
     `最新版本：${status.latestVersion}`,
     status.releaseUrl ? `发布页面：${status.releaseUrl}` : "",
     "",
-    "建议先阅读 release notes，再按 README 的更新与迁移步骤执行。"
+    "建议先阅读 release notes，再按 README 的更新步骤重新部署。"
   ].filter(Boolean).join("\n");
 
   if (config.settings.notificationChannel === "telegram") {

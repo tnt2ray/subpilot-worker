@@ -42,8 +42,15 @@ wrangler login
 克隆并部署：
 
 ```bash
-git clone https://github.com/<your-name>/subpilot-worker.git
+git clone https://github.com/tnt2ray/subpilot-worker.git
 cd subpilot-worker
+npm install
+npm run setup
+```
+
+也可以在 GitHub Releases 下载 Source code zip，解压后进入目录运行：
+
+```bash
 npm install
 npm run setup
 ```
@@ -147,28 +154,17 @@ https://<your-domain>/sync/<read_token>/
 
 服务端只接受当前 `Managed Base URL` path 下的订阅入口；如果把 `Managed Base URL` 改成 `https://<your-domain>/sywwqnc`，则 `/sywwqnc/<read_token>/` 生效，默认 `/sync/<read_token>/` 不再作为订阅入口。
 
-## 更新与迁移
+## 更新
 
-公开源码后，建议通过 GitHub Releases 或 `main` 分支更新。更新前先阅读 release notes；如果版本说明里标注需要迁移，按本节步骤执行。
-
-常规更新流程：
+有新版本时，建议先阅读 GitHub Releases 中的版本说明。常规更新只需要在项目目录运行：
 
 ```bash
-git pull
-npm install
-wrangler deploy
-npm run migrate -- --url https://<your-domain> --token <admin-token>
+npm run update
 ```
 
-`wrangler deploy` 先部署新 Worker 代码，`npm run migrate` 再调用已部署后台的管理员迁移接口，把 KV 补到当前 schema。也可以用环境变量代替命令参数：
+如果当前目录是 Git 克隆，命令会拉取当前分支最新代码；如果当前目录来自 GitHub Releases 的 Source code zip，命令会自动下载最新 Release 源码并覆盖程序文件。两种方式都会保留本地 `wrangler.jsonc`，然后安装依赖并部署到对应 Worker。
 
-```bash
-SUBPILOT_BASE_URL=https://<your-domain> \
-SUBPILOT_ADMIN_TOKEN=<admin-token> \
-npm run migrate
-```
-
-迁移器使用 KV 中的 `config:schemaVersion` 判断当前数据版本。即使跳过多个版本后再更新，也可以直接运行当前版本的迁移命令；迁移会按顺序补齐缺失步骤。重复运行迁移命令不会破坏已有数据。
+部署后首次打开后台、拉取订阅或执行定时任务时，SubPilot 会自动补齐 KV 数据结构，不需要单独执行迁移命令。即使跳过多个版本后再更新，也会按顺序处理缺失的迁移。
 
 更新时不要删除本地 `wrangler.jsonc`，也不要重新运行会轮换 Secrets 的命令。尤其不要无意替换 `CONFIG_ENCRYPTION_KEY`，否则旧 KV 中已加密的订阅源 URL、Telegram Bot Token 和订阅读取 token 将无法解密。只有在你明确要重置整个部署或轮换密钥时，才使用 `npm run setup -- --force-secrets`。
 

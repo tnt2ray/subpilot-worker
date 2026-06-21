@@ -1,5 +1,5 @@
 import { clearSessionCookie, createSession, getOrCreateReadToken, isAdminRequest, rotateReadToken, sessionCookie, validateAdminToken, validateReadToken } from "./auth";
-import { readKvSchemaStatus, runKvMigrations } from "./config-schema";
+import { runKvMigrations } from "./config-schema";
 import { loadConfig, normalizeTarget, saveConfig, validateManagedBaseUrl, withInferredManagedBaseUrl } from "./config-store";
 import { readConfigFetchStats, recordConfigFetch } from "./fetch-stats";
 import { generateConfig, generateForRequest, generateSurgeValidationConfig, inferTarget } from "./generator";
@@ -91,7 +91,7 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
         version: APP_VERSION,
         releaseRepository: RELEASE_REPOSITORY
       },
-      schema: await readKvSchemaStatus(env),
+      schema: await runKvMigrations(env),
       update: await readCachedUpdateStatus(env)
     });
   }

@@ -1,12 +1,13 @@
 {
   "name": "subpilot-worker",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "setup": "node scripts/setup-cloudflare.mjs",
+    "update": "node scripts/update-cloudflare.mjs",
     "migrate": "node scripts/migrate-kv.mjs",
     "types": "node scripts/generate-worker-types.mjs",
     "typecheck": "tsc --noEmit",

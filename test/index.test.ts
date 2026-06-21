@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import worker from "../src/index";
 import { createSession, sessionCookie } from "../src/auth";
+import { CONFIG_SCHEMA_VERSION_KEY } from "../src/config-schema";
 import { loadConfig, saveConfig } from "../src/config-store";
 import { DEFAULT_CONFIG } from "../src/default-config";
 import { recordConfigFetch } from "../src/fetch-stats";
@@ -88,11 +89,21 @@ describe("asset access control", () => {
     expect(html).toContain("/app.js");
   });
 
-  it("exposes system status and explicit KV migration to authenticated admins", async () => {
+  it("auto-migrates KV from system status and keeps explicit migration idempotent", async () => {
     const kv = new Map<string, string>();
     const env = makeEnv(kv);
     const session = await createSession(env);
     const headers = { cookie: sessionCookie(session, true) };
+
+    expect(kv.has(CONFIG_SCHEMA_VERSION_KEY)).toBe(false);
+
+    const statusResponse = await worker.fetch(new Request("https://subpilot.example.com/api/system/status", { headers }), env, ctx);
+    const statusBody = await statusResponse.json<{ app: { version: string }; schema: { current: number; stored: number } }>();
+
+    expect(statusResponse.status).toBe(200);
+    expect(statusBody.app.version).toMatch(/^\d+\.\d+\.\d+/);
+    expect(statusBody.schema.stored).toBe(statusBody.schema.current);
+    expect(kv.get(CONFIG_SCHEMA_VERSION_KEY)).toBe(String(statusBody.schema.current));
 
     const migrateResponse = await worker.fetch(new Request("https://subpilot.example.com/api/system/migrate", {
       method: "POST",
@@ -103,13 +114,6 @@ describe("asset access control", () => {
     expect(migrateResponse.status).toBe(200);
     expect(migrateBody.schema.stored).toBe(migrateBody.schema.current);
     expect(migrateBody.schema.pending).toEqual([]);
-
-    const statusResponse = await worker.fetch(new Request("https://subpilot.example.com/api/system/status", { headers }), env, ctx);
-    const statusBody = await statusResponse.json<{ app: { version: string }; schema: { current: number; stored: number } }>();
-
-    expect(statusResponse.status).toBe(200);
-    expect(statusBody.app.version).toMatch(/^\d+\.\d+\.\d+/);
-    expect(statusBody.schema.stored).toBe(statusBody.schema.current);
   });
 
   it("proxies explicit Surge online validation for authenticated admins", async () => {
