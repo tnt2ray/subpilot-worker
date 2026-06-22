@@ -5,7 +5,7 @@ import { getSecret, requireSecret } from "./secrets";
 import { pruneSourceCache } from "./source-cache";
 import { inferUrlRewriteMitmHostnames } from "./surge-url-rewrite";
 import { CHAIN_EXIT_PROTOCOLS, type AppConfig, type ChainExitProtocol, type NotificationChannel, type SourceConfig, type SurgeIpv6VifMode, type Target } from "./types";
-import { sha256Hex } from "./util";
+import { normalizeDisplayTimeZone, sha256Hex } from "./util";
 
 const CONFIG_UPDATED_AT_KEY = "config:updatedAt";
 const READ_TOKEN_HASH_KEY = "auth:read_token_hash";
@@ -39,6 +39,7 @@ const SETTING_KEYS = [
   "geoipRenameEnabled",
   "featureTagRules",
   "updateCheckEnabled",
+  "displayTimeZone",
   "notificationChannel",
   "notificationTelegramChatId"
 ] as const satisfies readonly (keyof AppConfig["settings"])[];
@@ -172,6 +173,7 @@ export function normalizeConfig(input: AppConfig): AppConfig {
       geoipRenameEnabled: input.settings?.geoipRenameEnabled !== false,
       featureTagRules: stringArray(input.settings?.featureTagRules, DEFAULT_CONFIG.settings.featureTagRules),
       updateCheckEnabled: input.settings?.updateCheckEnabled === true,
+      displayTimeZone: normalizeDisplayTimeZone(input.settings?.displayTimeZone),
       notificationChannel: notificationChannelFromTelegramToken(notificationTelegramBotToken),
       notificationTelegramChatId: notificationTelegramBotToken ? stringValue(input.settings?.notificationTelegramChatId, "") : "",
       notificationTelegramBotToken,

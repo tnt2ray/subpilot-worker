@@ -39,6 +39,16 @@ describe("KV config storage", () => {
     expect(disabled.settings.notificationChannel).toBe("off");
     expect(disabled.settings.notificationTelegramChatId).toBe("");
     expect(disabled.settings.notificationTelegramWebhookSecret).toBe("");
+
+    const invalidTimeZone = normalizeConfig({
+      ...DEFAULT_CONFIG,
+      settings: {
+        ...DEFAULT_CONFIG.settings,
+        displayTimeZone: "Invalid/Zone"
+      }
+    });
+
+    expect(invalidTimeZone.settings.displayTimeZone).toBe("Asia/Shanghai");
   });
 
   it("stores settings, groups, sources, and client features as separate KV values", async () => {
@@ -49,6 +59,7 @@ describe("KV config storage", () => {
       settings: {
         ...DEFAULT_CONFIG.settings,
         userAgentSurge: "Surge iOS/3727",
+        displayTimeZone: "UTC",
         notificationChannel: "telegram",
         notificationTelegramChatId: "123456",
         notificationTelegramBotToken: "telegram-token"
@@ -103,6 +114,7 @@ describe("KV config storage", () => {
     });
 
     expect(JSON.parse(kv.get("config:settings:userAgentSurge") ?? "null")).toBe("Surge iOS/3727");
+    expect(JSON.parse(kv.get("config:settings:displayTimeZone") ?? "null")).toBe("UTC");
     expect(JSON.parse(kv.get("config:settings:notificationChannel") ?? "null")).toBe("telegram");
     expect(JSON.parse(kv.get("config:settings:notificationTelegramChatId") ?? "null")).toBe("123456");
     expect(kv.get("config:settings:notificationTelegramBotToken")).toMatch(/^v1\./);

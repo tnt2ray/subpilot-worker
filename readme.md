@@ -22,6 +22,7 @@ SubPilot Worker 项目代码以 [GNU Affero General Public License v3.0 or later
 - 配置共享链式出口节点，并自动生成对应链式代理节点。
 - 轮换订阅读取 token，生成带稳定文件名的订阅链接。
 - 缓存上游订阅，记录最近订阅拉取时间、User-Agent 和 IP 地理位置。
+- 可配置后台和 Telegram 通知的显示时区；系统内部时间仍按 UTC 保存。
 
 ## 安全模型
 
@@ -152,7 +153,8 @@ wrangler deploy
 3. 在 `Policy Groups` 中调整策略组。
 4. 在 `Surge`、`Clash` 页面中调整各目标的规则、DNS、TUN 等配置。
 5. 如需链式代理，在 `Configuration` 中填写共享链式出口节点。
-6. 在 `Tokens` 页面轮换订阅读取 token，并复制订阅链接。
+6. 按需要在 `Configuration` 中调整显示时区；默认是 `Asia/Shanghai`，只影响后台和通知中的时间展示。
+7. 在 `Tokens` 页面轮换订阅读取 token，并复制订阅链接。
 
 订阅链接基于管理页配置的 `Managed Base URL` 生成，通常是 `https://<your-domain>/sync`。`Managed Base URL` 必须包含非根路径，不能使用 `/api`、`/app.js`、`/styles.css`、`/mitm-ca.js`、`/login.html` 或 `/index.html` 等系统已占用路径。拼接链接时会去掉 `Managed Base URL` 末尾多余的 `/`。
 
@@ -176,7 +178,7 @@ SUBPILOT_SOURCE_REFRESH_HOURS=6 npm run setup
 
 取值范围是 1 到 24 小时。已经部署后如需修改间隔，编辑 `wrangler.jsonc` 中的 `triggers.crons` 并重新运行 `wrangler deploy`。
 
-后台状态页会显示上游缓存数量、缓存覆盖情况、最近更新时间和各订阅源缓存状态。点击“强制获取”可以立即重新拉取上游订阅源。Telegram bot 的 `/status` 会显示缓存概览，`/refresh` 可以远程触发强制获取。启用 Telegram 通知后，定时获取出现失败时会发送提醒。
+后台状态页会显示上游缓存数量、缓存覆盖情况、最近更新时间和各订阅源缓存状态。后台和 Telegram 通知中的时间会按 `Configuration` 中的显示时区转换，格式为 `yyyy-mm-dd hh:mm:ss`；KV 中保存的系统时间仍是 UTC。点击“强制获取”可以立即重新拉取上游订阅源。Telegram bot 的 `/status` 会显示缓存概览，`/recent` 会显示最近 5 条配置拉取记录，`/refresh` 可以远程触发强制获取。启用 Telegram 通知后，定时获取出现失败时会发送提醒。
 
 ## 更新
 

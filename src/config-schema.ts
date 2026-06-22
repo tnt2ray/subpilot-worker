@@ -1,4 +1,6 @@
-export const CURRENT_KV_SCHEMA_VERSION = 1;
+import { DEFAULT_DISPLAY_TIME_ZONE } from "./util";
+
+export const CURRENT_KV_SCHEMA_VERSION = 2;
 export const CONFIG_SCHEMA_VERSION_KEY = "config:schemaVersion";
 
 type MigrationStep = {
@@ -7,7 +9,16 @@ type MigrationStep = {
   run: (env: Env) => Promise<void>;
 };
 
-const MIGRATIONS: MigrationStep[] = [];
+const MIGRATIONS: MigrationStep[] = [{
+  from: 1,
+  to: 2,
+  run: async (env) => {
+    const key = "config:settings:displayTimeZone";
+    if (await env.SUBPILOT_CONFIG.get(key) === null) {
+      await env.SUBPILOT_CONFIG.put(key, JSON.stringify(DEFAULT_DISPLAY_TIME_ZONE));
+    }
+  }
+}];
 
 export interface KvSchemaStatus {
   current: number;

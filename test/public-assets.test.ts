@@ -49,6 +49,26 @@ describe("admin static assets", () => {
     expect(app).toContain("fetchRecordsTableBody");
   });
 
+  it("exposes the display time zone setting in General settings", () => {
+    const html = readPublicFile("index.html");
+    const app = readPublicFile("app.js");
+
+    expect(html).toContain('id="displayTimeZone"');
+    expect(html).toContain('value="Asia/Shanghai"');
+    expect(html).toContain('value="UTC"');
+    expect(html).toContain('value="Asia/Kolkata"');
+    expect(html).toContain('value="America/Chicago"');
+    expect(html).toContain('value="America/Sao_Paulo"');
+    expect(html).toContain('value="Australia/Sydney"');
+    expect(html).toContain('value="Africa/Johannesburg"');
+    expect(html).toContain('<optgroup label="欧洲">');
+    expect(html).toContain("显示时区");
+    expect(app).toContain('displayTimeZone: "显示时区"');
+    expect(app).toContain("setDisplayTimeZoneValue");
+    expect(app).toContain("normalizeDisplayTimeZone");
+    expect(app).toContain("formatDateInTimeZone");
+  });
+
   it("stacks the status summary above fetch records without the service row", () => {
     const html = readPublicFile("index.html");
     const css = readPublicFile("styles.css");

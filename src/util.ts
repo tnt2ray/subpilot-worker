@@ -41,6 +41,14 @@ export function randomToken(byteLength = 32): string {
   return base64Url(bytes);
 }
 
+export const DEFAULT_DISPLAY_TIME_ZONE = "Asia/Shanghai";
+
+const DISPLAY_TIME_ZONE_ALIASES = new Map<string, string>([
+  ["aisa/shanghai", DEFAULT_DISPLAY_TIME_ZONE],
+  ["asia/shanghai", DEFAULT_DISPLAY_TIME_ZONE],
+  ["utc", "UTC"]
+]);
+
 export async function sha256Hex(value: string): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
@@ -54,6 +62,41 @@ export async function timingSafeEqualString(a: string, b: string): Promise<boole
   let diff = 0;
   for (let i = 0; i < ab.byteLength; i += 1) diff |= ab[i]! ^ bb[i]!;
   return diff === 0;
+}
+
+export function formatTimestampInTimeZone(value: string | null | undefined, timeZone: string | null | undefined): string {
+  if (!value) return "无";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return formatDateInTimeZone(date, normalizeDisplayTimeZone(timeZone));
+}
+
+export function normalizeDisplayTimeZone(value: unknown): string {
+  const raw = typeof value === "string" ? value.trim() : "";
+  const timeZone = DISPLAY_TIME_ZONE_ALIASES.get(raw.toLowerCase()) ?? raw;
+  if (!timeZone) return DEFAULT_DISPLAY_TIME_ZONE;
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone }).format(new Date(0));
+    return timeZone;
+  } catch {
+    return DEFAULT_DISPLAY_TIME_ZONE;
+  }
+}
+
+function formatDateInTimeZone(date: Date, timeZone: string): string {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    hour12: false,
+    hourCycle: "h23",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit"
+  }).formatToParts(date);
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${values.year}-${values.month}-${values.day} ${values.hour}:${values.minute}:${values.second}`;
 }
 
 export function parseCookie(request: Request): Map<string, string> {

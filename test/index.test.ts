@@ -1086,11 +1086,14 @@ describe("asset access control", () => {
     const telegramBody = JSON.parse(String(fetchMock.mock.calls[4]?.[1]?.body ?? "{}")) as { text?: string };
     expect(telegramBody.text).toContain("失败订阅源：");
     expect(telegramBody.text).toContain("上游缓存：1 / 1 个启用源已缓存，全部就绪");
+    expect(telegramBody.text).toContain("缓存更新时间：2026-06-20 09:00:00");
     expect(telegramBody.text).toContain("协议节点：未解析到节点");
     expect(telegramBody.text).toContain("名称：Primary");
     expect(telegramBody.text).toContain("ID：src1");
     expect(telegramBody.text).toContain("原因：HTTP 500");
     expect(telegramBody.text).toContain("处理：已沿用旧缓存");
+    expect(telegramBody.text).not.toContain("2026-06-20T01:00:00.000Z");
+    expect(telegramBody.text).not.toContain("UTC+8");
   });
 
   it("generates a one-time Telegram bind command and registers the webhook", async () => {
@@ -1363,11 +1366,72 @@ describe("asset access control", () => {
     expect(telegramBody.text).toContain("SubPilot 状态");
     expect(telegramBody.text).toContain("订阅源：启用 1 / 停用 0");
     expect(telegramBody.text).toContain("上游缓存：1 / 1 个启用源已缓存，全部就绪");
+    expect(telegramBody.text).toContain("缓存更新时间：2026-06-20 09:00:00");
     expect(telegramBody.text).toContain("协议节点：trojan 1，vmess 1，总计 2");
-    expect(telegramBody.text).toContain("Primary：已缓存，2 个节点");
+    expect(telegramBody.text).toContain("Primary：已缓存，2 个节点，2026-06-20 09:00:00");
     expect(telegramBody.text).toContain("最近 Surge 配置获取：");
     expect(telegramBody.text).toContain("最近 Clash 配置获取：");
+    expect(telegramBody.text).not.toContain("2026-06-20T01:00:00.000Z");
+    expect(telegramBody.text).not.toContain("UTC+8");
     expect(telegramBody.text).not.toContain("Chat ID");
+  });
+
+  it("limits Telegram recent fetch output to five configured-time-zone rows", async () => {
+    const env = makeEnv();
+    const exec = makeExecutionContext();
+    await saveConfig(env, {
+      ...DEFAULT_CONFIG,
+      settings: {
+        ...DEFAULT_CONFIG.settings,
+        notificationChannel: "telegram",
+        notificationTelegramBotToken: "telegram-token",
+        notificationTelegramChatId: "123456",
+        notificationTelegramWebhookSecret: "webhook-secret",
+        displayTimeZone: "UTC"
+      }
+    });
+
+    vi.useFakeTimers();
+    try {
+      for (let index = 0; index < 6; index += 1) {
+        vi.setSystemTime(new Date(Date.UTC(2026, 5, 20, 0, 0, index)));
+        await recordConfigFetch(env, index % 2 === 0 ? "surge" : "clash", new Request("https://subpilot.example.com/sync/read-token/", {
+          headers: {
+            "cf-connecting-ip": "198.51.100.7",
+            "user-agent": `Recent Client/${index}`
+          }
+        }));
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ ok: true })));
+    const response = await worker.fetch(new Request("https://subpilot.example.com/api/telegram/webhook", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-telegram-bot-api-secret-token": "webhook-secret"
+      },
+      body: JSON.stringify({
+        update_id: 4,
+        message: {
+          text: "/recent",
+          chat: { id: 123456, type: "private", first_name: "Sub" }
+        }
+      })
+    }), env, exec.ctx);
+    await Promise.all(exec.waitUntil);
+
+    expect(response.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const telegramBody = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body ?? "{}")) as { text?: string };
+    expect(telegramBody.text).toContain("最近配置拉取：");
+    expect(telegramBody.text).toContain("1. Clash 配置，2026-06-20 00:00:05，UA：Recent Client/5");
+    expect(telegramBody.text).toContain("5. Clash 配置，2026-06-20 00:00:01，UA：Recent Client/1");
+    expect(telegramBody.text).not.toContain("Recent Client/0");
+    expect(telegramBody.text).not.toContain("2026-06-20T00:00:05.000Z");
+    expect(telegramBody.text).not.toContain("UTC+8");
   });
 
   it("ignores Telegram commands from chats that are not bound", async () => {

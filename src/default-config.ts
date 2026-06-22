@@ -1,4 +1,5 @@
 import { CHAIN_EXIT_PROXY_NAME, STATIC_EXIT_GROUP_NAME, type AppConfig } from "./types";
+import { DEFAULT_DISPLAY_TIME_ZONE } from "./util";
 
 export const DEFAULT_CONFIG: AppConfig = {
   version: 1,
@@ -17,6 +18,7 @@ export const DEFAULT_CONFIG: AppConfig = {
       "Prime=prime,amazon"
     ],
     updateCheckEnabled: false,
+    displayTimeZone: DEFAULT_DISPLAY_TIME_ZONE,
     notificationChannel: "off",
     notificationTelegramChatId: "",
     notificationTelegramBotToken: "",

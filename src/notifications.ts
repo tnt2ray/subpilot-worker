@@ -1,6 +1,7 @@
 import type { SourceCacheRefreshResult, SourceCacheStatus } from "./source-cache";
 import type { AppConfig } from "./types";
 import { getUpdateStatus, readNotifiedUpdateVersion, storeNotifiedUpdateVersion } from "./update-check";
+import { formatTimestampInTimeZone } from "./util";
 
 type RefreshTrigger = "manual" | "scheduled";
 
@@ -18,7 +19,7 @@ export async function notifySourceRefreshFailures(
   const delivery: NotificationDeliveryResult = { telegram: "disabled", warnings: [] };
   if (result.failed <= 0) return delivery;
 
-  const message = formatSourceRefreshFailureMessage(result, trigger);
+  const message = formatSourceRefreshFailureMessage(result, trigger, config.settings.displayTimeZone);
   console.warn(JSON.stringify({
     level: "warn",
     message: "Upstream source refresh completed with failures",
@@ -61,14 +62,14 @@ export async function notifyVersionUpdateAvailable(env: Env, config: AppConfig):
   return delivery;
 }
 
-function formatSourceRefreshFailureMessage(result: SourceCacheRefreshResult, trigger: RefreshTrigger): string {
+function formatSourceRefreshFailureMessage(result: SourceCacheRefreshResult, trigger: RefreshTrigger, timeZone: string): string {
   const lines = [
     "SubPilot 上游订阅刷新存在失败",
     `触发方式：${trigger === "scheduled" ? "定时任务" : "手动强制获取"}`,
     `刷新成功：${result.refreshed}`,
     `刷新失败：${result.failed}`,
     `沿用旧缓存：${result.cached}`,
-    ...formatSourceCacheStatusLines(result.sourceCache),
+    ...formatSourceCacheStatusLines(result.sourceCache, timeZone),
     "",
     "失败订阅源：",
     ...formatSourceFailures(result)
@@ -76,11 +77,11 @@ function formatSourceRefreshFailureMessage(result: SourceCacheRefreshResult, tri
   return lines.join("\n").slice(0, 3500);
 }
 
-function formatSourceCacheStatusLines(sourceCache: SourceCacheStatus): string[] {
+function formatSourceCacheStatusLines(sourceCache: SourceCacheStatus, timeZone: string): string[] {
   if (sourceCache.expectedCount <= 0) {
     return [
       `上游缓存：${sourceCache.count} 条缓存，没有启用订阅源`,
-      `缓存更新时间：${formatNotificationTimestamp(sourceCache.updatedAt)}`
+      `缓存更新时间：${formatNotificationTimestamp(sourceCache.updatedAt, timeZone)}`
     ];
   }
   const missing = sourceCache.expectedCount - sourceCache.cachedSourceCount;
@@ -90,7 +91,7 @@ function formatSourceCacheStatusLines(sourceCache: SourceCacheStatus): string[] 
   return [
     `上游缓存：${coverage}`,
     `协议节点：${formatProtocolCounts(sourceCache)}`,
-    `缓存更新时间：${formatNotificationTimestamp(sourceCache.updatedAt)}`
+    `缓存更新时间：${formatNotificationTimestamp(sourceCache.updatedAt, timeZone)}`
   ];
 }
 
@@ -102,11 +103,8 @@ function formatProtocolCounts(sourceCache: SourceCacheStatus): string {
   ].join("，");
 }
 
-function formatNotificationTimestamp(value: string | null): string {
-  if (!value) return "无";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return date.toISOString().replace(".000Z", "Z");
+function formatNotificationTimestamp(value: string | null, timeZone: string): string {
+  return formatTimestampInTimeZone(value, timeZone);
 }
 
 function formatSourceFailures(result: SourceCacheRefreshResult): string[] {

@@ -153,6 +153,74 @@
                     </div>
                   </div>
                   <div class="cbi-row">
+                    <label for="displayTimeZone" data-i18n="displayTimeZone">显示时区</label>
+                    <div class="field">
+                      <select id="displayTimeZone">
+                        <optgroup label="常用">
+                          <option value="Asia/Shanghai">Asia/Shanghai</option>
+                          <option value="UTC">UTC</option>
+                        </optgroup>
+                        <optgroup label="亚洲">
+                          <option value="Asia/Hong_Kong">Asia/Hong_Kong</option>
+                          <option value="Asia/Taipei">Asia/Taipei</option>
+                          <option value="Asia/Tokyo">Asia/Tokyo</option>
+                          <option value="Asia/Seoul">Asia/Seoul</option>
+                          <option value="Asia/Singapore">Asia/Singapore</option>
+                          <option value="Asia/Bangkok">Asia/Bangkok</option>
+                          <option value="Asia/Jakarta">Asia/Jakarta</option>
+                          <option value="Asia/Manila">Asia/Manila</option>
+                          <option value="Asia/Kuala_Lumpur">Asia/Kuala_Lumpur</option>
+                          <option value="Asia/Kolkata">Asia/Kolkata</option>
+                          <option value="Asia/Dubai">Asia/Dubai</option>
+                        </optgroup>
+                        <optgroup label="欧洲">
+                          <option value="Europe/London">Europe/London</option>
+                          <option value="Europe/Dublin">Europe/Dublin</option>
+                          <option value="Europe/Paris">Europe/Paris</option>
+                          <option value="Europe/Berlin">Europe/Berlin</option>
+                          <option value="Europe/Madrid">Europe/Madrid</option>
+                          <option value="Europe/Rome">Europe/Rome</option>
+                          <option value="Europe/Amsterdam">Europe/Amsterdam</option>
+                          <option value="Europe/Zurich">Europe/Zurich</option>
+                          <option value="Europe/Stockholm">Europe/Stockholm</option>
+                          <option value="Europe/Warsaw">Europe/Warsaw</option>
+                          <option value="Europe/Athens">Europe/Athens</option>
+                          <option value="Europe/Istanbul">Europe/Istanbul</option>
+                          <option value="Europe/Moscow">Europe/Moscow</option>
+                        </optgroup>
+                        <optgroup label="美洲">
+                          <option value="America/New_York">America/New_York</option>
+                          <option value="America/Chicago">America/Chicago</option>
+                          <option value="America/Denver">America/Denver</option>
+                          <option value="America/Los_Angeles">America/Los_Angeles</option>
+                          <option value="America/Toronto">America/Toronto</option>
+                          <option value="America/Vancouver">America/Vancouver</option>
+                          <option value="America/Mexico_City">America/Mexico_City</option>
+                          <option value="America/Sao_Paulo">America/Sao_Paulo</option>
+                          <option value="America/Buenos_Aires">America/Buenos_Aires</option>
+                          <option value="America/Santiago">America/Santiago</option>
+                          <option value="America/Bogota">America/Bogota</option>
+                          <option value="America/Lima">America/Lima</option>
+                        </optgroup>
+                        <optgroup label="大洋洲">
+                          <option value="Australia/Sydney">Australia/Sydney</option>
+                          <option value="Australia/Melbourne">Australia/Melbourne</option>
+                          <option value="Australia/Brisbane">Australia/Brisbane</option>
+                          <option value="Australia/Perth">Australia/Perth</option>
+                          <option value="Pacific/Auckland">Pacific/Auckland</option>
+                        </optgroup>
+                        <optgroup label="中东与非洲">
+                          <option value="Asia/Jerusalem">Asia/Jerusalem</option>
+                          <option value="Asia/Riyadh">Asia/Riyadh</option>
+                          <option value="Africa/Cairo">Africa/Cairo</option>
+                          <option value="Africa/Johannesburg">Africa/Johannesburg</option>
+                          <option value="Africa/Nairobi">Africa/Nairobi</option>
+                        </optgroup>
+                      </select>
+                      <small data-i18n="displayTimeZoneHelp">仅影响后台和通知中的时间显示；系统内部仍按 UTC 保存时间。</small>
+                    </div>
+                  </div>
+                  <div class="cbi-row">
                     <label data-i18n="geoIpMmdb">GeoIP MMDB</label>
                     <div class="field">
                       <div id="geoIpMmdbMissingNotice" class="field-notice warning" data-i18n="geoIpMmdbMissingNotice">未上传 MMDB 时，服务只能使用已有的单 IP 记录识别地区；没有记录的 IP 节点无法自动判断国家/地区，会影响 IP 节点重命名、按地区筛选和链式节点地区匹配的完整性。</div>

@@ -119,6 +119,7 @@ export interface AppConfig {
     geoipRenameEnabled: boolean;
     featureTagRules: string[];
     updateCheckEnabled: boolean;
+    displayTimeZone: string;
     notificationChannel: NotificationChannel;
     notificationTelegramChatId: string;
     notificationTelegramBotToken: string;

@@ -14,7 +14,7 @@ import { SURGE_BUILT_IN_POLICIES, validateSurgeRules } from "./surge-rules";
 import { validateSurgeUrlRewrite } from "./surge-url-rewrite";
 import { readCachedUpdateStatus, getUpdateStatus } from "./update-check";
 import { APP_VERSION, RELEASE_REPOSITORY } from "./version";
-import { badRequest, forbidden, jsonResponse, notFound, randomToken, sha256Hex, textResponse, timingSafeEqualString, unauthorized } from "./util";
+import { formatTimestampInTimeZone, badRequest, forbidden, jsonResponse, notFound, randomToken, sha256Hex, textResponse, timingSafeEqualString, unauthorized } from "./util";
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -206,6 +206,7 @@ interface TelegramCommand {
 
 const TELEGRAM_BIND_KEY = "auth:telegram_bind";
 const TELEGRAM_BIND_TTL_MS = 10 * 60 * 1000;
+const TELEGRAM_RECENT_FETCH_LIMIT = 5;
 const MAX_MMDB_BYTES = 25 * 1024 * 1024;
 
 interface GeoIpMmdbMeta {
@@ -368,7 +369,7 @@ async function handleTelegramCommand(
       await sendTelegramBotMessage(token, chat.id, formatTelegramSourcesMessage(config));
       return;
     case "recent":
-      await sendTelegramBotMessage(token, chat.id, formatTelegramRecentFetchesMessage(await readConfigFetchStats(env)));
+      await sendTelegramBotMessage(token, chat.id, formatTelegramRecentFetchesMessage(await readConfigFetchStats(env), config.settings.displayTimeZone));
       return;
     case "refresh":
       await sendTelegramBotMessage(token, chat.id, "开始强制重新拉取上游订阅源。完成后会发送结果。").catch(logTelegramCommandFailure);
@@ -385,7 +386,7 @@ async function handleTelegramRefreshCommand(env: Env, chatId: string): Promise<v
   if (!token) return;
   try {
     const result = await refreshSourceCache(env, config);
-    await sendTelegramBotMessage(token, chatId, formatTelegramRefreshResultMessage(result));
+    await sendTelegramBotMessage(token, chatId, formatTelegramRefreshResultMessage(result, config.settings.displayTimeZone));
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     await sendTelegramBotMessage(token, chatId, `上游订阅源强制获取失败：${message}`).catch(logTelegramCommandFailure);
@@ -412,17 +413,17 @@ function formatTelegramStatusMessage(
   return [
     "SubPilot 状态",
     `订阅源：启用 ${enabledSources} / 停用 ${disabledSources}`,
-    ...formatTelegramSourceCacheLines(stats.sourceCache),
-    `最近 Surge 配置获取：${formatTelegramTimestamp(stats.lastFetched.surge)}`,
-    `最近 Clash 配置获取：${formatTelegramTimestamp(stats.lastFetched.clash)}`
+    ...formatTelegramSourceCacheLines(stats.sourceCache, config.settings.displayTimeZone),
+    `最近 Surge 配置获取：${formatTelegramTimestamp(stats.lastFetched.surge, config.settings.displayTimeZone)}`,
+    `最近 Clash 配置获取：${formatTelegramTimestamp(stats.lastFetched.clash, config.settings.displayTimeZone)}`
   ].join("\n");
 }
 
-function formatTelegramSourceCacheLines(sourceCache: Awaited<ReturnType<typeof readConfigFetchStats>>["sourceCache"]): string[] {
+function formatTelegramSourceCacheLines(sourceCache: Awaited<ReturnType<typeof readConfigFetchStats>>["sourceCache"], timeZone: string): string[] {
   if (sourceCache.expectedCount <= 0) {
     return [
       `上游缓存：${sourceCache.count} 条缓存，没有启用订阅源`,
-      `缓存更新时间：${formatTelegramTimestamp(sourceCache.updatedAt)}`
+      `缓存更新时间：${formatTelegramTimestamp(sourceCache.updatedAt, timeZone)}`
     ];
   }
   const missing = sourceCache.expectedCount - sourceCache.cachedSourceCount;
@@ -432,10 +433,10 @@ function formatTelegramSourceCacheLines(sourceCache: Awaited<ReturnType<typeof r
   return [
     `上游缓存：${sourceSummary}`,
     `缓存条目：${sourceCache.count} 条`,
-    `缓存更新时间：${formatTelegramTimestamp(sourceCache.updatedAt)}`,
+    `缓存更新时间：${formatTelegramTimestamp(sourceCache.updatedAt, timeZone)}`,
     `协议节点：${formatTelegramProtocolCounts(sourceCache)}`,
     "订阅源缓存：",
-    ...sourceCache.sources.slice(0, 12).map(formatTelegramSourceCacheStatus),
+    ...sourceCache.sources.slice(0, 12).map((source) => formatTelegramSourceCacheStatus(source, timeZone)),
     ...(sourceCache.sources.length > 12 ? [`... 还有 ${sourceCache.sources.length - 12} 个订阅源未显示`] : [])
   ];
 }
@@ -448,10 +449,10 @@ function formatTelegramProtocolCounts(sourceCache: Awaited<ReturnType<typeof rea
   ].join("，");
 }
 
-function formatTelegramSourceCacheStatus(source: Awaited<ReturnType<typeof readConfigFetchStats>>["sourceCache"]["sources"][number]): string {
+function formatTelegramSourceCacheStatus(source: Awaited<ReturnType<typeof readConfigFetchStats>>["sourceCache"]["sources"][number], timeZone: string): string {
   const name = source.sourceName || source.sourceId || "(未命名订阅源)";
   if (!source.cached) return `- ${name}：未缓存`;
-  return `- ${name}：已缓存，${source.nodeCount} 个节点，${formatTelegramTimestamp(source.fetchedAt)}`;
+  return `- ${name}：已缓存，${source.nodeCount} 个节点，${formatTelegramTimestamp(source.fetchedAt, timeZone)}`;
 }
 
 function formatTelegramSourcesMessage(config: Awaited<ReturnType<typeof loadConfig>>): string {
@@ -466,13 +467,13 @@ function formatTelegramSourcesMessage(config: Awaited<ReturnType<typeof loadConf
   return ["订阅源状态：", ...lines].join("\n");
 }
 
-function formatTelegramRecentFetchesMessage(stats: Awaited<ReturnType<typeof readConfigFetchStats>>): string {
+function formatTelegramRecentFetchesMessage(stats: Awaited<ReturnType<typeof readConfigFetchStats>>, timeZone: string): string {
   if (stats.recentUserAgents.length === 0) return "还没有订阅配置拉取记录。";
   return [
     "最近配置拉取：",
-    ...stats.recentUserAgents.map((record, index) => {
+    ...stats.recentUserAgents.slice(0, TELEGRAM_RECENT_FETCH_LIMIT).map((record, index) => {
       const location = record.location.label ? `，${record.location.label}` : "";
-      return `${index + 1}. ${formatTelegramFetchTargetLabel(record.target)}，${formatTelegramTimestamp(record.fetchedAt)}${location}，UA：${truncateTelegramLine(record.userAgent, 80)}`;
+      return `${index + 1}. ${formatTelegramFetchTargetLabel(record.target)}，${formatTelegramTimestamp(record.fetchedAt, timeZone)}${location}，UA：${truncateTelegramLine(record.userAgent, 80)}`;
     })
   ].join("\n");
 }
@@ -483,16 +484,16 @@ function formatTelegramFetchTargetLabel(target: string): string {
   return target;
 }
 
-function formatTelegramRefreshResultMessage(result: Awaited<ReturnType<typeof refreshSourceCache>>): string {
+function formatTelegramRefreshResultMessage(result: Awaited<ReturnType<typeof refreshSourceCache>>, timeZone: string): string {
   const lines = [
     "上游订阅源强制获取完成",
     `刷新成功：${result.refreshed}`,
     `刷新失败：${result.failed}`,
     `沿用旧缓存：${result.cached}`,
     `清理非当前启用源缓存：${result.deleted}`,
-    `完成时间：${formatTelegramTimestamp(result.updatedAt)}`,
+    `完成时间：${formatTelegramTimestamp(result.updatedAt, timeZone)}`,
     "",
-    ...formatTelegramSourceCacheLines(result.sourceCache)
+    ...formatTelegramSourceCacheLines(result.sourceCache, timeZone)
   ];
   if (result.failures.length > 0) {
     lines.push("", "失败订阅源：");
@@ -505,11 +506,8 @@ function formatTelegramRefreshResultMessage(result: Awaited<ReturnType<typeof re
   return lines.join("\n").slice(0, 3500);
 }
 
-function formatTelegramTimestamp(value: string | null | undefined): string {
-  if (!value) return "无";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return date.toISOString().replace(".000Z", "Z");
+function formatTelegramTimestamp(value: string | null | undefined, timeZone: string): string {
+  return formatTimestampInTimeZone(value, timeZone);
 }
 
 function truncateTelegramLine(value: string, maxLength: number): string {

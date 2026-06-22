@@ -19,6 +19,7 @@ const PAGES = ["status", "settings", "groups", "sources", "surge", "clash", "tok
 const EDITABLE_PAGES = new Set(["settings", "groups", "sources", "surge", "clash"]);
 const CODE_EDITOR_PAGES = new Set(["surge", "clash"]);
 const FETCH_RECORDS_PAGE_SIZE = 10;
+const DEFAULT_DISPLAY_TIME_ZONE = "Asia/Shanghai";
 const DEFAULT_CLASH_MODE = "Rule";
 const DEFAULT_CLASH_LOG_LEVEL = "info";
 let activePage = getPageFromHash();
@@ -70,6 +71,8 @@ const I18N = {
   excludeKeywordsHelp: "逗号分隔，节点名称包含这些关键词时会在策略组生成前移除。",
   featureTagRules: "能力标签规则",
   featureTagRulesHelp: "每行一个规则，格式为 标签=关键词1,关键词2。命中原始节点名后会追加标签。",
+  displayTimeZone: "显示时区",
+  displayTimeZoneHelp: "仅影响后台和通知中的时间显示；系统内部仍按 UTC 保存时间。",
   geoIpMmdb: "GeoIP MMDB",
   chooseGeoIpMmdb: "选择 .mmdb",
   uploadGeoIpMmdb: "上传",
@@ -460,6 +463,7 @@ const refs = {
   userAgentClash: $("userAgentClash"),
   excludeKeywords: $("excludeKeywords"),
   featureTagRules: $("featureTagRules"),
+  displayTimeZone: $("displayTimeZone"),
   geoIpMmdbFile: $("geoIpMmdbFile"),
   uploadGeoIpMmdbBtn: $("uploadGeoIpMmdbBtn"),
   geoIpMmdbStatus: $("geoIpMmdbStatus"),
@@ -1103,6 +1107,7 @@ function renderSettings() {
   refs.userAgentClash.value = state.settings.userAgentClash;
   refs.excludeKeywords.value = state.settings.excludeKeywords.join(", ");
   refs.featureTagRules.value = linesToText(state.settings.featureTagRules || []);
+  setDisplayTimeZoneValue(state.settings.displayTimeZone);
   refs.notificationTelegramBotToken.value = state.settings.notificationTelegramBotToken || "";
   refs.updateCheckEnabled.checked = state.settings.updateCheckEnabled === true;
   renderTelegramBindStatus();
@@ -3926,6 +3931,7 @@ function readSettingsDraft() {
       userAgentClash: refs.userAgentClash.value.trim(),
       excludeKeywords: refs.excludeKeywords.value.split(",").map((item) => item.trim()).filter(Boolean),
       featureTagRules: textToLines(refs.featureTagRules.value),
+      displayTimeZone: normalizeDisplayTimeZone(refs.displayTimeZone.value),
       updateCheckEnabled: refs.updateCheckEnabled.checked,
       notificationChannel: notificationTelegramBotToken ? "telegram" : "off",
       notificationTelegramChatId: notificationTelegramBotToken ? state.settings.notificationTelegramChatId || "" : "",
@@ -4812,16 +4818,50 @@ function formatTimestamp(value) {
   if (!value) return t("neverFetched");
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return t("neverFetched");
-  return date.toLocaleString("zh-CN", {
-    timeZone: "Asia/Shanghai",
+  return formatDateInTimeZone(date, currentDisplayTimeZone());
+}
+
+function currentDisplayTimeZone() {
+  return normalizeDisplayTimeZone(state?.settings?.displayTimeZone);
+}
+
+function setDisplayTimeZoneValue(value) {
+  const timeZone = normalizeDisplayTimeZone(value);
+  if (![...refs.displayTimeZone.options].some((option) => option.value === timeZone)) {
+    const option = document.createElement("option");
+    option.value = timeZone;
+    option.textContent = timeZone;
+    refs.displayTimeZone.append(option);
+  }
+  refs.displayTimeZone.value = timeZone;
+}
+
+function normalizeDisplayTimeZone(value) {
+  const raw = typeof value === "string" ? value.trim() : "";
+  const timeZone = raw.toLowerCase() === "aisa/shanghai" ? DEFAULT_DISPLAY_TIME_ZONE : raw;
+  if (!timeZone) return DEFAULT_DISPLAY_TIME_ZONE;
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone }).format(new Date(0));
+    return timeZone;
+  } catch {
+    return DEFAULT_DISPLAY_TIME_ZONE;
+  }
+}
+
+function formatDateInTimeZone(date, timeZone) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
     hour12: false,
+    hourCycle: "h23",
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
     hour: "2-digit",
     minute: "2-digit",
     second: "2-digit"
-  });
+  }).formatToParts(date);
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${values.year}-${values.month}-${values.day} ${values.hour}:${values.minute}:${values.second}`;
 }
 
 async function preview(target, options = {}) {
