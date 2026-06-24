@@ -9,36 +9,30 @@ import { mockSubscription, restoreMocksAfterEach } from "./helpers/fetch";
 restoreMocksAfterEach();
 
 describe("target inference", () => {
-  it("ignores explicit target query strings and uses user-agent only", () => {
+  it("infers targets from user-agent, normalizes preview targets, and keeps key defaults", () => {
     const request = new Request("https://example.com/sync/token?target=clash", {
       headers: { "user-agent": "Surge/5.0" }
     });
     expect(inferTarget(request)).toBe("surge");
     expect(inferTarget(new Request("https://example.com/sync/token?target=unsupported"))).toBeNull();
-  });
 
-  it("detects common clients from user-agent", () => {
     expect(inferTarget(new Request("https://example.com/sync/token", { headers: { "user-agent": "Mihomo/1" } }))).toBe("clash");
+    expect(inferTarget(new Request("https://example.com/sync/token", { headers: { "user-agent": "Stash/2.0 Clash.Meta" } }))).toBe("stash");
     expect(inferTarget(new Request("https://example.com/sync/token", { headers: { "user-agent": "Surge Mac/11390" } }))).toBe("surge");
     expect(inferTarget(new Request("https://example.com/sync/token", { headers: { "user-agent": "Surge iOS/3727" } }))).toBe("surge");
     expect(inferTarget(new Request("https://example.com/sync/token", { headers: { "user-agent": "TestClient/1" } }))).toBeNull();
-  });
 
-  it("normalizes admin preview target values", () => {
     expect(normalizeTarget("surge")).toBe("surge");
     expect(normalizeTarget("clash")).toBe("clash");
+    expect(normalizeTarget("stash")).toBe("stash");
     expect(normalizeTarget("unknown")).toBeNull();
     expect(normalizeTarget("surge2")).toBeNull();
     expect(normalizeTarget("mobile")).toBeNull();
-  });
 
-  it("uses real client user agents for upstream subscription requests by default", () => {
     expect(DEFAULT_CONFIG.settings.userAgentSurge).toBe("Surge iOS/3727");
     expect(DEFAULT_CONFIG.settings.userAgentClash).toBe("clash-verge/v2.5.1");
-  });
-
-  it("uses Chinese subscription noise keywords by default", () => {
     expect(DEFAULT_CONFIG.settings.excludeKeywords).toEqual(["过期", "剩余", "官网", "直接连接", "购买", "漏洞", "备用", "登陆", "工作室", "客服"]);
+    expect(DEFAULT_CONFIG.groups.Auto).toMatch(/^url-test,/);
   });
 
   it("uses the sanitized Gist-derived Clash feature defaults", async () => {
@@ -165,11 +159,7 @@ describe("target inference", () => {
     });
   });
 
-  it("uses automatic selection for the Auto group by default", () => {
-    expect(DEFAULT_CONFIG.groups.Auto).toMatch(/^url-test,/);
-  });
-
-  it("does not initialize the managed base URL with a fixed example domain", () => {
+  it("normalizes, infers, and validates managed base URLs", () => {
     const config = normalizeConfig({
       ...DEFAULT_CONFIG,
       settings: {
@@ -178,16 +168,7 @@ describe("target inference", () => {
       }
     });
     expect(config.settings.managedBaseUrl).toBe("");
-  });
 
-  it("infers the managed base URL from the current request until one is saved", () => {
-    const config = normalizeConfig({
-      ...DEFAULT_CONFIG,
-      settings: {
-        ...DEFAULT_CONFIG.settings,
-        managedBaseUrl: ""
-      }
-    });
     const inferred = withInferredManagedBaseUrl(config, "https://subpilot.example.com/api/config");
     const stored = withInferredManagedBaseUrl({
       ...config,
@@ -200,76 +181,6 @@ describe("target inference", () => {
     expect(inferManagedBaseUrl("https://subpilot.example.com/api/config")).toBe("https://subpilot.example.com/sync");
     expect(inferred.settings.managedBaseUrl).toBe("https://subpilot.example.com/sync");
     expect(stored.settings.managedBaseUrl).toBe("https://saved.example.com/sync");
-  });
-
-  it("uses automatic subscription paths in Surge managed config URLs", async () => {
-    mockSubscription("JP 1 = trojan, jp.example.com, 443, password=p");
-    const result = await generateConfig(makeEnv(), {
-      ...DEFAULT_CONFIG,
-      sources: [{
-        id: "src1",
-        name: "Primary",
-        url: "https://example.com/sub",
-        fetchUserAgent: "surge",
-        enabled: true
-      }]
-    }, "surge", "https://subpilot.example.com/sync/read-token/");
-
-    expect(result.content).toContain("#!MANAGED-CONFIG https://subpilot.example.com/sync/read-token/ interval=43200 strict=true");
-    expect(result.content).toContain("[Proxy]\n[Primary] JP 01 = trojan, jp.example.com, 443");
-    expect(result.content).not.toContain("policy-path=");
-    expect(result.content).not.toContain("surge-resources");
-    expect(result.content).toContain("[Rule]\nRULE-SET");
-  });
-
-  it("uses the configured Surge managed interval in inline output", async () => {
-    mockSubscription("JP 1 = trojan, jp.example.com, 443, password=p");
-    const result = await generateConfig(makeEnv(), {
-      ...DEFAULT_CONFIG,
-      sources: [{
-        id: "src1",
-        name: "Primary",
-        url: "https://example.com/sub",
-        fetchUserAgent: "surge",
-        enabled: true
-      }],
-      surge: {
-        ...DEFAULT_CONFIG.surge,
-        managedConfigIntervalSeconds: 21600
-      }
-    }, "surge", "https://subpilot.example.com/sync/read-token/");
-
-    expect(result.content).toContain("#!MANAGED-CONFIG https://subpilot.example.com/sync/read-token/ interval=21600 strict=true");
-    expect(result.content).not.toContain("policy-path=");
-  });
-
-  it("joins managed base URLs without duplicate slashes", async () => {
-    const result = await generateConfig(makeEnv(), {
-      ...DEFAULT_CONFIG,
-      settings: {
-        ...DEFAULT_CONFIG.settings,
-        managedBaseUrl: "https://subpilot.example.com/sync/"
-      }
-    }, "surge", "https://subpilot.example.com/sync/read-token/");
-
-    expect(result.content).toContain("#!MANAGED-CONFIG https://subpilot.example.com/sync/read-token/");
-    expect(result.content).not.toContain("/sync//read-token");
-  });
-
-  it("extracts read tokens relative to multi-segment managed base paths", async () => {
-    const result = await generateConfig(makeEnv(), {
-      ...DEFAULT_CONFIG,
-      settings: {
-        ...DEFAULT_CONFIG.settings,
-        managedBaseUrl: "https://subpilot.example.com/managed/sync"
-      }
-    }, "surge", "https://subpilot.example.com/managed/sync/read-token/");
-
-    expect(result.content).toContain("#!MANAGED-CONFIG https://subpilot.example.com/managed/sync/read-token/");
-    expect(result.content).not.toContain("/managed/sync/sync/surge");
-  });
-
-  it("requires a valid managed base URL before saving through the API", () => {
     expect(validateManagedBaseUrl({
       ...DEFAULT_CONFIG,
       settings: {
@@ -321,4 +232,79 @@ describe("target inference", () => {
     })).toBeNull();
   });
 
+  it("generates Surge managed config URLs without legacy resource paths", async () => {
+    mockSubscription("JP 1 = trojan, jp.example.com, 443, password=p");
+    const defaultInterval = await generateConfig(makeEnv(), {
+      ...DEFAULT_CONFIG,
+      sources: [{
+        id: "src1",
+        name: "Primary",
+        url: "https://example.com/sub",
+        fetchUserAgent: "surge",
+        enabled: true
+      }]
+    }, "surge", "https://subpilot.example.com/sync/read-token/");
+
+    expect(defaultInterval.content).toContain("#!MANAGED-CONFIG https://subpilot.example.com/sync/read-token/ interval=43200 strict=true");
+    expect(defaultInterval.content).toContain("[Proxy]\n[Primary] JP 01 = trojan, jp.example.com, 443");
+    expect(defaultInterval.content).not.toContain("policy-path=");
+    expect(defaultInterval.content).not.toContain("surge-resources");
+    expect(defaultInterval.content).toContain("[Rule]\nRULE-SET");
+
+    mockSubscription("JP 1 = trojan, jp.example.com, 443, password=p");
+    const customInterval = await generateConfig(makeEnv(), {
+      ...DEFAULT_CONFIG,
+      sources: [{
+        id: "src1",
+        name: "Primary",
+        url: "https://example.com/sub",
+        fetchUserAgent: "surge",
+        enabled: true
+      }],
+      surge: {
+        ...DEFAULT_CONFIG.surge,
+        managedConfigIntervalSeconds: 21600
+      }
+    }, "surge", "https://subpilot.example.com/sync/read-token/");
+    expect(customInterval.content).toContain("#!MANAGED-CONFIG https://subpilot.example.com/sync/read-token/ interval=21600 strict=true");
+    expect(customInterval.content).not.toContain("policy-path=");
+
+    const joined = await generateConfig(makeEnv(), {
+      ...DEFAULT_CONFIG,
+      settings: {
+        ...DEFAULT_CONFIG.settings,
+        managedBaseUrl: "https://subpilot.example.com/sync/"
+      }
+    }, "surge", "https://subpilot.example.com/sync/read-token/");
+    expect(joined.content).toContain("#!MANAGED-CONFIG https://subpilot.example.com/sync/read-token/");
+    expect(joined.content).not.toContain("/sync//read-token");
+
+    const multiSegment = await generateConfig(makeEnv(), {
+      ...DEFAULT_CONFIG,
+      settings: {
+        ...DEFAULT_CONFIG.settings,
+        managedBaseUrl: "https://subpilot.example.com/managed/sync"
+      }
+    }, "surge", "https://subpilot.example.com/managed/sync/read-token/");
+    expect(multiSegment.content).toContain("#!MANAGED-CONFIG https://subpilot.example.com/managed/sync/read-token/");
+    expect(multiSegment.content).not.toContain("/managed/sync/sync/surge");
+
+    mockSubscription("JP 1 = trojan, jp.example.com, 443, password=p");
+    const stash = await generateConfig(makeEnv(), {
+      ...DEFAULT_CONFIG,
+      settings: {
+        ...DEFAULT_CONFIG.settings,
+        managedBaseUrl: "https://subpilot.example.com/stash-sync"
+      },
+      sources: [{
+        id: "src1",
+        name: "Primary",
+        url: "https://example.com/sub",
+        fetchUserAgent: "surge",
+        enabled: true
+      }]
+    }, "stash", "https://subpilot.example.com/stash-sync/read-token/");
+    expect(stash.content).toContain("#SUBSCRIBED https://subpilot.example.com/stash-sync/read-token/");
+    expect(stash.content).not.toContain("/stash-sync//read-token");
+  });
 });

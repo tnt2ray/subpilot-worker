@@ -16,6 +16,8 @@ import { readCachedUpdateStatus, getUpdateStatus } from "./update-check";
 import { APP_VERSION, RELEASE_REPOSITORY } from "./version";
 import { formatTimestampInTimeZone, badRequest, forbidden, jsonResponse, notFound, randomToken, sha256Hex, textResponse, timingSafeEqualString, unauthorized } from "./util";
 
+type LoadedConfig = Awaited<ReturnType<typeof loadConfig>>;
+
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     try {
@@ -86,12 +88,12 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
     return jsonResponse(await readConfigFetchStats(env, config));
   }
   if (url.pathname === "/api/system/status" && request.method === "GET") {
+    await runKvMigrations(env);
     return jsonResponse({
       app: {
         version: APP_VERSION,
         releaseRepository: RELEASE_REPOSITORY
       },
-      schema: await runKvMigrations(env),
       update: await readCachedUpdateStatus(env)
     });
   }
@@ -415,7 +417,8 @@ function formatTelegramStatusMessage(
     `订阅源：启用 ${enabledSources} / 停用 ${disabledSources}`,
     ...formatTelegramSourceCacheLines(stats.sourceCache, config.settings.displayTimeZone),
     `最近 Surge 配置获取：${formatTelegramTimestamp(stats.lastFetched.surge, config.settings.displayTimeZone)}`,
-    `最近 Clash 配置获取：${formatTelegramTimestamp(stats.lastFetched.clash, config.settings.displayTimeZone)}`
+    `最近 Clash 配置获取：${formatTelegramTimestamp(stats.lastFetched.clash, config.settings.displayTimeZone)}`,
+    `最近 Stash 配置获取：${formatTelegramTimestamp(stats.lastFetched.stash, config.settings.displayTimeZone)}`
   ].join("\n");
 }
 
@@ -481,6 +484,7 @@ function formatTelegramRecentFetchesMessage(stats: Awaited<ReturnType<typeof rea
 function formatTelegramFetchTargetLabel(target: string): string {
   if (target === "surge") return "Surge 配置";
   if (target === "clash") return "Clash 配置";
+  if (target === "stash") return "Stash 配置";
   return target;
 }
 
@@ -790,9 +794,9 @@ function escapeRegExp(value: string): string {
 }
 
 function mergeConfigPatch(
-  config: Awaited<ReturnType<typeof loadConfig>>,
-  patch: Partial<Awaited<ReturnType<typeof loadConfig>>>
-): Awaited<ReturnType<typeof loadConfig>> {
+  config: LoadedConfig,
+  patch: Partial<LoadedConfig>
+): LoadedConfig {
   return {
     ...config,
     settings: patch.settings && typeof patch.settings === "object"
@@ -813,24 +817,46 @@ function mergeConfigPatch(
       : config.surge,
     clash: patch.clash && typeof patch.clash === "object"
       ? { ...config.clash, ...patch.clash }
-      : config.clash
+      : config.clash,
+    stash: mergeStashPatch(config.stash, patch.stash)
+  };
+}
+
+function mergeStashPatch(
+  current: LoadedConfig["stash"],
+  patch: Partial<LoadedConfig["stash"]> | undefined
+): LoadedConfig["stash"] {
+  if (!patch || typeof patch !== "object") return current;
+  return {
+    ...current,
+    ...patch,
+    tun: patch.tun && typeof patch.tun === "object"
+      ? { ...current.tun, ...patch.tun }
+      : current.tun,
+    dns: patch.dns && typeof patch.dns === "object"
+      ? { ...current.dns, ...patch.dns }
+      : current.dns,
+    mitm: patch.mitm && typeof patch.mitm === "object"
+      ? { ...current.mitm, ...patch.mitm }
+      : current.mitm
   };
 }
 
 function sanitizeConfigAfterPatch(
-  config: Awaited<ReturnType<typeof loadConfig>>,
-  patch: Partial<Awaited<ReturnType<typeof loadConfig>>>
-): Awaited<ReturnType<typeof loadConfig>> {
+  config: LoadedConfig,
+  patch: Partial<LoadedConfig>
+): LoadedConfig {
   if (!("groups" in patch) && !("disabledGroups" in patch)) return config;
   const rules = sanitizeRuleTargets(config);
   return {
     ...config,
     surge: { ...config.surge, rules: rules.surge },
-    clash: { ...config.clash, rules: rules.clash }
+    clash: { ...config.clash, rules: rules.clash },
+    stash: { ...config.stash, rules: rules.stash }
   };
 }
 
-function sanitizeRuleTargets(config: Awaited<ReturnType<typeof loadConfig>>): { surge: string[]; clash: string[] } {
+function sanitizeRuleTargets(config: LoadedConfig): { surge: string[]; clash: string[]; stash: string[] } {
   const disabledGroups = new Set(config.disabledGroups);
   const availablePolicies = new Set([
     ...Object.keys(config.groups).filter((name) => !disabledGroups.has(name)),
@@ -838,7 +864,8 @@ function sanitizeRuleTargets(config: Awaited<ReturnType<typeof loadConfig>>): { 
   ]);
   return {
     surge: rewriteRulesToAvailablePolicies(config.surge.rules, availablePolicies),
-    clash: rewriteRulesToAvailablePolicies(config.clash.rules, availablePolicies)
+    clash: rewriteRulesToAvailablePolicies(config.clash.rules, availablePolicies),
+    stash: rewriteRulesToAvailablePolicies(config.stash.rules, availablePolicies)
   };
 }
 

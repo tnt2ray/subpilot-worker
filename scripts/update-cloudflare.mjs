@@ -7,6 +7,8 @@ import { platform, tmpdir } from "node:os";
 
 const RELEASE_REPOSITORY = "tnt2ray/subpilot-worker";
 const RELEASE_API_URL = `https://api.github.com/repos/${RELEASE_REPOSITORY}/releases/latest`;
+const RELEASE_ASSET_PREFIX = "subpilot-worker-";
+const RELEASE_ASSET_SUFFIX = ".tar.gz";
 const args = new Set(process.argv.slice(2));
 const npmCommand = platform() === "win32" ? "npm.cmd" : "npm";
 const gitCommand = platform() === "win32" ? "git.exe" : "git";
@@ -72,14 +74,17 @@ async function downloadLatestReleaseArchive() {
   }
 
   const release = await releaseResponse.json();
-  const tarballUrl = typeof release.tarball_url === "string" ? release.tarball_url : "";
-  if (!tarballUrl) {
+  const releaseAsset = trackedReleaseAsset(release);
+  const archiveUrl = releaseAsset?.url || (typeof release.tarball_url === "string" ? release.tarball_url : "");
+  if (!archiveUrl) {
     process.stderr.write("Latest GitHub Release does not include a source archive URL.\n");
     process.exit(1);
   }
 
-  const archiveResponse = await fetch(tarballUrl, {
-    headers: githubHeaders()
+  const archiveResponse = await fetch(archiveUrl, {
+    headers: releaseAsset
+      ? githubHeaders({ accept: "application/octet-stream" })
+      : githubHeaders()
   });
   if (!archiveResponse.ok) {
     process.stderr.write(`Could not download release archive: HTTP ${archiveResponse.status}\n`);
@@ -103,6 +108,18 @@ async function downloadLatestReleaseArchive() {
     sourceDirectory: join(tempDirectory, sourceRoot.name),
     version: typeof release.tag_name === "string" ? release.tag_name : "latest"
   };
+}
+
+function trackedReleaseAsset(release) {
+  const tagName = typeof release?.tag_name === "string" ? release.tag_name : "";
+  const expectedName = tagName ? `${RELEASE_ASSET_PREFIX}${tagName}${RELEASE_ASSET_SUFFIX}` : "";
+  const assets = Array.isArray(release?.assets) ? release.assets : [];
+  return assets.find((asset) => (
+    asset
+    && typeof asset.url === "string"
+    && typeof asset.name === "string"
+    && asset.name === expectedName
+  )) || null;
 }
 
 function copyReleaseIntoCurrentDirectory(sourceDirectory) {

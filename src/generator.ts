@@ -162,8 +162,9 @@ interface PreparedOutput {
 
 export function inferTarget(request: Request): Target | null {
   const ua = request.headers.get("user-agent")?.toLowerCase() ?? "";
+  if (ua.includes("stash")) return "stash";
   if (ua.includes("surge")) return "surge";
-  if (ua.includes("clash") || ua.includes("mihomo") || ua.includes("stash") || ua.includes("clash.meta")) return "clash";
+  if (ua.includes("clash") || ua.includes("mihomo") || ua.includes("clash.meta")) return "clash";
   return null;
 }
 
@@ -178,7 +179,9 @@ export async function generateConfig(env: Env, config: AppConfig, target: Target
   const prepared = await prepareOutput(env, config, target);
   const content = target === "surge"
     ? buildSurge(config, prepared.nodes, prepared.hostEntries, requestUrl)
-    : buildClash(config, prepared.nodes, prepared.hostEntries);
+    : target === "stash"
+      ? buildStash(config, prepared.nodes, prepared.hostEntries, requestUrl, prepared.warnings)
+      : buildClash(config, prepared.nodes, prepared.hostEntries);
   return {
     target,
     content,
@@ -724,6 +727,70 @@ function buildClash(config: AppConfig, nodes: ProxyNode[], sourceHostEntries: Ho
   return `# Last Updated: ${beijingTimestamp()} (UTC+8)\n${YAML.stringify(data)}`;
 }
 
+function buildStash(config: AppConfig, nodes: ProxyNode[], sourceHostEntries: HostEntry[], requestUrl: string, warnings: string[]): string {
+  const data: Record<string, unknown> = {
+    port: config.stash.port,
+    "socks-port": config.stash.socksPort,
+    "mixed-port": config.stash.mixedPort,
+    "allow-lan": config.stash.allowLan,
+    mode: config.stash.mode,
+    "log-level": config.stash.logLevel,
+    ipv6: config.stash.ipv6,
+    "unified-delay": config.stash.unifiedDelay,
+    "tcp-concurrent": config.stash.tcpConcurrent,
+    "external-controller": config.stash.externalController
+  };
+  if (config.stash.tun.enable) {
+    data.tun = {
+      enable: true,
+      stack: config.stash.tun.stack,
+      "auto-route": config.stash.tun.autoRoute,
+      "auto-detect-interface": config.stash.tun.autoDetectInterface,
+      "skip-proxy": config.stash.tun.skipProxy
+    };
+  }
+  if (config.stash.dns.enable) {
+    const dns: Record<string, unknown> = {
+      enable: true,
+      listen: config.stash.dns.listen,
+      ipv6: config.stash.dns.ipv6,
+      "enhanced-mode": config.stash.dns.enhancedMode
+    };
+    if (config.stash.dns.enhancedMode === "fake-ip") {
+      dns["fake-ip-range"] = config.stash.dns.fakeIpRange;
+      dns["fake-ip-filter"] = config.stash.dns.fakeIpFilter;
+    }
+    Object.assign(dns, {
+      "default-nameserver": config.stash.dns.defaultNameservers,
+      nameserver: config.stash.dns.nameservers,
+      fallback: config.stash.dns.fallbackNameservers,
+      "fallback-filter": {
+        geoip: config.stash.dns.fallbackFilterGeoip,
+        ipcidr: config.stash.dns.fallbackFilterIpcidr
+      }
+    });
+    data.dns = dns;
+  }
+  const hosts = hostEntriesToStashHosts(config.stash.hosts, sourceHostEntries);
+  if (Object.keys(hosts).length > 0) data.hosts = hosts;
+  const http = buildStashHttp(config, warnings);
+  if (Object.keys(http.http).length > 0) data.http = http.http;
+  if (Object.keys(http.scriptProviders).length > 0) data["script-providers"] = http.scriptProviders;
+  const ruleProviders = parseClashRuleProvidersYaml(config.stash.ruleProviders);
+  if (Object.keys(ruleProviders).length > 0) {
+    data["rule-providers"] = ruleProviders;
+  }
+  data.proxies = nodes.map(toClashProxy);
+  const proxyGroups = buildClashGroups(config, nodes);
+  data["proxy-groups"] = proxyGroups;
+  const rules = addMissingClashRuleProviderRules(
+    rewriteUnavailableGroupRuleTargets(config, filterClashRules(config.stash.rules), nodes, new Set(proxyGroups.map((group) => String(group.name)))),
+    Object.keys(ruleProviders)
+  );
+  data.rules = rules;
+  return `#SUBSCRIBED ${buildManagedUrl(config, requestUrl)}\n# Last Updated: ${beijingTimestamp()} (UTC+8)\n${YAML.stringify(data)}`;
+}
+
 function hostEntriesToClashHosts(entries: HostEntry[]): Record<string, HostEntryValue> {
   const hosts: Record<string, HostEntryValue> = {};
   for (const entry of entries) {
@@ -732,6 +799,127 @@ function hostEntriesToClashHosts(entries: HostEntry[]): Record<string, HostEntry
     }
   }
   return hosts;
+}
+
+function hostEntriesToStashHosts(configHostLines: string[], sourceHostEntries: HostEntry[]): Record<string, HostEntryValue> {
+  const hosts = hostEntriesToClashHosts(sourceHostEntries);
+  for (const entry of parseHostEntries(`[Host]\n${configHostLines.join("\n")}`)) {
+    hosts[entry.host] = entry.value;
+  }
+  return hosts;
+}
+
+interface StashHttpOutput {
+  http: Record<string, unknown>;
+  scriptProviders: Record<string, unknown>;
+}
+
+function buildStashHttp(config: AppConfig, warnings: string[]): StashHttpOutput {
+  const http: Record<string, unknown> = {};
+  const scriptProviders: Record<string, unknown> = {};
+  if (config.stash.urlRewrite.length > 0) {
+    http["url-rewrite"] = config.stash.urlRewrite;
+  }
+  if (config.stash.mitm.hostname.length > 0) {
+    http.mitm = config.stash.mitm.hostname;
+  }
+  const scriptNames = new Set<string>();
+  const scripts = config.stash.scripts.flatMap((line, index) => {
+    const parsed = parseStashScriptLine(line, index + 1, warnings);
+    if (!parsed) return [];
+    if (scriptNames.has(parsed.name)) {
+      warnings.push(`Stash script line ${index + 1}: duplicate script name ${parsed.name}`);
+      return [];
+    }
+    scriptNames.add(parsed.name);
+    scriptProviders[parsed.name] = {
+      url: parsed.url,
+      interval: 86400
+    };
+    return [{
+      name: parsed.name,
+      type: parsed.type,
+      match: parsed.match,
+      "require-body": parsed.requireBody,
+      "max-size": parsed.maxSize
+    }];
+  });
+  if (scripts.length > 0) {
+    http.script = scripts;
+  }
+  return { http, scriptProviders };
+}
+
+interface ParsedStashScript {
+  name: string;
+  type: "request" | "response";
+  match: string;
+  requireBody: boolean;
+  maxSize: number;
+  url: string;
+}
+
+function parseStashScriptLine(line: string, lineNumber: number, warnings: string[]): ParsedStashScript | null {
+  const trimmed = line.trim();
+  if (!trimmed || trimmed.startsWith("#") || trimmed.startsWith(";")) return null;
+  const separatorIndex = trimmed.indexOf("=");
+  const name = separatorIndex > 0 ? trimmed.slice(0, separatorIndex).trim() : "";
+  const params = separatorIndex > 0 ? parseStashScriptParams(trimmed.slice(separatorIndex + 1)) : {};
+  const typeValue = params.type?.toLowerCase() ?? "";
+  const type = typeValue === "http-request"
+    ? "request"
+    : typeValue === "http-response"
+      ? "response"
+      : null;
+  const match = params.pattern ?? "";
+  const url = params["script-path"] ?? "";
+  const maxSize = Number(params["max-size"] ?? "0");
+  if (!name || !type || !match || !isHttpUrl(url) || !Number.isFinite(maxSize) || maxSize < 0) {
+    warnings.push(`Stash script line ${lineNumber}: skipped invalid script definition`);
+    return null;
+  }
+  return {
+    name,
+    type,
+    match,
+    requireBody: parseStashBoolean(params["requires-body"]),
+    maxSize: Math.floor(maxSize),
+    url
+  };
+}
+
+function parseStashScriptParams(value: string): Record<string, string> {
+  const params: Record<string, string> = {};
+  const parts: string[] = [];
+  for (const rawPart of value.split(",")) {
+    const part = rawPart.trim();
+    if (!part) continue;
+    if (parts.length > 0 && !/^[A-Za-z][\w-]*=/.test(part)) {
+      parts[parts.length - 1] = `${parts[parts.length - 1]},${rawPart}`;
+      continue;
+    }
+    parts.push(part);
+  }
+  for (const part of parts) {
+    const [key, raw] = part.split(/=(.*)/s);
+    const normalizedKey = key?.trim().toLowerCase();
+    const valuePart = raw?.trim();
+    if (normalizedKey && valuePart !== undefined) params[normalizedKey] = valuePart;
+  }
+  return params;
+}
+
+function parseStashBoolean(value: string | undefined): boolean {
+  return ["1", "true", "yes"].includes(String(value ?? "").trim().toLowerCase());
+}
+
+function isHttpUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
 }
 
 function renderHostEntryLine(entry: HostEntry): string {

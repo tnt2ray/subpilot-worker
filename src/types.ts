@@ -1,4 +1,4 @@
-export type Target = "surge" | "clash";
+export type Target = "surge" | "clash" | "stash";
 export type SourceFetchUserAgent = "surge" | "clash";
 export type NotificationChannel = "off" | "telegram";
 export type SurgeIpv6VifMode = "off" | "auto" | "always";
@@ -98,6 +98,53 @@ export interface ClashTunConfig {
   skipProxy: string[];
 }
 
+export interface StashConfig {
+  port: number;
+  socksPort: number;
+  mixedPort: number;
+  allowLan: boolean;
+  mode: string;
+  logLevel: string;
+  ipv6: boolean;
+  unifiedDelay: boolean;
+  tcpConcurrent: boolean;
+  externalController: string;
+  tun: StashTunConfig;
+  dns: StashDnsConfig;
+  ruleProviders: string;
+  rules: string[];
+  hosts: string[];
+  urlRewrite: string[];
+  scripts: string[];
+  mitm: StashMitmConfig;
+}
+
+export interface StashTunConfig {
+  enable: boolean;
+  stack: string;
+  autoRoute: boolean;
+  autoDetectInterface: boolean;
+  skipProxy: string[];
+}
+
+export interface StashDnsConfig {
+  enable: boolean;
+  listen: string;
+  ipv6: boolean;
+  enhancedMode: string;
+  fakeIpRange: string;
+  defaultNameservers: string[];
+  nameservers: string[];
+  fallbackNameservers: string[];
+  fallbackFilterGeoip: boolean;
+  fallbackFilterIpcidr: string[];
+  fakeIpFilter: string[];
+}
+
+export interface StashMitmConfig {
+  hostname: string[];
+}
+
 export interface ChainConfig {
   exitProxy: {
     protocol: ChainExitProtocol;
@@ -131,6 +178,7 @@ export interface AppConfig {
   chain: ChainConfig;
   surge: SurgeConfig;
   clash: ClashConfig;
+  stash: StashConfig;
   updatedAt?: string | undefined;
 }
 

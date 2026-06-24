@@ -23,6 +23,7 @@
           <a href="#sources" data-page="sources"><span data-i18n="navSources">订阅源</span></a>
           <a href="#surge" data-page="surge"><span data-i18n="navSurge">Surge</span></a>
           <a href="#clash" data-page="clash"><span data-i18n="navClash">Clash</span></a>
+          <a href="#stash" data-page="stash"><span data-i18n="navStash">Stash</span></a>
           <div class="menu-heading" data-i18n="navAccess">访问</div>
           <a href="#tokens" data-page="tokens"><span data-i18n="navTokens">配置链接</span></a>
         </aside>
@@ -100,7 +101,6 @@
                   <div class="box-title" data-i18n="systemStatusTitle">版本状态</div>
                   <dl>
                     <div><dt data-i18n="currentVersion">当前版本</dt><dd id="systemCurrentVersion">-</dd></div>
-                    <div><dt data-i18n="kvSchemaVersion">KV Schema</dt><dd id="systemSchemaVersion">-</dd></div>
                     <div>
                       <dt data-i18n="latestVersion">最新版本</dt>
                       <dd class="status-cache-row">
@@ -824,6 +824,269 @@
               </section>
             </section>
 
+            <section id="page-stash" class="page-view hidden" data-page="stash">
+              <section class="luci-box">
+                <div class="box-title" data-i18n="stashConfigTitle">Stash 功能配置</div>
+                <div class="tabs section-tabs" role="tablist" aria-label="Stash sections">
+                  <button class="tab active" type="button" data-stash-tab="general" role="tab" aria-selected="true" data-i18n="stashTabGeneral">General</button>
+                  <button class="tab" type="button" data-stash-tab="host" role="tab" aria-selected="false" data-i18n="stashTabHost">Host</button>
+                  <button class="tab" type="button" data-stash-tab="urlRewrite" role="tab" aria-selected="false" data-i18n="stashTabUrlRewrite">URL Rewrite</button>
+                  <button class="tab" type="button" data-stash-tab="script" role="tab" aria-selected="false" data-i18n="stashTabScript">Script</button>
+                  <button class="tab" type="button" data-stash-tab="mitm" role="tab" aria-selected="false" data-i18n="stashTabMitm">MITM</button>
+                  <button class="tab" type="button" data-stash-tab="rule" role="tab" aria-selected="false" data-i18n="stashTabRule">Rule</button>
+                </div>
+                <div class="cbi-section" data-stash-panel="general">
+                  <div class="cbi-row split">
+                    <label data-i18n="ports">端口</label>
+                    <div class="field three port-fields">
+                      <label class="port-field" for="stashPort">
+                        <span class="field-label" data-i18n="clashHttpPort">HTTP 代理端口</span>
+                        <input id="stashPort" type="number" min="1" max="65535" aria-label="Stash HTTP proxy port">
+                        <small data-i18n="clashHttpPortHelp">HTTP 代理入口，供浏览器或系统 HTTP 代理使用。</small>
+                      </label>
+                      <label class="port-field" for="stashSocksPort">
+                        <span class="field-label" data-i18n="clashSocksPort">SOCKS5 代理端口</span>
+                        <input id="stashSocksPort" type="number" min="1" max="65535" aria-label="Stash SOCKS5 proxy port">
+                        <small data-i18n="clashSocksPortHelp">SOCKS5 代理入口，供支持 SOCKS5 的应用使用。</small>
+                      </label>
+                      <label class="port-field" for="stashMixedPort">
+                        <span class="field-label" data-i18n="clashMixedPort">混合代理端口</span>
+                        <input id="stashMixedPort" type="number" min="1" max="65535" aria-label="Stash mixed proxy port">
+                        <small data-i18n="clashMixedPortHelp">同时接受 HTTP 和 SOCKS5，通常作为默认代理入口。</small>
+                      </label>
+                    </div>
+                  </div>
+                  <div class="cbi-row split">
+                    <label data-i18n="clashNetworkOptions">网络选项</label>
+                    <div class="field three check-cells">
+                      <label class="check-cell" for="stashAllowLan">
+                        <span class="field-label">allow-lan</span>
+                        <span class="check"><input id="stashAllowLan" type="checkbox"> <span data-i18n="enabled">已启用</span></span>
+                        <small data-i18n="clashAllowLanHelp">允许局域网其它设备访问 Clash 代理端口。</small>
+                      </label>
+                      <label class="check-cell" for="stashIpv6">
+                        <span class="field-label">IPv6</span>
+                        <span class="check"><input id="stashIpv6" type="checkbox"> <span data-i18n="enabled">已启用</span></span>
+                        <small data-i18n="stashIpv6Help">控制 Stash 输出中是否启用 IPv6 解析和连接。</small>
+                      </label>
+                      <label class="check-cell" for="stashExternalController">
+                        <span class="field-label" data-i18n="clashExternalController">external-controller</span>
+                        <input id="stashExternalController" type="text">
+                        <small data-i18n="clashExternalControllerHelp">Clash 外部控制器监听地址；0.0.0.0:9090 表示监听所有 IPv4 网络接口，不按来源地址限制访问。</small>
+                      </label>
+                    </div>
+                  </div>
+                  <div class="cbi-row split hidden">
+                    <label data-i18n="modeAndLog">模式 / 日志级别</label>
+                    <div class="field two">
+                      <select id="stashMode">
+                        <option value="Rule">Rule</option>
+                        <option value="Global">Global</option>
+                        <option value="Direct">Direct</option>
+                      </select>
+                      <select id="stashLogLevel">
+                        <option value="debug">debug</option>
+                        <option value="info">info</option>
+                        <option value="warning">warning</option>
+                        <option value="error">error</option>
+                        <option value="silent">silent</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div class="cbi-row split">
+                    <label data-i18n="clashRuntimeOptions">运行选项</label>
+                    <div class="field two check-cells">
+                      <label class="check-cell" for="stashUnifiedDelay">
+                        <span class="field-label" data-i18n="clashUnifiedDelay">unified-delay</span>
+                        <span class="check"><input id="stashUnifiedDelay" type="checkbox"> <span data-i18n="enabled">已启用</span></span>
+                        <small data-i18n="clashUnifiedDelayHelp">统一节点测速口径，减少握手差异造成的延迟偏差。</small>
+                      </label>
+                      <label class="check-cell" for="stashTcpConcurrent">
+                        <span class="field-label" data-i18n="clashTcpConcurrent">tcp-concurrent</span>
+                        <span class="check"><input id="stashTcpConcurrent" type="checkbox"> <span data-i18n="enabled">已启用</span></span>
+                        <small data-i18n="clashTcpConcurrentHelp">对同一域名解析出的多个 IP 并发连接，使用最先连通的地址。</small>
+                      </label>
+                    </div>
+                  </div>
+                  <div class="cbi-row">
+                    <label data-i18n="clashTunMode">TUN 模式</label>
+                    <div class="field checks">
+                      <label class="check"><input id="stashTunEnable" type="checkbox"> <span data-i18n="enabled">已启用</span></label>
+                      <small data-i18n="stashTunEnableHelp">通过 TUN 接管系统流量；关闭后隐藏相关设置，并从 Stash 生成结果中移除 tun 配置。</small>
+                    </div>
+                  </div>
+                  <div class="cbi-row split" data-stash-tun-dependent>
+                    <label data-i18n="clashTunRouteOptions">TUN 路由 / 栈</label>
+                    <div class="field three check-cells">
+                      <label class="check-cell" for="stashTunAutoRoute">
+                        <span class="field-label" data-i18n="clashTunAutoRoute">auto-route</span>
+                        <span class="check"><input id="stashTunAutoRoute" type="checkbox"> <span data-i18n="enabled">已启用</span></span>
+                        <small data-i18n="clashTunAutoRouteHelp">自动添加系统路由，把匹配流量导入 TUN。</small>
+                      </label>
+                      <label class="check-cell" for="stashTunAutoDetectInterface">
+                        <span class="field-label" data-i18n="clashTunAutoDetectInterface">auto-detect-interface</span>
+                        <span class="check"><input id="stashTunAutoDetectInterface" type="checkbox"> <span data-i18n="enabled">已启用</span></span>
+                        <small data-i18n="clashTunAutoDetectInterfaceHelp">自动识别当前出口网卡，减少手动指定接口的需要。</small>
+                      </label>
+                      <label class="check-cell" for="stashTunStack">
+                        <span class="field-label" data-i18n="clashTunStack">stack</span>
+                        <select id="stashTunStack">
+                          <option value="system">system</option>
+                          <option value="gvisor">gvisor</option>
+                          <option value="mixed">mixed</option>
+                        </select>
+                        <small data-i18n="clashTunStackHelp">选择 TUN 网络栈实现；system 使用系统栈，gvisor 使用用户态栈，mixed 由客户端混合处理。</small>
+                      </label>
+                    </div>
+                  </div>
+                  <div class="cbi-row" data-stash-tun-dependent>
+                    <label for="stashTunSkipProxy" data-i18n="clashTunSkipProxy">skip-proxy</label>
+                    <div class="field">
+                      <textarea id="stashTunSkipProxy" class="line-editor compact-editor config-code-textarea" rows="30" spellcheck="false" data-code-editor-mode="plain"></textarea>
+                      <small data-i18n="clashTunSkipProxyHelp">TUN 开启时每行一个地址或网段；这些目标不进入 TUN 代理处理。</small>
+                    </div>
+                  </div>
+                  <div class="cbi-row">
+                    <label data-i18n="dnsSettings">DNS 设置</label>
+                    <div class="field clash-dns-settings-grid">
+                      <label class="check-cell" for="stashDnsEnabled">
+                        <span class="field-label" data-i18n="dnsEnabled">启用 DNS</span>
+                        <span class="check"><input id="stashDnsEnabled" type="checkbox"> <span data-i18n="enabled">已启用</span></span>
+                        <small data-i18n="stashDnsEnabledHelp">启用 Stash 内置 DNS 服务，下面的 DNS 解析配置才会生效。</small>
+                      </label>
+                      <label class="check-cell" for="stashDnsIpv6">
+                        <span class="field-label" data-i18n="dnsIpv6">DNS IPv6</span>
+                        <span class="check"><input id="stashDnsIpv6" type="checkbox"> <span data-i18n="enabled">已启用</span></span>
+                        <small data-i18n="dnsIpv6Help">允许 DNS 返回 IPv6 结果；是否实际连接 IPv6 还受 General 中 IPv6 开关影响。</small>
+                      </label>
+                      <label class="check-cell" for="stashDnsListen">
+                        <span class="field-label" data-i18n="clashDnsListen">listen</span>
+                        <input id="stashDnsListen" type="text" aria-label="Stash DNS listen">
+                        <small data-i18n="clashDnsListenHelp">DNS 服务监听地址，只有启用 DNS 后生效。</small>
+                      </label>
+                    </div>
+                  </div>
+                  <div class="cbi-row split">
+                    <label data-i18n="clashDnsResolveOptions">DNS 解析方式</label>
+                    <div class="field two check-cells">
+                      <label class="check-cell" for="stashDnsEnhancedMode">
+                        <span class="field-label" data-i18n="clashDnsResolveMode">返回模式</span>
+                        <select id="stashDnsEnhancedMode">
+                          <option value="fake-ip">fake-ip</option>
+                          <option value="redir-host">redir-host</option>
+                        </select>
+                        <small data-i18n="clashDnsEnhancedModeHelp">选择 Clash DNS 如何返回解析结果：fake-ip 返回虚拟 IP，适合 TUN 和透明代理；redir-host 返回真实 IP，兼容性较高。</small>
+                      </label>
+                      <label class="check-cell" for="stashDnsFakeIpRange" data-stash-fake-ip-dependent>
+                        <span class="field-label" data-i18n="clashDnsFakeIpRange">fake-ip-range</span>
+                        <input id="stashDnsFakeIpRange" type="text">
+                        <small data-i18n="clashDnsFakeIpRangeHelp">仅返回模式为 fake-ip 时生效；用于设置 fake-ip 使用的 IPv4 地址段。</small>
+                      </label>
+                    </div>
+                  </div>
+                  <div class="cbi-row" data-stash-fake-ip-dependent>
+                    <label for="stashFakeIpFilter" data-i18n="clashFakeIpFilter">Fake-IP 过滤</label>
+                    <div class="field">
+                      <textarea id="stashFakeIpFilter" class="line-editor config-code-textarea" rows="30" spellcheck="false" data-code-editor-mode="plain"></textarea>
+                      <small data-i18n="clashFakeIpFilterHelp">仅返回模式为 fake-ip 时生效；匹配的域名返回真实解析结果，不分配 fake-ip。</small>
+                    </div>
+                  </div>
+                  <div class="cbi-row">
+                    <label for="stashDefaultNameservers" data-i18n="clashDefaultNameservers">default-nameserver</label>
+                    <div class="field">
+                      <textarea id="stashDefaultNameservers" class="line-editor compact-editor config-code-textarea" rows="30" spellcheck="false" data-code-editor-mode="plain"></textarea>
+                      <small data-i18n="clashDefaultNameserversHelp">每行一个基础 DNS，通常填写纯 IP；用于解析 DNS 服务器本身的域名。</small>
+                    </div>
+                  </div>
+                  <div class="cbi-row">
+                    <label for="stashNameservers" data-i18n="nameservers">DNS 服务器</label>
+                    <div class="field">
+                      <textarea id="stashNameservers" class="line-editor config-code-textarea" rows="30" spellcheck="false" data-code-editor-mode="plain"></textarea>
+                      <small data-i18n="nameserversHelp">每行一个上游 DNS；Clash DNS 默认优先使用这里的服务器解析域名。</small>
+                    </div>
+                  </div>
+                  <div class="cbi-row">
+                    <label for="stashFallbackNameservers" data-i18n="clashFallbackNameservers">fallback</label>
+                    <div class="field">
+                      <textarea id="stashFallbackNameservers" class="line-editor compact-editor config-code-textarea" rows="30" spellcheck="false" data-code-editor-mode="plain"></textarea>
+                      <small data-i18n="clashFallbackNameserversHelp">每行一个备用 DNS；Fallback 过滤命中时使用这里的解析结果。</small>
+                    </div>
+                  </div>
+                  <div class="cbi-row">
+                    <label data-i18n="clashFallbackFilter">fallback-filter</label>
+                    <div class="field checks">
+                      <label class="check-cell" for="stashFallbackFilterGeoip">
+                        <span class="check"><input id="stashFallbackFilterGeoip" type="checkbox"> <span>geoip</span></span>
+                        <small data-i18n="clashFallbackFilterGeoipHelp">根据 GeoIP 判断主 DNS 结果是否需要回退；命中时使用 Fallback DNS。</small>
+                      </label>
+                      <label class="field-label" for="stashFallbackFilterIpcidr">ipcidr</label>
+                      <textarea id="stashFallbackFilterIpcidr" class="line-editor compact-editor config-code-textarea" rows="30" spellcheck="false" data-code-editor-mode="plain"></textarea>
+                      <small data-i18n="clashFallbackFilterIpcidrHelp">每行一个 IP 或 CIDR；主 DNS 结果命中这些地址段时使用 Fallback DNS。</small>
+                    </div>
+                  </div>
+                </div>
+                <div class="cbi-section hidden" data-stash-panel="host">
+                  <div class="cbi-row">
+                    <label for="stashHosts" data-i18n="stashHosts">Stash Host</label>
+                    <div class="field">
+                      <textarea id="stashHosts" class="line-editor config-code-textarea" rows="30" spellcheck="false"></textarea>
+                      <small data-i18n="stashHostHelp">每行一个 Host 映射，格式为 example.com = 1.2.3.4。Stash 输出会把这里的 Host 覆盖同名上游 Host。</small>
+                      <div id="stashHostValidation" class="validation-messages hidden"></div>
+                    </div>
+                  </div>
+                </div>
+                <div class="cbi-section hidden" data-stash-panel="urlRewrite">
+                  <div class="cbi-row">
+                    <label for="stashUrlRewrite" data-i18n="stashUrlRewrite">URL Rewrite</label>
+                    <div class="field">
+                      <div class="field-notice warning" data-i18n="surgeUrlRewriteHttpsMitmNotice">如果 URL Rewrite 匹配 https:// 请求，必须在 MITM 页启用对应主机名，否则该规则不会生效。</div>
+                      <textarea id="stashUrlRewrite" class="line-editor config-code-textarea" rows="30" spellcheck="false"></textarea>
+                      <small data-i18n="surgeUrlRewriteEditorHelp">URL Rewrite 用于按 URL 正则执行 header 重写、302 跳转或 reject 拒绝。</small>
+                      <div id="stashUrlRewriteValidation" class="validation-messages hidden"></div>
+                    </div>
+                  </div>
+                </div>
+                <div class="cbi-section hidden" data-stash-panel="script">
+                  <div class="cbi-row">
+                    <label for="stashScripts" data-i18n="stashScripts">Stash 脚本</label>
+                    <div class="field">
+                      <textarea id="stashScripts" class="line-editor config-code-textarea" rows="30" spellcheck="false"></textarea>
+                      <small data-i18n="stashScriptsHelp">每行一条脚本定义，例如：名称 = type=http-response,requires-body=1,max-size=0,pattern=...,script-path=https://...。</small>
+                      <div id="stashScriptValidation" class="validation-messages hidden"></div>
+                    </div>
+                  </div>
+                </div>
+                <div class="cbi-section hidden" data-stash-panel="mitm">
+                  <div class="cbi-row">
+                    <label for="stashMitmHostname" data-i18n="stashMitmHostname">MITM 主机名</label>
+                    <div class="field">
+                      <div class="field-notice warning" data-i18n="stashMitmCertificateNotice">Stash CA 由客户端本地生成；SubPilot 不保存也不会下发 CA 私钥、ca-p12 或 ca-passphrase。</div>
+                      <textarea id="stashMitmHostname" class="line-editor compact-editor config-code-textarea" rows="20" spellcheck="false"></textarea>
+                      <small data-i18n="stashMitmHostnameHelp">Stash 只会对这里列出的域名执行 HTTPS 解密。每行一个主机名，支持通配符。</small>
+                    </div>
+                  </div>
+                </div>
+                <div class="cbi-section hidden" data-stash-panel="rule">
+                  <div class="cbi-row">
+                    <label for="stashRuleProviders" data-i18n="stashRuleProviders">rule-providers</label>
+                    <div class="field">
+                      <textarea id="stashRuleProviders" class="line-editor config-code-textarea" rows="30" spellcheck="false"></textarea>
+                      <small data-i18n="clashRuleProvidersHelp">YAML 顶层固定为 rule-providers；每个规则集可配置 type、behavior、url、interval，path 由系统按名称生成。</small>
+                      <div id="stashRuleProviderValidation" class="validation-messages hidden"></div>
+                    </div>
+                  </div>
+                  <div class="cbi-row">
+                    <label for="stashRules" data-i18n="stashRules">Stash 规则</label>
+                    <div class="field">
+                      <textarea id="stashRules" class="line-editor config-code-textarea" rows="30" spellcheck="false"></textarea>
+                      <small data-i18n="stashRulesHelp">YAML 顶层固定为 rules；每一项使用标准 Stash/Clash 规则语法，例如 RULE-SET,Google,Proxy 或 MATCH,Proxy。</small>
+                      <div id="stashRuleValidation" class="validation-messages hidden"></div>
+                    </div>
+                  </div>
+                </div>
+              </section>
+            </section>
+
             <section id="page-tokens" class="page-view hidden" data-page="tokens">
               <section class="luci-box">
                 <div class="box-title row-title">
@@ -838,6 +1101,7 @@
                   <div class="button-row">
                     <button id="previewSurgeBtn" class="btn" type="button">Surge</button>
                     <button id="previewClashBtn" class="btn" type="button">Clash</button>
+                    <button id="previewStashBtn" class="btn" type="button">Stash</button>
                     <button id="validateSurgeOnlineBtn" class="btn" type="button" data-i18n="validateSurgeOnline">Surge 在线验证</button>
                   </div>
                 </div>

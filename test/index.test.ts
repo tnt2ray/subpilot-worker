@@ -52,8 +52,9 @@ function makeExecutionContext(): { ctx: ExecutionContext; waitUntil: Promise<unk
 }
 
 describe("asset access control", () => {
-  it("serves only the login page before an admin session exists", async () => {
-    const response = await worker.fetch(new Request("https://subpilot.example.com/"), makeEnv(), ctx);
+  it("serves the login page before a session, blocks assets, and serves the admin app after login", async () => {
+    const env = makeEnv();
+    const response = await worker.fetch(new Request("https://subpilot.example.com/"), env, ctx);
     const html = await response.text();
 
     expect(response.status).toBe(200);
@@ -64,29 +65,22 @@ describe("asset access control", () => {
     expect(html).not.toContain("/app.js");
     expect(html).not.toContain("/styles.css");
     expect(html).toContain("/api/login");
-  });
-
-  it("blocks admin assets before an admin session exists", async () => {
-    const env = makeEnv();
 
     await expect(worker.fetch(new Request("https://subpilot.example.com/app.js"), env, ctx)
       .then((response) => response.status)).resolves.toBe(401);
     await expect(worker.fetch(new Request("https://subpilot.example.com/styles.css"), env, ctx)
       .then((response) => response.status)).resolves.toBe(401);
-  });
 
-  it("serves the admin app only after an admin session exists", async () => {
-    const env = makeEnv();
     const session = await createSession(env);
-    const request = new Request("https://subpilot.example.com/", {
+    const appRequest = new Request("https://subpilot.example.com/", {
       headers: { cookie: sessionCookie(session, true) }
     });
-    const response = await worker.fetch(request, env, ctx);
-    const html = await response.text();
+    const appResponse = await worker.fetch(appRequest, env, ctx);
+    const appHtml = await appResponse.text();
 
-    expect(response.status).toBe(200);
-    expect(html).toContain("配置链接");
-    expect(html).toContain("/app.js");
+    expect(appResponse.status).toBe(200);
+    expect(appHtml).toContain("配置链接");
+    expect(appHtml).toContain("/app.js");
   });
 
   it("auto-migrates KV from system status and keeps explicit migration idempotent", async () => {
@@ -98,12 +92,12 @@ describe("asset access control", () => {
     expect(kv.has(CONFIG_SCHEMA_VERSION_KEY)).toBe(false);
 
     const statusResponse = await worker.fetch(new Request("https://subpilot.example.com/api/system/status", { headers }), env, ctx);
-    const statusBody = await statusResponse.json<{ app: { version: string }; schema: { current: number; stored: number } }>();
+    const statusBody = await statusResponse.json<{ app: { version: string }; schema?: unknown }>();
 
     expect(statusResponse.status).toBe(200);
     expect(statusBody.app.version).toMatch(/^\d+\.\d+\.\d+/);
-    expect(statusBody.schema.stored).toBe(statusBody.schema.current);
-    expect(kv.get(CONFIG_SCHEMA_VERSION_KEY)).toBe(String(statusBody.schema.current));
+    expect(statusBody.schema).toBeUndefined();
+    expect(kv.get(CONFIG_SCHEMA_VERSION_KEY)).toBeDefined();
 
     const migrateResponse = await worker.fetch(new Request("https://subpilot.example.com/api/system/migrate", {
       method: "POST",
@@ -403,7 +397,7 @@ describe("asset access control", () => {
     kv.set("auth:read_token_hash", await sha256Hex("read-token"));
     kv.set("geoip:ip:198.51.100.7", JSON.stringify({ city: { names: { en: "Singapore" } }, country: { iso_code: "SG" } }));
     const env = makeEnv(kv);
-    const userAgents = ["Surge TestClient/0", "Mihomo TestClient/1", "Surge TestClient/2", "Mihomo TestClient/3", "Surge TestClient/4", "Mihomo TestClient/5"];
+    const userAgents = ["Surge TestClient/0", "Mihomo TestClient/1", "Stash TestClient/2", "Surge TestClient/3", "Mihomo TestClient/4", "Surge TestClient/5", "Mihomo TestClient/6"];
     for (const [index, userAgent] of userAgents.entries()) {
       const exec = makeExecutionContext();
       const response = await worker.fetch(new Request("https://subpilot.example.com/sync/read-token/", {
@@ -434,8 +428,9 @@ describe("asset access control", () => {
     expect(statsResponse.status).toBe(200);
     expect(body.lastFetched.surge).toMatch(/^\d{4}-\d{2}-\d{2}T/);
     expect(body.lastFetched.clash).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(body.lastFetched.stash).toMatch(/^\d{4}-\d{2}-\d{2}T/);
     expect("surgeResource" in body.lastFetched).toBe(false);
-    expect(body.recentUserAgents).toHaveLength(6);
+    expect(body.recentUserAgents).toHaveLength(7);
     expect(body.recentUserAgents).toEqual(expect.arrayContaining([
       expect.objectContaining({
         target: "surge",
@@ -449,13 +444,17 @@ describe("asset access control", () => {
       }),
       expect.objectContaining({
         target: "clash",
-        userAgent: "Mihomo TestClient/5"
+        userAgent: "Mihomo TestClient/6"
+      }),
+      expect.objectContaining({
+        target: "stash",
+        userAgent: "Stash TestClient/2"
       })
     ]));
-    expect(body.recentUserAgents.every((record) => record.target === "surge" || record.target === "clash")).toBe(true);
+    expect(body.recentUserAgents.every((record) => record.target === "surge" || record.target === "clash" || record.target === "stash")).toBe(true);
     expect(body.recentUserAgents.some((record) => "count" in record)).toBe(false);
     const recentRecordKeys = [...kv.keys()].filter((key) => key.startsWith("stats:config:recentFetch:"));
-    expect(recentRecordKeys).toHaveLength(6);
+    expect(recentRecordKeys).toHaveLength(7);
     expect(kv.has("stats:config:recentFetches")).toBe(false);
   });
 
@@ -555,46 +554,42 @@ describe("asset access control", () => {
     })]);
   });
 
-  it("rejects legacy query-string subscription links with valid tokens as forbidden", async () => {
+  it("rejects legacy, malformed, invalid-token, and explicit-target subscription links", async () => {
     const kv = new Map<string, string>();
     kv.set("auth:read_token_hash", await sha256Hex("read-token"));
     const env = makeEnv(kv);
 
-    for (const url of [
-      "https://subpilot.example.com/sync/read-token?target=surge",
-      "https://subpilot.example.com/sync/read-token?target=clash"
-    ]) {
-      const response = await worker.fetch(new Request(url), env, ctx);
-      const body = await response.json<{ error: string }>();
-
-      expect(response.status).toBe(403);
-      expect(body.error).toBe("Invalid subscription path");
-    }
-  });
-
-  it("rejects subscription links with invalid tokens as bad requests", async () => {
-    const kv = new Map<string, string>();
-    kv.set("auth:read_token_hash", await sha256Hex("read-token"));
-    const env = makeEnv(kv);
-
-    for (const url of [
-      "https://subpilot.example.com/sync/wrong-token/",
-      "https://subpilot.example.com/sync/wrong-token/surge",
-      "https://subpilot.example.com/sync/wrong-token?target=surge"
-    ]) {
-      const response = await worker.fetch(new Request(url), env, ctx);
-      const body = await response.json<{ error: string }>();
-
-      expect(response.status).toBe(400);
-      expect(body.error).toBe("Invalid subscription token");
-    }
-  });
-
-  it("rejects valid-token subscription links that are not in the exact supported shape as forbidden", async () => {
-    const kv = new Map<string, string>();
-    kv.set("auth:read_token_hash", await sha256Hex("read-token"));
-    const env = makeEnv(kv);
     const cases = [
+      {
+        url: "https://subpilot.example.com/sync/read-token?target=surge",
+        status: 403,
+        error: "Invalid subscription path"
+      },
+      {
+        url: "https://subpilot.example.com/sync/read-token?target=clash",
+        status: 403,
+        error: "Invalid subscription path"
+      },
+      {
+        url: "https://subpilot.example.com/sync/read-token?target=stash",
+        status: 403,
+        error: "Invalid subscription path"
+      },
+      {
+        url: "https://subpilot.example.com/sync/wrong-token/",
+        status: 400,
+        error: "Invalid subscription token"
+      },
+      {
+        url: "https://subpilot.example.com/sync/wrong-token/surge",
+        status: 400,
+        error: "Invalid subscription token"
+      },
+      {
+        url: "https://subpilot.example.com/sync/wrong-token?target=surge",
+        status: 400,
+        error: "Invalid subscription token"
+      },
       {
         url: "https://subpilot.example.com/sync/read-token",
         status: 403,
@@ -607,6 +602,16 @@ describe("asset access control", () => {
       },
       {
         url: "https://subpilot.example.com/sync/read-token/surge/",
+        status: 403,
+        error: "Invalid subscription path"
+      },
+      {
+        url: "https://subpilot.example.com/sync/read-token/stash",
+        status: 403,
+        error: "Invalid subscription path"
+      },
+      {
+        url: "https://subpilot.example.com/sync/read-token/stash/",
         status: 403,
         error: "Invalid subscription path"
       },
@@ -664,12 +669,6 @@ describe("asset access control", () => {
       expect(response.status).toBe(item.status);
       expect(body.error).toBe(item.error);
     }
-  });
-
-  it("rejects explicit target subscription path segments", async () => {
-    const kv = new Map<string, string>();
-    kv.set("auth:read_token_hash", await sha256Hex("read-token"));
-    const env = makeEnv(kv);
 
     const response = await worker.fetch(new Request("https://subpilot.example.com/sync/read-token/surge", {
       headers: { "user-agent": "Surge iOS" }
@@ -684,15 +683,19 @@ describe("asset access control", () => {
     const kv = new Map<string, string>();
     kv.set("auth:read_token_hash", await sha256Hex("read-token"));
     const env = makeEnv(kv);
-    const exec = makeExecutionContext();
+    for (const { userAgent, fileName } of [
+      { userAgent: "Mihomo/1", fileName: "SubPilot.yaml" },
+      { userAgent: "Stash/2.0 Clash.Meta", fileName: "subpilot-stash.yaml" }
+    ]) {
+      const exec = makeExecutionContext();
+      const response = await worker.fetch(new Request("https://subpilot.example.com/sync/read-token/", {
+        headers: { "user-agent": userAgent }
+      }), env, exec.ctx);
+      await Promise.all(exec.waitUntil);
 
-    const response = await worker.fetch(new Request("https://subpilot.example.com/sync/read-token/", {
-      headers: { "user-agent": "Mihomo/1" }
-    }), env, exec.ctx);
-    await Promise.all(exec.waitUntil);
-
-    expect(response.status).toBe(200);
-    expect(response.headers.get("content-disposition")).toBe("inline; filename=SubPilot.yaml");
+      expect(response.status).toBe(200);
+      expect(response.headers.get("content-disposition")).toBe(`inline; filename=${fileName}`);
+    }
   });
 
   it("rejects removed Surge resource endpoints", async () => {
@@ -745,30 +748,22 @@ describe("asset access control", () => {
     expect(body).toContain("proxies:");
   });
 
-  it("does not accept the default sync path when managed base URL uses another path", async () => {
+  it("rejects default or malformed subscription links when managed base URL uses another path", async () => {
     const kv = new Map<string, string>();
     kv.set("auth:read_token_hash", await sha256Hex("read-token"));
     kv.set("config:settings:managedBaseUrl", JSON.stringify("https://subpilot.example.com/sywwqnc"));
     const env = makeEnv(kv);
 
-    const response = await worker.fetch(new Request("https://subpilot.example.com/sync/read-token/"), env, ctx);
-    const body = await response.json<{ error: string }>();
+    for (const url of [
+      "https://subpilot.example.com/sync/read-token/",
+      "https://subpilot.example.com/sywwqnc/read-token/121"
+    ]) {
+      const response = await worker.fetch(new Request(url), env, ctx);
+      const body = await response.json<{ error: string }>();
 
-    expect(response.status).toBe(403);
-    expect(body.error).toBe("Invalid subscription path");
-  });
-
-  it("rejects malformed subscription links under the configured managed base URL path", async () => {
-    const kv = new Map<string, string>();
-    kv.set("auth:read_token_hash", await sha256Hex("read-token"));
-    kv.set("config:settings:managedBaseUrl", JSON.stringify("https://subpilot.example.com/sywwqnc"));
-    const env = makeEnv(kv);
-
-    const response = await worker.fetch(new Request("https://subpilot.example.com/sywwqnc/read-token/121"), env, ctx);
-    const body = await response.json<{ error: string }>();
-
-    expect(response.status).toBe(403);
-    expect(body.error).toBe("Invalid subscription path");
+      expect(response.status).toBe(403);
+      expect(body.error).toBe("Invalid subscription path");
+    }
   });
 
   it("uses a real read token URL in Surge previews", async () => {
@@ -849,26 +844,21 @@ describe("asset access control", () => {
     expect(body.content).not.toContain("/sywwqnc//");
   });
 
-  it("rejects invalid preview target query strings", async () => {
+  it("rejects invalid preview targets and requests without an inferred target", async () => {
     const env = makeEnv();
     const session = await createSession(env);
 
-    const response = await worker.fetch(new Request("https://subpilot.example.com/api/preview?target=unknown", {
+    const invalidTargetResponse = await worker.fetch(new Request("https://subpilot.example.com/api/preview?target=unknown", {
       method: "POST",
       headers: { cookie: sessionCookie(session, true) },
       body: "{}"
     }), env, ctx);
-    const body = await response.json<{ error: string }>();
+    const invalidTargetBody = await invalidTargetResponse.json<{ error: string }>();
 
-    expect(response.status).toBe(400);
-    expect(body.error).toBe("Invalid target");
-  });
+    expect(invalidTargetResponse.status).toBe(400);
+    expect(invalidTargetBody.error).toBe("Invalid target");
 
-  it("rejects previews without an inferred target", async () => {
-    const env = makeEnv();
-    const session = await createSession(env);
-
-    const response = await worker.fetch(new Request("https://subpilot.example.com/api/preview", {
+    const missingTargetResponse = await worker.fetch(new Request("https://subpilot.example.com/api/preview", {
       method: "POST",
       headers: {
         cookie: sessionCookie(session, true),
@@ -876,10 +866,24 @@ describe("asset access control", () => {
       },
       body: "{}"
     }), env, ctx);
-    const body = await response.json<{ error: string }>();
+    const missingTargetBody = await missingTargetResponse.json<{ error: string }>();
 
-    expect(response.status).toBe(400);
-    expect(body.error).toBe("Missing target");
+    expect(missingTargetResponse.status).toBe(400);
+    expect(missingTargetBody.error).toBe("Missing target");
+
+    const stashPreviewResponse = await worker.fetch(new Request("https://subpilot.example.com/api/preview?target=stash", {
+      method: "POST",
+      headers: { cookie: sessionCookie(session, true) },
+      body: "{}"
+    }), env, ctx);
+    const stashPreviewBody = await stashPreviewResponse.json<{ content: string }>();
+
+    expect(stashPreviewResponse.status).toBe(200);
+    expect(stashPreviewBody.content).toMatch(/^#SUBSCRIBED https:\/\/subpilot\.example\.com\/sync\/[A-Za-z0-9_-]+\/\n# Last Updated:/);
+    expect(stashPreviewBody.content).toContain("proxies:");
+    expect(stashPreviewBody.content).not.toContain("/api/preview");
+    expect(stashPreviewBody.content).not.toContain("ca-p12");
+    expect(stashPreviewBody.content).not.toContain("ca-passphrase");
   });
 
   it("reports and refreshes upstream source cache", async () => {
@@ -1129,16 +1133,21 @@ describe("asset access control", () => {
     expect(result.config.settings.notificationTelegramWebhookSecret).toBe(body.get("secret_token"));
   });
 
-  it("blocks Telegram bind command generation without an admin session", async () => {
+  it("blocks Telegram bind command generation and chat unbinding without an admin session", async () => {
     const env = makeEnv();
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ ok: true })));
 
-    const response = await worker.fetch(new Request("https://subpilot.example.com/api/telegram/bind-code", {
+    const bindResponse = await worker.fetch(new Request("https://subpilot.example.com/api/telegram/bind-code", {
       method: "POST",
       body: JSON.stringify({ token: "telegram-token" })
     }), env, ctx);
 
-    expect(response.status).toBe(401);
+    const unbindResponse = await worker.fetch(new Request("https://subpilot.example.com/api/telegram/unbind", {
+      method: "POST"
+    }), env, ctx);
+
+    expect(bindResponse.status).toBe(401);
+    expect(unbindResponse.status).toBe(401);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -1200,16 +1209,6 @@ describe("asset access control", () => {
     expect(saved.settings.notificationTelegramBotToken).toBe("telegram-token");
     expect(saved.settings.notificationTelegramWebhookSecret).toBe("webhook-secret");
     await expect(env.SUBPILOT_CONFIG.get("auth:telegram_bind")).resolves.toBeNull();
-  });
-
-  it("blocks Telegram chat unbinding without an admin session", async () => {
-    const env = makeEnv();
-
-    const response = await worker.fetch(new Request("https://subpilot.example.com/api/telegram/unbind", {
-      method: "POST"
-    }), env, ctx);
-
-    expect(response.status).toBe(401);
   });
 
   it("records Telegram chat id from a valid one-time bind command", async () => {
@@ -1878,6 +1877,7 @@ describe("asset access control", () => {
       groups: Record<string, string>;
       surge: { rules: string[] };
       clash: { rules: string[] };
+      stash: { rules: string[] };
     }>();
 
     expect(response.status).toBe(200);
@@ -1885,8 +1885,10 @@ describe("asset access control", () => {
     expect(body.groups).toHaveProperty("Static");
     expect(body.surge.rules.some((rule) => rule.includes("Static-IP"))).toBe(false);
     expect(body.clash.rules.some((rule) => rule.includes("Static-IP"))).toBe(false);
+    expect(body.stash.rules.some((rule) => rule.includes("Static-IP"))).toBe(false);
     expect(body.surge.rules).toContain("RULE-SET,https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Surge/Google/Google.list,Static,extended-matching");
     expect(body.clash.rules).toContain("RULE-SET,Google,Static");
+    expect(body.stash.rules).toContain("RULE-SET,Google,Static");
     expect(JSON.parse(kv.get("config:groups:index") ?? "[]")).not.toContain("Static-IP");
     expect(kv.has("config:groups:Static-IP")).toBe(false);
   });

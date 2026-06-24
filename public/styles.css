@@ -1848,7 +1848,8 @@ dd {
     align-self: start;
     display: flex;
     flex-wrap: nowrap;
-    width: auto;
+    width: 100%;
+    max-width: 100vw;
     min-height: 0;
     height: 52px;
     overflow-x: auto;
@@ -1858,6 +1859,13 @@ dd {
     border-bottom: 1px solid var(--surface-dark-elevated);
     -webkit-overflow-scrolling: touch;
     scrollbar-width: none;
+  }
+
+  .luci-menu:hover,
+  .luci-menu:focus-within {
+    width: 100%;
+    max-width: 100vw;
+    padding: 6px 8px;
   }
 
   .menu-indicator {

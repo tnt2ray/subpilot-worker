@@ -20,6 +20,7 @@ const SOURCE_PREFIX = "config:sources:";
 const CHAIN_PREFIX = "config:chain:";
 const SURGE_PREFIX = "config:surge:";
 const CLASH_PREFIX = "config:clash:";
+const STASH_PREFIX = "config:stash:";
 const READ_TOKEN_KEY = "auth:read_token";
 const SURGE_IPV6_VIF_MODES = ["off", "auto", "always"] as const satisfies readonly SurgeIpv6VifMode[];
 const RESERVED_MANAGED_BASE_PATHS = new Set([
@@ -95,6 +96,27 @@ const CLASH_KEYS = [
   "rules"
 ] as const satisfies readonly (keyof AppConfig["clash"])[];
 
+const STASH_KEYS = [
+  "port",
+  "socksPort",
+  "mixedPort",
+  "allowLan",
+  "mode",
+  "logLevel",
+  "ipv6",
+  "unifiedDelay",
+  "tcpConcurrent",
+  "externalController",
+  "tun",
+  "dns",
+  "ruleProviders",
+  "rules",
+  "hosts",
+  "urlRewrite",
+  "scripts",
+  "mitm"
+] as const satisfies readonly (keyof AppConfig["stash"])[];
+
 export async function loadConfig(env: Env): Promise<AppConfig> {
   const config = await loadStoredConfig(env);
   return unsealConfig(env, config);
@@ -112,7 +134,8 @@ export async function saveConfig(env: Env, config: AppConfig): Promise<AppConfig
     saveSources(env, sealedSources),
     saveChain(env, normalized.chain),
     saveSurge(env, normalized.surge),
-    saveClash(env, normalized.clash)
+    saveClash(env, normalized.clash),
+    saveStash(env, normalized.stash)
   ]);
 
   await pruneSourceCache(env, normalized);
@@ -155,7 +178,7 @@ function notificationChannelFromTelegramToken(token: string): NotificationChanne
 
 export function normalizeTarget(value: string | null | undefined): Target | null {
   const lowered = String(value ?? "").toLowerCase();
-  if (lowered === "surge" || lowered === "clash") return lowered;
+  if (lowered === "surge" || lowered === "clash" || lowered === "stash") return lowered;
   return null;
 }
 
@@ -185,6 +208,7 @@ export function normalizeConfig(input: AppConfig): AppConfig {
     chain,
     surge: normalizeSurge(input.surge),
     clash: normalizeClash(input.clash),
+    stash: normalizeStash(input.stash),
     updatedAt: input.updatedAt
   };
 }
@@ -339,7 +363,7 @@ function normalizeManagedBasePath(pathname: string): string {
 
 async function loadStoredConfig(env: Env): Promise<AppConfig> {
   await ensureKvSchema(env);
-  const [settings, groups, disabledGroups, sources, chain, surge, clash, updatedAt] = await Promise.all([
+  const [settings, groups, disabledGroups, sources, chain, surge, clash, stash, updatedAt] = await Promise.all([
     loadSettings(env),
     loadGroups(env),
     loadDisabledGroups(env),
@@ -347,6 +371,7 @@ async function loadStoredConfig(env: Env): Promise<AppConfig> {
     loadChain(env),
     loadSurge(env),
     loadClash(env),
+    loadStash(env),
     getJson<string>(env, CONFIG_UPDATED_AT_KEY)
   ]);
 
@@ -359,6 +384,7 @@ async function loadStoredConfig(env: Env): Promise<AppConfig> {
     chain,
     surge,
     clash,
+    stash,
     updatedAt
   });
 }
@@ -495,6 +521,18 @@ async function saveClash(env: Env, clash: AppConfig["clash"]): Promise<void> {
   await Promise.all(CLASH_KEYS.map((key) => putJson(env, `${CLASH_PREFIX}${key}`, clash[key])));
 }
 
+async function loadStash(env: Env): Promise<AppConfig["stash"]> {
+  const entries = await Promise.all(STASH_KEYS.map(async (key): Promise<[keyof AppConfig["stash"], unknown]> => {
+    const value = await getJson<unknown>(env, `${STASH_PREFIX}${key}`);
+    return [key, value ?? DEFAULT_CONFIG.stash[key]];
+  }));
+  return normalizeStash(Object.fromEntries(entries) as Partial<AppConfig["stash"]>);
+}
+
+async function saveStash(env: Env, stash: AppConfig["stash"]): Promise<void> {
+  await Promise.all(STASH_KEYS.map((key) => putJson(env, `${STASH_PREFIX}${key}`, stash[key])));
+}
+
 async function getJson<T>(env: Env, key: string): Promise<T | undefined> {
   const value = await env.SUBPILOT_CONFIG.get(key);
   if (value === null) return undefined;
@@ -609,6 +647,30 @@ function normalizeClash(input: Partial<AppConfig["clash"]> | undefined): AppConf
   };
 }
 
+function normalizeStash(input: Partial<AppConfig["stash"]> | undefined): AppConfig["stash"] {
+  const stash = input ?? {};
+  return {
+    port: clampNumber(stash.port, 1, 65535, DEFAULT_CONFIG.stash.port),
+    socksPort: clampNumber(stash.socksPort, 1, 65535, DEFAULT_CONFIG.stash.socksPort),
+    mixedPort: clampNumber(stash.mixedPort, 1, 65535, DEFAULT_CONFIG.stash.mixedPort),
+    allowLan: stash.allowLan === true,
+    mode: stringValue(stash.mode, DEFAULT_CONFIG.stash.mode),
+    logLevel: stringValue(stash.logLevel, DEFAULT_CONFIG.stash.logLevel),
+    ipv6: stash.ipv6 !== false,
+    unifiedDelay: stash.unifiedDelay !== false,
+    tcpConcurrent: stash.tcpConcurrent !== false,
+    externalController: stringValue(stash.externalController, DEFAULT_CONFIG.stash.externalController),
+    tun: normalizeStashTun(stash.tun),
+    dns: normalizeStashDns(stash.dns),
+    ruleProviders: normalizeStashRuleProviders(stash.ruleProviders),
+    rules: stringArray(stash.rules, DEFAULT_CONFIG.stash.rules),
+    hosts: stringArray(stash.hosts, DEFAULT_CONFIG.stash.hosts),
+    urlRewrite: stringArray(stash.urlRewrite, DEFAULT_CONFIG.stash.urlRewrite),
+    scripts: stringArray(stash.scripts, DEFAULT_CONFIG.stash.scripts),
+    mitm: normalizeStashMitm(stash.mitm)
+  };
+}
+
 function normalizeClashTun(input: Partial<AppConfig["clash"]["tun"]> | undefined): AppConfig["clash"]["tun"] {
   const tun = input ?? {};
   return {
@@ -620,13 +682,57 @@ function normalizeClashTun(input: Partial<AppConfig["clash"]["tun"]> | undefined
   };
 }
 
+function normalizeStashTun(input: Partial<AppConfig["stash"]["tun"]> | undefined): AppConfig["stash"]["tun"] {
+  const tun = input ?? {};
+  return {
+    enable: tun.enable !== false,
+    stack: stringValue(tun.stack, DEFAULT_CONFIG.stash.tun.stack),
+    autoRoute: tun.autoRoute !== false,
+    autoDetectInterface: tun.autoDetectInterface !== false,
+    skipProxy: stringArray(tun.skipProxy, DEFAULT_CONFIG.stash.tun.skipProxy)
+  };
+}
+
+function normalizeStashDns(input: Partial<AppConfig["stash"]["dns"]> | undefined): AppConfig["stash"]["dns"] {
+  const dns = input ?? {};
+  return {
+    enable: dns.enable !== false,
+    listen: stringValue(dns.listen, DEFAULT_CONFIG.stash.dns.listen),
+    ipv6: dns.ipv6 !== false,
+    enhancedMode: normalizeStashDnsEnhancedMode(dns.enhancedMode),
+    fakeIpRange: stringValue(dns.fakeIpRange, DEFAULT_CONFIG.stash.dns.fakeIpRange),
+    defaultNameservers: stringArray(dns.defaultNameservers, DEFAULT_CONFIG.stash.dns.defaultNameservers),
+    nameservers: stringArray(dns.nameservers, DEFAULT_CONFIG.stash.dns.nameservers),
+    fallbackNameservers: stringArray(dns.fallbackNameservers, DEFAULT_CONFIG.stash.dns.fallbackNameservers),
+    fallbackFilterGeoip: dns.fallbackFilterGeoip !== false,
+    fallbackFilterIpcidr: stringArray(dns.fallbackFilterIpcidr, DEFAULT_CONFIG.stash.dns.fallbackFilterIpcidr),
+    fakeIpFilter: stringArray(dns.fakeIpFilter, DEFAULT_CONFIG.stash.dns.fakeIpFilter)
+  };
+}
+
 function normalizeClashDnsEnhancedMode(value: unknown): AppConfig["clash"]["dnsEnhancedMode"] {
   return value === "fake-ip" || value === "redir-host" ? value : DEFAULT_CONFIG.clash.dnsEnhancedMode;
+}
+
+function normalizeStashDnsEnhancedMode(value: unknown): AppConfig["stash"]["dns"]["enhancedMode"] {
+  return value === "fake-ip" || value === "redir-host" ? value : DEFAULT_CONFIG.stash.dns.enhancedMode;
 }
 
 function normalizeClashRuleProviders(input: unknown): AppConfig["clash"]["ruleProviders"] {
   if (input === undefined || input === null) return DEFAULT_CONFIG.clash.ruleProviders;
   return typeof input === "string" ? input.trimEnd() : DEFAULT_CONFIG.clash.ruleProviders;
+}
+
+function normalizeStashRuleProviders(input: unknown): AppConfig["stash"]["ruleProviders"] {
+  if (input === undefined || input === null) return DEFAULT_CONFIG.stash.ruleProviders;
+  return typeof input === "string" ? input.trimEnd() : DEFAULT_CONFIG.stash.ruleProviders;
+}
+
+function normalizeStashMitm(input: Partial<AppConfig["stash"]["mitm"]> | undefined): AppConfig["stash"]["mitm"] {
+  const mitm = input ?? {};
+  return {
+    hostname: stringArray(mitm.hostname, DEFAULT_CONFIG.stash.mitm.hostname)
+  };
 }
 
 function normalizeChain(input: { exitProxy?: unknown; filter?: unknown } | undefined): AppConfig["chain"] {

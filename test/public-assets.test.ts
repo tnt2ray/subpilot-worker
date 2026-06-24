@@ -9,19 +9,16 @@ function readPublicFile(name: string): string {
 }
 
 describe("admin static assets", () => {
-  it("does not load CodeMirror on the initial HTML document", () => {
+  it("keeps the admin static asset contract", () => {
     const html = readPublicFile("index.html");
     const app = readPublicFile("app.js");
+    const css = readPublicFile("styles.css");
 
     expect(html).not.toContain("/vendor/codemirror/codemirror.css");
     expect(html).not.toContain("/vendor/codemirror/codemirror.js");
     expect(app).toContain('loadStylesheet("/vendor/codemirror/codemirror.css")');
     expect(app).toContain('loadScript("/vendor/codemirror/codemirror.js")');
-  });
 
-  it("exposes the Surge managed config interval in General settings", () => {
-    const html = readPublicFile("index.html");
-    const app = readPublicFile("app.js");
     const generalStart = html.indexOf('data-surge-panel="general"');
     const hostStart = html.indexOf('data-surge-panel="host"');
     const generalPanel = html.slice(generalStart, hostStart);
@@ -32,26 +29,22 @@ describe("admin static assets", () => {
     expect(generalPanel).toContain('min="300" max="604800" step="60"');
     expect(generalPanel).toContain("主配置更新间隔");
     expect(app).toContain('managedConfigIntervalHelp: "写入 #!MANAGED-CONFIG 的 interval，单位秒；默认 43200（12 小时）。"');
-  });
-
-  it("labels config fetch status targets", () => {
-    const html = readPublicFile("index.html");
-    const app = readPublicFile("app.js");
 
     expect(html).toContain('id="fetchRecordsTableBody"');
     expect(html).toContain('id="fetchRecordsPagination"');
     expect(html).not.toContain('data-i18n="fetchColumnCount"');
     expect(html).toContain("配置获取记录");
     expect(app).toContain('fetchTargetSurge: "Surge 配置"');
+    expect(app).toContain('fetchTargetStash: "Stash 配置"');
     expect(app).toContain("FETCH_RECORDS_PAGE_SIZE = 10");
-    expect(app).toContain('const targets = ["surge", "clash"]');
+    expect(app).toContain('const targets = ["surge", "clash", "stash"]');
     expect(app).toContain("renderFetchRecordRow");
     expect(app).toContain("fetchRecordsTableBody");
-  });
 
-  it("exposes the display time zone setting in General settings", () => {
-    const html = readPublicFile("index.html");
-    const app = readPublicFile("app.js");
+    expect(html).toContain('data-page="stash"');
+    expect(html).toContain('id="previewStashBtn"');
+    expect(html).toContain('id="stashMitmHostname"');
+    expect(app).toContain('const PREVIEW_TARGETS = ["surge", "clash", "stash"]');
 
     expect(html).toContain('id="displayTimeZone"');
     expect(html).toContain('value="Asia/Shanghai"');
@@ -67,23 +60,23 @@ describe("admin static assets", () => {
     expect(app).toContain("setDisplayTimeZoneValue");
     expect(app).toContain("normalizeDisplayTimeZone");
     expect(app).toContain("formatDateInTimeZone");
-  });
-
-  it("stacks the status summary above fetch records without the service row", () => {
-    const html = readPublicFile("index.html");
-    const css = readPublicFile("styles.css");
 
     expect(html).not.toContain('data-i18n="service"');
     expect(html).not.toContain('data-i18n="stateRunning"');
+    expect(html).not.toContain('id="systemSchemaVersion"');
+    expect(app).not.toContain("kvSchemaVersion");
     expect(css).toContain(".status-grid {\n  display: grid;\n  grid-template-columns: minmax(0, 1fr);");
-  });
-
-  it("refreshes status stats when the status page becomes visible", () => {
-    const app = readPublicFile("app.js");
 
     expect(app).toContain("refreshStatusStatsIfVisible();");
     expect(app).toContain('statusStatsRefreshPromise = request("/api/stats")');
     expect(app).toContain('if (!state || activePage !== "status") return;');
     expect(app).toContain('renderPage("status", { force: true })');
+
+    expect(app).toContain("function validateStashScriptLines(lines)");
+    expect(app).toContain("function parseStashScriptParams(value)");
+    expect(app).toContain('const validation = validateStashScriptLines(textToLines(refs.stashScripts.value));');
+    expect(app).toContain('params["script-path"]');
+    expect(app).toContain('type 必须是 http-request 或 http-response');
+    expect(app).not.toContain("const validation = validateSurgeScriptLines(textToLines(refs.stashScripts.value));");
   });
 });

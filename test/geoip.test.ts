@@ -41,7 +41,7 @@ describe("geoip lookup", () => {
     mmdb.lookups.length = 0;
   });
 
-  it("uses MMDB registered country records for IP region lookups", async () => {
+  it("uses MMDB records, refreshes stale unknown cache entries, and reloads when the database changes", async () => {
     const kv = new Map<string, string | ArrayBuffer>([
       ["geoip:mmdb:country:meta", JSON.stringify({ updatedAt: "2026-06-21T00:00:00.000Z" })],
       ["geoip:mmdb:country", new ArrayBuffer(8)]
@@ -59,38 +59,28 @@ describe("geoip lookup", () => {
     expect(kv.has("cache:geoip:local:162.159.34.96")).toBe(false);
     expect(mmdb.lookups).toContain("162.159.34.96");
     expect(mmdb.constructorInputs.length).toBeGreaterThan(0);
-  });
 
-  it("ignores stale unknown GeoIP location cache entries", async () => {
-    const kv = new Map<string, string | ArrayBuffer>([
+    resetGeoIpCountryReader();
+    mmdb.constructorInputs.length = 0;
+    const staleKv = new Map<string, string | ArrayBuffer>([
       ["geoip:mmdb:country:meta", JSON.stringify({ updatedAt: "2026-06-21T00:00:00.000Z" })],
       ["geoip:mmdb:country", new ArrayBuffer(8)],
       ["cache:geoip:location:162.159.34.96", JSON.stringify({ countryCode: "ZZ", source: "mmdb" })]
     ]);
-    const env = makeEnv(kv);
+    const staleEnv = makeEnv(staleKv);
 
-    await expect(lookupIpLocation(env, "162.159.34.96")).resolves.toMatchObject({
+    await expect(lookupIpLocation(staleEnv, "162.159.34.96")).resolves.toMatchObject({
       countryCode: "US",
       source: "mmdb"
     });
-    expect(JSON.parse(kv.get("cache:geoip:location:162.159.34.96") as string).countryCode).toBe("US");
-  });
-
-  it("reloads the MMDB reader when the uploaded database version changes", async () => {
-    const kv = new Map<string, string | ArrayBuffer>([
-      ["geoip:mmdb:country:meta", JSON.stringify({ updatedAt: "2026-06-21T00:00:00.000Z" })],
-      ["geoip:mmdb:country", new ArrayBuffer(8)]
-    ]);
-    const env = makeEnv(kv);
-
-    await expect(lookupIpLocation(env, "162.159.34.96")).resolves.toMatchObject({ countryCode: "US" });
+    expect(JSON.parse(staleKv.get("cache:geoip:location:162.159.34.96") as string).countryCode).toBe("US");
     expect(mmdb.constructorInputs).toHaveLength(1);
 
-    kv.set("geoip:mmdb:country:meta", JSON.stringify({ updatedAt: "2026-06-21T01:00:00.000Z" }));
-    kv.set("geoip:mmdb:country", new ArrayBuffer(16));
-    kv.delete("cache:geoip:location:162.159.34.96");
+    staleKv.set("geoip:mmdb:country:meta", JSON.stringify({ updatedAt: "2026-06-21T01:00:00.000Z" }));
+    staleKv.set("geoip:mmdb:country", new ArrayBuffer(16));
+    staleKv.delete("cache:geoip:location:162.159.34.96");
 
-    await expect(lookupIpLocation(env, "162.159.34.96")).resolves.toMatchObject({ countryCode: "US" });
+    await expect(lookupIpLocation(staleEnv, "162.159.34.96")).resolves.toMatchObject({ countryCode: "US" });
     expect(mmdb.constructorInputs).toHaveLength(2);
   });
 });

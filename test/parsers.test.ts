@@ -3,19 +3,14 @@ import { maybeDecodeBase64, parseHostEntries, parseManualSurge, parseSubscriptio
 import { CHAIN_EXIT_PROXY_NAME } from "../src/types";
 
 describe("proxy parsing", () => {
-  it("decodes base64 subscriptions", () => {
-    const encoded = btoa("trojan://password@example.com:443#Japan");
-    expect(maybeDecodeBase64(encoded)).toContain("trojan://");
-  });
+  it("parses encoded, manual, Surge host, Clash host, YAML, and duplicate subscription inputs", () => {
+    expect(maybeDecodeBase64(btoa("trojan://password@example.com:443#Japan"))).toContain("trojan://");
 
-  it("parses manual surge proxy lines", () => {
-    const nodes = parseManualSurge("[Proxy]\nProxy A = socks5, 1.2.3.4, 443, username=u, password=p");
-    expect(nodes).toHaveLength(1);
-    expect(nodes[0]?.name).toBe("Proxy A");
-  });
+    const manualNodes = parseManualSurge("[Proxy]\nProxy A = socks5, 1.2.3.4, 443, username=u, password=p");
+    expect(manualNodes).toHaveLength(1);
+    expect(manualNodes[0]?.name).toBe("Proxy A");
 
-  it("preserves host lines from surge subscriptions", () => {
-    const lines = parseSurgeHostLines([
+    const surgeHostLines = parseSurgeHostLines([
       "[General]",
       "loglevel = notify",
       "",
@@ -27,11 +22,9 @@ describe("proxy parsing", () => {
       "[Proxy]",
       "Proxy A = socks5, 1.2.3.4, 443"
     ].join("\n"));
-    expect(lines).toEqual(["example.test = 1.2.3.4", "api.example.test = server:443"]);
-  });
+    expect(surgeHostLines).toEqual(["example.test = 1.2.3.4", "api.example.test = server:443"]);
 
-  it("preserves host entries from clash subscriptions", () => {
-    const entries = parseHostEntries([
+    const hostEntries = parseHostEntries([
       "hosts:",
       "  clash.example.test:",
       "    - 1.1.1.1",
@@ -44,28 +37,53 @@ describe("proxy parsing", () => {
       "    port: 443",
       "    password: pass"
     ].join("\n"));
-    expect(entries).toEqual([
+    expect(hostEntries).toEqual([
       { host: "clash.example.test", value: ["1.1.1.1", "1.0.0.1"] },
       { host: "edge.example.test", value: "2.2.2.2" }
     ]);
+
+    const yamlNodes = parseSubscription("proxies:\n  - name: JP 1\n    type: trojan\n    server: jp.example.com\n    port: 443\n    password: pass\n", "src");
+    expect(yamlNodes[0]?.server).toBe("jp.example.com");
+
+    const duplicateNodes = parseSubscription([
+      "proxies:",
+      "  - name: Simple",
+      "    type: trojan",
+      "    server: dup.example.com",
+      "    port: 443",
+      "    password: p",
+      "  - name: Rich",
+      "    type: trojan",
+      "    server: dup.example.com",
+      "    port: 443",
+      "    password: p",
+      "    network: ws",
+      "    ws-opts:",
+      "      path: /ws",
+      "      headers:",
+      "        Host: edge.example.com"
+    ].join("\n"), "src");
+    expect(duplicateNodes).toHaveLength(2);
+    expect(duplicateNodes[0]?.name).toBe("Simple");
+    expect(duplicateNodes[1]?.name).toBe("Rich");
+    expect(duplicateNodes[1]?.params).toMatchObject({
+      network: "ws",
+      "ws-opts": {
+        path: "/ws",
+        headers: {
+          Host: "edge.example.com"
+        }
+      }
+    });
   });
 
-  it("keeps socks5 usernames as usernames in Clash output", () => {
-    const [node] = parseManualSurge("[Proxy]\nProxy A = socks5, 1.2.3.4, 443, username=u, password=p");
-    expect(toClashProxy(node!)).toMatchObject({ type: "socks5", username: "u", password: "p" });
-    expect(toClashProxy(node!)).not.toHaveProperty("uuid");
-  });
+  it("maps Surge proxy variants into Clash structures without leaking flattened source fields", () => {
+    const [socksNode] = parseManualSurge("[Proxy]\nProxy A = socks5, 1.2.3.4, 443, username=u, password=p");
+    expect(toClashProxy(socksNode!)).toMatchObject({ type: "socks5", username: "u", password: "p" });
+    expect(toClashProxy(socksNode!)).not.toHaveProperty("uuid");
 
-  it("reuses original surge proxy details for Surge output", () => {
-    const [node] = parseManualSurge("[Proxy]\nJP 1 = trojan,jp.example.com,443,password=p,udp-relay=true,tfo=true");
-    expect(toSurgeLine({ ...node!, name: "Primary JP 1" })).toBe(
-      "Primary JP 1 = trojan,jp.example.com,443,password=p,udp-relay=true,tfo=true"
-    );
-  });
-
-  it("maps surge proxy parameters to Clash fields for Clash output", () => {
-    const [node] = parseManualSurge("[Proxy]\nSS 1 = ss,1.2.3.4,8388,encrypt-method=chacha20-ietf-poly1305,password=p");
-    expect(toClashProxy(node!)).toMatchObject({
+    const [ssNode] = parseManualSurge("[Proxy]\nSS 1 = ss,1.2.3.4,8388,encrypt-method=chacha20-ietf-poly1305,password=p");
+    expect(toClashProxy(ssNode!)).toMatchObject({
       name: "SS 1",
       type: "ss",
       server: "1.2.3.4",
@@ -73,12 +91,10 @@ describe("proxy parsing", () => {
       cipher: "chacha20-ietf-poly1305",
       password: "p"
     });
-    expect(toClashProxy(node!)).not.toHaveProperty("encrypt-method");
-  });
+    expect(toClashProxy(ssNode!)).not.toHaveProperty("encrypt-method");
 
-  it("maps Surge WebSocket proxy parameters to Clash structures", () => {
-    const [node] = parseManualSurge("[Proxy]\nCF 1 = trojan,1.2.3.4,443,password=p,sni=edge.example.com,ws=true,ws-path=/photos/documents/member?ed=2560,ws-headers=Host:\"edge.example.com\",skip-cert-verify=true,udp-relay=true");
-    expect(toClashProxy(node!)).toMatchObject({
+    const [wsNode] = parseManualSurge("[Proxy]\nCF 1 = trojan,1.2.3.4,443,password=p,sni=edge.example.com,ws=true,ws-path=/photos/documents/member?ed=2560,ws-headers=Host:\"edge.example.com\",skip-cert-verify=true,udp-relay=true");
+    expect(toClashProxy(wsNode!)).toMatchObject({
       name: "CF 1",
       type: "trojan",
       password: "p",
@@ -93,14 +109,55 @@ describe("proxy parsing", () => {
       "skip-cert-verify": true,
       udp: true
     });
-    expect(toClashProxy(node!)).not.toHaveProperty("ws");
-    expect(toClashProxy(node!)).not.toHaveProperty("ws-path");
-    expect(toClashProxy(node!)).not.toHaveProperty("ws-headers");
-    expect(toClashProxy(node!)).not.toHaveProperty("udp-relay");
+    expect(toClashProxy(wsNode!)).not.toHaveProperty("ws");
+    expect(toClashProxy(wsNode!)).not.toHaveProperty("ws-path");
+    expect(toClashProxy(wsNode!)).not.toHaveProperty("ws-headers");
+    expect(toClashProxy(wsNode!)).not.toHaveProperty("udp-relay");
+
+    expect(toClashProxy({
+      name: CHAIN_EXIT_PROXY_NAME,
+      type: "https",
+      server: "1.2.3.4",
+      port: 443,
+      params: {}
+    })).toMatchObject({ type: "http", tls: true });
+    expect(toClashProxy({
+      name: CHAIN_EXIT_PROXY_NAME,
+      type: "socks5-tls",
+      server: "1.2.3.4",
+      port: 443,
+      params: {}
+    })).toMatchObject({ type: "socks5", tls: true });
+
+    const [flattenedNode] = parseManualSurge("[Proxy]\nVL 1 = vless,vl.example.com,443,username=00000000-0000-0000-0000-000000000002,tls=true,network=grpc,grpc-service-name=TunService,reality-public-key=pubkey,reality-short-id=sid");
+    const flattenedProxy = toClashProxy(flattenedNode!);
+    expect(flattenedProxy).toMatchObject({
+      type: "vless",
+      uuid: "00000000-0000-0000-0000-000000000002",
+      tls: true,
+      network: "grpc",
+      "grpc-opts": {
+        "grpc-service-name": "TunService"
+      },
+      "reality-opts": {
+        "public-key": "pubkey",
+        "short-id": "sid"
+      }
+    });
+    expect(flattenedProxy).not.toHaveProperty("grpc-service-name");
+    expect(flattenedProxy).not.toHaveProperty("reality-public-key");
+    expect(flattenedProxy).not.toHaveProperty("reality-short-id");
+    expect((flattenedProxy["reality-opts"] as Record<string, unknown>).opts).toBeUndefined();
+    expect((flattenedProxy["grpc-opts"] as Record<string, unknown>)["grpc-opts"]).toBeUndefined();
   });
 
-  it("converts clash yaml proxy parameters for Surge output", () => {
-    const [node] = parseSubscription([
+  it("maps Clash YAML and URI auth fields into Surge and Clash target output", () => {
+    const [surgeNode] = parseManualSurge("[Proxy]\nJP 1 = trojan,jp.example.com,443,password=p,udp-relay=true,tfo=true");
+    expect(toSurgeLine({ ...surgeNode!, name: "Primary JP 1" })).toBe(
+      "Primary JP 1 = trojan,jp.example.com,443,password=p,udp-relay=true,tfo=true"
+    );
+
+    const [clashNode] = parseSubscription([
       "proxies:",
       "  - name: TR 1",
       "    type: trojan",
@@ -125,8 +182,7 @@ describe("proxy parsing", () => {
       "      public-key: pubkey",
       "      short-id: sid"
     ].join("\n"), "src");
-
-    expect(toSurgeLine({ ...node!, name: "Primary TR 1" })).toBe([
+    expect(toSurgeLine({ ...clashNode!, name: "Primary TR 1" })).toBe([
       "Primary TR 1 = trojan",
       "tr.example.com",
       "443",
@@ -143,27 +199,8 @@ describe("proxy parsing", () => {
       "reality-public-key=pubkey",
       "reality-short-id=sid"
     ].join(", "));
-  });
 
-  it("maps TLS HTTP and SOCKS variants to Clash TLS fields", () => {
-    expect(toClashProxy({
-      name: CHAIN_EXIT_PROXY_NAME,
-      type: "https",
-      server: "1.2.3.4",
-      port: 443,
-      params: {}
-    })).toMatchObject({ type: "http", tls: true });
-    expect(toClashProxy({
-      name: CHAIN_EXIT_PROXY_NAME,
-      type: "socks5-tls",
-      server: "1.2.3.4",
-      port: 443,
-      params: {}
-    })).toMatchObject({ type: "socks5", tls: true });
-  });
-
-  it("normalizes Clash alpn strings to arrays", () => {
-    const [node] = parseSubscription([
+    const [alpnNode] = parseSubscription([
       "proxies:",
       "  - name: TR 1",
       "    type: trojan",
@@ -172,13 +209,10 @@ describe("proxy parsing", () => {
       "    password: p",
       "    alpn: h2,http/1.1"
     ].join("\n"), "src");
-
-    expect(toClashProxy(node!)).toMatchObject({
+    expect(toClashProxy(alpnNode!)).toMatchObject({
       alpn: ["h2", "http/1.1"]
     });
-  });
 
-  it("maps URI authentication fields by protocol instead of duplicating password and uuid", () => {
     const [trojan] = parseSubscription("trojan://pass@tr.example.com:443#TR", "src");
     const trojanProxy = toClashProxy(trojan!);
     expect(trojanProxy).toMatchObject({ type: "trojan", password: "pass" });
@@ -202,67 +236,5 @@ describe("proxy parsing", () => {
       }
     });
     expect(vlessProxy).not.toHaveProperty("password");
-  });
-
-  it("restores flattened Surge transport and Reality params to Clash nested structures", () => {
-    const [node] = parseManualSurge("[Proxy]\nVL 1 = vless,vl.example.com,443,username=00000000-0000-0000-0000-000000000002,tls=true,network=grpc,grpc-service-name=TunService,reality-public-key=pubkey,reality-short-id=sid");
-    const proxy = toClashProxy(node!);
-    expect(proxy).toMatchObject({
-      type: "vless",
-      uuid: "00000000-0000-0000-0000-000000000002",
-      tls: true,
-      network: "grpc",
-      "grpc-opts": {
-        "grpc-service-name": "TunService"
-      },
-      "reality-opts": {
-        "public-key": "pubkey",
-        "short-id": "sid"
-      }
-    });
-    expect(proxy).not.toHaveProperty("grpc-service-name");
-    expect(proxy).not.toHaveProperty("reality-public-key");
-    expect(proxy).not.toHaveProperty("reality-short-id");
-    expect((proxy["reality-opts"] as Record<string, unknown>).opts).toBeUndefined();
-    expect((proxy["grpc-opts"] as Record<string, unknown>)["grpc-opts"]).toBeUndefined();
-  });
-
-  it("parses clash yaml proxies", () => {
-    const nodes = parseSubscription("proxies:\n  - name: JP 1\n    type: trojan\n    server: jp.example.com\n    port: 443\n    password: pass\n", "src");
-    expect(nodes[0]?.server).toBe("jp.example.com");
-  });
-
-  it("keeps duplicate nodes while parsing a single subscription", () => {
-    const nodes = parseSubscription([
-      "proxies:",
-      "  - name: Simple",
-      "    type: trojan",
-      "    server: dup.example.com",
-      "    port: 443",
-      "    password: p",
-      "  - name: Rich",
-      "    type: trojan",
-      "    server: dup.example.com",
-      "    port: 443",
-      "    password: p",
-      "    network: ws",
-      "    ws-opts:",
-      "      path: /ws",
-      "      headers:",
-      "        Host: edge.example.com"
-    ].join("\n"), "src");
-
-    expect(nodes).toHaveLength(2);
-    expect(nodes[0]?.name).toBe("Simple");
-    expect(nodes[1]?.name).toBe("Rich");
-    expect(nodes[1]?.params).toMatchObject({
-      network: "ws",
-      "ws-opts": {
-        path: "/ws",
-        headers: {
-          Host: "edge.example.com"
-        }
-      }
-    });
   });
 });

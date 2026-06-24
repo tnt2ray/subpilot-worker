@@ -15,9 +15,9 @@ let saveStatusResetTimer = 0;
 let telegramBindPollTimer = 0;
 let codeMirrorLoadPromise = null;
 
-const PAGES = ["status", "settings", "groups", "sources", "surge", "clash", "tokens"];
-const EDITABLE_PAGES = new Set(["settings", "groups", "sources", "surge", "clash"]);
-const CODE_EDITOR_PAGES = new Set(["surge", "clash"]);
+const PAGES = ["status", "settings", "groups", "sources", "surge", "clash", "stash", "tokens"];
+const EDITABLE_PAGES = new Set(["settings", "groups", "sources", "surge", "clash", "stash"]);
+const CODE_EDITOR_PAGES = new Set(["surge", "clash", "stash"]);
 const FETCH_RECORDS_PAGE_SIZE = 10;
 const DEFAULT_DISPLAY_TIME_ZONE = "Asia/Shanghai";
 const DEFAULT_CLASH_MODE = "Rule";
@@ -34,6 +34,7 @@ const I18N = {
   navSources: "订阅源",
   navSurge: "Surge",
   navClash: "Clash",
+  navStash: "Stash",
   navAccess: "访问",
   navTokens: "配置链接",
   pageStatusTitle: "状态",
@@ -48,8 +49,10 @@ const I18N = {
   pageSurgeDescription: "管理 Surge 输出所需的通用设置、规则、脚本和 MITM 选项。",
   pageClashTitle: "Clash",
   pageClashDescription: "管理 Clash 输出所需的端口、TUN、DNS 和规则配置。",
+  pageStashTitle: "Stash",
+  pageStashDescription: "管理 Stash 输出所需的端口、TUN、DNS、Host、URL Rewrite、脚本、MITM 和规则配置。",
   pageTokensTitle: "配置链接",
-  pageTokensDescription: "复制自动识别订阅链接，并生成 Surge 或 Clash 配置预览。",
+  pageTokensDescription: "复制自动识别订阅链接，并生成 Surge、Clash 或 Stash 配置预览。",
   idle: "保存并应用",
   saving: "保存中",
   saved: "已保存",
@@ -166,7 +169,7 @@ const I18N = {
   tableAction: "操作",
   sourceFetchUserAgentHelp: "选择请求该订阅地址时使用的客户端标识。",
   sourceNameHelp: "用于标识节点来源，生成时会作为节点名前缀。",
-  sourceUrlHelp: "上游订阅地址。启用后会参与 Surge 和 Clash 配置生成。",
+  sourceUrlHelp: "上游订阅地址。启用后会参与 Surge、Clash 和 Stash 配置生成。",
   fetchUserAgentSurge: "Surge User-Agent",
   fetchUserAgentClash: "Clash User-Agent",
   remove: "移除",
@@ -377,6 +380,32 @@ const I18N = {
   clashRuleMatchDuplicate: "只能保留一个 MATCH 或 FINAL 兜底规则。",
   clashRuleMatchNotLast: "MATCH 或 FINAL 兜底规则必须位于最后。",
   clashRuleValidationError: "存在无效 Clash 规则，已阻止保存。请修正后再保存。",
+  stashConfigTitle: "Stash 功能配置",
+  stashTabGeneral: "General",
+  stashTabHost: "Host",
+  stashTabUrlRewrite: "URL Rewrite",
+  stashTabScript: "Script",
+  stashTabMitm: "MITM",
+  stashTabRule: "Rule",
+  stashIpv6Help: "控制 Stash 输出中是否启用 IPv6 解析和连接。",
+  stashTunEnableHelp: "通过 TUN 接管系统流量；关闭后隐藏相关设置，并从 Stash 生成结果中移除 tun 配置。",
+  stashDnsEnabledHelp: "启用 Stash 内置 DNS 服务，下面的 DNS 解析配置才会生效。",
+  stashHosts: "Stash Host",
+  stashHostHelp: "每行一个 Host 映射，格式为 example.com = 1.2.3.4。Stash 输出会把这里的 Host 覆盖同名上游 Host。",
+  stashHostValidationError: "存在无效 Stash Host 配置，已阻止保存。请修正后再保存。",
+  stashUrlRewrite: "URL Rewrite",
+  stashUrlRewriteValidationError: "存在无效 Stash URL Rewrite 配置，已阻止保存。请修正后再保存。",
+  stashScripts: "Stash 脚本",
+  stashScriptsHelp: "每行一条脚本定义，例如：名称 = type=http-response,requires-body=1,max-size=0,pattern=...,script-path=https://...。",
+  stashScriptValidationError: "存在无效 Stash 脚本配置，已阻止保存。请修正后再保存。",
+  stashMitmHostname: "MITM 主机名",
+  stashMitmHostnameHelp: "Stash 只会对这里列出的域名执行 HTTPS 解密。每行一个主机名，支持通配符。",
+  stashMitmCertificateNotice: "Stash CA 由客户端本地生成；SubPilot 不保存也不会下发 CA 私钥、ca-p12 或 ca-passphrase。",
+  stashRuleProviders: "rule-providers",
+  stashRuleProvidersValidationError: "规则集配置存在错误，请先修正。",
+  stashRules: "Stash 规则",
+  stashRulesHelp: "YAML 顶层固定为 rules；每一项使用标准 Stash/Clash 规则语法，例如 RULE-SET,Google,Proxy 或 MATCH,Proxy。",
+  stashRuleValidationError: "存在无效 Stash 规则，已阻止保存。请修正后再保存。",
   linksTitle: "配置链接",
   automaticLink: "自动识别",
   rotateReadToken: "刷新订阅令牌",
@@ -404,6 +433,7 @@ const I18N = {
   fetchRecordsPageInfo: "{start}-{end} / {total}",
   fetchTargetSurge: "Surge 配置",
   fetchTargetClash: "Clash 配置",
+  fetchTargetStash: "Stash 配置",
   neverFetched: "尚未获取",
   noRecentUa: "暂无获取记录",
   unknownIp: "未知 IP",
@@ -423,7 +453,6 @@ const I18N = {
   sourceCacheSourceMissing: "{name}：未缓存",
   systemStatusTitle: "版本状态",
   currentVersion: "当前版本",
-  kvSchemaVersion: "KV Schema",
   latestVersion: "最新版本",
   checkUpdate: "检查更新",
   checkingUpdate: "检查中",
@@ -434,8 +463,6 @@ const I18N = {
   updateCurrent: "已是最新版本",
   updateCheckFailed: "检查失败：{error}",
   updateCheckDisabled: "自动检查未启用",
-  schemaMigrated: "{stored} / {current}",
-  schemaPending: "{stored} / {current}，自动处理中",
   refreshSourceCache: "强制获取",
   refreshingSourceCache: "获取中",
   enabled: "已启用",
@@ -569,11 +596,49 @@ const refs = {
   clashRuleRows: $("clashRuleRows"),
   clashRuleValidation: $("clashRuleValidation"),
   clashRules: $("clashRules"),
+  stashPort: $("stashPort"),
+  stashSocksPort: $("stashSocksPort"),
+  stashMixedPort: $("stashMixedPort"),
+  stashAllowLan: $("stashAllowLan"),
+  stashMode: $("stashMode"),
+  stashLogLevel: $("stashLogLevel"),
+  stashIpv6: $("stashIpv6"),
+  stashUnifiedDelay: $("stashUnifiedDelay"),
+  stashTcpConcurrent: $("stashTcpConcurrent"),
+  stashExternalController: $("stashExternalController"),
+  stashTunEnable: $("stashTunEnable"),
+  stashTunStack: $("stashTunStack"),
+  stashTunAutoRoute: $("stashTunAutoRoute"),
+  stashTunAutoDetectInterface: $("stashTunAutoDetectInterface"),
+  stashTunSkipProxy: $("stashTunSkipProxy"),
+  stashDnsEnabled: $("stashDnsEnabled"),
+  stashDnsListen: $("stashDnsListen"),
+  stashDnsIpv6: $("stashDnsIpv6"),
+  stashDnsEnhancedMode: $("stashDnsEnhancedMode"),
+  stashDnsFakeIpRange: $("stashDnsFakeIpRange"),
+  stashDefaultNameservers: $("stashDefaultNameservers"),
+  stashNameservers: $("stashNameservers"),
+  stashFallbackNameservers: $("stashFallbackNameservers"),
+  stashFallbackFilterGeoip: $("stashFallbackFilterGeoip"),
+  stashFallbackFilterIpcidr: $("stashFallbackFilterIpcidr"),
+  stashFakeIpFilter: $("stashFakeIpFilter"),
+  stashHosts: $("stashHosts"),
+  stashHostValidation: $("stashHostValidation"),
+  stashUrlRewrite: $("stashUrlRewrite"),
+  stashUrlRewriteValidation: $("stashUrlRewriteValidation"),
+  stashScripts: $("stashScripts"),
+  stashScriptValidation: $("stashScriptValidation"),
+  stashMitmHostname: $("stashMitmHostname"),
+  stashRuleProviders: $("stashRuleProviders"),
+  stashRuleProviderValidation: $("stashRuleProviderValidation"),
+  stashRules: $("stashRules"),
+  stashRuleValidation: $("stashRuleValidation"),
   rotateTokenBtn: $("rotateTokenBtn"),
   links: $("links"),
   previewOutput: $("previewOutput"),
   previewSurgeBtn: $("previewSurgeBtn"),
   previewClashBtn: $("previewClashBtn"),
+  previewStashBtn: $("previewStashBtn"),
   validateSurgeOnlineBtn: $("validateSurgeOnlineBtn"),
   surgeOnlineValidation: $("surgeOnlineValidation"),
   summarySources: $("summarySources"),
@@ -581,7 +646,6 @@ const refs = {
   summarySourceCache: $("summarySourceCache"),
   refreshSourceCacheBtn: $("refreshSourceCacheBtn"),
   systemCurrentVersion: $("systemCurrentVersion"),
-  systemSchemaVersion: $("systemSchemaVersion"),
   systemUpdateStatus: $("systemUpdateStatus"),
   checkUpdateBtn: $("checkUpdateBtn"),
   fetchRecordsTableBody: $("fetchRecordsTableBody"),
@@ -605,7 +669,19 @@ const configCodeEditorRefs = [
   "clashFallbackFilterIpcidr",
   "clashFakeIpFilter",
   "clashRuleProviders",
-  "clashRules"
+  "clashRules",
+  "stashTunSkipProxy",
+  "stashDefaultNameservers",
+  "stashNameservers",
+  "stashFallbackNameservers",
+  "stashFallbackFilterIpcidr",
+  "stashFakeIpFilter",
+  "stashHosts",
+  "stashUrlRewrite",
+  "stashScripts",
+  "stashMitmHostname",
+  "stashRuleProviders",
+  "stashRules"
 ];
 const configCodeEditors = new Map();
 const CONFIG_POLICY_HIGHLIGHT_BUILT_INS = [
@@ -619,10 +695,11 @@ const CONFIG_POLICY_HIGHLIGHT_BUILT_INS = [
   "GLOBAL"
 ];
 
-const PREVIEW_TARGETS = ["surge", "clash"];
+const PREVIEW_TARGETS = ["surge", "clash", "stash"];
 const PREVIEW_TARGET_LABELS = {
   surge: "Surge",
-  clash: "Clash"
+  clash: "Clash",
+  stash: "Stash"
 };
 
 function isModeTogglePressed(button) {
@@ -980,6 +1057,19 @@ function showClashTab(tab) {
   ensureConfigCodeEditorsForPage("clash");
 }
 
+function showStashTab(tab) {
+  const nextTab = ["general", "host", "urlRewrite", "script", "mitm", "rule"].includes(tab) ? tab : "general";
+  document.querySelectorAll("[data-stash-tab]").forEach((button) => {
+    const active = button.dataset.stashTab === nextTab;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-selected", active ? "true" : "false");
+  });
+  document.querySelectorAll("[data-stash-panel]").forEach((panel) => {
+    panel.classList.toggle("hidden", panel.dataset.stashPanel !== nextTab);
+  });
+  ensureConfigCodeEditorsForPage("stash");
+}
+
 function scrollActiveNavIntoView() {
   const activeLink = document.querySelector(".luci-menu a.active");
   if (!activeLink || !window.matchMedia("(max-width: 820px)").matches) return;
@@ -1085,6 +1175,9 @@ function renderPage(page, options = {}) {
       break;
     case "clash":
       renderClash();
+      break;
+    case "stash":
+      renderStash();
       break;
     case "tokens":
       renderLinks();
@@ -1210,6 +1303,51 @@ function renderClash() {
   setModeTogglePressed(refs.clashRuleAdvancedMode, advancedRuleMode);
   syncClashRuleMode();
   reconcileClashRulesWithProviders();
+  syncConfigCodeEditors();
+}
+
+function renderStash() {
+  const stash = state.stash || {};
+  const dns = stash.dns || {};
+  refs.stashPort.value = String(stash.port);
+  refs.stashSocksPort.value = String(stash.socksPort);
+  refs.stashMixedPort.value = String(stash.mixedPort);
+  refs.stashAllowLan.checked = stash.allowLan === true;
+  refs.stashMode.value = stash.mode || DEFAULT_CLASH_MODE;
+  refs.stashLogLevel.value = stash.logLevel || DEFAULT_CLASH_LOG_LEVEL;
+  refs.stashIpv6.checked = stash.ipv6 !== false;
+  refs.stashUnifiedDelay.checked = stash.unifiedDelay !== false;
+  refs.stashTcpConcurrent.checked = stash.tcpConcurrent !== false;
+  refs.stashExternalController.value = stash.externalController || "";
+  refs.stashTunEnable.checked = stash.tun?.enable !== false;
+  refs.stashTunStack.value = stash.tun?.stack || "system";
+  refs.stashTunAutoRoute.checked = stash.tun?.autoRoute !== false;
+  refs.stashTunAutoDetectInterface.checked = stash.tun?.autoDetectInterface !== false;
+  refs.stashTunSkipProxy.value = linesToText(stash.tun?.skipProxy || []);
+  syncStashTunVisibility();
+  refs.stashDnsEnabled.checked = dns.enable !== false;
+  refs.stashDnsListen.value = dns.listen || "";
+  refs.stashDnsIpv6.checked = dns.ipv6 !== false;
+  refs.stashDnsEnhancedMode.value = dns.enhancedMode || "fake-ip";
+  refs.stashDnsFakeIpRange.value = dns.fakeIpRange || "";
+  syncStashFakeIpVisibility();
+  refs.stashDefaultNameservers.value = linesToText(dns.defaultNameservers || []);
+  refs.stashNameservers.value = linesToText(dns.nameservers || []);
+  refs.stashFallbackNameservers.value = linesToText(dns.fallbackNameservers || []);
+  refs.stashFallbackFilterGeoip.checked = dns.fallbackFilterGeoip !== false;
+  refs.stashFallbackFilterIpcidr.value = linesToText(dns.fallbackFilterIpcidr || []);
+  refs.stashFakeIpFilter.value = linesToText(dns.fakeIpFilter || []);
+  refs.stashHosts.value = linesToText(stash.hosts || []);
+  refs.stashUrlRewrite.value = linesToText(stash.urlRewrite || []);
+  refs.stashScripts.value = linesToText(stash.scripts || []);
+  refs.stashMitmHostname.value = linesToText(stash.mitm?.hostname || []);
+  refs.stashRuleProviders.value = stash.ruleProviders || "";
+  refs.stashRules.value = buildClashRulesYaml(stash.rules || []);
+  validateCurrentStashHosts();
+  validateCurrentStashUrlRewrite();
+  validateCurrentStashScripts();
+  validateCurrentStashRuleProviders();
+  validateCurrentStashRules();
   syncConfigCodeEditors();
 }
 
@@ -1840,6 +1978,87 @@ function validateCurrentClashRules() {
   const lines = isModeTogglePressed(refs.clashRuleAdvancedMode) ? parsed.rules : buildClashRuleLines(readClashRuleRows());
   const validation = validateClashRuleLines(lines, isModeTogglePressed(refs.clashRuleAdvancedMode) ? parsed.errors : []);
   renderClashRuleValidation(validation);
+  return validation;
+}
+
+function renderValidationMessages(container, validation) {
+  const messages = [
+    ...(validation?.errors || []).map((message) => ({ type: "error", message })),
+    ...(validation?.warnings || []).map((message) => ({ type: "warning", message }))
+  ];
+  container.classList.toggle("hidden", messages.length === 0);
+  container.innerHTML = messages
+    .map(({ type, message }) => `<div class="${type}">${escapeHtml(message)}</div>`)
+    .join("");
+}
+
+function validateCurrentStashHosts() {
+  const validation = validateSurgeHostLines(textToLines(refs.stashHosts.value));
+  renderValidationMessages(refs.stashHostValidation, validation);
+  return validation;
+}
+
+function validateCurrentStashUrlRewrite() {
+  const validation = validateSurgeUrlRewriteLines(textToLines(refs.stashUrlRewrite.value));
+  renderValidationMessages(refs.stashUrlRewriteValidation, validation);
+  return validation;
+}
+
+function validateCurrentStashScripts() {
+  const validation = validateStashScriptLines(textToLines(refs.stashScripts.value));
+  renderValidationMessages(refs.stashScriptValidation, validation);
+  return validation;
+}
+
+function validateCurrentStashRuleProviders() {
+  const parsed = parseClashRuleProvidersYaml(refs.stashRuleProviders.value);
+  const validation = validateClashRuleProviderRows(parsed.providers, parsed.errors);
+  renderValidationMessages(refs.stashRuleProviderValidation, validation);
+  return validation;
+}
+
+function stashRuleProviderNames() {
+  return parseClashRuleProvidersYaml(refs.stashRuleProviders.value).providers
+    .map((provider) => provider.name)
+    .filter(Boolean);
+}
+
+function validateCurrentStashRules() {
+  const parsed = parseClashRulesYaml(refs.stashRules.value);
+  const validation = { errors: [...parsed.errors], warnings: [] };
+  const providerNames = new Set(stashRuleProviderNames());
+  const policies = new Set([...groupEntries().map(([name]) => name), ...CLASH_BUILT_IN_POLICIES]);
+  const effectiveRules = effectiveClashRuleEntries(parsed.rules);
+  parsed.rules.forEach((line, index) => {
+    const parts = splitSurgeRuleLine(line);
+    const type = (parts[0] || "").trim().toUpperCase();
+    if (!type || type.startsWith("#")) return;
+    if (type === "RULE-SET") {
+      const provider = (parts[1] || "").trim();
+      const policy = (parts[2] || "").trim();
+      if (!provider || !providerNames.has(provider)) {
+        validation.errors.push(`第 ${index + 1} 行${t("clashRuleUnknownProvider")}`);
+      }
+      if (!policy || !policies.has(policy)) {
+        validation.errors.push(`第 ${index + 1} 行${t("clashRuleUnknownPolicy")}`);
+      }
+      return;
+    }
+    const targetIndex = CLASH_VALUELESS_RULE_TYPES.has(type) ? 1 : 2;
+    const policy = (parts[targetIndex] || "").trim();
+    if (!policy || !policies.has(policy)) {
+      validation.errors.push(`第 ${index + 1} 行${t("clashRuleUnknownPolicy")}`);
+    }
+  });
+  const fallbackRules = effectiveRules.filter((rule) => CLASH_VALUELESS_RULE_TYPES.has(rule.type));
+  if (fallbackRules.length === 0) {
+    validation.errors.push(t("clashRuleMatchMissing"));
+  } else if (fallbackRules.length > 1) {
+    validation.errors.push(t("clashRuleMatchDuplicate"));
+  } else if (!CLASH_VALUELESS_RULE_TYPES.has(effectiveRules[effectiveRules.length - 1]?.type || "")) {
+    validation.errors.push(t("clashRuleMatchNotLast"));
+  }
+  renderValidationMessages(refs.stashRuleValidation, validation);
   return validation;
 }
 
@@ -4035,6 +4254,52 @@ function readClashDraft() {
   };
 }
 
+function readStashDraft() {
+  return {
+    ...state.stash,
+    port: Number(refs.stashPort.value) || 7890,
+    socksPort: Number(refs.stashSocksPort.value) || 7891,
+    mixedPort: Number(refs.stashMixedPort.value) || 7892,
+    allowLan: refs.stashAllowLan.checked,
+    mode: refs.stashMode.value || DEFAULT_CLASH_MODE,
+    logLevel: refs.stashLogLevel.value || DEFAULT_CLASH_LOG_LEVEL,
+    ipv6: refs.stashIpv6.checked,
+    unifiedDelay: refs.stashUnifiedDelay.checked,
+    tcpConcurrent: refs.stashTcpConcurrent.checked,
+    externalController: refs.stashExternalController.value.trim(),
+    tun: {
+      ...state.stash.tun,
+      enable: refs.stashTunEnable.checked,
+      stack: refs.stashTunStack.value.trim(),
+      autoRoute: refs.stashTunAutoRoute.checked,
+      autoDetectInterface: refs.stashTunAutoDetectInterface.checked,
+      skipProxy: textToLines(refs.stashTunSkipProxy.value)
+    },
+    dns: {
+      ...state.stash.dns,
+      enable: refs.stashDnsEnabled.checked,
+      listen: refs.stashDnsListen.value.trim(),
+      ipv6: refs.stashDnsIpv6.checked,
+      enhancedMode: refs.stashDnsEnhancedMode.value,
+      fakeIpRange: refs.stashDnsFakeIpRange.value.trim(),
+      defaultNameservers: textToLines(refs.stashDefaultNameservers.value),
+      nameservers: textToLines(refs.stashNameservers.value),
+      fallbackNameservers: textToLines(refs.stashFallbackNameservers.value),
+      fallbackFilterGeoip: refs.stashFallbackFilterGeoip.checked,
+      fallbackFilterIpcidr: textToLines(refs.stashFallbackFilterIpcidr.value),
+      fakeIpFilter: textToLines(refs.stashFakeIpFilter.value)
+    },
+    hosts: textToLines(refs.stashHosts.value),
+    urlRewrite: textToLines(refs.stashUrlRewrite.value),
+    scripts: textToLines(refs.stashScripts.value),
+    mitm: {
+      hostname: textToLines(refs.stashMitmHostname.value)
+    },
+    ruleProviders: refs.stashRuleProviders.value.trimEnd(),
+    rules: parseClashRulesYaml(refs.stashRules.value).rules
+  };
+}
+
 function readGroupsDraft() {
   const groups = Object.fromEntries(groupEntries()
     .map(([name, spec]) => [name.trim(), normalizeGroupSpec(name.trim(), spec)])
@@ -4052,6 +4317,7 @@ function pageDraft(page) {
   if (page === "sources") return { sources: cloneConfig(state.sources || []) };
   if (page === "surge") return { surge: readSurgeDraft() };
   if (page === "clash") return { clash: readClashDraft() };
+  if (page === "stash") return { stash: readStashDraft() };
   return null;
 }
 
@@ -4062,6 +4328,7 @@ function pageBaseline(page) {
   if (page === "sources") return { sources: lastSavedState.sources || [] };
   if (page === "surge") return { surge: lastSavedState.surge };
   if (page === "clash") return { clash: lastSavedState.clash };
+  if (page === "stash") return { stash: lastSavedState.stash };
   return null;
 }
 
@@ -4089,6 +4356,10 @@ function collectClash() {
   state.clash = readClashDraft();
 }
 
+function collectStash() {
+  state.stash = readStashDraft();
+}
+
 function syncSurgeIpv6VifVisibility() {
   refs.surgeIpv6VifRow.classList.toggle("hidden", !refs.surgeIpv6.checked);
   refs.surgeIpv6Vif.disabled = !refs.surgeIpv6.checked;
@@ -4108,6 +4379,28 @@ function syncClashTunVisibility() {
 function syncClashFakeIpVisibility() {
   const enabled = refs.clashDnsEnhancedMode.value === "fake-ip";
   document.querySelectorAll("[data-clash-fake-ip-dependent]").forEach((row) => {
+    row.classList.toggle("hidden", !enabled);
+    row.querySelectorAll("input, select, textarea").forEach((control) => {
+      control.disabled = !enabled;
+    });
+  });
+  refreshConfigCodeEditors();
+}
+
+function syncStashTunVisibility() {
+  const enabled = refs.stashTunEnable.checked;
+  document.querySelectorAll("[data-stash-tun-dependent]").forEach((row) => {
+    row.classList.toggle("hidden", !enabled);
+    row.querySelectorAll("input, select, textarea").forEach((control) => {
+      control.disabled = !enabled;
+    });
+  });
+  refreshConfigCodeEditors();
+}
+
+function syncStashFakeIpVisibility() {
+  const enabled = refs.stashDnsEnhancedMode.value === "fake-ip";
+  document.querySelectorAll("[data-stash-fake-ip-dependent]").forEach((row) => {
     row.classList.toggle("hidden", !enabled);
     row.querySelectorAll("input, select, textarea").forEach((control) => {
       control.disabled = !enabled;
@@ -4331,6 +4624,91 @@ function validateSurgeScriptLines(lines) {
   return validation;
 }
 
+function parseStashScriptParams(value) {
+  const params = {};
+  const parts = [];
+  for (const rawPart of String(value || "").split(",")) {
+    const part = rawPart.trim();
+    if (!part) continue;
+    if (parts.length > 0 && !/^[A-Za-z][\w-]*=/.test(part)) {
+      parts[parts.length - 1] = `${parts[parts.length - 1]},${rawPart}`;
+      continue;
+    }
+    parts.push(part);
+  }
+  for (const part of parts) {
+    const [key, raw] = part.split(/=(.*)/s);
+    const normalizedKey = key?.trim().toLowerCase();
+    const valuePart = raw?.trim();
+    if (normalizedKey && valuePart !== undefined) params[normalizedKey] = valuePart;
+  }
+  return params;
+}
+
+function isHttpScriptUrl(value) {
+  try {
+    const url = new URL(String(value || ""));
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+function validateStashScriptLine(line, lineNumber, scriptNames) {
+  const trimmed = String(line || "").trim();
+  const result = { errors: [], warnings: [] };
+  if (!trimmed || trimmed.startsWith("#") || trimmed.startsWith(";")) return result;
+  if (/^\[[^\]]+\]$/.test(trimmed)) {
+    result.errors.push(`第 ${lineNumber} 行不能包含配置段标题`);
+    return result;
+  }
+
+  const separatorIndex = trimmed.indexOf("=");
+  if (separatorIndex <= 0 || !trimmed.slice(separatorIndex + 1).trim()) {
+    result.errors.push(`第 ${lineNumber} 行脚本语法应为 名称 = 参数`);
+    return result;
+  }
+
+  const name = trimmed.slice(0, separatorIndex).trim();
+  const params = parseStashScriptParams(trimmed.slice(separatorIndex + 1));
+  if (!name) {
+    result.errors.push(`第 ${lineNumber} 行缺少脚本名称`);
+  } else if (scriptNames.has(name)) {
+    result.errors.push(`第 ${lineNumber} 行脚本名称 ${name} 重复`);
+  } else {
+    scriptNames.add(name);
+  }
+
+  const type = (params.type || "").toLowerCase();
+  if (!["http-request", "http-response"].includes(type)) {
+    result.errors.push(`第 ${lineNumber} 行 type 必须是 http-request 或 http-response`);
+  }
+  if (!params.pattern) {
+    result.errors.push(`第 ${lineNumber} 行缺少 pattern`);
+  }
+  if (!isHttpScriptUrl(params["script-path"])) {
+    result.errors.push(`第 ${lineNumber} 行 script-path 必须是 http 或 https URL`);
+  }
+  if (params["max-size"] !== undefined) {
+    const maxSize = Number(params["max-size"]);
+    if (!Number.isFinite(maxSize) || maxSize < 0) {
+      result.errors.push(`第 ${lineNumber} 行 max-size 必须是非负数字`);
+    }
+  }
+  return result;
+}
+
+function validateStashScriptLines(lines) {
+  const validation = { errors: [], warnings: [] };
+  const scriptNames = new Set();
+  (lines || []).forEach((line, index) => {
+    const result = validateStashScriptLine(line, index + 1, scriptNames);
+    validation.errors.push(...result.errors);
+    validation.warnings.push(...result.warnings);
+  });
+  return validation;
+}
+
 function renderSurgeScriptValidation(validation) {
   const messages = [
     ...(validation?.errors || []).map((message) => ({ type: "error", message })),
@@ -4501,6 +4879,39 @@ async function saveActivePage(page = activePage) {
       }
       collectClash();
       patch = { clash: state.clash };
+    } else if (page === "stash") {
+      const hostValidation = validateCurrentStashHosts();
+      if (hostValidation.errors.length > 0) {
+        setSaveStatus("idle");
+        window.alert(t("stashHostValidationError"));
+        return;
+      }
+      const urlRewriteValidation = validateCurrentStashUrlRewrite();
+      if (urlRewriteValidation.errors.length > 0) {
+        setSaveStatus("idle");
+        window.alert(t("stashUrlRewriteValidationError"));
+        return;
+      }
+      const scriptValidation = validateCurrentStashScripts();
+      if (scriptValidation.errors.length > 0) {
+        setSaveStatus("idle");
+        window.alert(t("stashScriptValidationError"));
+        return;
+      }
+      const ruleProviderValidation = validateCurrentStashRuleProviders();
+      if (ruleProviderValidation.errors.length > 0) {
+        setSaveStatus("idle");
+        window.alert(t("stashRuleProvidersValidationError"));
+        return;
+      }
+      const ruleValidation = validateCurrentStashRules();
+      if (ruleValidation.errors.length > 0) {
+        setSaveStatus("idle");
+        window.alert(t("stashRuleValidationError"));
+        return;
+      }
+      collectStash();
+      patch = { stash: state.stash };
     }
     if (patch) {
       state = await request("/api/config", { method: "PATCH", body: JSON.stringify(patch) });
@@ -4573,16 +4984,8 @@ function renderSummary() {
 
 function renderSystemStatus() {
   const app = systemStatus?.app || {};
-  const schema = systemStatus?.schema || {};
   const update = systemStatus?.update || {};
   refs.systemCurrentVersion.textContent = app.version || "-";
-  const stored = Number(schema.stored);
-  const current = Number(schema.current);
-  refs.systemSchemaVersion.textContent = Number.isFinite(stored) && Number.isFinite(current)
-    ? t(schema.pending?.length ? "schemaPending" : "schemaMigrated")
-      .replace("{stored}", String(stored))
-      .replace("{current}", String(current))
-    : "-";
   refs.systemUpdateStatus.innerHTML = formatUpdateStatus(update);
   refs.checkUpdateBtn.disabled = false;
 }
@@ -4727,7 +5130,7 @@ function showSourceRefreshWarnings(result) {
 
 function renderFetchStats() {
   const lastFetched = fetchStats?.lastFetched || {};
-  const targets = ["surge", "clash"];
+  const targets = ["surge", "clash", "stash"];
   const records = Array.isArray(fetchStats?.recentUserAgents) ? fetchStats.recentUserAgents : [];
   const rows = records.map((record) => ({
     ...record,
@@ -4791,7 +5194,8 @@ function setFetchRecordsPage(page) {
 function formatFetchTargetLabel(target) {
   const key = {
     surge: "fetchTargetSurge",
-    clash: "fetchTargetClash"
+    clash: "fetchTargetClash",
+    stash: "fetchTargetStash"
   }[target];
   return key ? t(key) : String(target || "-");
 }
@@ -4894,9 +5298,11 @@ async function preview(target, options = {}) {
 function updatePreviewControls() {
   const loading = Boolean(previewLoadingTarget);
   for (const target of PREVIEW_TARGETS) {
-    const button = target === "surge"
-      ? refs.previewSurgeBtn
-      : refs.previewClashBtn;
+    const button = {
+      surge: refs.previewSurgeBtn,
+      clash: refs.previewClashBtn,
+      stash: refs.previewStashBtn
+    }[target];
     button.disabled = loading;
     button.textContent = PREVIEW_TARGET_LABELS[target];
   }
@@ -4978,6 +5384,7 @@ refs.fetchRecordsNextBtn.addEventListener("click", () => setFetchRecordsPage(fet
 refs.links.addEventListener("click", copyLink);
 refs.previewSurgeBtn.addEventListener("click", () => preview("surge"));
 refs.previewClashBtn.addEventListener("click", () => preview("clash"));
+refs.previewStashBtn.addEventListener("click", () => preview("stash"));
 refs.validateSurgeOnlineBtn.addEventListener("click", validateSurgeOnline);
 refs.uploadGeoIpMmdbBtn.addEventListener("click", uploadGeoIpMmdb);
 refs.notificationTelegramBotToken.addEventListener("input", () => {
@@ -4990,6 +5397,8 @@ refs.telegramBindCodeBtn.addEventListener("click", handleTelegramBindAction);
 refs.surgeIpv6.addEventListener("change", syncSurgeIpv6VifVisibility);
 refs.clashTunEnable.addEventListener("change", syncClashTunVisibility);
 refs.clashDnsEnhancedMode.addEventListener("change", syncClashFakeIpVisibility);
+refs.stashTunEnable.addEventListener("change", syncStashTunVisibility);
+refs.stashDnsEnhancedMode.addEventListener("change", syncStashFakeIpVisibility);
 refs.surgeHostAdvancedMode.addEventListener("click", toggleSurgeHostAdvancedMode);
 refs.addSurgeHostBtn.addEventListener("click", addSurgeHost);
 refs.surgeHostRows.addEventListener("click", handleSurgeHostListClick);
@@ -5026,6 +5435,14 @@ refs.generateSurgeMitmCaPassphraseBtn.addEventListener("click", generateSurgeMit
 refs.surgeMitmCaP12File.addEventListener("change", importSurgeMitmCaP12);
 refs.surgeRules.addEventListener("input", validateCurrentSurgeRules);
 refs.surgePonteDeviceNames.addEventListener("input", syncSurgePonteDeviceNames);
+refs.stashHosts.addEventListener("input", validateCurrentStashHosts);
+refs.stashUrlRewrite.addEventListener("input", validateCurrentStashUrlRewrite);
+refs.stashScripts.addEventListener("input", validateCurrentStashScripts);
+refs.stashRuleProviders.addEventListener("input", () => {
+  validateCurrentStashRuleProviders();
+  validateCurrentStashRules();
+});
+refs.stashRules.addEventListener("input", validateCurrentStashRules);
 document.addEventListener("input", () => queueMicrotask(updateSaveAvailability));
 document.addEventListener("change", () => queueMicrotask(updateSaveAvailability));
 document.addEventListener("click", () => queueMicrotask(updateSaveAvailability));
@@ -5035,6 +5452,9 @@ document.querySelectorAll("[data-surge-tab]").forEach((button) => {
 });
 document.querySelectorAll("[data-clash-tab]").forEach((button) => {
   button.addEventListener("click", () => showClashTab(button.dataset.clashTab));
+});
+document.querySelectorAll("[data-stash-tab]").forEach((button) => {
+  button.addEventListener("click", () => showStashTab(button.dataset.stashTab));
 });
 document.querySelectorAll(".luci-menu a").forEach((link) => {
   link.addEventListener("click", (event) => {

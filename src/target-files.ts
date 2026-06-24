@@ -6,6 +6,8 @@ export function configFileNameForTarget(target: Target): string {
       return "SubPilot.conf";
     case "clash":
       return "SubPilot.yaml";
+    case "stash":
+      return "subpilot-stash.yaml";
   }
 }
 

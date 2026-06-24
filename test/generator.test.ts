@@ -1,6 +1,7 @@
 import YAML from "yaml";
 import { describe, expect, it, vi } from "vitest";
 import { generateConfig } from "../src/generator";
+import { normalizeConfig } from "../src/config-store";
 import { DEFAULT_CONFIG } from "../src/default-config";
 import { CHAIN_EXIT_PROTOCOLS, CHAIN_EXIT_PROXY_NAME, STATIC_EXIT_GROUP_NAME, type ChainExitProtocol } from "../src/types";
 import { makeEnv } from "./helpers/env";
@@ -871,6 +872,10 @@ describe("generation", () => {
       clash: {
         ...DEFAULT_CONFIG.clash,
         rules: ["MATCH,Auto"]
+      },
+      stash: {
+        ...DEFAULT_CONFIG.stash,
+        rules: ["MATCH,Auto"]
       }
     }, "surge", "https://subpilot.example.com/sync/token/");
     expect(result.content).toContain("Proxy = select, Auto, [Primary] JP 1");
@@ -895,9 +900,9 @@ describe("generation", () => {
     expect(result.content).not.toContain("ipv6-vif =");
   });
 
-  it("outputs configured Surge scripts before rules", async () => {
+  it("outputs configured Surge script, MITM, and URL Rewrite sections in the expected order", async () => {
     const env = makeEnv();
-    const result = await generateConfig(env, {
+    const scriptResult = await generateConfig(env, {
       ...DEFAULT_CONFIG,
       sources: [],
       surge: {
@@ -909,14 +914,11 @@ describe("generation", () => {
       }
     }, "surge", "https://subpilot.example.com/sync/token");
 
-    expect(result.content).toContain("[Script]\n京东_开屏去广告 = type=http-response");
-    expect(result.content.indexOf("[Script]")).toBeGreaterThan(result.content.indexOf("[Proxy Group]"));
-    expect(result.content.indexOf("[Script]")).toBeLessThan(result.content.indexOf("[Rule]"));
-  });
+    expect(scriptResult.content).toContain("[Script]\n京东_开屏去广告 = type=http-response");
+    expect(scriptResult.content.indexOf("[Script]")).toBeGreaterThan(scriptResult.content.indexOf("[Proxy Group]"));
+    expect(scriptResult.content.indexOf("[Script]")).toBeLessThan(scriptResult.content.indexOf("[Rule]"));
 
-  it("outputs configured Surge MITM options before rules", async () => {
-    const env = makeEnv();
-    const result = await generateConfig(env, {
+    const mitmResult = await generateConfig(env, {
       ...DEFAULT_CONFIG,
       sources: [],
       surge: {
@@ -932,12 +934,33 @@ describe("generation", () => {
       }
     }, "surge", "https://subpilot.example.com/sync/token");
 
-    expect(result.content).toContain("[MITM]\nskip-server-cert-verify = true\nh2 = true\nhostname = wmapi.meituan.com, api.m.jd.com\nca-passphrase = test-passphrase\nca-p12 = BASE64P12");
-    expect(result.content.indexOf("[MITM]")).toBeLessThan(result.content.indexOf("[Rule]"));
+    expect(mitmResult.content).toContain("[MITM]\nskip-server-cert-verify = true\nh2 = true\nhostname = wmapi.meituan.com, api.m.jd.com\nca-passphrase = test-passphrase\nca-p12 = BASE64P12");
+    expect(mitmResult.content.indexOf("[MITM]")).toBeLessThan(mitmResult.content.indexOf("[Rule]"));
+
+    const urlRewriteResult = await generateConfig(env, {
+      ...DEFAULT_CONFIG,
+      sources: [],
+      surge: {
+        ...DEFAULT_CONFIG.surge,
+        urlRewrite: [
+          "^https?:\\/\\/example\\.com\\/ad - reject",
+          "^https?:\\/\\/old\\.example\\.com https://new.example.com 302"
+        ],
+        scripts: [
+          "Test Script = type=http-response,pattern=^https://example.com,script-path=https://example.com/script.js"
+        ],
+        rules: ["FINAL,Proxy"]
+      }
+    }, "surge", "https://subpilot.example.com/sync/token");
+
+    expect(urlRewriteResult.content).toContain("[URL Rewrite]\n^https?:\\/\\/example\\.com\\/ad - reject\n^https?:\\/\\/old\\.example\\.com https://new.example.com 302");
+    expect(urlRewriteResult.content.indexOf("[URL Rewrite]")).toBeGreaterThan(urlRewriteResult.content.indexOf("[Proxy Group]"));
+    expect(urlRewriteResult.content.indexOf("[URL Rewrite]")).toBeLessThan(urlRewriteResult.content.indexOf("[Script]"));
+    expect(urlRewriteResult.content.indexOf("[URL Rewrite]")).toBeLessThan(urlRewriteResult.content.indexOf("[Rule]"));
   });
 
-  it("outputs configured Surge hosts after General and keeps source hosts in the external resource", async () => {
-    const fetchMock = mockSubscription([
+  it("outputs configured Surge hosts and source subscription hosts for Surge and Clash", async () => {
+    mockSubscription([
       "[Host]",
       "source.example.test = 1.2.3.4",
       "custom.example.test = server:system",
@@ -971,79 +994,23 @@ describe("generation", () => {
         rules: ["FINAL,Proxy"]
       }
     };
-    const result = await generateConfig(env, config, "surge", "https://subpilot.example.com/sync/token");
 
-    expect(result.content).toContain("[Host]\ncustom.example.test = server:system\nalias.example.test = target.example.test");
-    expect(result.content).not.toContain("#!include https://subpilot.example.com/sync/token/surge-resources/");
-    expect(result.content).not.toContain("policy-path=");
-    expect(result.content.match(/custom\.example\.test = server:system/g)).toHaveLength(1);
-    expect(result.content).toContain("source.example.test = 1.2.3.4");
-    expect(result.content.indexOf("[Host]")).toBeGreaterThan(result.content.indexOf("[General]"));
-    expect(result.content.indexOf("[Host]")).toBeLessThan(result.content.indexOf("[Proxy Group]"));
-  });
+    const surge = await generateConfig(env, config, "surge", "https://subpilot.example.com/sync/token");
+    const clashFromSurgeHosts = await generateConfig(env, config, "clash", "https://subpilot.example.com/sync/token/");
 
-  it("outputs configured Surge URL Rewrite before scripts and rules", async () => {
-    const env = makeEnv();
-    const result = await generateConfig(env, {
-      ...DEFAULT_CONFIG,
-      sources: [],
-      surge: {
-        ...DEFAULT_CONFIG.surge,
-        urlRewrite: [
-          "^https?:\\/\\/example\\.com\\/ad - reject",
-          "^https?:\\/\\/old\\.example\\.com https://new.example.com 302"
-        ],
-        scripts: [
-          "Test Script = type=http-response,pattern=^https://example.com,script-path=https://example.com/script.js"
-        ],
-        rules: ["FINAL,Proxy"]
-      }
-    }, "surge", "https://subpilot.example.com/sync/token");
+    expect(surge.content).toContain("[Host]\ncustom.example.test = server:system\nalias.example.test = target.example.test");
+    expect(surge.content).not.toContain("#!include https://subpilot.example.com/sync/token/surge-resources/");
+    expect(surge.content).not.toContain("policy-path=");
+    expect(surge.content.match(/custom\.example\.test = server:system/g)).toHaveLength(1);
+    expect(surge.content).toContain("source.example.test = 1.2.3.4");
+    expect(surge.content.indexOf("[Host]")).toBeGreaterThan(surge.content.indexOf("[General]"));
+    expect(surge.content.indexOf("[Host]")).toBeLessThan(surge.content.indexOf("[Proxy Group]"));
 
-    expect(result.content).toContain("[URL Rewrite]\n^https?:\\/\\/example\\.com\\/ad - reject\n^https?:\\/\\/old\\.example\\.com https://new.example.com 302");
-    expect(result.content.indexOf("[URL Rewrite]")).toBeGreaterThan(result.content.indexOf("[Proxy Group]"));
-    expect(result.content.indexOf("[URL Rewrite]")).toBeLessThan(result.content.indexOf("[Script]"));
-    expect(result.content.indexOf("[URL Rewrite]")).toBeLessThan(result.content.indexOf("[Rule]"));
-  });
+    expect((YAML.parse(clashFromSurgeHosts.content) as { hosts: Record<string, string> }).hosts).toMatchObject({
+      "source.example.test": "1.2.3.4"
+    });
 
-  it("keeps host lines from source subscriptions in surge and clash outputs", async () => {
-    const fetchMock = mockSubscription([
-      "[Host]",
-      "source.example.test = 1.2.3.4",
-      "",
-      "[Proxy]",
-      "JP 1 = trojan, jp.example.com, 443, password=p"
-    ].join("\n"));
-    const env = makeEnv();
-    const config = {
-      ...DEFAULT_CONFIG,
-      settings: {
-        ...DEFAULT_CONFIG.settings,
-        geoipRenameEnabled: false
-      },
-      groups: {
-        Proxy: "select, {all}"
-      },
-      sources: [{
-        id: "src1",
-        name: "Primary",
-        url: "https://example.com/sub",
-        fetchUserAgent: "surge" as const,
-        enabled: true
-      }],
-      surge: DEFAULT_CONFIG.surge
-    };
-
-    const surge = await generateConfig(env, config, "surge", "https://subpilot.example.com/sync/token/");
-    const clash = await generateConfig(env, config, "clash", "https://subpilot.example.com/sync/token/");
-
-    expect(surge.content).toContain("[Host]\nsource.example.test = 1.2.3.4");
-    const clashHosts = (YAML.parse(clash.content) as { hosts: Record<string, string> }).hosts;
-    expect(clashHosts).toMatchObject({ "source.example.test": "1.2.3.4" });
-  });
-
-  it("keeps clash hosts from source subscriptions in surge and clash outputs", async () => {
-    const fetchMock = mockSubscription([
+    mockSubscription([
       "hosts:",
       "  clash.example.test:",
       "    - 1.1.1.1",
@@ -1056,8 +1023,7 @@ describe("generation", () => {
       "    port: 443",
       "    password: p"
     ].join("\n"));
-    const env = makeEnv();
-    const config = {
+    const clashHostConfig = {
       ...DEFAULT_CONFIG,
       settings: {
         ...DEFAULT_CONFIG.settings,
@@ -1075,15 +1041,191 @@ describe("generation", () => {
       }]
     };
 
-    const surge = await generateConfig(env, config, "surge", "https://subpilot.example.com/sync/token/");
-    const clash = await generateConfig(env, config, "clash", "https://subpilot.example.com/sync/token/");
+    const surgeFromClashHosts = await generateConfig(env, clashHostConfig, "surge", "https://subpilot.example.com/sync/token/");
+    const clash = await generateConfig(env, clashHostConfig, "clash", "https://subpilot.example.com/sync/token/");
 
-    expect(surge.content).toContain("[Host]\nclash.example.test = 1.1.1.1, 1.0.0.1\nedge.example.test = 2.2.2.2");
+    expect(surgeFromClashHosts.content).toContain("[Host]\nclash.example.test = 1.1.1.1, 1.0.0.1\nedge.example.test = 2.2.2.2");
     const clashHosts = (YAML.parse(clash.content) as { hosts: Record<string, string | string[]> }).hosts;
     expect(clashHosts).toEqual({
       "clash.example.test": ["1.1.1.1", "1.0.0.1"],
       "edge.example.test": "2.2.2.2"
     });
+  });
+
+  it("builds Stash as an independent YAML target", async () => {
+    mockSubscription([
+      "[Host]",
+      "source.example.test = 1.1.1.1",
+      "",
+      "[Proxy]",
+      "SG 1 = trojan, sg.example.com, 443, password=p"
+    ].join("\n"));
+    const env = makeEnv();
+    const config = normalizeConfig({
+      ...DEFAULT_CONFIG,
+      settings: {
+        ...DEFAULT_CONFIG.settings,
+        geoipRenameEnabled: false
+      },
+      groups: {
+        Proxy: "select, {all exclude=Chain}",
+        Auto: "url-test, {all exclude=Chain}, url=https://www.gstatic.com/generate_204, interval=600"
+      },
+      sources: [{
+        id: "src1",
+        name: "Primary",
+        url: "https://example.com/sub",
+        fetchUserAgent: "surge" as const,
+        enabled: true
+      }],
+      surge: {
+        ...DEFAULT_CONFIG.surge,
+        urlRewrite: ["^https?:\\/\\/surge\\.example\\.com\\/ad - reject"],
+        mitm: {
+          ...DEFAULT_CONFIG.surge.mitm,
+          caPassphrase: "secret-passphrase",
+          caP12: "BASE64P12"
+        }
+      },
+      clash: {
+        ...DEFAULT_CONFIG.clash,
+        port: 8800,
+        rules: ["MATCH,DIRECT"]
+      },
+      stash: {
+        ...DEFAULT_CONFIG.stash,
+        port: 9900,
+        hosts: [
+          "source.example.test = 2.2.2.2",
+          "manual.example.test = server:system"
+        ],
+        urlRewrite: ["^https?:\\/\\/example\\.com\\/ad - reject"],
+        scripts: [
+          "Startup = type=http-response,requires-body=1,max-size=0,pattern=^https://example.com/api,script-path=https://example.com/startup.js",
+          "Broken = type=http-response,pattern=^https://bad.example.com"
+        ],
+        mitm: {
+          hostname: ["example.com"]
+        },
+        ruleProviders: [
+          "rule-providers:",
+          "  Advertising:",
+          "    type: http",
+          "    behavior: classical",
+          "    url: https://example.com/Advertising.yaml",
+          "    path: ./rules/Advertising.yaml",
+          "    interval: 86400"
+        ].join("\n"),
+        rules: [
+          "RULE-SET,Advertising,REJECT",
+          "MATCH,Proxy"
+        ]
+      }
+    });
+
+    const result = await generateConfig(env, config, "stash", "https://subpilot.example.com/sync/token/");
+    const parsed = YAML.parse(result.content) as {
+      port: number;
+      hosts: Record<string, string>;
+      http: {
+        "url-rewrite": string[];
+        mitm: string[];
+        script: Array<{ name: string; type: string; match: string; "require-body": boolean; "max-size": number }>;
+      };
+      "script-providers": Record<string, { url: string; interval: number }>;
+      "rule-providers": Record<string, { url: string }>;
+      proxies: Array<Record<string, unknown>>;
+      "proxy-groups": Array<{ name: string; proxies: string[] }>;
+      rules: string[];
+    };
+
+    expect(result.target).toBe("stash");
+    expect(result.contentType).toBe("text/yaml; charset=utf-8");
+    expect(result.warnings).toContain("Stash script line 2: skipped invalid script definition");
+    expect(result.content).toMatch(/^#SUBSCRIBED https:\/\/subpilot\.example\.com\/sync\/token\/\n# Last Updated:/);
+    expect(result.content).not.toContain("ca-p12");
+    expect(result.content).not.toContain("ca-passphrase");
+    expect(result.content).not.toContain("secret-passphrase");
+    expect(result.content).not.toContain("BASE64P12");
+    expect(parsed.port).toBe(9900);
+    expect(parsed.hosts).toMatchObject({
+      "source.example.test": "2.2.2.2",
+      "manual.example.test": "server:system"
+    });
+    expect(parsed.http["url-rewrite"]).toEqual(["^https?:\\/\\/example\\.com\\/ad - reject"]);
+    expect(parsed.http.mitm).toEqual(["example.com"]);
+    expect(parsed.http.script).toEqual([expect.objectContaining({
+      name: "Startup",
+      type: "response",
+      match: "^https://example.com/api",
+      "require-body": true,
+      "max-size": 0
+    })]);
+    expect(parsed["script-providers"].Startup).toEqual({
+      url: "https://example.com/startup.js",
+      interval: 86400
+    });
+    expect(parsed["rule-providers"].Advertising?.url).toBe("https://example.com/Advertising.yaml");
+    expect(parsed.proxies).toContainEqual(expect.objectContaining({
+      type: "trojan",
+      server: "sg.example.com"
+    }));
+    expect(parsed["proxy-groups"].find((group) => group.name === "Proxy")?.proxies).toContain("[Primary] SG 1");
+    expect(parsed.rules).toEqual([
+      "RULE-SET,Advertising,REJECT",
+      "MATCH,Proxy"
+    ]);
+  });
+
+  it("keeps Stash output isolated from Surge and Clash feature settings", async () => {
+    const env = makeEnv();
+    const baseConfig = normalizeConfig({
+      ...DEFAULT_CONFIG,
+      sources: [],
+      stash: {
+        ...DEFAULT_CONFIG.stash,
+        port: 9900,
+        hosts: ["stash.example.test = 1.1.1.1"],
+        rules: ["MATCH,Proxy"]
+      }
+    });
+    const changedClientConfig = normalizeConfig({
+      ...baseConfig,
+      surge: {
+        ...baseConfig.surge,
+        hosts: ["surge.example.test = 2.2.2.2"],
+        urlRewrite: ["^https?:\\/\\/surge\\.example\\.com\\/ad - reject"],
+        scripts: ["Surge Script = type=http-response,pattern=^https://surge.example.com,script-path=https://surge.example.com/script.js"],
+        mitm: {
+          ...baseConfig.surge.mitm,
+          hostname: ["surge.example.test"],
+          caPassphrase: "secret-passphrase",
+          caP12: "BASE64P12"
+        }
+      },
+      clash: {
+        ...baseConfig.clash,
+        port: 8800,
+        rules: ["MATCH,DIRECT"]
+      }
+    });
+    const changedStashConfig = normalizeConfig({
+      ...baseConfig,
+      stash: {
+        ...baseConfig.stash,
+        port: 9901,
+        hosts: ["stash.example.test = 9.9.9.9"],
+        urlRewrite: ["^https?:\\/\\/stash\\.example\\.com\\/ad - reject"]
+      }
+    });
+
+    const baseStash = YAML.parse((await generateConfig(env, baseConfig, "stash", "https://subpilot.example.com/sync/token/")).content);
+    const changedStash = YAML.parse((await generateConfig(env, changedClientConfig, "stash", "https://subpilot.example.com/sync/token/")).content);
+    const baseClash = YAML.parse((await generateConfig(env, baseConfig, "clash", "https://subpilot.example.com/sync/token/")).content);
+    const clashAfterStashChanges = YAML.parse((await generateConfig(env, changedStashConfig, "clash", "https://subpilot.example.com/sync/token/")).content);
+
+    expect(changedStash).toEqual(baseStash);
+    expect(clashAfterStashChanges).toEqual(baseClash);
   });
 
   it("generates chain proxy nodes whenever the shared exit proxy is configured", async () => {

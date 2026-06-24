@@ -13,7 +13,11 @@ import { mockSubscription, restoreMocksAfterEach } from "./helpers/fetch";
 restoreMocksAfterEach();
 
 describe("KV config storage", () => {
-  it("derives Telegram notification channel from the bot token", () => {
+  it("normalizes default config, notification settings, empty lists, subnet groups, and removed client switches", async () => {
+    const env = makeEnv();
+    const loaded = await loadConfig(env);
+    expect(loaded).toMatchObject(DEFAULT_CONFIG);
+
     const config = normalizeConfig({
       ...DEFAULT_CONFIG,
       settings: {
@@ -49,6 +53,77 @@ describe("KV config storage", () => {
     });
 
     expect(invalidTimeZone.settings.displayTimeZone).toBe("Asia/Shanghai");
+
+    const cleared = normalizeConfig({
+      ...DEFAULT_CONFIG,
+      chain: {
+        ...DEFAULT_CONFIG.chain,
+        filter: []
+      },
+      surge: {
+        ...DEFAULT_CONFIG.surge,
+        rules: []
+      },
+      clash: {
+        ...DEFAULT_CONFIG.clash,
+        nameservers: [],
+        ruleProviders: "",
+        rules: []
+      },
+      stash: {
+        ...DEFAULT_CONFIG.stash,
+        dns: {
+          ...DEFAULT_CONFIG.stash.dns,
+          nameservers: []
+        },
+        hosts: [],
+        urlRewrite: [],
+        scripts: [],
+        rules: []
+      }
+    });
+    expect(cleared.chain.filter).toEqual([]);
+    expect(cleared.surge.rules).toEqual([]);
+    expect(cleared.clash.nameservers).toEqual([]);
+    expect(cleared.clash.ruleProviders).toBe("");
+    expect(cleared.clash.rules).toEqual([]);
+    expect(cleared.stash.dns.nameservers).toEqual([]);
+    expect(cleared.stash.hosts).toEqual([]);
+    expect(cleared.stash.urlRewrite).toEqual([]);
+    expect(cleared.stash.scripts).toEqual([]);
+    expect(cleared.stash.rules).toEqual([]);
+
+    const subnet = normalizeConfig({
+      ...DEFAULT_CONFIG,
+      groups: {
+        Proxy: "select, Auto",
+        Auto: "url-test, {all}, url=https://www.gstatic.com/generate_204, interval=600",
+        Network: "subnet, default=Proxy, default=Auto, TYPE:WIFI=Proxy, TYPE:WIFI=Proxy, SSID:Office=DIRECT, BSSID:Self=Network, Proxy, {all}, url=https://example.com"
+      }
+    });
+    expect(subnet.groups.Network).toBe("subnet, default=Proxy, TYPE:WIFI=Proxy, TYPE:WIFI=Proxy, SSID:Office=DIRECT");
+
+    const chainSwitches = normalizeConfig({
+      ...DEFAULT_CONFIG,
+      chain: {
+        exitProxy: {
+          ...DEFAULT_CONFIG.chain.exitProxy,
+          server: ""
+        },
+        filter: DEFAULT_CONFIG.chain.filter
+      }
+    });
+    expect("chainEnabled" in chainSwitches.surge).toBe(false);
+    expect("chainEnabled" in chainSwitches.clash).toBe(false);
+
+    const unsupportedDnsMode = normalizeConfig({
+      ...DEFAULT_CONFIG,
+      clash: {
+        ...DEFAULT_CONFIG.clash,
+        dnsEnhancedMode: "normal"
+      }
+    });
+    expect(unsupportedDnsMode.clash.dnsEnhancedMode).toBe(DEFAULT_CONFIG.clash.dnsEnhancedMode);
   });
 
   it("stores settings, groups, sources, and client features as separate KV values", async () => {
@@ -109,6 +184,21 @@ describe("KV config storage", () => {
       clash: {
         ...DEFAULT_CONFIG.clash,
         mixedPort: 7899,
+        rules: ["MATCH,Proxy"]
+      },
+      stash: {
+        ...DEFAULT_CONFIG.stash,
+        port: 7900,
+        hosts: ["stash.example.com = 4.4.4.4"],
+        urlRewrite: ["^https?:\\/\\/stash\\.example\\.com\\/ad - reject"],
+        scripts: ["Stash Script = type=http-response,requires-body=1,max-size=0,pattern=^https://stash.example.com,script-path=https://stash.example.com/script.js"],
+        mitm: {
+          hostname: ["stash.example.com"]
+        },
+        dns: {
+          ...DEFAULT_CONFIG.stash.dns,
+          nameservers: ["9.9.9.9"]
+        },
         rules: ["MATCH,Proxy"]
       }
     });
@@ -210,6 +300,18 @@ describe("KV config storage", () => {
     expect(JSON.parse(kv.get("config:clash:fakeIpFilter") ?? "[]")).toContain("dns.msftncsi.com");
     expect(JSON.parse(kv.get("config:clash:ruleProviders") ?? "\"\"")).toContain("rule-providers:");
     expect(JSON.parse(kv.get("config:clash:rules") ?? "[]")).toEqual(["MATCH,Proxy"]);
+    expect(JSON.parse(kv.get("config:stash:port") ?? "0")).toBe(7900);
+    expect(JSON.parse(kv.get("config:stash:hosts") ?? "[]")).toEqual(["stash.example.com = 4.4.4.4"]);
+    expect(JSON.parse(kv.get("config:stash:urlRewrite") ?? "[]")).toEqual(["^https?:\\/\\/stash\\.example\\.com\\/ad - reject"]);
+    expect(JSON.parse(kv.get("config:stash:scripts") ?? "[]")).toEqual(["Stash Script = type=http-response,requires-body=1,max-size=0,pattern=^https://stash.example.com,script-path=https://stash.example.com/script.js"]);
+    expect(JSON.parse(kv.get("config:stash:mitm") ?? "{}")).toEqual({ hostname: ["stash.example.com"] });
+    expect(JSON.parse(kv.get("config:stash:dns") ?? "{}")).toMatchObject({
+      enable: true,
+      nameservers: ["9.9.9.9"]
+    });
+    expect(JSON.parse(kv.get("config:stash:rules") ?? "[]")).toEqual(["MATCH,Proxy"]);
+    expect(kv.has("config:stash:caP12")).toBe(false);
+    expect(kv.has("config:stash:caPassphrase")).toBe(false);
     expect(JSON.parse(kv.get("config:sources:index") ?? "[]")).toEqual(["src1"]);
     const storedSource = JSON.parse(kv.get("config:sources:src1") ?? "{}") as { url?: string; urlEncrypted?: string; fetchUserAgent?: string };
     expect(storedSource).toMatchObject({ url: "", fetchUserAgent: "surge" });
@@ -217,15 +319,18 @@ describe("KV config storage", () => {
     expect(kv.get("config:sources:src1")).not.toContain("https://example.com/sub");
     const loaded = await loadConfig(env);
     expect(loaded.sources[0]).toMatchObject({ id: "src1", url: "https://example.com/sub", fetchUserAgent: "surge" });
+    expect(loaded.stash.port).toBe(7900);
+    expect(loaded.stash.mitm).toEqual({ hostname: ["stash.example.com"] });
   });
 
-  it("clears source caches immediately when sources are disabled or deleted", async () => {
+  it("clears source caches immediately when sources are disabled, deleted, or orphaned", async () => {
     const kv = new Map<string, string>();
     const env = makeEnv(kv);
     const fetchedAt = "2026-06-20T01:00:00.000Z";
     const disabledKey = `cache:source:${await sha256Hex("https://example.com/disabled|Surge iOS/3727")}`;
     const deletedKey = `cache:source:${await sha256Hex("https://example.com/deleted|Surge iOS/3727")}`;
     const orphanDeletedKey = `cache:source:${await sha256Hex("https://example.com/orphan-deleted|Surge iOS/3727")}`;
+    const orphanKey = `cache:source:${await sha256Hex("https://example.com/orphan|Surge iOS/3727")}`;
     const enabledKey = `cache:source:${await sha256Hex("https://example.com/enabled|Surge iOS/3727")}`;
     const cacheEntries = [
       { key: disabledKey, fetchedAt, sourceId: "disabled", sourceName: "Disabled" },
@@ -237,6 +342,7 @@ describe("KV config storage", () => {
       kv.set(`cache:sourceMeta:${entry.key.slice("cache:source:".length)}`, JSON.stringify(entry));
     }
     kv.set(orphanDeletedKey, "orphan-deleted-content");
+    kv.set(orphanKey, "orphan-content");
     kv.set("cache:sourceMeta:index", JSON.stringify(cacheEntries));
 
     await saveConfig(env, {
@@ -264,55 +370,9 @@ describe("KV config storage", () => {
     expect(kv.has(deletedKey)).toBe(false);
     expect(kv.has(`cache:sourceMeta:${deletedKey.slice("cache:source:".length)}`)).toBe(false);
     expect(kv.has(orphanDeletedKey)).toBe(false);
+    expect(kv.has(orphanKey)).toBe(false);
     expect(kv.get(enabledKey)).toBe("enabled-content");
     expect(JSON.parse(kv.get("cache:sourceMeta:index") ?? "[]")).toEqual([cacheEntries[2]]);
-  });
-
-  it("clears orphan source cache content even when metadata is missing", async () => {
-    const kv = new Map<string, string>();
-    const env = makeEnv(kv);
-    const orphanKey = `cache:source:${await sha256Hex("https://example.com/orphan|Surge iOS/3727")}`;
-    kv.set(orphanKey, "orphan-content");
-
-    await saveConfig(env, {
-      ...DEFAULT_CONFIG,
-      sources: []
-    });
-
-    expect(kv.has(orphanKey)).toBe(false);
-    expect(JSON.parse(kv.get("cache:sourceMeta:index") ?? "[]")).toEqual([]);
-  });
-
-  it("loads defaults when stored config has not been initialized", async () => {
-    const env = makeEnv();
-    const loaded = await loadConfig(env);
-    expect(loaded).toMatchObject(DEFAULT_CONFIG);
-  });
-
-  it("keeps explicitly cleared chain filter and client feature lists empty", () => {
-    const config = normalizeConfig({
-      ...DEFAULT_CONFIG,
-      chain: {
-        ...DEFAULT_CONFIG.chain,
-        filter: []
-      },
-      surge: {
-        ...DEFAULT_CONFIG.surge,
-        rules: []
-      },
-      clash: {
-        ...DEFAULT_CONFIG.clash,
-        nameservers: [],
-        ruleProviders: "",
-        rules: []
-      }
-    });
-
-    expect(config.chain.filter).toEqual([]);
-    expect(config.surge.rules).toEqual([]);
-    expect(config.clash.nameservers).toEqual([]);
-    expect(config.clash.ruleProviders).toBe("");
-    expect(config.clash.rules).toEqual([]);
   });
 
   it("omits disabled groups while keeping their definitions stored", async () => {
@@ -386,7 +446,7 @@ describe("KV config storage", () => {
     expect(rules).not.toContain("MATCH,Auto");
   });
 
-  it("validates Surge rule syntax and rejects unknown policies", () => {
+  it("validates Surge rules, hosts, URL Rewrite entries, and inferred MITM hostnames", () => {
     expect(validateSurgeRules(DEFAULT_CONFIG)).toBeNull();
 
     const baseConfig = {
@@ -407,7 +467,7 @@ describe("KV config storage", () => {
 
     expect(validateSurgeRules(baseConfig)).toBeNull();
 
-    const invalidCases: Array<[string[], string]> = [
+    const invalidRuleCases: Array<[string[], string]> = [
       [["DOMAIN-SUFFIX,example.com,CustomPolicy"], "策略出口必须是已配置策略组或 Surge 内置策略"],
       [["DOMAIN-SUFFIX,example.com,PASS", "FINAL,Proxy"], "策略出口必须是已配置策略组或 Surge 内置策略"],
       [["DOMAIN-SUFFIX,example.com,REJECT-200", "FINAL,Proxy"], "策略出口必须是已配置策略组或 Surge 内置策略"],
@@ -422,7 +482,7 @@ describe("KV config storage", () => {
       [["FINAL,Proxy", "FINAL,DIRECT"], "只能保留一个 FINAL"]
     ];
 
-    for (const [rules, message] of invalidCases) {
+    for (const [rules, message] of invalidRuleCases) {
       expect(validateSurgeRules({
         ...baseConfig,
         surge: {
@@ -431,9 +491,7 @@ describe("KV config storage", () => {
         }
       })).toContain(message);
     }
-  });
 
-  it("validates Surge host syntax", () => {
     expect(validateSurgeHosts({
       surge: {
         ...DEFAULT_CONFIG.surge,
@@ -448,7 +506,7 @@ describe("KV config storage", () => {
       }
     })).toBeNull();
 
-    const invalidCases: Array<[string[], string]> = [
+    const invalidHostCases: Array<[string[], string]> = [
       [["[Host]"], "不能包含配置段标题"],
       [["abc.com 1.2.3.4"], "语法应为"],
       [["abc.com = "], "语法应为"],
@@ -458,7 +516,7 @@ describe("KV config storage", () => {
       [["abc.com = server:ftp://dns.example.com"], "解析值格式无效"]
     ];
 
-    for (const [hosts, message] of invalidCases) {
+    for (const [hosts, message] of invalidHostCases) {
       expect(validateSurgeHosts({
         surge: {
           ...DEFAULT_CONFIG.surge,
@@ -466,9 +524,7 @@ describe("KV config storage", () => {
         }
       })).toContain(message);
     }
-  });
 
-  it("validates Surge URL Rewrite syntax", () => {
     expect(validateSurgeUrlRewrite({
       surge: {
         ...DEFAULT_CONFIG.surge,
@@ -480,7 +536,7 @@ describe("KV config storage", () => {
       }
     })).toBeNull();
 
-    const invalidCases: Array<[string[], string]> = [
+    const invalidUrlRewriteCases: Array<[string[], string]> = [
       [["[URL Rewrite]"], "不能包含配置段标题"],
       [["^http:\\/\\/ad\\.com -"], "语法应为"],
       [["^http:\\/\\/( - reject"], "正则表达式无效"],
@@ -488,7 +544,7 @@ describe("KV config storage", () => {
       [["^http:\\/\\/old\\.example\\.com - 302"], "需要有效替换 URL"]
     ];
 
-    for (const [urlRewrite, message] of invalidCases) {
+    for (const [urlRewrite, message] of invalidUrlRewriteCases) {
       expect(validateSurgeUrlRewrite({
         surge: {
           ...DEFAULT_CONFIG.surge,
@@ -496,9 +552,7 @@ describe("KV config storage", () => {
         }
       })).toContain(message);
     }
-  });
 
-  it("infers MITM hostnames from HTTPS URL Rewrite patterns", () => {
     expect(inferUrlRewriteMitmHostnames([
       "^https?:\\/\\/.+\\.pangolin-sdk-toutiao\\.com\\/api\\/ad - reject",
       "^https?:\\/\\/.+\\.(pglstatp-toutiao|pstatp)\\.com\\/obj\\/ad - reject",
@@ -585,19 +639,6 @@ describe("KV config storage", () => {
     expect(String(autoGroup?.interval)).toBe("600");
   });
 
-  it("preserves subnet mapping options during normalization", () => {
-    const config = normalizeConfig({
-      ...DEFAULT_CONFIG,
-      groups: {
-        Proxy: "select, Auto",
-        Auto: "url-test, {all}, url=https://www.gstatic.com/generate_204, interval=600",
-        Network: "subnet, default=Proxy, default=Auto, TYPE:WIFI=Proxy, TYPE:WIFI=Proxy, SSID:Office=DIRECT, BSSID:Self=Network, Proxy, {all}, url=https://example.com"
-      }
-    });
-
-    expect(config.groups.Network).toBe("subnet, default=Proxy, TYPE:WIFI=Proxy, TYPE:WIFI=Proxy, SSID:Office=DIRECT");
-  });
-
   it("outputs subnet policy groups only for Surge and rewrites Clash rule targets to Proxy", async () => {
     const fetchMock = mockSubscription("JP 1 = trojan, jp.example.com, 443, password=p");
     const env = makeEnv();
@@ -645,31 +686,4 @@ describe("KV config storage", () => {
     expect(parsed.rules).not.toContain("DOMAIN-SUFFIX,network.example,Network");
   });
 
-  it("does not expose client chain switches in normalized config", () => {
-    const config = normalizeConfig({
-      ...DEFAULT_CONFIG,
-      chain: {
-        exitProxy: {
-          ...DEFAULT_CONFIG.chain.exitProxy,
-          server: ""
-        },
-        filter: DEFAULT_CONFIG.chain.filter
-      }
-    });
-
-    expect("chainEnabled" in config.surge).toBe(false);
-    expect("chainEnabled" in config.clash).toBe(false);
-  });
-
-  it("normalizes unsupported Clash DNS enhanced modes to the default", () => {
-    const config = normalizeConfig({
-      ...DEFAULT_CONFIG,
-      clash: {
-        ...DEFAULT_CONFIG.clash,
-        dnsEnhancedMode: "normal"
-      }
-    });
-
-    expect(config.clash.dnsEnhancedMode).toBe(DEFAULT_CONFIG.clash.dnsEnhancedMode);
-  });
 });

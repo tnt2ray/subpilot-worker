@@ -1,6 +1,7 @@
+import { DEFAULT_CONFIG } from "./default-config";
 import { DEFAULT_DISPLAY_TIME_ZONE } from "./util";
 
-export const CURRENT_KV_SCHEMA_VERSION = 2;
+export const CURRENT_KV_SCHEMA_VERSION = 3;
 export const CONFIG_SCHEMA_VERSION_KEY = "config:schemaVersion";
 
 type MigrationStep = {
@@ -9,16 +10,30 @@ type MigrationStep = {
   run: (env: Env) => Promise<void>;
 };
 
-const MIGRATIONS: MigrationStep[] = [{
-  from: 1,
-  to: 2,
-  run: async (env) => {
-    const key = "config:settings:displayTimeZone";
-    if (await env.SUBPILOT_CONFIG.get(key) === null) {
-      await env.SUBPILOT_CONFIG.put(key, JSON.stringify(DEFAULT_DISPLAY_TIME_ZONE));
+const MIGRATIONS: MigrationStep[] = [
+  {
+    from: 1,
+    to: 2,
+    run: async (env) => {
+      const key = "config:settings:displayTimeZone";
+      if (await env.SUBPILOT_CONFIG.get(key) === null) {
+        await env.SUBPILOT_CONFIG.put(key, JSON.stringify(DEFAULT_DISPLAY_TIME_ZONE));
+      }
+    }
+  },
+  {
+    from: 2,
+    to: 3,
+    run: async (env) => {
+      await Promise.all(Object.entries(DEFAULT_CONFIG.stash).map(async ([field, value]) => {
+        const key = `config:stash:${field}`;
+        if (await env.SUBPILOT_CONFIG.get(key) === null) {
+          await env.SUBPILOT_CONFIG.put(key, JSON.stringify(value));
+        }
+      }));
     }
   }
-}];
+];
 
 export interface KvSchemaStatus {
   current: number;

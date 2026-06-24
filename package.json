@@ -1,6 +1,6 @@
 {
   "name": "subpilot-worker",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "private": true,
   "license": "AGPL-3.0-or-later",
   "type": "module",
@@ -10,6 +10,7 @@
     "setup": "node scripts/setup-cloudflare.mjs",
     "update": "node scripts/update-cloudflare.mjs",
     "migrate": "node scripts/migrate-kv.mjs",
+    "package:release": "node scripts/package-release.mjs",
     "types": "node scripts/generate-worker-types.mjs",
     "typecheck": "tsc --noEmit",
     "typecheck:worker": "npm run types && npm run typecheck",

@@ -7,7 +7,7 @@ const RECENT_FETCHES_KEY = "stats:config:recentFetches";
 const RECENT_FETCH_PREFIX = "stats:config:recentFetch:";
 export type ConfigFetchTarget = Target;
 
-const TRACKED_TARGETS: ConfigFetchTarget[] = ["surge", "clash"];
+const TRACKED_TARGETS: ConfigFetchTarget[] = ["surge", "clash", "stash"];
 const MAX_STORED_FETCH_RECORDS = 500;
 const MAX_RECENT_FETCH_ROWS = MAX_STORED_FETCH_RECORDS;
 const MAX_USER_AGENT_LENGTH = 240;

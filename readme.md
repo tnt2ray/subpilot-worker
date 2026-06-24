@@ -1,6 +1,6 @@
 # SubPilot Worker
 
-SubPilot Worker 是运行在 Cloudflare Workers 上的订阅配置生成器。它从上游订阅源读取节点，按管理页中的规则生成 Surge 和 Clash/mihomo 配置，并用 Workers KV 保存运行配置。
+SubPilot Worker 是运行在 Cloudflare Workers 上的订阅配置生成器。它从上游订阅源读取节点，按管理页中的规则生成 Surge、Clash/mihomo 和 Stash 配置，并用 Workers KV 保存运行配置。
 
 本仓库可以公开使用：仓库不会保存生产 KV namespace、生产域名、管理员 token、订阅源 URL、链式出口密码、MITM CA 或其他个人运行数据。自己的生产部署信息应保存在本地未跟踪的 `wrangler.jsonc`、Cloudflare Worker Secrets 和 Workers KV 中。
 
@@ -13,11 +13,11 @@ SubPilot Worker 项目代码以 [GNU Affero General Public License v3.0 or later
 ## 功能概览
 
 - 管理上游订阅源地址、启用状态、抓取 User-Agent 和节点名前缀。
-- 生成 Surge 和 Clash/mihomo 两种目标配置。
+- 生成 Surge、Clash/mihomo 和 Stash 目标配置。
 - 支持客户端 User-Agent 自动选择输出目标。
-- 用独立字段维护 Surge 和 Clash 功能配置，不需要编辑整段模板。
+- 用独立字段维护 Surge、Clash 和 Stash 功能配置，不需要编辑整段模板。
 - 管理策略组、策略规则、规则集、DNS、TUN、MITM 和 URL Rewrite。
-- 提供 Surge / Clash 规则结构化编辑器，同时保留文本模式用于直接编辑生成内容。
+- 提供 Surge / Clash / Stash 规则结构化编辑器，同时保留文本模式用于直接编辑生成内容。
 - Clash rule-providers 与 rules 联动：未引用的规则集会自动补入 rules，删除规则集时会同步移除对应规则。
 - 配置共享链式出口节点，并自动生成对应链式代理节点。
 - 轮换订阅读取 token，生成带稳定文件名的订阅链接。
@@ -31,6 +31,8 @@ SubPilot Worker 项目代码以 [GNU Affero General Public License v3.0 or later
 - `CONFIG_ENCRYPTION_KEY` 必须作为 Worker Secret 保存，用于加密订阅源 URL 和可恢复订阅读取 token。
 - 订阅源 URL 保存到 KV 前会加密；读取配置时才在 Worker 内解密。
 - 管理员会话是 HttpOnly 签名 Cookie，不创建 `session:*` KV 键。
+- Stash CA 应在客户端本地生成和保存；SubPilot 不保存也不会下发 Stash CA 私钥、`ca-p12` 或 `ca-passphrase`。
+- Stash 配置输出尚未完成真实 Stash 客户端实机测试，可能存在兼容性问题；发布版中请先按测试功能使用，导入前建议核对规则、MITM、脚本和 rule-providers 是否符合预期。
 - `wrangler.jsonc` 被 `.gitignore` 排除，用于保存个人 Worker 名称、KV namespace ID 和自定义域名。
 
 ## 快速部署
@@ -55,7 +57,7 @@ npm install --omit=dev
 npm run setup
 ```
 
-也可以在 GitHub Releases 下载 Source code zip，解压后进入目录运行：
+也可以在 GitHub Releases 下载 `subpilot-worker-vX.Y.Z.tar.gz` 发布包，解压后进入目录运行：
 
 ```bash
 npm install --omit=dev
@@ -151,7 +153,7 @@ wrangler deploy
 1. 在 `Configuration` 中设置 `Managed Base URL`，通常是 `https://<your-domain>/sync`。
 2. 在 `Sources` 中添加上游订阅源；URL 会加密保存到 KV。
 3. 在 `Policy Groups` 中调整策略组。
-4. 在 `Surge`、`Clash` 页面中调整各目标的规则、DNS、TUN 等配置。
+4. 在 `Surge`、`Clash`、`Stash` 页面中调整各目标的规则、DNS、TUN 等配置。
 5. 如需链式代理，在 `Configuration` 中填写共享链式出口节点。
 6. 按需要在 `Configuration` 中调整显示时区；默认是 `Asia/Shanghai`，只影响后台和通知中的时间展示。
 7. 在 `Tokens` 页面轮换订阅读取 token，并复制订阅链接。
@@ -162,7 +164,7 @@ wrangler deploy
 https://<your-domain>/sync/<read_token>/
 ```
 
-`https://<your-domain>/sync/<read_token>/` 会根据客户端 User-Agent 自动选择 Surge 或 Clash/mihomo。订阅接口不接受额外查询参数，也不接受 `/surge`、`/clash` 等显式目标路径；如果 User-Agent 无法识别，服务端会返回 401，不下发配置。客户端文件名通过响应头 `Content-Disposition` 提供。
+`https://<your-domain>/sync/<read_token>/` 会根据客户端 User-Agent 自动选择 Surge、Clash/mihomo 或 Stash。订阅接口不接受额外查询参数，也不接受 `/surge`、`/clash`、`/stash` 等显式目标路径；如果 User-Agent 无法识别，服务端会返回 401，不下发配置。客户端文件名通过响应头 `Content-Disposition` 提供。
 
 服务端只接受当前 `Managed Base URL` path 下的订阅入口；如果把 `Managed Base URL` 改成 `https://<your-domain>/sywwqnc`，则 `/sywwqnc/<read_token>/` 生效，默认 `/sync/<read_token>/` 不再作为订阅入口。
 
@@ -188,19 +190,19 @@ SUBPILOT_SOURCE_REFRESH_HOURS=6 npm run setup
 npm run update
 ```
 
-如果当前目录是 Git 克隆，命令会拉取当前分支最新代码；如果当前目录来自 GitHub Releases 的 Source code zip，命令会自动下载最新 Release 源码并覆盖程序文件。两种方式都会保留本地 `wrangler.jsonc`，只安装运行部署所需依赖，然后部署到对应 Worker。
+如果当前目录是 Git 克隆，命令会拉取当前分支最新代码；如果当前目录来自 GitHub Releases 的 `subpilot-worker-vX.Y.Z.tar.gz` 发布包，命令会优先下载最新 Release 中同名发布包并覆盖程序文件。两种方式都会保留本地 `wrangler.jsonc`，只安装运行部署所需依赖，然后部署到对应 Worker。
 
 部署后首次打开后台、拉取订阅或执行定时任务时，SubPilot 会自动补齐 KV 数据结构，不需要单独执行迁移命令。即使跳过多个版本后再更新，也会按顺序处理缺失的迁移。
 
 更新时不要删除本地 `wrangler.jsonc`，也不要重新运行会轮换 Secrets 的命令。尤其不要无意替换 `CONFIG_ENCRYPTION_KEY`，否则旧 KV 中已加密的订阅源 URL、Telegram Bot Token 和订阅读取 token 将无法解密。只有在你明确要重置整个部署或轮换密钥时，才使用 `npm run setup -- --force-secrets`。
 
-后台状态页会显示当前应用版本、KV schema 版本和最新版本检查结果。设置页的“版本更新检查”默认关闭；启用后，定时任务每天最多访问一次 GitHub Releases。若已绑定 Telegram，有新版本时会发送一次提醒。同一个最新版本不会重复提醒。手动点击状态页“检查更新”会立即访问 GitHub Releases。
+后台状态页会显示当前应用版本和最新版本检查结果。设置页的“版本更新检查”默认关闭；启用后，定时任务每天最多访问一次 GitHub Releases。若已绑定 Telegram，有新版本时会发送一次提醒。同一个最新版本不会重复提醒。手动点击状态页“检查更新”会立即访问 GitHub Releases。
 
 ## 规则与策略组
 
-策略组是 Surge 和 Clash 输出共同使用的出口选择基础。内置 `Proxy` 策略组名称固定，不可删除；其他策略组可在 `Policy Groups` 页面新增、改名、禁用或调整顺序。规则中的策略出口必须引用已配置的策略组，或引用目标客户端支持的内置策略，例如 `DIRECT`、`REJECT`、`REJECT-DROP`。
+策略组是 Surge、Clash 和 Stash 输出共同使用的出口选择基础。内置 `Proxy` 策略组名称固定，不可删除；其他策略组可在 `Policy Groups` 页面新增、改名、禁用或调整顺序。规则中的策略出口必须引用已配置的策略组，或引用目标客户端支持的内置策略，例如 `DIRECT`、`REJECT`、`REJECT-DROP`。
 
-Surge 和 Clash 的规则页默认使用结构化编辑器。结构化模式会按页面中的行顺序生成配置文本，并在下方显示生成结果；切换到文本模式后，可以直接编辑对应配置内容。保存前系统会校验规则类型、规则集引用、策略出口和兜底规则位置，避免写入明显无效的规则配置。
+Surge、Clash 和 Stash 的规则页默认使用结构化编辑器。结构化模式会按页面中的行顺序生成配置文本，并在下方显示生成结果；切换到文本模式后，可以直接编辑对应配置内容。保存前系统会校验规则类型、规则集引用、策略出口和兜底规则位置，避免写入明显无效的规则配置。
 
 Surge 规则集和单条规则使用不同语法。规则集行通常形如：
 
@@ -219,7 +221,7 @@ FINAL,Proxy
 
 Surge 的 `SUBNET`、`AND`、`OR`、`NOT` 等复合规则类型可以在结构化编辑器中选择，也可以在文本模式中直接编辑。Ponte 设备名会生成 `DEVICE:<name>` 策略出口，保存后可在规则中选择。
 
-Clash / mihomo 的 rule-providers 是规则集来源；rules 中的 `RULE-SET` 行是实际匹配入口。SubPilot 会把 rule-providers 中尚未出现在 rules 里的规则集自动补入 rules，并默认使用 `Proxy` 作为策略出口。删除 rule-providers 中的某个规则集时，对应的 `RULE-SET` 规则会一并移除；如果在 rules 中删除某个规则集规则，系统会提示确认，并同步删除同名 rule-provider。后续再次添加 rule-provider 时，rules 会重新自动补齐。
+Clash / mihomo 和 Stash 的 rule-providers 是规则集来源；rules 中的 `RULE-SET` 行是实际匹配入口。SubPilot 会把 rule-providers 中尚未出现在 rules 里的规则集自动补入 rules，并默认使用 `Proxy` 作为策略出口。删除 rule-providers 中的某个规则集时，对应的 `RULE-SET` 规则会一并移除；如果在 rules 中删除某个规则集规则，系统会提示确认，并同步删除同名 rule-provider。后续再次添加 rule-provider 时，rules 会重新自动补齐。
 
 ## Telegram 通知配置
 
@@ -274,7 +276,7 @@ help - 查看命令列表
 ### 可用 bot 命令
 
 ```text
-/status  查看订阅源数量、缓存数量和最近 Surge/Clash 拉取时间
+/status  查看订阅源数量、缓存数量和最近 Surge/Clash/Stash 拉取时间
 /sources 查看订阅源启用状态
 /recent  查看最近配置拉取记录、目标类型、客户端位置和 User-Agent
 /refresh 强制重新拉取上游订阅源，并在完成后回复刷新结果
@@ -331,6 +333,7 @@ config:sources:<id>                  单个订阅源，加密保存 URL
 config:chain:exitProxy               共享链式出口节点
 config:surge:<field>                 Surge 功能配置
 config:clash:<field>                 Clash 功能配置
+config:stash:<field>                 Stash 功能配置
 config:updatedAt                     配置更新时间
 config:schemaVersion                 KV schema 版本，迁移器按它判断待执行步骤
 auth:read_token                      可恢复订阅读取 token，加密保存
