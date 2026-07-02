@@ -445,17 +445,26 @@ function formatTelegramSourceCacheLines(sourceCache: Awaited<ReturnType<typeof r
 }
 
 function formatTelegramProtocolCounts(sourceCache: Awaited<ReturnType<typeof readConfigFetchStats>>["sourceCache"]): string {
-  if (sourceCache.totalNodes <= 0 || sourceCache.protocolCounts.length === 0) return "未解析到节点";
-  return [
-    ...sourceCache.protocolCounts.map((item) => `${item.protocol} ${item.count}`),
-    `总计 ${sourceCache.totalNodes}`
-  ].join("，");
+  return formatTelegramProtocolCountList(sourceCache.totalNodes, sourceCache.protocolCounts, true);
+}
+
+function formatTelegramProtocolCountList(
+  totalNodes: number,
+  protocolCounts: Awaited<ReturnType<typeof readConfigFetchStats>>["sourceCache"]["protocolCounts"],
+  includeTotal: boolean
+): string {
+  if (totalNodes <= 0 || protocolCounts.length === 0) return "未解析到节点";
+  const parts = protocolCounts
+    .filter((item) => item.count > 0)
+    .map((item) => `${item.protocol} ${item.count}`);
+  if (includeTotal) parts.push(`总计 ${totalNodes}`);
+  return parts.length > 0 ? parts.join("，") : "未解析到节点";
 }
 
 function formatTelegramSourceCacheStatus(source: Awaited<ReturnType<typeof readConfigFetchStats>>["sourceCache"]["sources"][number], timeZone: string): string {
   const name = source.sourceName || source.sourceId || "(未命名订阅源)";
   if (!source.cached) return `- ${name}：未缓存`;
-  return `- ${name}：已缓存，${source.nodeCount} 个节点，${formatTelegramTimestamp(source.fetchedAt, timeZone)}`;
+  return `- ${name}：已缓存，${source.nodeCount} 个节点；协议 ${formatTelegramProtocolCountList(source.nodeCount, source.protocolCounts, false)}；${formatTelegramTimestamp(source.fetchedAt, timeZone)}`;
 }
 
 function formatTelegramSourcesMessage(config: Awaited<ReturnType<typeof loadConfig>>): string {

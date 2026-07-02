@@ -450,6 +450,7 @@ const I18N = {
   sourceCacheProtocols: "协议节点：{value}",
   sourceCacheNoNodes: "未解析到节点",
   sourceCacheSourceCached: "{name}：已缓存，{count} 个节点",
+  sourceCacheSourceProtocols: "；协议 {value}",
   sourceCacheSourceMissing: "{name}：未缓存",
   systemStatusTitle: "版本状态",
   currentVersion: "当前版本",
@@ -5041,22 +5042,30 @@ function formatSourceCacheStatus(sourceCache) {
 }
 
 function formatSourceCacheProtocols(sourceCache) {
-  const totalNodes = Number(sourceCache.totalNodes) || 0;
-  const protocolCounts = Array.isArray(sourceCache.protocolCounts) ? sourceCache.protocolCounts : [];
-  if (totalNodes <= 0 || protocolCounts.length === 0) return t("sourceCacheNoNodes");
-  return protocolCounts
+  return formatSourceCacheProtocolCounts(Number(sourceCache.totalNodes) || 0, sourceCache.protocolCounts, true);
+}
+
+function formatSourceCacheProtocolCounts(totalNodes, protocolCounts, includeTotal) {
+  const counts = Array.isArray(protocolCounts) ? protocolCounts : [];
+  if (totalNodes <= 0 || counts.length === 0) return t("sourceCacheNoNodes");
+  const parts = counts
     .map((item) => `${item.protocol || "unknown"} ${Number(item.count) || 0}`)
-    .concat(`总计 ${totalNodes}`)
-    .join("，");
+    .filter((item) => !item.endsWith(" 0"));
+  if (includeTotal) parts.push(`总计 ${totalNodes}`);
+  return parts.length > 0 ? parts.join("，") : t("sourceCacheNoNodes");
 }
 
 function formatSourceCacheSourceRow(source) {
   const name = source?.sourceName || source?.sourceId || "-";
-  const text = source?.cached
+  let text = source?.cached
     ? t("sourceCacheSourceCached")
       .replace("{name}", name)
       .replace("{count}", String(Number(source.nodeCount) || 0))
     : t("sourceCacheSourceMissing").replace("{name}", name);
+  if (source?.cached) {
+    text += t("sourceCacheSourceProtocols")
+      .replace("{value}", formatSourceCacheProtocolCounts(Number(source.nodeCount) || 0, source.protocolCounts, false));
+  }
   return `<div class="status-cache-source ${source?.cached ? "ready" : "warning"}">${escapeHtml(text)}</div>`;
 }
 

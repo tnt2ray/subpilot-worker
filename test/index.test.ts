@@ -916,7 +916,7 @@ describe("asset access control", () => {
         allSourcesCached: boolean;
         totalNodes: number;
         protocolCounts: Array<{ protocol: string; count: number }>;
-        sources: Array<{ sourceId: string; sourceName: string; cached: boolean; fetchedAt: string | null; nodeCount: number }>;
+        sources: Array<{ sourceId: string; sourceName: string; cached: boolean; fetchedAt: string | null; nodeCount: number; protocolCounts: Array<{ protocol: string; count: number }> }>;
       };
     }>();
     expect(stats.sourceCache.count).toBe(1);
@@ -932,7 +932,8 @@ describe("asset access control", () => {
       sourceName: "Primary",
       cached: false,
       fetchedAt: null,
-      nodeCount: 0
+      nodeCount: 0,
+      protocolCounts: []
     }]);
 
     const fetchMock = vi.spyOn(globalThis, "fetch")
@@ -954,6 +955,7 @@ describe("asset access control", () => {
         allSourcesCached: boolean;
         totalNodes: number;
         protocolCounts: Array<{ protocol: string; count: number }>;
+        sources: Array<{ sourceId: string; sourceName: string; cached: boolean; fetchedAt: string | null; nodeCount: number; protocolCounts: Array<{ protocol: string; count: number }> }>;
       };
     }>();
     const sourceKey = `cache:source:${await sha256Hex("https://example.com/sub|Surge iOS/3727")}`;
@@ -967,6 +969,15 @@ describe("asset access control", () => {
       totalNodes: 1
     });
     expect(refreshed.sourceCache.protocolCounts).toEqual([{ protocol: "trojan", count: 1 }]);
+    expect(refreshed.sourceCache.sources).toHaveLength(1);
+    expect(refreshed.sourceCache.sources[0]).toMatchObject({
+      sourceId: "src1",
+      sourceName: "Primary",
+      cached: true,
+      nodeCount: 1,
+      protocolCounts: [{ protocol: "trojan", count: 1 }]
+    });
+    expect(refreshed.sourceCache.sources[0]?.fetchedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
     expect(fetchMock).toHaveBeenCalledTimes(4);
     expect(fetchMock).toHaveBeenCalledWith("https://example.com/sub", { headers: { "user-agent": "Surge iOS/3727" } });
     expect(kv.get(sourceKey)).toBe("Proxy = trojan, proxy.example.com, 443, password=p");
@@ -1092,10 +1103,13 @@ describe("asset access control", () => {
     expect(telegramBody.text).toContain("上游缓存：1 / 1 个启用源已缓存，全部就绪");
     expect(telegramBody.text).toContain("缓存更新时间：2026-06-20 09:00:00");
     expect(telegramBody.text).toContain("协议节点：未解析到节点");
+    expect(telegramBody.text).toContain("订阅源缓存：");
+    expect(telegramBody.text).toContain("Primary：已缓存，0 个节点；协议 未解析到节点；2026-06-20 09:00:00");
     expect(telegramBody.text).toContain("名称：Primary");
     expect(telegramBody.text).toContain("ID：src1");
     expect(telegramBody.text).toContain("原因：HTTP 500");
     expect(telegramBody.text).toContain("处理：已沿用旧缓存");
+    expect(String(telegramBody.text).indexOf("失败订阅源：")).toBeLessThan(String(telegramBody.text).indexOf("订阅源缓存："));
     expect(telegramBody.text).not.toContain("2026-06-20T01:00:00.000Z");
     expect(telegramBody.text).not.toContain("UTC+8");
   });
@@ -1367,7 +1381,7 @@ describe("asset access control", () => {
     expect(telegramBody.text).toContain("上游缓存：1 / 1 个启用源已缓存，全部就绪");
     expect(telegramBody.text).toContain("缓存更新时间：2026-06-20 09:00:00");
     expect(telegramBody.text).toContain("协议节点：trojan 1，vmess 1，总计 2");
-    expect(telegramBody.text).toContain("Primary：已缓存，2 个节点，2026-06-20 09:00:00");
+    expect(telegramBody.text).toContain("Primary：已缓存，2 个节点；协议 trojan 1，vmess 1；2026-06-20 09:00:00");
     expect(telegramBody.text).toContain("最近 Surge 配置获取：");
     expect(telegramBody.text).toContain("最近 Clash 配置获取：");
     expect(telegramBody.text).not.toContain("2026-06-20T01:00:00.000Z");
@@ -1554,6 +1568,7 @@ describe("asset access control", () => {
     expect(doneBody.text).toContain("刷新失败：0");
     expect(doneBody.text).toContain("上游缓存：1 / 1 个启用源已缓存，全部就绪");
     expect(doneBody.text).toContain("协议节点：trojan 1，总计 1");
+    expect(doneBody.text).toContain("Primary：已缓存，1 个节点；协议 trojan 1");
   });
 
   it("continues Telegram refresh when the start message fails", async () => {

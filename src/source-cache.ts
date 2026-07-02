@@ -32,6 +32,7 @@ export interface SourceCacheSourceStatus {
   cached: boolean;
   fetchedAt: string | null;
   nodeCount: number;
+  protocolCounts: SourceCacheProtocolCount[];
 }
 
 export interface SourceCacheProtocolCount {
@@ -174,7 +175,8 @@ export async function readSourceCacheStatus(env: Env, config?: AppConfig): Promi
     sourceName: source.sourceName,
     cached: source.cached,
     fetchedAt: source.fetchedAt,
-    nodeCount: source.nodeCount
+    nodeCount: source.nodeCount,
+    protocolCounts: countProtocols(source.protocols)
   }));
   const cachedSourceCount = visibleSources.filter((source) => source.cached).length;
   return {
@@ -195,9 +197,9 @@ async function readSourceCacheSourceStatuses(
   env: Env,
   config: AppConfig,
   entries: SourceCacheEntry[]
-): Promise<Array<SourceCacheSourceStatus & { protocols: string[] }>> {
+): Promise<Array<Omit<SourceCacheSourceStatus, "protocolCounts"> & { protocols: string[] }>> {
   const entriesByKey = new Map(entries.map((entry) => [entry.key, entry]));
-  const statuses: Array<SourceCacheSourceStatus & { protocols: string[] }> = [];
+  const statuses: Array<Omit<SourceCacheSourceStatus, "protocolCounts"> & { protocols: string[] }> = [];
   for (const source of config.sources) {
     if (!source.enabled || !source.url) continue;
     const key = await sourceCacheKeyFor(source.url, sourceUserAgent(config, source));
@@ -222,6 +224,16 @@ function parseProtocols(content: string, sourceId: string): string[] {
   } catch {
     return [];
   }
+}
+
+function countProtocols(protocols: string[]): SourceCacheProtocolCount[] {
+  const counts = new Map<string, number>();
+  for (const protocol of protocols) {
+    counts.set(protocol, (counts.get(protocol) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .map(([protocol, count]) => ({ protocol, count }))
+    .sort((left, right) => right.count - left.count || left.protocol.localeCompare(right.protocol));
 }
 
 function normalizeProtocol(value: string): string {
