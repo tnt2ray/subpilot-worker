@@ -45,6 +45,8 @@ describe("admin static assets", () => {
     expect(html).toContain('id="previewStashBtn"');
     expect(html).toContain('id="stashMitmHostname"');
     expect(app).toContain('const PREVIEW_TARGETS = ["surge", "clash", "stash"]');
+    expect(app).toContain('previewWarnings: "诊断提示："');
+    expect(app).toContain("function renderPreviewWarnings(warnings)");
 
     expect(html).toContain('id="displayTimeZone"');
     expect(html).toContain('value="Asia/Shanghai"');

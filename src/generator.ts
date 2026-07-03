@@ -1,10 +1,12 @@
 import YAML from "yaml";
 import { Buffer } from "node:buffer";
 import { parseClashRuleProvidersYaml } from "./clash-rule-providers";
+import { collectClashRuleCoverageWarnings } from "./clash-rules";
 import { loadConfig } from "./config-store";
 import { lookupIpRegion, type RegionInfo } from "./geoip";
 import { parseHostEntries, parseSubscription, toClashProxy, toSurgeLine } from "./parsers";
 import { fetchCachedSource, sourceUserAgent } from "./source-cache";
+import { collectSurgeRuleCoverageWarnings } from "./surge-rules";
 import { syncPathForToken } from "./target-files";
 import { CHAIN_EXIT_PROXY_NAME, type AppConfig, type ChainExitProtocol, type GenerationResult, type HostEntry, type HostEntryValue, type ProxyNode, type Target } from "./types";
 
@@ -160,6 +162,10 @@ interface PreparedOutput {
   warnings: string[];
 }
 
+interface GenerationOptions {
+  includeRuleDiagnostics?: boolean;
+}
+
 export function inferTarget(request: Request): Target | null {
   const ua = request.headers.get("user-agent")?.toLowerCase() ?? "";
   if (ua.includes("stash")) return "stash";
@@ -175,8 +181,21 @@ export async function generateForRequest(env: Env, request: Request, forcedTarge
   return generateConfig(env, config, target, request.url);
 }
 
-export async function generateConfig(env: Env, config: AppConfig, target: Target, requestUrl: string): Promise<GenerationResult> {
+export async function generateConfig(
+  env: Env,
+  config: AppConfig,
+  target: Target,
+  requestUrl: string,
+  options: GenerationOptions = {}
+): Promise<GenerationResult> {
   const prepared = await prepareOutput(env, config, target);
+  if (options.includeRuleDiagnostics) {
+    if (target === "surge") {
+      prepared.warnings.push(...await collectSurgeRuleCoverageWarnings(config));
+    } else {
+      prepared.warnings.push(...await collectClashRuleCoverageWarnings(config, target));
+    }
+  }
   const content = target === "surge"
     ? buildSurge(config, prepared.nodes, prepared.hostEntries, requestUrl)
     : target === "stash"

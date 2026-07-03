@@ -844,6 +844,128 @@ describe("asset access control", () => {
     expect(body.content).not.toContain("/sywwqnc//");
   });
 
+  it("includes Surge rule coverage diagnostics in Surge previews", async () => {
+    const env = makeEnv();
+    await saveConfig(env, {
+      ...DEFAULT_CONFIG,
+      sources: [],
+      surge: {
+        ...DEFAULT_CONFIG.surge,
+        rules: [
+          "DOMAIN-SUFFIX,example.com,DIRECT",
+          "RULE-SET,https://rules.example.com/demo.list,Proxy",
+          "FINAL,Proxy"
+        ]
+      }
+    });
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+      if (String(url) === "https://rules.example.com/demo.list") {
+        return new Response("DOMAIN,www.example.com");
+      }
+      return new Response("not found", { status: 404 });
+    });
+    const session = await createSession(env);
+
+    const response = await worker.fetch(new Request("https://subpilot.example.com/api/preview?target=surge", {
+      method: "POST",
+      headers: { cookie: sessionCookie(session, true) },
+      body: "{}"
+    }), env, ctx);
+    const body = await response.json<{ content: string; warnings: string[] }>();
+
+    expect(response.status).toBe(200);
+    expect(body.content).toContain("RULE-SET,https://rules.example.com/demo.list,Proxy");
+    expect(body.warnings).toContain("Surge Rule 第 2 行规则集 https://rules.example.com/demo.list 内第 1 行 被前面的 第 1 行 覆盖（DOMAIN-SUFFIX,example.com 覆盖 DOMAIN,www.example.com；DIRECT 会优先生效，Proxy 不会生效）。");
+  });
+
+  it("includes Clash rule coverage diagnostics in Clash previews", async () => {
+    const env = makeEnv();
+    await saveConfig(env, {
+      ...DEFAULT_CONFIG,
+      sources: [],
+      clash: {
+        ...DEFAULT_CONFIG.clash,
+        ruleProviders: [
+          "rule-providers:",
+          "  Demo:",
+          "    type: http",
+          "    behavior: domain",
+          "    url: https://rules.example.com/demo.yaml"
+        ].join("\n"),
+        rules: [
+          "DOMAIN-SUFFIX,example.com,DIRECT",
+          "RULE-SET,Demo,Proxy",
+          "MATCH,Proxy"
+        ]
+      }
+    });
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+      if (String(url) === "https://rules.example.com/demo.yaml") {
+        return new Response([
+          "payload:",
+          "  - '+.example.com'"
+        ].join("\n"));
+      }
+      return new Response("not found", { status: 404 });
+    });
+    const session = await createSession(env);
+
+    const response = await worker.fetch(new Request("https://subpilot.example.com/api/preview?target=clash", {
+      method: "POST",
+      headers: { cookie: sessionCookie(session, true) },
+      body: "{}"
+    }), env, ctx);
+    const body = await response.json<{ content: string; warnings: string[] }>();
+
+    expect(response.status).toBe(200);
+    expect(body.content).toContain("RULE-SET,Demo,Proxy");
+    expect(body.warnings).toContain("Clash Rule 第 2 行规则集 Demo 内第 1 行 被前面的 第 1 行 覆盖（DOMAIN-SUFFIX,example.com 覆盖 DOMAIN-SUFFIX,example.com；DIRECT 会优先生效，Proxy 不会生效）。");
+  });
+
+  it("includes Stash rule coverage diagnostics in Stash previews", async () => {
+    const env = makeEnv();
+    await saveConfig(env, {
+      ...DEFAULT_CONFIG,
+      sources: [],
+      stash: {
+        ...DEFAULT_CONFIG.stash,
+        ruleProviders: [
+          "rule-providers:",
+          "  Demo:",
+          "    type: http",
+          "    behavior: classical",
+          "    url: https://rules.example.com/demo.yaml"
+        ].join("\n"),
+        rules: [
+          "DOMAIN-SUFFIX,example.com,DIRECT",
+          "RULE-SET,Demo,Proxy",
+          "MATCH,Proxy"
+        ]
+      }
+    });
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+      if (String(url) === "https://rules.example.com/demo.yaml") {
+        return new Response([
+          "payload:",
+          "  - DOMAIN,www.example.com"
+        ].join("\n"));
+      }
+      return new Response("not found", { status: 404 });
+    });
+    const session = await createSession(env);
+
+    const response = await worker.fetch(new Request("https://subpilot.example.com/api/preview?target=stash", {
+      method: "POST",
+      headers: { cookie: sessionCookie(session, true) },
+      body: "{}"
+    }), env, ctx);
+    const body = await response.json<{ content: string; warnings: string[] }>();
+
+    expect(response.status).toBe(200);
+    expect(body.content).toContain("RULE-SET,Demo,Proxy");
+    expect(body.warnings).toContain("Stash Rule 第 2 行规则集 Demo 内第 1 行 被前面的 第 1 行 覆盖（DOMAIN-SUFFIX,example.com 覆盖 DOMAIN,www.example.com；DIRECT 会优先生效，Proxy 不会生效）。");
+  });
+
   it("rejects invalid preview targets and requests without an inferred target", async () => {
     const env = makeEnv();
     const session = await createSession(env);
@@ -870,6 +992,8 @@ describe("asset access control", () => {
 
     expect(missingTargetResponse.status).toBe(400);
     expect(missingTargetBody.error).toBe("Missing target");
+
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("not found", { status: 404 }));
 
     const stashPreviewResponse = await worker.fetch(new Request("https://subpilot.example.com/api/preview?target=stash", {
       method: "POST",

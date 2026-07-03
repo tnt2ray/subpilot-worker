@@ -163,7 +163,7 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
     const target = normalizedTarget ?? inferTarget(request);
     if (!target) return badRequest("Missing target");
     const previewRequestUrl = buildManagedRequestUrl(config, request.url, await getOrCreateReadToken(env));
-    const result = await generateConfig(env, config, target, previewRequestUrl);
+    const result = await generateConfig(env, config, target, previewRequestUrl, { includeRuleDiagnostics: true });
     return jsonResponse(result);
   }
   if (url.pathname === "/api/surge/validate-online" && request.method === "POST") {

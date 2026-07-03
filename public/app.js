@@ -416,6 +416,7 @@ const I18N = {
   previewEmpty: "点击上方按钮生成预览。",
   previewLoading: "正在生成 {target} 配置预览，请稍候...",
   previewFailed: "配置预览生成失败：",
+  previewWarnings: "诊断提示：",
   validateSurgeOnline: "Surge 在线验证",
   validateSurgeOnlineRisk: "在线验证会将后台生成的脱敏 Surge 配置提交至 services.nssurge.com；真实代理服务器、端口、用户名、密码、token、SNI、WebSocket Host 和外部资源地址不会提交，规则内容仍会用于校验。是否继续？",
   validateSurgeOnlineRunning: "正在提交 Surge 在线验证...",
@@ -5290,6 +5291,7 @@ async function preview(target, options = {}) {
     currentPreviewContent = result.content || "";
     refs.previewOutput.textContent = currentPreviewContent;
     refs.previewOutput.dataset.empty = currentPreviewContent ? "false" : "true";
+    renderPreviewWarnings(Array.isArray(result.warnings) ? result.warnings : []);
     return currentPreviewContent;
   } catch (error) {
     currentPreviewTarget = "";
@@ -5302,6 +5304,19 @@ async function preview(target, options = {}) {
     previewLoadingTarget = "";
     updatePreviewControls();
   }
+}
+
+function renderPreviewWarnings(warnings) {
+  if (!warnings.length) {
+    refs.surgeOnlineValidation.classList.add("hidden");
+    refs.surgeOnlineValidation.innerHTML = "";
+    return;
+  }
+  refs.surgeOnlineValidation.classList.remove("hidden");
+  refs.surgeOnlineValidation.innerHTML = [
+    `<div class="warning">${escapeHtml(t("previewWarnings"))}</div>`,
+    ...warnings.map((message) => `<div class="warning">${escapeHtml(message)}</div>`)
+  ].join("");
 }
 
 function updatePreviewControls() {
