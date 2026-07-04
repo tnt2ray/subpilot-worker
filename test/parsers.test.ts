@@ -391,4 +391,48 @@ describe("proxy parsing", () => {
     });
     expect(vlessProxy).not.toHaveProperty("password");
   });
+
+  it("repairs common boolean parameter typos from upstream proxy inputs", () => {
+    const [uriNode] = parseSubscription("trojan://pass@tr.example.com:443?skip-cert-verify=tue&tfo=tue#TR", "src");
+    expect(toClashProxy(uriNode!)).toMatchObject({
+      "skip-cert-verify": true,
+      tfo: true
+    });
+    expect(toSurgeLine({ ...uriNode!, name: "TR" })).toBe(
+      "TR = trojan, tr.example.com, 443, password=pass, skip-cert-verify=true, tfo=true"
+    );
+
+    const [surgeNode] = parseSubscription("TR = trojan,tr.example.com,443,password=p,skip-cert-verify=tue,udp-relay=tue,ws=tue", "src");
+    expect(toClashProxy(surgeNode!)).toMatchObject({
+      "skip-cert-verify": true,
+      udp: true,
+      network: "ws"
+    });
+    expect(toSurgeLine({ ...surgeNode!, name: "TR" })).toBe(
+      "TR = trojan, tr.example.com, 443, password=p, skip-cert-verify=true, udp-relay=true, ws=true"
+    );
+
+    const [embeddedUriNode] = parseSubscription("Embedded = trojan://pass@tr.example.com:443?skip-cert-verify=tue#TR", "src");
+    expect(toSurgeLine({ ...embeddedUriNode!, name: "Embedded" })).toBe(
+      "Embedded = trojan, tr.example.com, 443, password=pass, skip-cert-verify=true"
+    );
+
+    const [yamlNode] = parseSubscription([
+      "proxies:",
+      "  - name: TR",
+      "    type: trojan",
+      "    server: tr.example.com",
+      "    port: 443",
+      "    password: p",
+      "    skip-cert-verify: tue",
+      "    udp: tue"
+    ].join("\n"), "src");
+    expect(toClashProxy(yamlNode!)).toMatchObject({
+      "skip-cert-verify": true,
+      udp: true
+    });
+    expect(toSurgeLine({ ...yamlNode!, name: "TR" })).toBe(
+      "TR = trojan, tr.example.com, 443, password=p, skip-cert-verify=true, udp-relay=true"
+    );
+  });
 });

@@ -2,6 +2,14 @@ import YAML from "yaml";
 import type { HostEntry, HostEntryValue, ProxyNode, ProxyParamValue } from "./types";
 
 const URI_PROTOCOLS = ["trojan:", "vless:", "vmess:", "ss:", "hysteria2:", "hy2:", "tuic:", "anytls:"];
+const BOOLEAN_PROXY_PARAM_KEYS = new Set(["skip-cert-verify", "tls", "udp", "udp-relay", "tfo", "ws"]);
+const TRUE_PROXY_PARAM_VALUES = new Set(["true", "1"]);
+const FALSE_PROXY_PARAM_VALUES = new Set(["false", "0"]);
+const TRUE_PROXY_PARAM_TYPOS = new Set(["tue"]);
+const REPAIRABLE_BOOLEAN_PARAM_PATTERN = new RegExp(
+  `(?:^|[?&,])\\s*(?:${[...BOOLEAN_PROXY_PARAM_KEYS].map(escapeRegex).join("|")})\\s*=\\s*(?:${[...TRUE_PROXY_PARAM_TYPOS].map(escapeRegex).join("|")})(?=$|[#&,\\s])`,
+  "i"
+);
 
 export function maybeDecodeBase64(content: string): string {
   const trimmed = content.trim();
@@ -183,6 +191,7 @@ function parseYamlProxies(content: string, sourceId: string): ProxyNode[] {
         if (["name", "type", "server", "port", "password", "uuid", "cipher"].includes(key)) continue;
         if (isProxyParamValue(value)) params[key] = value;
       }
+      normalizeProxyParams(params);
       return [{
         name,
         type,
@@ -220,7 +229,7 @@ export function parseSurgeLine(line: string): ProxyNode | null {
   const detail = detailPart?.trim();
   if (!name || !detail) return null;
   const urlNode = parseProxyUrl(detail);
-  if (urlNode) return { ...urlNode, name, surgeDetail: detail };
+  if (urlNode) return { ...urlNode, name, surgeDetail: hasRepairableBooleanParamTypo(detail) ? undefined : detail };
   const parts = detail.split(",").map((item) => item.trim()).filter(Boolean);
   if (parts.length < 3) return null;
   const type = parts[0]!;
@@ -232,6 +241,7 @@ export function parseSurgeLine(line: string): ProxyNode | null {
     const [key, ...rest] = part.split("=");
     if (key && rest.length > 0) params[key.trim()] = rest.join("=").trim();
   }
+  normalizeProxyParams(params);
   return {
     name,
     type,
@@ -241,7 +251,7 @@ export function parseSurgeLine(line: string): ProxyNode | null {
     uuid: asString(params.username),
     cipher: asString(params["encrypt-method"]),
     params,
-    surgeDetail: detail
+    surgeDetail: hasRepairableBooleanParamTypo(detail) ? undefined : detail
   };
 }
 
@@ -256,6 +266,7 @@ function parseProxyUrl(value: string): ProxyNode | null {
       params[k] = v;
     });
     normalizeUriParams(params);
+    normalizeProxyParams(params);
     const auth = decodeURIComponent(parsed.username || "");
     const secret = decodeURIComponent(parsed.password || "");
     const type = parsed.protocol.replace(":", "");
@@ -316,6 +327,39 @@ function normalizeUriParams(params: ProxyNode["params"]): void {
   delete params.fp;
   delete params.pbk;
   delete params.sid;
+}
+
+function normalizeProxyParams(params: ProxyNode["params"]): void {
+  for (const [key, value] of Object.entries(params)) {
+    params[key] = normalizeProxyParamValue(key, value);
+  }
+}
+
+function normalizeProxyParamValue(key: string, value: ProxyParamValue): ProxyParamValue {
+  const normalizedKey = key.toLowerCase();
+  if (Array.isArray(value)) return value.map((item) => normalizeProxyParamValue(key, item));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([nestedKey, nestedValue]) => [
+      nestedKey,
+      normalizeProxyParamValue(nestedKey, nestedValue)
+    ]));
+  }
+  if (!BOOLEAN_PROXY_PARAM_KEYS.has(normalizedKey)) return value;
+  return normalizeBooleanProxyParamValue(value);
+}
+
+function normalizeBooleanProxyParamValue(value: ProxyParamValue): ProxyParamValue {
+  if (value === true || value === 1) return true;
+  if (value === false || value === 0) return false;
+  if (typeof value !== "string") return value;
+  const normalized = value.trim().toLowerCase();
+  if (TRUE_PROXY_PARAM_VALUES.has(normalized) || TRUE_PROXY_PARAM_TYPOS.has(normalized)) return true;
+  if (FALSE_PROXY_PARAM_VALUES.has(normalized)) return false;
+  return value;
+}
+
+function hasRepairableBooleanParamTypo(value: string): boolean {
+  return REPAIRABLE_BOOLEAN_PARAM_PATTERN.test(value);
 }
 
 function parseVmess(value: string): ProxyNode | null {
@@ -508,7 +552,10 @@ function unquoteHeaderValue(value: string): string {
 }
 
 function paramEnabled(value: ProxyParamValue | undefined): boolean {
-  return value === true || value === "true" || value === "1" || value === 1;
+  if (value === true || value === 1) return true;
+  if (typeof value !== "string") return false;
+  const normalized = value.trim().toLowerCase();
+  return TRUE_PROXY_PARAM_VALUES.has(normalized) || TRUE_PROXY_PARAM_TYPOS.has(normalized);
 }
 
 function buildSurgeParams(node: ProxyNode): [string, string][] {
@@ -754,4 +801,8 @@ function dedupeHostEntries(entries: HostEntry[]): HostEntry[] {
 function toPort(value: unknown): number | undefined {
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed > 0 && parsed < 65536 ? parsed : undefined;
+}
+
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
