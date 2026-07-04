@@ -146,14 +146,22 @@ export interface StashMitmConfig {
 }
 
 export interface ChainConfig {
-  exitProxy: {
-    protocol: ChainExitProtocol;
-    server: string;
-    port: number;
-    username: string;
-    password: string;
-  };
   filter: string[];
+}
+
+export interface StaticProxyNodeConfig {
+  id: string;
+  config: string;
+  chainFilter: string[];
+  name?: string | undefined;
+  protocol?: ChainExitProtocol | undefined;
+  server?: string | undefined;
+  port?: number | undefined;
+  username?: string | undefined;
+  password?: string | undefined;
+  enabled: boolean;
+  chainExit: boolean;
+  includeInGroups: boolean;
 }
 
 export interface AppConfig {
@@ -175,6 +183,7 @@ export interface AppConfig {
   groups: Record<string, string>;
   disabledGroups: string[];
   sources: SourceConfig[];
+  proxyNodes: StaticProxyNodeConfig[];
   chain: ChainConfig;
   surge: SurgeConfig;
   clash: ClashConfig;
@@ -214,6 +223,10 @@ export interface ProxyNode {
   sourceName?: string | undefined;
   featureTags?: string[] | undefined;
   matchLabels?: string[] | undefined;
+  manual?: boolean | undefined;
+  chainExit?: boolean | undefined;
+  chainFilter?: string[] | undefined;
+  includeInGroups?: boolean | undefined;
 }
 
 export interface GenerationResult {

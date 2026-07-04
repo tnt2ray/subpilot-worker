@@ -4,11 +4,11 @@ import { parseClashRuleProvidersYaml } from "./clash-rule-providers";
 import { collectClashRuleCoverageWarnings } from "./clash-rules";
 import { loadConfig } from "./config-store";
 import { lookupIpRegion, type RegionInfo } from "./geoip";
-import { parseHostEntries, parseSubscription, toClashProxy, toSurgeLine } from "./parsers";
+import { parseConfiguredProxyNode, parseHostEntries, parseSubscription, toClashProxy, toSurgeLine } from "./parsers";
 import { fetchCachedSource, sourceUserAgent } from "./source-cache";
 import { collectSurgeRuleCoverageWarnings } from "./surge-rules";
 import { syncPathForToken } from "./target-files";
-import { CHAIN_EXIT_PROXY_NAME, type AppConfig, type ChainExitProtocol, type GenerationResult, type HostEntry, type HostEntryValue, type ProxyNode, type Target } from "./types";
+import { CHAIN_EXIT_PROXY_NAME, type AppConfig, type GenerationResult, type HostEntry, type HostEntryValue, type ProxyNode, type Target } from "./types";
 
 (globalThis as typeof globalThis & { Buffer?: typeof Buffer }).Buffer ??= Buffer;
 
@@ -166,6 +166,10 @@ interface GenerationOptions {
   includeRuleDiagnostics?: boolean;
 }
 
+interface SurgeRenderOptions {
+  includeProxyServerHostEntries?: boolean;
+}
+
 export function inferTarget(request: Request): Target | null {
   const ua = request.headers.get("user-agent")?.toLowerCase() ?? "";
   if (ua.includes("stash")) return "stash";
@@ -215,19 +219,16 @@ export async function generateConfig(
 
 export async function generateSurgeValidationConfig(env: Env, config: AppConfig, requestUrl: string): Promise<string> {
   const prepared = await prepareOutput(env, config, "surge");
-  return buildSurgeInline(config, prepared.nodes, prepared.hostEntries, requestUrl);
+  return buildSurgeInline(config, prepared.nodes, prepared.hostEntries, requestUrl, { includeProxyServerHostEntries: false });
 }
 
 async function prepareOutput(env: Env, config: AppConfig, target: Target): Promise<PreparedOutput> {
   const warnings: string[] = [];
   const fetched = await fetchAllSources(env, config, target, warnings);
-  const exitNode = buildExitNode(config);
-  const exitNodes = exitNode ? [exitNode] : [];
-  const supported = await applyTransforms(env, [...fetched.nodes, ...exitNodes], config, target, warnings);
-  const chainSettings = chainSettingsForConfig(config);
-  const nodes = chainSettings.enabled
-    ? [...supported, ...buildChainNodes(supported, chainSettings.filter)]
-    : supported;
+  const configuredNodes = buildConfiguredProxyNodes(config);
+  const supported = await applyTransforms(env, [...fetched.nodes, ...configuredNodes], config, target, warnings);
+  const chainNodes = buildChainNodes(supported);
+  const nodes = chainNodes.length > 0 ? [...supported, ...chainNodes] : supported;
   return {
     nodes,
     hostEntries: fetched.hostEntries,
@@ -236,68 +237,23 @@ async function prepareOutput(env: Env, config: AppConfig, target: Target): Promi
   };
 }
 
-function buildExitNode(config: AppConfig): ProxyNode | null {
-  const exitProxy = config.chain.exitProxy;
-  const server = exitProxy.server.trim();
-  if (!server || !exitProxy.port) return null;
-  const params: ProxyNode["params"] = {};
-  const username = exitProxy.username.trim();
-  const password = exitProxy.password.trim();
-  const node: ProxyNode = {
-    name: CHAIN_EXIT_PROXY_NAME,
-    type: exitProxy.protocol,
-    server,
-    port: exitProxy.port,
-    params
-  };
-  applyExitAuth(node, exitProxy.protocol, username, password);
-  return node;
-}
-
-function applyExitAuth(node: ProxyNode, protocol: ChainExitProtocol, username: string, password: string): void {
-  if (["http", "https", "socks5", "socks5-tls", "trust-tunnel", "ssh"].includes(protocol)) {
-    if (username) node.params.username = username;
-    if (password) {
-      node.password = password;
-      node.params.password = password;
-    }
-    return;
-  }
-
-  if (protocol === "ss") {
-    node.cipher = username || "chacha20-ietf-poly1305";
-    if (password) {
-      node.password = password;
-      node.params.password = password;
-    }
-    return;
-  }
-
-  if (protocol === "snell") {
-    if (password) node.params.psk = password;
-    node.params.version = 4;
-    return;
-  }
-
-  if (protocol === "tuic") {
-    if (username) node.uuid = username;
-    if (password) {
-      node.password = password;
-      node.params.token = password;
-    }
-    return;
-  }
-
-  if (protocol === "vmess") {
-    if (username) node.uuid = username;
-    node.cipher = "auto";
-    return;
-  }
-
-  if (["trojan", "hysteria2", "anytls"].includes(protocol) && password) {
-    node.password = password;
-    node.params.password = password;
-  }
+function buildConfiguredProxyNodes(config: AppConfig): ProxyNode[] {
+  const featureTagRules = parseFeatureTagRules(config.settings.featureTagRules);
+  return config.proxyNodes
+    .filter((node) => node.enabled)
+    .flatMap((proxyNode) => {
+      const parsedNode = parseConfiguredProxyNode(proxyNode);
+      if (!parsedNode) return [];
+      return [{
+        ...parsedNode,
+        originalName: parsedNode.name,
+        manual: true,
+        chainExit: proxyNode.chainExit,
+        chainFilter: proxyNode.chainFilter,
+        includeInGroups: proxyNode.includeInGroups,
+        ...nodeTagsForMatching(parsedNode.name, parsedNode.matchLabels, featureTagRules)
+      }];
+    });
 }
 
 async function fetchAllSources(env: Env, config: AppConfig, target: Target, warnings: string[]): Promise<FetchedSources> {
@@ -343,7 +299,7 @@ async function applyTransforms(
   target: Target,
   warnings: string[]
 ): Promise<ProxyNode[]> {
-  const filtered = nodes.filter((node) => !config.settings.excludeKeywords.some((keyword) => node.name.includes(keyword)));
+  const filtered = nodes.filter((node) => node.manual || !config.settings.excludeKeywords.some((keyword) => node.name.includes(keyword)));
   const deduped = dedupeByFingerprint(filtered);
   const supported = filterNodesForTarget(deduped, target);
   return config.settings.geoipRenameEnabled
@@ -351,19 +307,12 @@ async function applyTransforms(
     : supported.map((node) => ({ ...node, name: prependSourceNameTag(node.name, node.sourceName) }));
 }
 
-function chainSettingsForConfig(config: AppConfig): { enabled: boolean; filter: string[] } {
-  return {
-    enabled: Boolean(config.chain.exitProxy.server.trim() && config.chain.exitProxy.port),
-    filter: config.chain.filter
-  };
-}
-
 async function renameByNodeRegion(env: Env, nodes: ProxyNode[], featureTagRuleLines: string[], warnings: string[]): Promise<ProxyNode[]> {
   const featureTagRules = parseFeatureTagRules(featureTagRuleLines);
   const counters = new Map<string, number>();
   const renamed: ProxyNode[] = [];
   for (const node of nodes) {
-    if (node.name === CHAIN_EXIT_PROXY_NAME) {
+    if (node.manual || node.name === CHAIN_EXIT_PROXY_NAME) {
       renamed.push({ ...node });
       continue;
     }
@@ -544,10 +493,24 @@ function dedupeByFingerprint(nodes: ProxyNode[]): ProxyNode[] {
     }
     const featureTags = mergeFeatureTags(existing.featureTags, node.featureTags);
     const matchLabels = mergeMatchLabels(existing.matchLabels, node.matchLabels);
-    if (nodeConfigWeight(node) > nodeConfigWeight(existing)) {
-      selected.set(key, { ...node, featureTags, matchLabels });
+    const mergedBase = {
+      manual: existing.manual || node.manual || undefined,
+      chainExit: existing.chainExit || node.chainExit || undefined,
+      chainFilter: existing.chainFilter?.length ? existing.chainFilter : node.chainFilter,
+      includeInGroups: existing.includeInGroups === true || node.includeInGroups === true
+        ? true
+        : existing.includeInGroups === false || node.includeInGroups === false
+          ? false
+          : undefined
+    };
+    if (node.manual && !existing.manual) {
+      selected.set(key, { ...node, ...mergedBase, featureTags, matchLabels });
+    } else if (!node.manual && existing.manual) {
+      selected.set(key, { ...existing, ...mergedBase, featureTags, matchLabels });
+    } else if (nodeConfigWeight(node) > nodeConfigWeight(existing)) {
+      selected.set(key, { ...node, ...mergedBase, featureTags, matchLabels });
     } else {
-      selected.set(key, { ...existing, featureTags, matchLabels });
+      selected.set(key, { ...existing, ...mergedBase, featureTags, matchLabels });
     }
   }
   return [...selected.values()];
@@ -655,32 +618,48 @@ function paramWeight(value: unknown): number {
   return 1;
 }
 
-function buildChainNodes(nodes: ProxyNode[], filters: string[]): ProxyNode[] {
-  const exit = nodes.find((node) => node.name === CHAIN_EXIT_PROXY_NAME);
-  if (!exit) return [];
-  return nodes
-    .filter((node) => node.name !== CHAIN_EXIT_PROXY_NAME && filters.some((filter) => nodeMatchesFilter(node, filter)))
-    .map((node) => ({
+function buildChainNodes(nodes: ProxyNode[]): ProxyNode[] {
+  const exits = nodes.filter((node) => node.chainExit && node.chainFilter && node.chainFilter.length > 0);
+  if (exits.length === 0) return [];
+  return exits.flatMap((exit) => {
+    const bases = nodes.filter((node) => !node.chainExit && exit.chainFilter?.some((filter) => nodeMatchesFilter(node, filter)));
+    return bases.map((node) => ({
       ...exit,
-      name: `${node.name} Chain`,
-      featureTags: mergeFeatureTags(node.featureTags, ["Chain"]),
-      matchLabels: mergeMatchLabels(node.matchLabels, ["Chain"]),
+      name: chainNodeName(node, exit),
+      originalName: chainNodeName(node, exit),
+      manual: false,
+      chainExit: false,
+      includeInGroups: true,
+      surgeDetail: undefined,
+      featureTags: node.featureTags,
+      matchLabels: mergeMatchLabels(node.matchLabels, ["via", exit.name]),
       params: {
         ...exit.params,
         "underlying-proxy": node.name,
         "dialer-proxy": node.name
       }
     }));
+  });
+}
+
+function chainNodeName(node: ProxyNode, exit: ProxyNode): string {
+  return `${node.name} via ${exit.name}`;
 }
 
 function buildSurge(config: AppConfig, nodes: ProxyNode[], sourceHostEntries: HostEntry[], requestUrl: string): string {
   return buildSurgeInline(config, nodes, sourceHostEntries, requestUrl);
 }
 
-function buildSurgeInline(config: AppConfig, nodes: ProxyNode[], sourceHostEntries: HostEntry[], requestUrl: string): string {
+function buildSurgeInline(
+  config: AppConfig,
+  nodes: ProxyNode[],
+  sourceHostEntries: HostEntry[],
+  requestUrl: string,
+  options: SurgeRenderOptions = {}
+): string {
   const proxyLines = nodes.map(toSurgeLine);
   const groupOutputs = buildSurgeGroups(config, nodes);
-  const variant = renderSurgeInlineProfile(config, nodes, sourceHostEntries, proxyLines, groupOutputs);
+  const variant = renderSurgeInlineProfile(config, nodes, sourceHostEntries, proxyLines, groupOutputs, options);
   const managedUrl = buildManagedUrl(config, requestUrl);
   return `#!MANAGED-CONFIG ${managedUrl} interval=${config.surge.managedConfigIntervalSeconds} strict=true\n# Last Updated: ${beijingTimestamp()} (UTC+8)\n${variant}`;
 }
@@ -945,6 +924,38 @@ function renderHostEntryLine(entry: HostEntry): string {
   return `${entry.host} = ${Array.isArray(entry.value) ? entry.value.join(", ") : entry.value}`;
 }
 
+function proxyServerHostEntries(config: AppConfig, nodes: ProxyNode[], existingEntries: HostEntry[]): HostEntry[] {
+  if (!config.surge.encryptedDnsFollowOutboundMode || config.surge.encryptedDnsServer.length === 0) return [];
+  const dnsServer = firstSurgeEncryptedDnsServer(config);
+  if (!dnsServer) return [];
+  const mappedHosts = existingEntries.map((entry) => entry.host);
+  const seen = new Set<string>();
+  return nodes.flatMap((node) => {
+    const host = proxyServerHost(node.server);
+    if (!host || seen.has(host) || hostEntryCoversHost(mappedHosts, host)) return [];
+    seen.add(host);
+    return [{ host, value: `server:${dnsServer}` }];
+  });
+}
+
+function firstSurgeEncryptedDnsServer(config: AppConfig): string {
+  return config.surge.encryptedDnsServer.map((server) => String(server).trim()).find(Boolean) || "";
+}
+
+function proxyServerHost(value: string): string {
+  const host = value.trim().replace(/\.$/, "").toLowerCase();
+  if (!host || !host.includes(".") || isIPv4(host) || isIPv6(host)) return "";
+  if (!/^[a-z0-9.-]+$/.test(host)) return "";
+  return host;
+}
+
+function hostEntryCoversHost(entries: string[], host: string): boolean {
+  return entries.some((entry) => {
+    const normalized = entry.trim().replace(/\.$/, "").toLowerCase();
+    return normalized === host || (normalized.startsWith("*.") && host.endsWith(normalized.slice(1)));
+  });
+}
+
 function dedupeHostEntries(entries: HostEntry[]): HostEntry[] {
   const seen = new Set<string>();
   return entries.filter((entry) => {
@@ -984,7 +995,7 @@ function buildSurgeGroups(config: AppConfig, nodes: ProxyNode[]): SurgeGroupOutp
     const [type, ...items] = splitGroupSpec(spec);
     const groupType = type || "select";
     const resolved = groupType === "subnet"
-      ? resolveSubnetGroupItems(items, name, disabledGroups)
+      ? resolveSubnetGroupItems(items, name, disabledGroups, nodes)
       : resolveGroupItems(items, nodes).filter((item) => isAllowedGroupItem(item) && !disabledGroups.has(item));
     const outputItems = groupType === "url-test" ? resolved.filter((item) => !item.includes("=")) : resolved;
     if (!shouldEmitPolicyGroup(name, groupType, outputItems)) return [];
@@ -1041,16 +1052,20 @@ function splitGroupSpec(spec: string): string[] {
 
 function resolveGroupItems(items: string[], nodes: ProxyNode[]): string[] {
   const output: string[] = [];
+  const excludedChainExitNames = new Set(nodes.filter((node) => isChainExitExcludedFromGroups(node)).map((node) => node.name));
+  const includableNodeNames = new Set(nodes.filter(nodeCanEnterGroups).map((node) => node.name));
   for (const item of items) {
     const match = matchExternalPolicyPlaceholder(item);
     if (!match) {
+      if (excludedChainExitNames.has(item)) continue;
+      if (item === CHAIN_EXIT_PROXY_NAME && !includableNodeNames.has(item)) continue;
       output.push(item);
       continue;
     }
     const filters = match[1]?.split(",").map((part) => part.trim()).filter(Boolean) ?? [];
     const excludes = match[2]?.split(",").map((part) => part.trim()).filter(Boolean) ?? [];
     output.push(...nodes
-      .filter((node) => node.name !== CHAIN_EXIT_PROXY_NAME)
+      .filter(nodeCanEnterGroups)
       .filter((node) => filters.length === 0 || filters.some((filter) => nodeMatchesFilter(node, filter)))
       .filter((node) => excludes.every((exclude) => !nodeMatchesFilter(node, exclude)))
       .map((node) => node.name));
@@ -1058,18 +1073,28 @@ function resolveGroupItems(items: string[], nodes: ProxyNode[]): string[] {
   return [...new Set(output)];
 }
 
+function nodeCanEnterGroups(node: ProxyNode): boolean {
+  return !node.chainExit || node.includeInGroups === true;
+}
+
+function isChainExitExcludedFromGroups(node: ProxyNode): boolean {
+  return node.chainExit === true && node.includeInGroups !== true;
+}
+
 function matchExternalPolicyPlaceholder(item: string): RegExpMatchArray | null {
   return item.match(/^\{all(?:\s+filter=([^}]*?)(?=\s+exclude=|}))?(?:\s+exclude=([^}]+))?\}$/);
 }
 
-function resolveSubnetGroupItems(items: string[], groupName: string, disabledGroups: Set<string>): string[] {
+function resolveSubnetGroupItems(items: string[], groupName: string, disabledGroups: Set<string>, nodes: ProxyNode[]): string[] {
   const output: string[] = [];
   let hasDefault = false;
+  const excludedChainExitNames = new Set(nodes.filter((node) => isChainExitExcludedFromGroups(node)).map((node) => node.name));
+  const includableNodeNames = new Set(nodes.filter(nodeCanEnterGroups).map((node) => node.name));
   for (const item of items) {
     const option = parseGroupOption(item);
     if (!option) continue;
     if (!isSubnetGroupOption(option.key)) continue;
-    if (!isAllowedSubnetPolicy(option.value, groupName, disabledGroups)) continue;
+    if (!isAllowedSubnetPolicy(option.value, groupName, disabledGroups, excludedChainExitNames, includableNodeNames)) continue;
     const isDefault = option.key.toLowerCase() === "default";
     if (isDefault) {
       if (hasDefault) continue;
@@ -1097,9 +1122,16 @@ function isSubnetGroupOption(key: string): boolean {
   return key.toLowerCase() === "default" || /^(SSID|BSSID|ROUTER):.+$/i.test(key) || /^TYPE:(WIFI|WIRED|CELLULAR)$/i.test(key);
 }
 
-function isAllowedSubnetPolicy(policy: string, groupName: string, disabledGroups: Set<string>): boolean {
+function isAllowedSubnetPolicy(
+  policy: string,
+  groupName: string,
+  disabledGroups: Set<string>,
+  excludedChainExitNames: Set<string>,
+  includableNodeNames: Set<string>
+): boolean {
   return policy !== groupName
-    && policy !== CHAIN_EXIT_PROXY_NAME
+    && !excludedChainExitNames.has(policy)
+    && (policy !== CHAIN_EXIT_PROXY_NAME || includableNodeNames.has(policy))
     && !disabledGroups.has(policy);
 }
 
@@ -1109,7 +1141,7 @@ function nodeMatchesFilter(node: ProxyNode, filter: string): boolean {
 }
 
 function isAllowedGroupItem(item: string): boolean {
-  return item !== CHAIN_EXIT_PROXY_NAME && item !== "Proxy";
+  return item !== "Proxy";
 }
 
 function mapSurgeGroupType(type: string): string {
@@ -1121,10 +1153,21 @@ function mapClashGroupType(type: string): string {
   return type;
 }
 
-function renderSurgeInlineProfile(config: AppConfig, nodes: ProxyNode[], sourceHostEntries: HostEntry[], proxyLines: string[], groupOutputs: SurgeGroupOutput[]): string {
+function renderSurgeInlineProfile(
+  config: AppConfig,
+  nodes: ProxyNode[],
+  sourceHostEntries: HostEntry[],
+  proxyLines: string[],
+  groupOutputs: SurgeGroupOutput[],
+  options: SurgeRenderOptions = {}
+): string {
   const sections = renderSurgeBaseSections(config);
+  const configuredHostEntries = parseHostEntries(`[Host]\n${config.surge.hosts.join("\n")}`);
+  const autoProxyHostLines = options.includeProxyServerHostEntries === false
+    ? []
+    : proxyServerHostEntries(config, nodes, [...configuredHostEntries, ...sourceHostEntries]).map(renderHostEntryLine);
   const sourceHostLines = sourceHostEntries.map(renderHostEntryLine);
-  const hostLines = [...config.surge.hosts, ...sourceHostLines];
+  const hostLines = [...config.surge.hosts, ...sourceHostLines, ...autoProxyHostLines];
   if (hostLines.length > 0) {
     sections.push(renderSection("Host", [...new Set(hostLines)]));
   }
@@ -1159,9 +1202,11 @@ function renderSurgeBaseSections(config: AppConfig): string[] {
   }
   generalLines.push(
     `wifi-assist = ${config.surge.wifiAssist ? "true" : "false"}`,
-    `exclude-simple-hostnames = ${config.surge.excludeSimpleHostnames ? "true" : "false"}`,
-    `encrypted-dns-follow-outbound-mode = ${config.surge.encryptedDnsFollowOutboundMode ? "true" : "false"}`
+    `exclude-simple-hostnames = ${config.surge.excludeSimpleHostnames ? "true" : "false"}`
   );
+  if (config.surge.encryptedDnsServer.length > 0) {
+    generalLines.push(`encrypted-dns-follow-outbound-mode = ${config.surge.encryptedDnsFollowOutboundMode ? "true" : "false"}`);
+  }
   sections.push(renderSection("General", generalLines));
   return sections;
 }

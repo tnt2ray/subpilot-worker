@@ -392,6 +392,62 @@ describe("asset access control", () => {
     expect(body.error).toContain("Surge URL Rewrite");
   });
 
+  it("rejects proxy node and policy group name conflicts while saving config", async () => {
+    const env = makeEnv();
+    const session = await createSession(env);
+    const headers = {
+      cookie: sessionCookie(session, true),
+      "content-type": "application/json"
+    };
+
+    const proxyNodeResponse = await worker.fetch(new Request("https://subpilot.example.com/api/config", {
+      method: "PATCH",
+      headers,
+      body: JSON.stringify({
+        proxyNodes: [{
+          id: "proxy",
+          config: "Proxy = socks5, 1.1.1.1, 1080",
+          chainFilter: [],
+          enabled: true,
+          chainExit: false,
+          includeInGroups: true
+        }]
+      })
+    }), env, ctx);
+    const proxyNodeBody = await proxyNodeResponse.json<{ error: string }>();
+
+    expect(proxyNodeResponse.status).toBe(400);
+    expect(proxyNodeBody.error).toBe("代理节点名称 Proxy 不能和策略组名称相同");
+
+    await saveConfig(env, {
+      ...DEFAULT_CONFIG,
+      proxyNodes: [{
+        id: "exit",
+        config: "Manual = socks5, 1.1.1.1, 1080",
+        chainFilter: [],
+        enabled: true,
+        chainExit: false,
+        includeInGroups: true
+      }]
+    });
+
+    const groupResponse = await worker.fetch(new Request("https://subpilot.example.com/api/config", {
+      method: "PATCH",
+      headers,
+      body: JSON.stringify({
+        groups: {
+          ...DEFAULT_CONFIG.groups,
+          Manual: "select, {all}"
+        },
+        disabledGroups: []
+      })
+    }), env, ctx);
+    const groupBody = await groupResponse.json<{ error: string }>();
+
+    expect(groupResponse.status).toBe(400);
+    expect(groupBody.error).toBe("代理节点名称 Manual 不能和策略组名称相同");
+  });
+
   it("records config fetch timestamps and recent user agents", async () => {
     const kv = new Map<string, string>();
     kv.set("auth:read_token_hash", await sha256Hex("read-token"));

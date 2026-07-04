@@ -1,5 +1,7 @@
 # SubPilot Worker
 
+语言：中文 | [英文版](./README.en.md)
+
 SubPilot Worker 是运行在 Cloudflare Workers 上的订阅配置生成器。它从上游订阅源读取节点，按管理页中的规则生成 Surge、Clash/mihomo 和 Stash 配置，并用 Workers KV 保存运行配置。
 
 本仓库可以公开使用：仓库不会保存生产 KV namespace、生产域名、管理员 token、订阅源 URL、链式出口密码、MITM CA 或其他个人运行数据。自己的生产部署信息应保存在本地未跟踪的 `wrangler.jsonc`、Cloudflare Worker Secrets 和 Workers KV 中。
@@ -20,7 +22,7 @@ SubPilot Worker 项目代码以 [GNU Affero General Public License v3.0 or later
 - 提供 Surge / Clash / Stash 规则结构化编辑器，同时保留文本模式用于直接编辑生成内容。
 - 管理端预览可提示被前面规则覆盖、实际不会生效的规则，支持检查 Surge 规则集和 Clash / Stash rule-providers 内容。
 - Clash rule-providers 与 rules 联动：未引用的规则集会自动补入 rules，删除规则集时会同步移除对应规则。
-- 配置共享链式出口节点，并自动生成对应链式代理节点。
+- 管理自维护代理节点，可标记多个链式出口并自动生成对应链式代理节点。
 - 轮换订阅读取 token，生成带稳定文件名的订阅链接。
 - 缓存上游订阅，记录最近订阅拉取时间、User-Agent 和 IP 地理位置。
 - 可配置后台和 Telegram 通知的显示时区；系统内部时间仍按 UTC 保存。
@@ -155,7 +157,7 @@ wrangler deploy
 2. 在 `Sources` 中添加上游订阅源；URL 会加密保存到 KV。
 3. 在 `Policy Groups` 中调整策略组。
 4. 在 `Surge`、`Clash`、`Stash` 页面中调整各目标的规则、DNS、TUN 等配置。
-5. 如需链式代理，在 `Configuration` 中填写共享链式出口节点。
+5. 如需链式代理，在 `Proxy Nodes` 中添加自维护代理节点，勾选可作为链式出口的节点，并在该节点上配置链式过滤器。
 6. 按需要在 `Configuration` 中调整显示时区；默认是 `Asia/Shanghai`，只影响后台和通知中的时间展示。
 7. 在 `Tokens` 页面轮换订阅读取 token，并复制订阅链接。
 
@@ -333,7 +335,8 @@ config:groups:disabled               禁用的策略组
 config:groups:<name>                 单个策略组定义
 config:sources:index                 订阅源 ID 顺序
 config:sources:<id>                  单个订阅源，加密保存 URL
-config:chain:exitProxy               共享链式出口节点
+config:proxyNodes:index              自维护代理节点 ID 顺序
+config:proxyNodes:<id>               单个自维护代理节点
 config:surge:<field>                 Surge 功能配置
 config:clash:<field>                 Clash 功能配置
 config:stash:<field>                 Stash 功能配置

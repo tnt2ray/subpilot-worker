@@ -212,7 +212,7 @@ describe("proxy parsing", () => {
       server: "snell.example.com",
       port: 44046,
       psk: "secret",
-      version: "4",
+      version: 4,
       "obfs-opts": {
         mode: "http",
         host: "bing.com"

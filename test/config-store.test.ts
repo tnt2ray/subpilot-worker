@@ -93,6 +93,17 @@ describe("KV config storage", () => {
     expect(cleared.stash.scripts).toEqual([]);
     expect(cleared.stash.rules).toEqual([]);
 
+    const noEncryptedDns = normalizeConfig({
+      ...DEFAULT_CONFIG,
+      surge: {
+        ...DEFAULT_CONFIG.surge,
+        encryptedDnsServer: [],
+        encryptedDnsFollowOutboundMode: true
+      }
+    });
+    expect(noEncryptedDns.surge.encryptedDnsServer).toEqual([]);
+    expect(noEncryptedDns.surge.encryptedDnsFollowOutboundMode).toBe(false);
+
     const subnet = normalizeConfig({
       ...DEFAULT_CONFIG,
       groups: {
@@ -103,16 +114,7 @@ describe("KV config storage", () => {
     });
     expect(subnet.groups.Network).toBe("subnet, default=Proxy, TYPE:WIFI=Proxy, TYPE:WIFI=Proxy, SSID:Office=DIRECT");
 
-    const chainSwitches = normalizeConfig({
-      ...DEFAULT_CONFIG,
-      chain: {
-        exitProxy: {
-          ...DEFAULT_CONFIG.chain.exitProxy,
-          server: ""
-        },
-        filter: DEFAULT_CONFIG.chain.filter
-      }
-    });
+    const chainSwitches = normalizeConfig(DEFAULT_CONFIG);
     expect("chainEnabled" in chainSwitches.surge).toBe(false);
     expect("chainEnabled" in chainSwitches.clash).toBe(false);
 
@@ -151,14 +153,30 @@ describe("KV config storage", () => {
         fetchUserAgent: "surge",
         enabled: true
       }],
+      proxyNodes: [{
+        id: "exit",
+        config: "Chain Exit = socks5, 1.1.1.1, 1080, username=u, password=p",
+        chainFilter: ["JP"],
+        enabled: true,
+        chainExit: true,
+        includeInGroups: true
+      }, {
+        id: "snell",
+        config: [
+          "# user maintained Clash YAML",
+          "name: Snell Exit",
+          "type: snell",
+          "server: snell.example.com",
+          "port: 44046",
+          "psk: secret",
+          "version: 4"
+        ].join("\n"),
+        chainFilter: [],
+        enabled: true,
+        chainExit: false,
+        includeInGroups: true
+      }],
       chain: {
-        exitProxy: {
-          protocol: "socks5",
-          server: "1.1.1.1",
-          port: 1080,
-          username: "u",
-          password: "p"
-        },
         filter: ["JP"]
       },
       surge: {
@@ -218,14 +236,33 @@ describe("KV config storage", () => {
     expect(kv.get("config:groups:Proxy")).toBe("select, Auto");
     expect(kv.get("config:groups:Auto")).toBe("url-test, {all}, url=https://www.gstatic.com/generate_204, interval=600");
     expect(JSON.parse(kv.get("config:groups:disabled") ?? "[]")).toEqual(["Auto"]);
-    expect(JSON.parse(kv.get("config:chain:exitProxy") ?? "{}")).toEqual({
-      protocol: "socks5",
-      server: "1.1.1.1",
-      port: 1080,
-      username: "u",
-      password: "p"
+    expect(JSON.parse(kv.get("config:proxyNodes:index") ?? "[]")).toEqual(["exit", "snell"]);
+    expect(JSON.parse(kv.get("config:proxyNodes:exit") ?? "{}")).toEqual({
+      id: "exit",
+      config: "Chain Exit = socks5, 1.1.1.1, 1080, username=u, password=p",
+      chainFilter: ["JP"],
+      enabled: true,
+      chainExit: true,
+      includeInGroups: true
     });
-    expect(JSON.parse(kv.get("config:chain:filter") ?? "[]")).toEqual(["JP"]);
+    expect(JSON.parse(kv.get("config:proxyNodes:snell") ?? "{}")).toEqual({
+      id: "snell",
+      config: [
+        "# user maintained Clash YAML",
+        "name: Snell Exit",
+        "type: snell",
+        "server: snell.example.com",
+        "port: 44046",
+        "psk: secret",
+        "version: 4"
+      ].join("\n"),
+      chainFilter: [],
+      enabled: true,
+      chainExit: false,
+      includeInGroups: true
+    });
+    expect(kv.has("config:chain:exitProxy")).toBe(false);
+    expect(kv.has("config:chain:filter")).toBe(false);
     expect(kv.has("config:surge:loglevel")).toBe(false);
     expect(JSON.parse(kv.get("config:surge:skipProxy") ?? "[]")).toEqual([
       "127.0.0.1",

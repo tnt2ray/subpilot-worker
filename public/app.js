@@ -15,9 +15,17 @@ let saveStatusResetTimer = 0;
 let telegramBindPollTimer = 0;
 let codeMirrorLoadPromise = null;
 
-const PAGES = ["status", "settings", "groups", "sources", "surge", "clash", "stash", "tokens"];
-const EDITABLE_PAGES = new Set(["settings", "groups", "sources", "surge", "clash", "stash"]);
-const CODE_EDITOR_PAGES = new Set(["surge", "clash", "stash"]);
+const PAGES = ["status", "settings", "proxy-nodes", "sources", "groups", "surge", "clash", "stash", "tokens"];
+const EDITABLE_PAGES = new Set(["settings", "groups", "sources", "proxy-nodes", "surge", "clash", "stash"]);
+const CODE_EDITOR_PAGES = new Set(["proxy-nodes", "surge", "clash", "stash", "tokens"]);
+const PROXY_NODE_PROTOCOLS = ["http", "https", "socks5", "socks5-tls", "ss", "snell", "trojan", "vmess", "hysteria2", "tuic", "anytls", "trust-tunnel", "ssh"];
+const PROXY_NODE_URI_PATTERN = /^(?:trojan|vless|vmess|ss|hysteria2|hy2|tuic|anytls):\/\//i;
+const CONFIG_PROXY_PROTOCOL_PATTERN = /(?:socks5-tls|trust-tunnel|hysteria2|hysteria|anytls|socks5|trojan|vmess|vless|snell|https|http|tuic|hy2|ss|ssh)(?=\s*(?:,|#|;|\]|\)|$))/i;
+const CONFIG_PROXY_PARAM_KEY_PATTERN = /(?:allow-insecure|alterId|alpn|client-fingerprint|cipher|down|encrypt-method|fast-open|fingerprint|flow|grpc-opts|h2-opts|headers|host|http-opts|ip-version|network|obfs|obfs-host|obfs-password|obfs-opts|obfs-uri|passwd|password|path|plugin|plugin-opts|psk|reality-opts|salamander-password|security|server-cert-fingerprint-sha256|servername|skip-cert-verify|skip-server-cert-verify|sni|spx|tls|token|tfo|udp|udp-relay|up|uuid|username|version|ws|ws-headers|ws-opts|ws-path)(?=\s*[:=])/i;
+const CONFIG_IPV4_CIDR_PATTERN = /\d{1,3}(?:\.\d{1,3}){3}\/\d{1,2}(?=\s*(?:,|#|;|\]|\)|$))/;
+const CONFIG_IPV4_PATTERN = /\d{1,3}(?:\.\d{1,3}){3}(?=\s*(?:,|#|;|\]|\)|$))/;
+const CONFIG_NUMBER_PATTERN = /-?\d+(?:\.\d+)?(?=\s*(?:,|#|;|\]|\)|$))/;
+const CONFIG_BARE_VALUE_PATTERN = /[A-Za-z_][\w.-]*(?=\s*(?:,|#|;|\]|\)|$))/;
 const FETCH_RECORDS_PAGE_SIZE = 10;
 const DEFAULT_DISPLAY_TIME_ZONE = "Asia/Shanghai";
 const DEFAULT_CLASH_MODE = "Rule";
@@ -29,9 +37,10 @@ const I18N = {
   title: "SubPilot 控制台",
   navStatus: "状态",
   navSystem: "系统",
-  navConfiguration: "配置",
+  navConfiguration: "基础系统配置",
   navPolicyGroups: "策略组",
   navSources: "订阅源",
+  navProxyNodes: "代理节点",
   navSurge: "Surge",
   navClash: "Clash",
   navStash: "Stash",
@@ -39,12 +48,14 @@ const I18N = {
   navTokens: "配置链接",
   pageStatusTitle: "状态",
   pageStatusDescription: "查看服务状态、订阅数量和最近获取记录。",
-  pageSettingsTitle: "配置",
-  pageSettingsDescription: "编辑生成行为、上游请求头、缓存策略和链式代理。",
+  pageSettingsTitle: "基础系统配置",
+  pageSettingsDescription: "编辑生成行为、上游请求头和缓存策略。",
   pageGroupsTitle: "策略组",
   pageGroupsDescription: "按输出顺序编辑 Surge 与 Clash 的策略组。",
   pageSourcesTitle: "订阅源",
   pageSourcesDescription: "管理上游订阅地址和拉取方式；启用的订阅会参与配置生成。",
+  pageProxyNodesTitle: "代理节点",
+  pageProxyNodesDescription: "管理手动维护的代理节点，并为链式出口配置独立过滤器。",
   pageSurgeTitle: "Surge",
   pageSurgeDescription: "管理 Surge 输出所需的通用设置、规则、脚本和 MITM 选项。",
   pageClashTitle: "Clash",
@@ -105,17 +116,29 @@ const I18N = {
   sourceCacheRefreshFailed: "强制获取完成，但有 {count} 个订阅源失败：\n{warnings}",
   sourceCacheNotificationWarnings: "\n\n通知状态：\n{warnings}",
   sourceCacheStatus: "上游缓存",
-  chainExitProxy: "链式出口节点",
-  chainExitProxyHelp: "生成配置时会自动创建名为 Chain Exit 的出口节点。",
-  chainExitServer: "服务器地址",
-  chainExitPort: "端口",
-  chainExitUsername: "用户名 / UUID / 加密方法",
-  chainExitPassword: "密码 / token / psk",
-  chainFilter: "链式节点过滤器",
-  chainFilterHelp: "逗号分隔，按最终节点名、地区或能力标签筛选。命中的节点会额外生成经 Chain Exit 出口的链式节点。",
+  proxyNodesTitle: "代理节点",
+  addProxyNode: "添加代理节点",
+  newProxyNode: "新代理节点",
+  proxyNodeConfigText: "配置文本",
+  proxyNodeFlags: "用途",
+  proxyNodeEnabled: "启用此节点",
+  proxyNodeChainExit: "作为链式出口",
+  proxyNodeIncludeInGroups: "出口节点加入策略组",
+  proxyNodeChainFilter: "链式过滤器",
+  proxyNodeNoRows: "暂无代理节点。添加后可作为普通节点输出，也可标记为链式代理出口。",
+  proxyNodeConfigHelp: "填写完整单个节点配置。支持 Surge [Proxy] 行，也支持 Clash proxy YAML；启用状态和链式出口由右上方选框控制。",
+  proxyNodeConfigPlaceholder: "Surge: Chain Exit = socks5, example.com, 443, username=u, password=p\n\nClash:\nname: Chain Exit\ntype: snell\nserver: example.com\nport: 44046\npsk: secret\nversion: 4",
+  proxyNodeChainFilterHelp: "仅作为链式出口时生效。逗号分隔，按最终节点名、地区或能力标签筛选；为空则不生成链式节点。",
+  proxyNodeChainFilterPlaceholder: "JP, KR, AI",
+  proxyNodeIncludeInGroupsHelp: "仅作为链式出口时生效。开启后，这个出口节点本身也会进入 {all} 策略组；关闭时只输出用于链式代理。",
+  proxyNodeFlagsHelp: "启用后参与配置生成；标记为链式出口后，会按本节点过滤器生成对应链式代理。",
+  proxyNodeValidationError: "存在无效代理节点，已阻止保存。",
+  proxyNodeGroupNameConflict: "代理节点名称 {name} 不能和策略组名称相同。",
   groupsTitle: "策略组",
   addGroup: "添加策略组",
   newGroup: "新策略组",
+  groupValidationError: "存在无效策略组，已阻止保存。",
+  groupProxyNodeNameConflict: "策略组名称 {name} 不能和代理节点名称相同。",
   policyGroups: "策略组",
   tableDefinition: "生成规则",
   groupType: "类型",
@@ -286,7 +309,7 @@ const I18N = {
   excludeSimpleHostnames: "排除简单主机名",
   excludeSimpleHostnamesHelp: "启用后，不带点号的简单主机名不会交给远端 DNS，适合保留局域网主机名解析。",
   encryptedDnsFollowOutboundMode: "加密 DNS 跟随出站模式",
-  encryptedDnsFollowOutboundModeHelp: "启用后，加密 DNS 查询会跟随当前出站模式，避免 DNS 流量绕过当前策略。",
+  encryptedDnsFollowOutboundModeHelp: "启用后，仅 Surge 自己发出的加密 DNS 查询会跟随当前出站模式，避免这部分 DNS 流量绕过当前策略。",
   surgePonteDeviceNames: "Ponte 设备名",
   surgePonteDeviceNamesHelp: "填写 Surge Ponte 设备名，逗号分隔；保存后可在 Rule 的策略出口中选择 DEVICE:<设备名>。",
   surgeRules: "Surge 规则",
@@ -487,6 +510,8 @@ const refs = {
   sourcesBody: $("sourcesBody"),
   addSourceBtn: $("addSourceBtn"),
   saveSourcesBtn: $("saveSourcesBtn"),
+  proxyNodesBody: $("proxyNodesBody"),
+  addProxyNodeBtn: $("addProxyNodeBtn"),
   managedBaseUrl: $("managedBaseUrl"),
   userAgentSurge: $("userAgentSurge"),
   userAgentClash: $("userAgentClash"),
@@ -501,12 +526,6 @@ const refs = {
   updateCheckEnabled: $("updateCheckEnabled"),
   telegramBindStatus: $("telegramBindStatus"),
   telegramBindCodeBtn: $("telegramBindCodeBtn"),
-  chainExitProtocol: $("chainExitProtocol"),
-  chainExitServer: $("chainExitServer"),
-  chainExitPort: $("chainExitPort"),
-  chainExitUsername: $("chainExitUsername"),
-  chainExitPassword: $("chainExitPassword"),
-  chainFilter: $("chainFilter"),
   surgeSkipProxy: $("surgeSkipProxy"),
   surgeDnsServer: $("surgeDnsServer"),
   surgeAlwaysRealIp: $("surgeAlwaysRealIp"),
@@ -522,6 +541,7 @@ const refs = {
   surgeEncryptedDnsServer: $("surgeEncryptedDnsServer"),
   surgeWifiAssist: $("surgeWifiAssist"),
   surgeExcludeSimpleHostnames: $("surgeExcludeSimpleHostnames"),
+  surgeEncryptedDnsFollowOutboundModeRow: $("surgeEncryptedDnsFollowOutboundModeRow"),
   surgeEncryptedDnsFollowOutboundMode: $("surgeEncryptedDnsFollowOutboundMode"),
   surgePonteDeviceNames: $("surgePonteDeviceNames"),
   surgeHostAdvancedMode: $("surgeHostAdvancedMode"),
@@ -757,6 +777,11 @@ function hasConfigPolicyStartBoundary(stream) {
   return !previous || /[,\s([=]/.test(previous);
 }
 
+function hasConfigTokenStartBoundary(stream) {
+  const previous = stream.pos > 0 ? stream.string.charAt(stream.pos - 1) : "";
+  return !previous || /[,\s([{:]/.test(previous);
+}
+
 function matchConfigPolicyToken(stream) {
   if (!hasConfigPolicyStartBoundary(stream)) return false;
   for (const policy of configPolicyHighlightCandidates()) {
@@ -770,6 +795,14 @@ function matchConfigPolicyToken(stream) {
     stream.match(/(?:DIRECT|Proxy|REJECT(?:-(?:DROP|NO-DROP|TINYGIF))?|PASS|GLOBAL)(?=\s*,|\s|\]|\)|$)/i)
     || stream.match(/DEVICE:[^,\s\])]+/i)
   );
+}
+
+function matchConfigProxyParamKey(stream) {
+  return hasConfigTokenStartBoundary(stream) && Boolean(stream.match(CONFIG_PROXY_PARAM_KEY_PATTERN));
+}
+
+function matchConfigProxyProtocol(stream) {
+  return hasConfigTokenStartBoundary(stream) && Boolean(stream.match(CONFIG_PROXY_PROTOCOL_PATTERN));
 }
 
 function resizeConfigCodeEditor(textarea, editor) {
@@ -836,22 +869,56 @@ function ensureConfigCodeEditorsForPage(page = activePage) {
 function defineConfigCodeMirrorMode(CodeMirror) {
   if (!CodeMirror || CodeMirror.modes?.["proxy-config"]) return;
   CodeMirror.defineMode("proxy-config", () => ({
-    token(stream) {
+    startState: () => ({
+      afterProxyParamKey: false,
+      afterProxyParamOperator: false
+    }),
+    token(stream, modeState) {
+      const resetProxyParamState = () => {
+        modeState.afterProxyParamKey = false;
+        modeState.afterProxyParamOperator = false;
+      };
+      if (stream.sol()) resetProxyParamState();
       if (stream.sol() && stream.match(/\s*[#;]/, false)) {
         stream.skipToEnd();
         return "comment";
       }
       if (stream.eatSpace()) return null;
-      if (stream.match(/[;#].*/)) return "comment";
+      if (stream.match(/[;#].*/)) {
+        resetProxyParamState();
+        return "comment";
+      }
+      if (modeState.afterProxyParamKey && !/[=:]/.test(stream.peek() || "")) {
+        modeState.afterProxyParamKey = false;
+      }
+      if (modeState.afterProxyParamOperator) {
+        modeState.afterProxyParamOperator = false;
+        if (stream.match(/"(?:[^"\\]|\\.)*"/) || stream.match(/'(?:[^'\\]|\\.)*'/)) return "string";
+        if (stream.match(/[^,\s#;][^,#;]*/)) return "string";
+      }
       if (stream.match(/\[[^\]]+\]/)) return "header";
       if (stream.match(/"(?:[^"\\]|\\.)*"/) || stream.match(/'(?:[^'\\]|\\.)*'/)) return "string";
       if (stream.match(/https?:\/\/[^\s,]+/i)) return "link";
+      if (matchConfigProxyParamKey(stream)) {
+        modeState.afterProxyParamKey = true;
+        return "attribute";
+      }
       if (stream.match(/[A-Za-z][\w.-]*(?=\s*:)/)) return "attribute";
+      if (matchConfigProxyProtocol(stream)) return "keyword";
       if (stream.match(/(?:RULE-SET|DOMAIN-SET|DOMAIN-SUFFIX|DOMAIN-KEYWORD|DOMAIN-WILDCARD|DOMAIN|IP-CIDR6?|GEOIP|FINAL|URL-REGEX|PROCESS-NAME|SUBNET|AND|OR|NOT|SSID|BSSID|ROUTER|TYPE|DEVICE-NAME)(?=\s*,|\s|$)/i)) return "keyword";
       if (matchConfigPolicyToken(stream)) return "variable-2";
       if (stream.match(/(?:no-resolve|extended-matching|server:[^,\s]+|skip-server-cert-verify|ca-passphrase|ca-p12|hostname|h2)(?=\s*,|\s|=|$)/i)) return "attribute";
-      if (stream.match(/[=,]/)) return "operator";
-      if (stream.match(/-?\d+(?:\.\d+)?/)) return "number";
+      const operator = stream.peek();
+      if (operator && /[=,:]/.test(operator)) {
+        stream.next();
+        modeState.afterProxyParamOperator = modeState.afterProxyParamKey && /[=:]/.test(operator);
+        modeState.afterProxyParamKey = false;
+        return "operator";
+      }
+      if (stream.match(CONFIG_IPV4_CIDR_PATTERN)) return "number";
+      if (stream.match(CONFIG_IPV4_PATTERN)) return "number";
+      if (stream.match(CONFIG_NUMBER_PATTERN)) return "number";
+      if (stream.match(CONFIG_BARE_VALUE_PATTERN)) return "string";
       stream.next();
       return null;
     }
@@ -882,14 +949,32 @@ function syncConfigCodeEditor(textarea) {
   });
 }
 
+function pruneConfigCodeEditors() {
+  for (const textarea of configCodeEditors.keys()) {
+    if (!textarea.isConnected) {
+      configCodeEditors.delete(textarea);
+    }
+  }
+}
+
+function configCodeTextareas() {
+  pruneConfigCodeEditors();
+  return [...new Set([
+    ...configCodeEditorRefs.map((name) => refs[name]).filter(Boolean),
+    ...document.querySelectorAll("textarea.config-code-textarea")
+  ])];
+}
+
 function syncConfigCodeEditors() {
-  for (const name of configCodeEditorRefs) {
-    syncConfigCodeEditor(refs[name]);
+  for (const textarea of configCodeTextareas()) {
+    syncConfigCodeEditor(textarea);
   }
 }
 
 function refreshConfigCodeEditors() {
+  pruneConfigCodeEditors();
   requestAnimationFrame(() => {
+    pruneConfigCodeEditors();
     for (const [textarea, editor] of configCodeEditors.entries()) {
       editor.setOption("mode", configCodeEditorMode(textarea));
       editor.refresh();
@@ -902,8 +987,7 @@ function initConfigCodeEditors() {
   const CodeMirror = window.CodeMirror;
   if (!CodeMirror) return;
   defineConfigCodeMirrorMode(CodeMirror);
-  for (const name of configCodeEditorRefs) {
-    const textarea = refs[name];
+  for (const textarea of configCodeTextareas()) {
     if (!textarea || configCodeEditors.has(textarea)) continue;
     const editor = CodeMirror.fromTextArea(textarea, {
       mode: configCodeEditorMode(textarea),
@@ -936,6 +1020,12 @@ function initConfigCodeEditors() {
   }
 }
 
+function setPreviewOutput(value, empty = !value) {
+  refs.previewOutput.value = value;
+  refs.previewOutput.dataset.empty = empty ? "true" : "false";
+  syncConfigCodeEditor(refs.previewOutput);
+}
+
 function t(key) {
   return I18N[key] ?? key;
 }
@@ -964,8 +1054,7 @@ function applyLanguage() {
   });
   setSaveStatus(refs.saveBtn.dataset.state || "idle");
   if (!currentPreviewContent) {
-    refs.previewOutput.textContent = t("previewEmpty");
-    refs.previewOutput.dataset.empty = "true";
+    setPreviewOutput(t("previewEmpty"), true);
   }
   updatePageHeading();
   if (state) {
@@ -1172,6 +1261,9 @@ function renderPage(page, options = {}) {
     case "sources":
       renderSources();
       break;
+    case "proxy-nodes":
+      renderProxyNodes();
+      break;
     case "surge":
       renderSurge();
       break;
@@ -1207,12 +1299,6 @@ function renderSettings() {
   refs.updateCheckEnabled.checked = state.settings.updateCheckEnabled === true;
   renderTelegramBindStatus();
   renderGeoIpMmdbStatus();
-  refs.chainExitProtocol.value = state.chain.exitProxy.protocol;
-  refs.chainExitServer.value = state.chain.exitProxy.server;
-  refs.chainExitPort.value = String(state.chain.exitProxy.port || "");
-  refs.chainExitUsername.value = state.chain.exitProxy.username;
-  refs.chainExitPassword.value = state.chain.exitProxy.password;
-  refs.chainFilter.value = (state.chain.filter || []).join(", ");
 }
 
 function renderSurge() {
@@ -1235,6 +1321,7 @@ function renderSurge() {
   refs.surgeWifiAssist.checked = state.surge.wifiAssist;
   refs.surgeExcludeSimpleHostnames.checked = state.surge.excludeSimpleHostnames;
   refs.surgeEncryptedDnsFollowOutboundMode.checked = state.surge.encryptedDnsFollowOutboundMode;
+  syncSurgeEncryptedDnsFollowOutboundModeVisibility();
   refs.surgePonteDeviceNames.value = normalizePonteDeviceNames(state.surge.ponteDeviceNames || []).join(", ");
   renderSurgeHostRows(state.surge.hosts || []);
   if (advancedHostMode) {
@@ -4142,6 +4229,233 @@ function addSource() {
   renderSummary();
 }
 
+function renderProxyNodeEmptyState() {
+  return `<div class="proxy-node-empty">${escapeHtml(t("proxyNodeNoRows"))}</div>`;
+}
+
+function proxyNodeConfigText(node) {
+  const config = String(node.config || "").trim();
+  return config || legacyProxyNodeConfigText(node);
+}
+
+function legacyProxyNodeConfigText(node) {
+  const server = String(node.server || "").trim();
+  const port = Number(node.port);
+  if (!server || !Number.isFinite(port) || port < 1 || port > 65535) return "";
+  const protocol = PROXY_NODE_PROTOCOLS.includes(node.protocol) ? node.protocol : "socks5";
+  const name = String(node.name || t("newProxyNode")).trim() || t("newProxyNode");
+  const username = String(node.username || "").trim();
+  const password = String(node.password || "").trim();
+  const parts = [server, String(port)];
+  if (protocol === "ss") {
+    if (username) parts.push(`encrypt-method=${username}`);
+    if (password) parts.push(`password=${password}`);
+  } else if (protocol === "snell") {
+    if (password) parts.push(`psk=${password}`);
+    parts.push("version=4");
+  } else if (protocol === "tuic") {
+    if (username) parts.push(`username=${username}`);
+    if (password) parts.push(`password=${password}`);
+  } else if (["trojan", "hysteria2", "anytls"].includes(protocol)) {
+    if (password) parts.push(`password=${password}`);
+  } else {
+    if (username) parts.push(`username=${username}`);
+    if (password) parts.push(`password=${password}`);
+  }
+  return `${name} = ${protocol}, ${parts.join(", ")}`;
+}
+
+function renderProxyNodes() {
+  const nodes = state.proxyNodes || [];
+  refs.proxyNodesBody.innerHTML = nodes.length > 0 ? "" : renderProxyNodeEmptyState();
+  nodes.forEach((node, index) => {
+    const card = document.createElement("section");
+    card.className = "proxy-node-card";
+    card.dataset.proxyNodeId = node.id;
+    card.innerHTML = `
+      <div class="proxy-node-card-head">
+        <div class="proxy-node-card-kicker">${escapeHtml(t("proxyNodesTitle"))} #${index + 1}</div>
+        <div class="proxy-node-card-actions">
+          <label class="check proxy-node-check"><input data-field="enabled" type="checkbox"${node.enabled !== false ? " checked" : ""}> <span>${escapeHtml(t("proxyNodeEnabled"))}</span></label>
+          <label class="check proxy-node-check"><input data-field="chainExit" type="checkbox"${node.chainExit === true ? " checked" : ""}> <span>${escapeHtml(t("proxyNodeChainExit"))}</span></label>
+          <button class="danger proxy-node-remove" data-remove type="button">${escapeHtml(t("remove"))}</button>
+        </div>
+      </div>
+      <div class="proxy-node-card-grid">
+        <label class="proxy-node-field proxy-node-config-field">
+          <span>${escapeHtml(t("proxyNodeConfigText"))}</span>
+          <textarea class="line-editor config-code-textarea proxy-node-config-textarea" rows="10" data-code-editor-max-rows="10" data-field="config" spellcheck="false" placeholder="${escapeHtml(t("proxyNodeConfigPlaceholder"))}">${escapeHtml(proxyNodeConfigText(node))}</textarea>
+          <small>${escapeHtml(t("proxyNodeConfigHelp"))}</small>
+        </label>
+        ${node.chainExit === true ? `
+        <div class="proxy-node-field proxy-node-chain-options-field">
+          <span>${escapeHtml(t("proxyNodeFlags"))}</span>
+          <label class="check proxy-node-check proxy-node-option-check"><input data-field="includeInGroups" type="checkbox"${node.includeInGroups === true ? " checked" : ""}> <span>${escapeHtml(t("proxyNodeIncludeInGroups"))}</span></label>
+          <small>${escapeHtml(t("proxyNodeIncludeInGroupsHelp"))}</small>
+        </div>
+        <label class="proxy-node-field proxy-node-chain-filter-field">
+          <span>${escapeHtml(t("proxyNodeChainFilter"))}</span>
+          <input data-field="chainFilter" type="text" value="${escapeHtml((node.chainFilter || []).join(", "))}" placeholder="${escapeHtml(t("proxyNodeChainFilterPlaceholder"))}">
+          <small>${escapeHtml(t("proxyNodeChainFilterHelp"))}</small>
+        </label>
+        ` : ""}
+      </div>
+    `;
+    card.querySelectorAll("[data-field]").forEach((input) => {
+      input.addEventListener(input.type === "checkbox" ? "change" : "input", () => updateProxyNode(node.id, input));
+    });
+    card.querySelector("[data-remove]").addEventListener("click", () => {
+      state.proxyNodes = (state.proxyNodes || []).filter((item) => item.id !== node.id);
+      renderProxyNodes();
+    });
+    refs.proxyNodesBody.append(card);
+  });
+  void ensureConfigCodeEditors();
+}
+
+function updateProxyNode(id, input) {
+  const node = (state.proxyNodes || []).find((item) => item.id === id);
+  if (!node) return;
+  const field = input.dataset.field;
+  if (field === "enabled") {
+    node[field] = input.checked;
+    return;
+  }
+  if (field === "chainExit") {
+    node.chainExit = input.checked;
+    node.includeInGroups = input.checked ? false : true;
+    renderProxyNodes();
+    return;
+  }
+  if (field === "includeInGroups") {
+    node.includeInGroups = input.checked;
+    return;
+  }
+  if (field === "chainFilter") {
+    node.chainFilter = input.value.split(",").map((item) => item.trim()).filter(Boolean);
+    return;
+  }
+  node[field] = input.value;
+}
+
+function addProxyNode() {
+  if (!Array.isArray(state.proxyNodes)) state.proxyNodes = [];
+  state.proxyNodes.push({
+    id: crypto.randomUUID(),
+    config: "",
+    chainFilter: [],
+    enabled: true,
+    chainExit: false,
+    includeInGroups: false
+  });
+  renderProxyNodes();
+}
+
+function validateProxyNodes() {
+  const errors = [];
+  const names = new Set();
+  const groupNames = new Set(Object.keys(state.groups || {}).map((name) => name.trim()).filter(Boolean));
+  (state.proxyNodes || []).forEach((node, index) => {
+    const rowNumber = index + 1;
+    const config = proxyNodeConfigText(node);
+    if (!config) {
+      errors.push(`第 ${rowNumber} 个代理节点缺少配置文本。`);
+      return;
+    }
+    const draft = parseProxyNodeConfigDraft(config);
+    if (!draft.valid) {
+      errors.push(`第 ${rowNumber} 个代理节点需要是完整 Surge 节点行或 Clash proxy YAML。`);
+      return;
+    }
+    if (names.has(draft.name)) {
+      errors.push(`代理节点名称 ${draft.name} 重复。`);
+    }
+    if (groupNames.has(draft.name)) {
+      errors.push(formatMessage("proxyNodeGroupNameConflict", { name: draft.name }));
+    }
+    names.add(draft.name);
+  });
+  return { errors };
+}
+
+function proxyNodeDraftNames() {
+  const names = new Set();
+  (state.proxyNodes || []).forEach((node) => {
+    const draft = parseProxyNodeConfigDraft(proxyNodeConfigText(node));
+    if (draft.valid && draft.name) names.add(draft.name);
+  });
+  return names;
+}
+
+function validateGroups() {
+  const errors = [];
+  const proxyNodeNames = proxyNodeDraftNames();
+  Object.keys(state.groups || {}).forEach((name) => {
+    if (proxyNodeNames.has(name)) {
+      errors.push(formatMessage("groupProxyNodeNameConflict", { name }));
+    }
+  });
+  return { errors };
+}
+
+function splitProxyNodeSurgeConfig(value) {
+  const parts = [];
+  for (const rawPart of String(value || "").split(",")) {
+    const part = rawPart.trim();
+    if (!part) continue;
+    if (parts.length >= 3 && !/^[A-Za-z][\w-]*=/.test(part)) {
+      parts[parts.length - 1] = `${parts[parts.length - 1]},${rawPart}`;
+      continue;
+    }
+    parts.push(part);
+  }
+  return parts;
+}
+
+function parseProxyNodeConfigDraft(value) {
+  const surge = parseSurgeProxyNodeDraft(value);
+  if (surge.valid) return surge;
+  return parseClashProxyNodeDraft(value);
+}
+
+function parseSurgeProxyNodeDraft(value) {
+  const line = String(value || "").split(/\r?\n/)
+    .map((item) => item.trim())
+    .find((item) => item && !item.startsWith("#") && !item.startsWith(";") && !/^\[[^\]]+\]$/.test(item));
+  const [rawName, rawDetail] = line?.split(/=(.*)/s) || [];
+  const name = String(rawName || "").trim();
+  const detail = String(rawDetail || "").trim();
+  if (name && PROXY_NODE_URI_PATTERN.test(detail)) {
+    return { valid: true, name };
+  }
+  const parts = splitProxyNodeSurgeConfig(rawDetail || "");
+  const protocol = String(parts[0] || "").trim();
+  const server = String(parts[1] || "").trim();
+  const port = Number(parts[2]);
+  return {
+    valid: Boolean(name && protocol && server && Number.isFinite(port) && port >= 1 && port <= 65535),
+    name
+  };
+}
+
+function readProxyNodeYamlScalar(text, key) {
+  const pattern = new RegExp(`(?:^|[\\n{,])\\s*-?\\s*${key}\\s*:\\s*(?:"([^"]*)"|'([^']*)'|([^"',}\\n#]+))`, "i");
+  const match = String(text || "").match(pattern);
+  return String(match?.[1] || match?.[2] || match?.[3] || "").trim();
+}
+
+function parseClashProxyNodeDraft(value) {
+  const text = String(value || "");
+  const name = readProxyNodeYamlScalar(text, "name");
+  const type = readProxyNodeYamlScalar(text, "type");
+  const server = readProxyNodeYamlScalar(text, "server");
+  const port = Number(readProxyNodeYamlScalar(text, "port"));
+  return {
+    valid: Boolean(name && type && server && Number.isFinite(port) && port >= 1 && port <= 65535),
+    name
+  };
+}
+
 function readSettingsDraft() {
   const notificationTelegramBotToken = refs.notificationTelegramBotToken.value.trim();
   return {
@@ -4157,29 +4471,16 @@ function readSettingsDraft() {
       notificationChannel: notificationTelegramBotToken ? "telegram" : "off",
       notificationTelegramChatId: notificationTelegramBotToken ? state.settings.notificationTelegramChatId || "" : "",
       notificationTelegramBotToken
-    },
-    chain: {
-      ...state.chain,
-      exitProxy: {
-        ...state.chain.exitProxy,
-        protocol: refs.chainExitProtocol.value,
-        server: refs.chainExitServer.value.trim(),
-        port: Number(refs.chainExitPort.value) || 1080,
-        username: refs.chainExitUsername.value.trim(),
-        password: refs.chainExitPassword.value.trim()
-      },
-      filter: refs.chainFilter.value.split(",").map((item) => item.trim()).filter(Boolean)
     }
   };
 }
 
 function collectSettings() {
-  const draft = readSettingsDraft();
-  state.settings = draft.settings;
-  state.chain = draft.chain;
+  state.settings = readSettingsDraft().settings;
 }
 
 function readSurgeDraft() {
+  const encryptedDnsServer = refs.surgeEncryptedDnsServer.value.split(",").map((item) => item.trim()).filter(Boolean);
   return {
     ...state.surge,
     skipProxy: refs.surgeSkipProxy.value.split(",").map((item) => item.trim()).filter(Boolean),
@@ -4193,10 +4494,10 @@ function readSurgeDraft() {
     ipv6Vif: refs.surgeIpv6Vif.value.trim(),
     allowWifiAccess: refs.surgeAllowWifiAccess.checked,
     tunExcludedRoutes: refs.surgeTunExcludedRoutes.value.split(",").map((item) => item.trim()).filter(Boolean),
-    encryptedDnsServer: refs.surgeEncryptedDnsServer.value.split(",").map((item) => item.trim()).filter(Boolean),
+    encryptedDnsServer,
     wifiAssist: refs.surgeWifiAssist.checked,
     excludeSimpleHostnames: refs.surgeExcludeSimpleHostnames.checked,
-    encryptedDnsFollowOutboundMode: refs.surgeEncryptedDnsFollowOutboundMode.checked,
+    encryptedDnsFollowOutboundMode: encryptedDnsServer.length > 0 && refs.surgeEncryptedDnsFollowOutboundMode.checked,
     ponteDeviceNames: normalizePonteDeviceNames(refs.surgePonteDeviceNames.value),
     hosts: isModeTogglePressed(refs.surgeHostAdvancedMode)
       ? textToLines(refs.surgeHosts.value)
@@ -4317,6 +4618,7 @@ function pageDraft(page) {
   if (page === "settings") return readSettingsDraft();
   if (page === "groups") return readGroupsDraft();
   if (page === "sources") return { sources: cloneConfig(state.sources || []) };
+  if (page === "proxy-nodes") return { proxyNodes: cloneConfig(state.proxyNodes || []) };
   if (page === "surge") return { surge: readSurgeDraft() };
   if (page === "clash") return { clash: readClashDraft() };
   if (page === "stash") return { stash: readStashDraft() };
@@ -4325,9 +4627,10 @@ function pageDraft(page) {
 
 function pageBaseline(page) {
   if (!lastSavedState) return null;
-  if (page === "settings") return { settings: lastSavedState.settings, chain: lastSavedState.chain };
+  if (page === "settings") return { settings: lastSavedState.settings };
   if (page === "groups") return { groups: lastSavedState.groups, disabledGroups: lastSavedState.disabledGroups };
   if (page === "sources") return { sources: lastSavedState.sources || [] };
+  if (page === "proxy-nodes") return { proxyNodes: lastSavedState.proxyNodes || [] };
   if (page === "surge") return { surge: lastSavedState.surge };
   if (page === "clash") return { clash: lastSavedState.clash };
   if (page === "stash") return { stash: lastSavedState.stash };
@@ -4365,6 +4668,13 @@ function collectStash() {
 function syncSurgeIpv6VifVisibility() {
   refs.surgeIpv6VifRow.classList.toggle("hidden", !refs.surgeIpv6.checked);
   refs.surgeIpv6Vif.disabled = !refs.surgeIpv6.checked;
+}
+
+function syncSurgeEncryptedDnsFollowOutboundModeVisibility() {
+  const hasEncryptedDnsServer = refs.surgeEncryptedDnsServer.value.split(",").some((item) => item.trim());
+  refs.surgeEncryptedDnsFollowOutboundModeRow.classList.toggle("hidden", !hasEncryptedDnsServer);
+  refs.surgeEncryptedDnsFollowOutboundMode.disabled = !hasEncryptedDnsServer;
+  if (!hasEncryptedDnsServer) refs.surgeEncryptedDnsFollowOutboundMode.checked = false;
 }
 
 function syncClashTunVisibility() {
@@ -4832,12 +5142,26 @@ async function saveActivePage(page = activePage) {
     let patch = null;
     if (page === "settings") {
       collectSettings();
-      patch = { settings: state.settings, chain: state.chain };
+      patch = { settings: state.settings };
     } else if (page === "groups") {
       collectGroups();
+      const validation = validateGroups();
+      if (validation.errors.length > 0) {
+        setSaveStatus("idle");
+        window.alert(`${t("groupValidationError")}\n${validation.errors.join("\n")}`);
+        return;
+      }
       patch = { groups: state.groups, disabledGroups: state.disabledGroups };
     } else if (page === "sources") {
       patch = { sources: state.sources };
+    } else if (page === "proxy-nodes") {
+      const validation = validateProxyNodes();
+      if (validation.errors.length > 0) {
+        setSaveStatus("idle");
+        window.alert(`${t("proxyNodeValidationError")}\n${validation.errors.join("\n")}`);
+        return;
+      }
+      patch = { proxyNodes: state.proxyNodes || [] };
     } else if (page === "surge") {
       const hostValidation = validateCurrentSurgeHosts();
       if (hostValidation.errors.length > 0) {
@@ -5281,23 +5605,20 @@ function formatDateInTimeZone(date, timeZone) {
 async function preview(target, options = {}) {
   previewLoadingTarget = target;
   updatePreviewControls();
-  refs.previewOutput.textContent = formatMessage("previewLoading", { target: PREVIEW_TARGET_LABELS[target] || target });
-  refs.previewOutput.dataset.empty = "true";
+  setPreviewOutput(formatMessage("previewLoading", { target: PREVIEW_TARGET_LABELS[target] || target }), true);
   refs.surgeOnlineValidation.classList.add("hidden");
   refs.surgeOnlineValidation.innerHTML = "";
   try {
     const result = await request(`/api/preview?target=${target}`, { method: "POST", body: "{}" });
     currentPreviewTarget = target;
     currentPreviewContent = result.content || "";
-    refs.previewOutput.textContent = currentPreviewContent;
-    refs.previewOutput.dataset.empty = currentPreviewContent ? "false" : "true";
+    setPreviewOutput(currentPreviewContent, !currentPreviewContent);
     renderPreviewWarnings(Array.isArray(result.warnings) ? result.warnings : []);
     return currentPreviewContent;
   } catch (error) {
     currentPreviewTarget = "";
     currentPreviewContent = "";
-    refs.previewOutput.textContent = `${t("previewFailed")}${error instanceof Error ? error.message : String(error)}`;
-    refs.previewOutput.dataset.empty = "true";
+    setPreviewOutput(`${t("previewFailed")}${error instanceof Error ? error.message : String(error)}`, true);
     if (options.propagateError) throw error;
     return "";
   } finally {
@@ -5510,6 +5831,7 @@ refs.saveBtn.addEventListener("click", save);
 refs.saveSourcesBtn?.addEventListener("click", saveSources);
 refs.addGroupBtn.addEventListener("click", addGroup);
 refs.addSourceBtn.addEventListener("click", addSource);
+refs.addProxyNodeBtn.addEventListener("click", addProxyNode);
 refs.rotateTokenBtn.addEventListener("click", rotateToken);
 refs.refreshSourceCacheBtn.addEventListener("click", refreshSourceCache);
 refs.checkUpdateBtn.addEventListener("click", checkForUpdates);
@@ -5529,6 +5851,7 @@ refs.notificationTelegramBotToken.addEventListener("input", () => {
 refs.updateCheckEnabled.addEventListener("change", updateSaveAvailability);
 refs.telegramBindCodeBtn.addEventListener("click", handleTelegramBindAction);
 refs.surgeIpv6.addEventListener("change", syncSurgeIpv6VifVisibility);
+refs.surgeEncryptedDnsServer.addEventListener("input", syncSurgeEncryptedDnsFollowOutboundModeVisibility);
 refs.clashTunEnable.addEventListener("change", syncClashTunVisibility);
 refs.clashDnsEnhancedMode.addEventListener("change", syncClashFakeIpVisibility);
 refs.stashTunEnable.addEventListener("change", syncStashTunVisibility);

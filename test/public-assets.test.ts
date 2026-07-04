@@ -73,6 +73,8 @@ describe("admin static assets", () => {
     expect(app).toContain("查看详情");
     expect(css).toContain(".validation-messages .diagnostic-group");
     expect(css).toContain(".validation-messages .diagnostic-detail-list");
+    expect(css).toContain(".config-code-editor .CodeMirror-gutter.CodeMirror-linenumbers");
+    expect(css).toContain("min-width: calc(4ch + 12px);");
 
     expect(html).toContain('id="displayTimeZone"');
     expect(html).toContain('value="Asia/Shanghai"');
@@ -155,5 +157,34 @@ describe("admin static assets", () => {
 
     expect(sandbox.simplified).toContain("规则集 Advertising.list 内第 284 行");
     expect(sandbox.simplified).not.toContain("raw.githubusercontent.com");
+  });
+
+  it("accepts Surge proxy node drafts with keyed params after port", () => {
+    const app = readPublicFile("app.js");
+    const sandbox: {
+      result?: Array<{ valid: boolean; name: string }>;
+    } = {};
+    const context = createContext(sandbox);
+    const uriPattern = app.match(/const PROXY_NODE_URI_PATTERN = [^;]+;/)?.[0];
+    if (!uriPattern) throw new Error("PROXY_NODE_URI_PATTERN not found");
+    const functions = [
+      uriPattern,
+      "splitProxyNodeSurgeConfig",
+      "parseProxyNodeConfigDraft",
+      "parseSurgeProxyNodeDraft",
+      "readProxyNodeYamlScalar",
+      "parseClashProxyNodeDraft"
+    ].map((item) => item.startsWith("const ") ? item : extractFunctionSource(app, item)).join("\n");
+    const lines = [
+      "Chain Exit = socks5, 207.97.145.15, 443, username=ed221103117, password=sxVQPhwY",
+      "DMIT = snell, 191.223.220.184, 42821, psk=7aa28cb89c5e5ca38b3bb8c0a30079035525c00175891727, version=6, mode=default, reuse=true, tfo=true"
+    ];
+
+    new Script(`${functions}\nglobalThis.result = ${JSON.stringify(lines)}.map(parseProxyNodeConfigDraft);`).runInContext(context);
+
+    expect(sandbox.result).toEqual([
+      { valid: true, name: "Chain Exit" },
+      { valid: true, name: "DMIT" }
+    ]);
   });
 });

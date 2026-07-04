@@ -1,6 +1,6 @@
 import { clearSessionCookie, createSession, getOrCreateReadToken, isAdminRequest, rotateReadToken, sessionCookie, validateAdminToken, validateReadToken } from "./auth";
 import { runKvMigrations } from "./config-schema";
-import { loadConfig, normalizeTarget, saveConfig, validateManagedBaseUrl, withInferredManagedBaseUrl } from "./config-store";
+import { loadConfig, normalizeTarget, saveConfig, validateManagedBaseUrl, validateProxyPolicyNameConflicts, withInferredManagedBaseUrl } from "./config-store";
 import { readConfigFetchStats, recordConfigFetch } from "./fetch-stats";
 import { generateConfig, generateForRequest, generateSurgeValidationConfig, inferTarget } from "./generator";
 import { createGeoIpCountryReader, GEOIP_MMDB_KV_KEY, GEOIP_MMDB_META_KV_KEY, resetGeoIpCountryReader } from "./geoip";
@@ -128,6 +128,8 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
     if (!config || typeof config !== "object") return badRequest("Invalid config body");
     const current = await loadConfig(env);
     const next = config as Awaited<ReturnType<typeof loadConfig>>;
+    const nameConflictError = validateProxyPolicyNameConflicts(next);
+    if (nameConflictError) return badRequest(nameConflictError);
     const error = validateManagedBaseUrl(next);
     if (error) return badRequest(error);
     const surgeRuleError = validateSurgeRules(next);
@@ -147,6 +149,8 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
     const config = withInferredManagedBaseUrl(current, request.url);
     const normalizedPatch = patch as Partial<Awaited<ReturnType<typeof loadConfig>>>;
     const next = sanitizeConfigAfterPatch(mergeConfigPatch(config, normalizedPatch), normalizedPatch);
+    const nameConflictError = validateProxyPolicyNameConflicts(next);
+    if (nameConflictError) return badRequest(nameConflictError);
     const error = validateManagedBaseUrl(next);
     if (error) return badRequest(error);
     const surgeRuleError = validateSurgeRules(next);
@@ -822,6 +826,7 @@ function mergeConfigPatch(
       ? patch.disabledGroups
       : config.disabledGroups,
     sources: Array.isArray(patch.sources) ? patch.sources : config.sources,
+    proxyNodes: Array.isArray(patch.proxyNodes) ? patch.proxyNodes : config.proxyNodes,
     chain: patch.chain && typeof patch.chain === "object"
       ? { ...config.chain, ...patch.chain }
       : config.chain,

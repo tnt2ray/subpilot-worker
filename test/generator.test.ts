@@ -9,19 +9,80 @@ import { mockSubscription, restoreMocksAfterEach } from "./helpers/fetch";
 
 restoreMocksAfterEach();
 
+function chainExitProxyNode(overrides: Partial<{
+  id: string;
+  name: string;
+  protocol: ChainExitProtocol;
+  config: string;
+  server: string;
+  port: number;
+  username: string;
+  password: string;
+  enabled: boolean;
+  chainExit: boolean;
+  chainFilter: string[];
+  includeInGroups: boolean;
+}> = {}) {
+  const legacy = {
+    id: "exit",
+    name: CHAIN_EXIT_PROXY_NAME,
+    protocol: "socks5" as ChainExitProtocol,
+    server: "1.1.1.1",
+    port: 1080,
+    username: "",
+    password: "",
+    enabled: true,
+    chainExit: true,
+    chainFilter: ["JP", "KR", "TW"],
+    includeInGroups: false,
+    ...overrides
+  };
+  return {
+    id: legacy.id,
+    config: legacy.config ?? `${legacy.name} = ${legacy.protocol}, ${legacyProxyNodeConfig(legacy)}`,
+    chainFilter: legacy.chainFilter,
+    enabled: legacy.enabled,
+    chainExit: legacy.chainExit,
+    includeInGroups: legacy.chainExit ? legacy.includeInGroups : true
+  };
+}
+
+function legacyProxyNodeConfig(node: {
+  protocol: ChainExitProtocol;
+  server: string;
+  port: number;
+  username: string;
+  password: string;
+}) {
+  const parts = [node.server, String(node.port)];
+  if (node.protocol === "ss") {
+    if (node.username) parts.push(`encrypt-method=${node.username}`);
+    if (node.password) parts.push(`password=${node.password}`);
+  } else if (node.protocol === "snell") {
+    if (node.password) parts.push(`psk=${node.password}`);
+    parts.push("version=4");
+  } else if (node.protocol === "tuic") {
+    if (node.username) parts.push(`username=${node.username}`);
+    if (node.password) parts.push(`password=${node.password}`);
+  } else if (["trojan", "hysteria2", "anytls"].includes(node.protocol)) {
+    if (node.password) parts.push(`password=${node.password}`);
+  } else {
+    if (node.username) parts.push(`username=${node.username}`);
+    if (node.password) parts.push(`password=${node.password}`);
+  }
+  return parts.join(", ");
+}
+
 function configWithExitProtocol(protocol: ChainExitProtocol) {
   return {
     ...DEFAULT_CONFIG,
-    chain: {
-      exitProxy: {
-        protocol,
-        server: "1.2.3.4",
-        port: 443,
-        username: protocol === "ss" ? "chacha20-ietf-poly1305" : "user-id",
-        password: "secret"
-      },
-      filter: DEFAULT_CONFIG.chain.filter
-    }
+    proxyNodes: [chainExitProxyNode({
+      protocol,
+      server: "1.2.3.4",
+      port: 443,
+      username: protocol === "ss" ? "chacha20-ietf-poly1305" : "user-id",
+      password: "secret"
+    })]
   };
 }
 
@@ -423,7 +484,7 @@ describe("generation", () => {
     expect(main.content).not.toContain("policy-regex-filter=");
   });
 
-  it("builds chain nodes from the renamed candidate pool using the shared chain filter", async () => {
+  it("builds chain nodes from the renamed candidate pool using each exit node filter", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
       const textUrl = String(url);
       if (textUrl === "https://example.com/sub") {
@@ -442,8 +503,8 @@ describe("generation", () => {
         geoipRenameEnabled: true
       },
       groups: {
-        Proxy: "select, {all exclude=Chain}",
-        [STATIC_EXIT_GROUP_NAME]: "select, {all filter=Chain}"
+        Proxy: "select, {all exclude=via}",
+        [STATIC_EXIT_GROUP_NAME]: "select, {all filter=via}"
       },
       sources: [{
         id: "src1",
@@ -452,16 +513,7 @@ describe("generation", () => {
         fetchUserAgent: "surge" as const,
         enabled: true
       }],
-      chain: {
-        exitProxy: {
-          protocol: "socks5" as const,
-          server: "1.1.1.1",
-          port: 1080,
-          username: "",
-          password: ""
-        },
-        filter: ["JP"]
-      },
+      proxyNodes: [chainExitProxyNode({ chainFilter: ["JP"] })],
       surge: {
         ...DEFAULT_CONFIG.surge
       }
@@ -472,16 +524,16 @@ describe("generation", () => {
 
     expect(result.content).toContain("JP 01 = trojan, shared.example.com, 10001");
     expect(result.content).toContain("SG 01 = trojan, shared.example.com, 10002");
-    expect(result.content).toContain("JP 01 Chain = socks5, 1.1.1.1, 1080");
+    expect(result.content).toContain(`JP 01 via ${CHAIN_EXIT_PROXY_NAME} = socks5, 1.1.1.1, 1080`);
     expect(result.content).toContain("underlying-proxy=JP 01");
     expect(main.content).toContain("[Proxy]\nJP 01 = trojan, shared.example.com, 10001");
     expect(main.content).toContain(`${CHAIN_EXIT_PROXY_NAME} = socks5, 1.1.1.1, 1080`);
-    expect(main.content).toContain("JP 01 Chain = socks5, 1.1.1.1, 1080");
+    expect(main.content).toContain(`JP 01 via ${CHAIN_EXIT_PROXY_NAME} = socks5, 1.1.1.1, 1080`);
     expect(main.content).toContain("underlying-proxy=JP 01");
-    expect(main.content).toContain(`${STATIC_EXIT_GROUP_NAME} = select, JP 01 Chain`);
+    expect(main.content).toContain(`${STATIC_EXIT_GROUP_NAME} = select, JP 01 via ${CHAIN_EXIT_PROXY_NAME}`);
     expect(main.content).not.toContain("policy-path=");
-    expect(result.content).not.toContain("SG 01 Chain");
-    expect(result.content).not.toContain("Alpha Chain");
+    expect(result.content).not.toContain("SG 01 via");
+    expect(result.content).not.toContain("Alpha via");
   });
 
   it("maps city names in original node names to country region codes", async () => {
@@ -845,7 +897,7 @@ describe("generation", () => {
         featureTagRules: DEFAULT_CONFIG.settings.featureTagRules
       },
       groups: {
-        Proxy: "select, Auto, {all exclude=Chain}"
+        Proxy: "select, Auto, {all exclude=via}"
       },
       disabledGroups: [],
       sources: [{
@@ -855,16 +907,8 @@ describe("generation", () => {
         fetchUserAgent: "surge" as const,
         enabled: true
       }],
-      chain: {
-        exitProxy: {
-          protocol: "socks5" as const,
-          server: "1.1.1.1",
-          port: 1080,
-          username: "",
-          password: ""
-        },
-        filter: DEFAULT_CONFIG.chain.filter
-      },
+      proxyNodes: [chainExitProxyNode()],
+      chain: DEFAULT_CONFIG.chain,
       surge: {
         ...DEFAULT_CONFIG.surge,
         rules: ["FINAL,Auto"]
@@ -1052,6 +1096,148 @@ describe("generation", () => {
     });
   });
 
+  it("adds Surge DNS mappings for proxy server domains", async () => {
+    mockSubscription([
+      "HK 1 = trojan, y6x0v4mutx.yn33dfs2.sbs, 443, password=p",
+      "US 1 = trojan, 203.0.113.1, 443, password=p",
+      "JP 1 = trojan, jp.example.test, 443, password=p"
+    ].join("\n"));
+    const env = makeEnv();
+    const config = {
+      ...DEFAULT_CONFIG,
+      settings: {
+        ...DEFAULT_CONFIG.settings,
+        geoipRenameEnabled: false
+      },
+      groups: {
+        Proxy: "select, {all}"
+      },
+      sources: [{
+        id: "src1",
+        name: "Primary",
+        url: "https://example.com/sub",
+        fetchUserAgent: "surge" as const,
+        enabled: true
+      }],
+      surge: {
+        ...DEFAULT_CONFIG.surge,
+        dnsServer: ["9.9.9.9"],
+        encryptedDnsServer: ["https://dns.example.test/dns-query", "https://backup.example.test/dns-query"],
+        hosts: ["*.example.test = server:system"],
+        rules: ["FINAL,Proxy"]
+      }
+    };
+
+    const surge = await generateConfig(env, config, "surge", "https://subpilot.example.com/sync/token/");
+    const clash = YAML.parse((await generateConfig(env, config, "clash", "https://subpilot.example.com/sync/token/")).content) as {
+      hosts?: Record<string, unknown>;
+    };
+
+    expect(surge.content).toContain("y6x0v4mutx.yn33dfs2.sbs = server:https://dns.example.test/dns-query");
+    expect(surge.content.match(/y6x0v4mutx\.yn33dfs2\.sbs = server:https:\/\/dns\.example\.test\/dns-query/g)).toHaveLength(1);
+    expect(surge.content).not.toContain("server:https://backup.example.test/dns-query");
+    expect(surge.content).not.toContain("203.0.113.1 = server:https://dns.example.test/dns-query");
+    expect(surge.content).not.toContain("jp.example.test = server:https://dns.example.test/dns-query");
+    expect(clash.hosts).toBeUndefined();
+  });
+
+  it("does not add Surge proxy server DNS mappings when encrypted DNS does not follow outbound mode", async () => {
+    mockSubscription("HK 1 = trojan, y6x0v4mutx.yn33dfs2.sbs, 443, password=p");
+    const env = makeEnv();
+    const config = {
+      ...DEFAULT_CONFIG,
+      settings: {
+        ...DEFAULT_CONFIG.settings,
+        geoipRenameEnabled: false
+      },
+      groups: {
+        Proxy: "select, {all}"
+      },
+      sources: [{
+        id: "src1",
+        name: "Primary",
+        url: "https://example.com/sub",
+        fetchUserAgent: "surge" as const,
+        enabled: true
+      }],
+      surge: {
+        ...DEFAULT_CONFIG.surge,
+        dnsServer: ["9.9.9.9"],
+        encryptedDnsFollowOutboundMode: false,
+        rules: ["FINAL,Proxy"]
+      }
+    };
+
+    const surge = await generateConfig(env, config, "surge", "https://subpilot.example.com/sync/token/");
+
+    expect(surge.content).not.toMatch(/y6x0v4mutx\.yn33dfs2\.sbs = server:/);
+  });
+
+  it("omits Surge encrypted DNS follow outbound mode when no encrypted DNS server is configured", async () => {
+    mockSubscription("HK 1 = trojan, hk.example.test, 443, password=p");
+    const env = makeEnv();
+    const config = {
+      ...DEFAULT_CONFIG,
+      settings: {
+        ...DEFAULT_CONFIG.settings,
+        geoipRenameEnabled: false
+      },
+      groups: {
+        Proxy: "select, {all}"
+      },
+      sources: [{
+        id: "src1",
+        name: "Primary",
+        url: "https://example.com/sub",
+        fetchUserAgent: "surge" as const,
+        enabled: true
+      }],
+      surge: {
+        ...DEFAULT_CONFIG.surge,
+        encryptedDnsServer: [],
+        encryptedDnsFollowOutboundMode: true,
+        rules: ["FINAL,Proxy"]
+      }
+    };
+
+    const surge = await generateConfig(env, config, "surge", "https://subpilot.example.com/sync/token/");
+
+    expect(surge.content).not.toContain("encrypted-dns-server =");
+    expect(surge.content).not.toContain("encrypted-dns-follow-outbound-mode =");
+  });
+
+  it("preserves the QUIC encrypted DNS syntax in Surge proxy server DNS mappings", async () => {
+    mockSubscription("HK 1 = trojan, y6x0v4mutx.yn33dfs2.sbs, 443, password=p");
+    const env = makeEnv();
+    const config = {
+      ...DEFAULT_CONFIG,
+      settings: {
+        ...DEFAULT_CONFIG.settings,
+        geoipRenameEnabled: false
+      },
+      groups: {
+        Proxy: "select, {all}"
+      },
+      sources: [{
+        id: "src1",
+        name: "Primary",
+        url: "https://example.com/sub",
+        fetchUserAgent: "surge" as const,
+        enabled: true
+      }],
+      surge: {
+        ...DEFAULT_CONFIG.surge,
+        encryptedDnsServer: ["quic://223.5.5.5", "https://dns.example.test/dns-query"],
+        rules: ["FINAL,Proxy"]
+      }
+    };
+
+    const surge = await generateConfig(env, config, "surge", "https://subpilot.example.com/sync/token/");
+
+    expect(surge.content).toContain("y6x0v4mutx.yn33dfs2.sbs = server:quic://223.5.5.5");
+    expect(surge.content).not.toContain("y6x0v4mutx.yn33dfs2.sbs = server:https://dns.example.test/dns-query");
+  });
+
   it("builds Stash as an independent YAML target", async () => {
     mockSubscription([
       "[Host]",
@@ -1068,8 +1254,8 @@ describe("generation", () => {
         geoipRenameEnabled: false
       },
       groups: {
-        Proxy: "select, {all exclude=Chain}",
-        Auto: "url-test, {all exclude=Chain}, url=https://www.gstatic.com/generate_204, interval=600"
+        Proxy: "select, {all exclude=via}",
+        Auto: "url-test, {all exclude=via}, url=https://www.gstatic.com/generate_204, interval=600"
       },
       sources: [{
         id: "src1",
@@ -1239,7 +1425,7 @@ describe("generation", () => {
       },
       groups: {
         Proxy: `select, ${CHAIN_EXIT_PROXY_NAME}, {all}`,
-        [STATIC_EXIT_GROUP_NAME]: `select, ${CHAIN_EXIT_PROXY_NAME}, {all filter=Chain}`
+        [STATIC_EXIT_GROUP_NAME]: `select, ${CHAIN_EXIT_PROXY_NAME}, {all filter=via}`
       },
       sources: [{
         id: "src1",
@@ -1248,16 +1434,12 @@ describe("generation", () => {
         fetchUserAgent: "surge" as const,
         enabled: true
       }],
-      chain: {
-        exitProxy: {
-          protocol: "socks5" as const,
-          server: "1.1.1.1",
-          port: 1080,
-          username: "u",
-          password: "p"
-        },
-        filter: ["JP"]
-      },
+      proxyNodes: [chainExitProxyNode({
+        name: "DMIT",
+        username: "u",
+        password: "p",
+        chainFilter: ["JP"]
+      })],
       surge: {
         ...DEFAULT_CONFIG.surge,
         rules: ["FINAL,Proxy"]
@@ -1272,17 +1454,17 @@ describe("generation", () => {
     const main = await generateConfig(env, config, "surge", "https://subpilot.example.com/sync/token/");
     const clash = await generateConfig(env, config, "clash", "https://subpilot.example.com/sync/token/");
 
-    expect(surge.content).toContain("[Primary] JP 1 Chain = socks5, 1.1.1.1, 1080");
+    expect(surge.content).toContain("[Primary] JP 1 via DMIT = socks5, 1.1.1.1, 1080");
     expect(surge.content).toContain("username=u");
     expect(surge.content).toContain("password=p");
     expect(surge.content).toContain("underlying-proxy=[Primary] JP 1");
     expect(main.content).toContain("[Proxy]\n[Primary] JP 1 = trojan, jp.example.com, 443");
-    expect(main.content).toContain(`${CHAIN_EXIT_PROXY_NAME} = socks5, 1.1.1.1, 1080`);
+    expect(main.content).toContain("DMIT = socks5, 1.1.1.1, 1080");
     expect(main.content).toContain("username=u");
     expect(main.content).toContain("password=p");
-    expect(main.content).toContain("[Primary] JP 1 Chain = socks5, 1.1.1.1, 1080");
+    expect(main.content).toContain("[Primary] JP 1 via DMIT = socks5, 1.1.1.1, 1080");
     expect(main.content).toContain("underlying-proxy=[Primary] JP 1");
-    expect(main.content).toContain(`${STATIC_EXIT_GROUP_NAME} = select, [Primary] JP 1 Chain`);
+    expect(main.content).toContain(`${STATIC_EXIT_GROUP_NAME} = select, [Primary] JP 1 via DMIT`);
     expect(main.content).not.toContain("policy-path=");
     expect(main.content).not.toContain(`${STATIC_EXIT_GROUP_NAME} = select, ${CHAIN_EXIT_PROXY_NAME}`);
     expect(main.content).not.toContain(`Proxy = select, ${CHAIN_EXIT_PROXY_NAME}`);
@@ -1292,11 +1474,339 @@ describe("generation", () => {
       "proxy-groups": Array<{ name: string; proxies: string[] }>;
     };
     expect(parsedClash.proxies).toContainEqual(expect.objectContaining({
-      name: "[Primary] JP 1 Chain",
+      name: "[Primary] JP 1 via DMIT",
       server: "1.1.1.1"
     }));
     expect(parsedClash["proxy-groups"].find((group) => group.name === "Proxy")?.proxies).not.toContain(CHAIN_EXIT_PROXY_NAME);
-    expect(parsedClash["proxy-groups"].find((group) => group.name === STATIC_EXIT_GROUP_NAME)?.proxies).toContain("[Primary] JP 1 Chain");
+    expect(parsedClash["proxy-groups"].find((group) => group.name === STATIC_EXIT_GROUP_NAME)?.proxies).toContain("[Primary] JP 1 via DMIT");
+  });
+
+  it("generates one chain proxy node per configured chain exit", async () => {
+    const fetchMock = mockSubscription([
+      "JP 1 = trojan, jp.example.com, 443, password=p",
+      "KR 1 = trojan, kr.example.com, 443, password=p"
+    ].join("\n"));
+    const env = makeEnv();
+    const config = {
+      ...DEFAULT_CONFIG,
+      settings: {
+        ...DEFAULT_CONFIG.settings,
+        geoipRenameEnabled: false
+      },
+      groups: {
+        Proxy: "select, {all exclude=via}",
+        [STATIC_EXIT_GROUP_NAME]: "select, {all filter=via}"
+      },
+      sources: [{
+        id: "src1",
+        name: "Primary",
+        url: "https://example.com/sub",
+        fetchUserAgent: "surge" as const,
+        enabled: true
+      }],
+      proxyNodes: [
+        chainExitProxyNode({ id: "exit-a", name: "Tokyo Exit", server: "1.1.1.1", chainFilter: ["JP"] }),
+        chainExitProxyNode({ id: "exit-b", name: "Seoul Exit", server: "2.2.2.2", chainFilter: ["KR"] })
+      ],
+      surge: {
+        ...DEFAULT_CONFIG.surge,
+        rules: ["FINAL,Proxy"]
+      },
+      clash: {
+        ...DEFAULT_CONFIG.clash,
+        rules: ["MATCH,Proxy"]
+      }
+    };
+
+    const surge = await generateConfig(env, config, "surge", "https://subpilot.example.com/sync/token/");
+    const clash = YAML.parse((await generateConfig(env, config, "clash", "https://subpilot.example.com/sync/token/")).content) as {
+      proxies: Array<{ name: string; server: string; "dialer-proxy"?: string }>;
+      "proxy-groups": Array<{ name: string; proxies: string[] }>;
+    };
+
+    expect(surge.content).toContain("[Primary] JP 1 via Tokyo Exit = socks5, 1.1.1.1, 1080");
+    expect(surge.content).toContain("[Primary] KR 1 via Seoul Exit = socks5, 2.2.2.2, 1080");
+    expect(surge.content).toContain("underlying-proxy=[Primary] JP 1");
+    expect(surge.content).toContain("underlying-proxy=[Primary] KR 1");
+    expect(surge.content).not.toContain("[Primary] JP 1 via Seoul Exit");
+    expect(surge.content).not.toContain("[Primary] KR 1 via Tokyo Exit");
+    expect(clash.proxies).toContainEqual(expect.objectContaining({
+      name: "[Primary] JP 1 via Tokyo Exit",
+      server: "1.1.1.1",
+      "dialer-proxy": "[Primary] JP 1"
+    }));
+    expect(clash.proxies).toContainEqual(expect.objectContaining({
+      name: "[Primary] KR 1 via Seoul Exit",
+      server: "2.2.2.2",
+      "dialer-proxy": "[Primary] KR 1"
+    }));
+    expect(clash["proxy-groups"].find((group) => group.name === STATIC_EXIT_GROUP_NAME)?.proxies).toEqual([
+      "[Primary] JP 1 via Tokyo Exit",
+      "[Primary] KR 1 via Seoul Exit"
+    ]);
+  });
+
+  it("emits an arrow-filtered group for a manually named chain exit", async () => {
+    const fetchMock = mockSubscription([
+      "JP 1 = trojan, jp.example.com, 443, password=p",
+      "US 1 = trojan, us.example.com, 443, password=p",
+      "SG 1 = trojan, sg.example.com, 443, password=p"
+    ].join("\n"));
+    const env = makeEnv();
+    const config = {
+      ...DEFAULT_CONFIG,
+      settings: {
+        ...DEFAULT_CONFIG.settings,
+        geoipRenameEnabled: false
+      },
+      groups: {
+        Proxy: "select, {all exclude=via}",
+        Static: "url-test, {all filter=via exclude=Chain Exit}, url=https://www.gstatic.com/generate_204, interval=600"
+      },
+      sources: [{
+        id: "src1",
+        name: "Primary",
+        url: "https://example.com/sub",
+        fetchUserAgent: "surge" as const,
+        enabled: true
+      }],
+      proxyNodes: [chainExitProxyNode({
+        name: "Static",
+        config: "Static = socks5, 207.97.145.15, 443, username=u, password=p",
+        chainFilter: ["JP", "US"]
+      })],
+      surge: {
+        ...DEFAULT_CONFIG.surge,
+        rules: ["FINAL,Proxy"]
+      }
+    };
+
+    const surge = await generateConfig(env, config, "surge", "https://subpilot.example.com/sync/token/");
+
+    expect(surge.content).toContain("Static = socks5, 207.97.145.15, 443, password=p, username=u");
+    expect(surge.content).toContain("[Primary] JP 1 via Static = socks5, 207.97.145.15, 443");
+    expect(surge.content).toContain("[Primary] US 1 via Static = socks5, 207.97.145.15, 443");
+    expect(surge.content).not.toContain("[Primary] SG 1 via Static");
+    expect(surge.content).toContain("Static = smart, [Primary] JP 1 via Static, [Primary] US 1 via Static");
+    expect(surge.content).not.toContain("Static = smart, Static");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the default static group populated for the default chain exit name", async () => {
+    const fetchMock = mockSubscription("JP 1 = trojan, jp.example.com, 443, password=p");
+    const env = makeEnv();
+    const config = {
+      ...DEFAULT_CONFIG,
+      settings: {
+        ...DEFAULT_CONFIG.settings,
+        geoipRenameEnabled: false
+      },
+      sources: [{
+        id: "src1",
+        name: "Primary",
+        url: "https://example.com/sub",
+        fetchUserAgent: "surge" as const,
+        enabled: true
+      }],
+      proxyNodes: [chainExitProxyNode({
+        chainFilter: ["JP"]
+      })],
+      surge: {
+        ...DEFAULT_CONFIG.surge,
+        rules: ["FINAL,Proxy"]
+      }
+    };
+
+    const surge = await generateConfig(env, config, "surge", "https://subpilot.example.com/sync/token/");
+    const staticLine = surge.content.split("\n").find((line) => line.startsWith(`${STATIC_EXIT_GROUP_NAME} = smart, `)) ?? "";
+
+    expect(staticLine).toBe(`${STATIC_EXIT_GROUP_NAME} = smart, [Primary] JP 1 via ${CHAIN_EXIT_PROXY_NAME}`);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps custom-named chain exits out of all-node groups", async () => {
+    const fetchMock = mockSubscription([
+      "JP 1 = trojan, jp.example.com, 443, password=p",
+      "US 1 = trojan, us.example.com, 443, password=p"
+    ].join("\n"));
+    const env = makeEnv();
+    const config = {
+      ...DEFAULT_CONFIG,
+      settings: {
+        ...DEFAULT_CONFIG.settings,
+        geoipRenameEnabled: false
+      },
+      groups: {
+        Proxy: "select, {all exclude=via}",
+        Static: "url-test, {all filter=via}, url=https://www.gstatic.com/generate_204, interval=600"
+      },
+      sources: [{
+        id: "src1",
+        name: "Primary",
+        url: "https://example.com/sub",
+        fetchUserAgent: "surge" as const,
+        enabled: true
+      }],
+      proxyNodes: [chainExitProxyNode({
+        name: "DMIT JP",
+        config: "DMIT JP = socks5, 207.97.145.15, 443, username=u, password=p",
+        chainFilter: ["JP"]
+      })],
+      surge: {
+        ...DEFAULT_CONFIG.surge,
+        rules: ["FINAL,Proxy"]
+      }
+    };
+
+    const surge = await generateConfig(env, config, "surge", "https://subpilot.example.com/sync/token/");
+    const proxyLine = surge.content.split("\n").find((line) => line.startsWith("Proxy = select, ")) ?? "";
+    const staticLine = surge.content.split("\n").find((line) => line.startsWith("Static = smart, ")) ?? "";
+
+    expect(surge.content).toContain("DMIT JP = socks5, 207.97.145.15, 443, password=p, username=u");
+    expect(surge.content).toContain("[Primary] JP 1 via DMIT JP = socks5, 207.97.145.15, 443");
+    expect(surge.content).not.toContain("[Primary] US 1 via DMIT JP");
+    expect(proxyLine).toContain("[Primary] JP 1");
+    expect(proxyLine).toContain("[Primary] US 1");
+    expect(proxyLine).not.toContain("DMIT JP");
+    expect(proxyLine).not.toContain("via");
+    expect(staticLine).toContain("[Primary] JP 1 via DMIT JP");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("can include a chain exit node itself in all-node groups when configured", async () => {
+    const fetchMock = mockSubscription("JP 1 = trojan, jp.example.com, 443, password=p");
+    const env = makeEnv();
+    const config = {
+      ...DEFAULT_CONFIG,
+      settings: {
+        ...DEFAULT_CONFIG.settings,
+        geoipRenameEnabled: false
+      },
+      groups: {
+        Proxy: "select, {all exclude=via}",
+        Static: "url-test, {all filter=via}, url=https://www.gstatic.com/generate_204, interval=600"
+      },
+      sources: [{
+        id: "src1",
+        name: "Primary",
+        url: "https://example.com/sub",
+        fetchUserAgent: "surge" as const,
+        enabled: true
+      }],
+      proxyNodes: [chainExitProxyNode({
+        name: "DMIT JP",
+        config: "DMIT JP = socks5, 207.97.145.15, 443, username=u, password=p",
+        chainFilter: ["JP"],
+        includeInGroups: true
+      })],
+      surge: {
+        ...DEFAULT_CONFIG.surge,
+        rules: ["FINAL,Proxy"]
+      },
+      clash: {
+        ...DEFAULT_CONFIG.clash,
+        rules: ["MATCH,Proxy"]
+      }
+    };
+
+    const surge = await generateConfig(env, config, "surge", "https://subpilot.example.com/sync/token/");
+    const clash = YAML.parse((await generateConfig(env, config, "clash", "https://subpilot.example.com/sync/token/")).content) as {
+      "proxy-groups": Array<{ name: string; proxies: string[] }>;
+    };
+    const proxyLine = surge.content.split("\n").find((line) => line.startsWith("Proxy = select, ")) ?? "";
+
+    expect(proxyLine).toContain("DMIT JP");
+    expect(proxyLine).not.toContain("via");
+    expect(clash["proxy-groups"].find((group) => group.name === "Proxy")?.proxies).toContain("DMIT JP");
+    expect(fetchMock).toHaveBeenCalled();
+  });
+
+  it("accepts Clash-like text for manually maintained proxy nodes", async () => {
+    const env = makeEnv();
+    const config = {
+      ...DEFAULT_CONFIG,
+      groups: {
+        Proxy: "select, {all}"
+      },
+      sources: [],
+      proxyNodes: [chainExitProxyNode({
+        id: "snell",
+        config: [
+          "name: Snell Exit",
+          "type: snell",
+          "server: snell.example.com",
+          "port: 44046",
+          "psk: secret",
+          "version: 4",
+          "obfs-opts:",
+          "  mode: http",
+          "  host: bing.com",
+          "  path: /"
+        ].join("\n"),
+        chainExit: false
+      })],
+      surge: {
+        ...DEFAULT_CONFIG.surge,
+        rules: ["FINAL,Proxy"]
+      },
+      clash: {
+        ...DEFAULT_CONFIG.clash,
+        rules: ["MATCH,Proxy"]
+      }
+    };
+
+    const surge = await generateConfig(env, config, "surge", "https://subpilot.example.com/sync/token/");
+    const clash = YAML.parse((await generateConfig(env, config, "clash", "https://subpilot.example.com/sync/token/")).content) as {
+      proxies: Array<Record<string, unknown>>;
+    };
+
+    expect(surge.content).toContain("Snell Exit = snell, snell.example.com, 44046");
+    expect(surge.content).toContain("psk=secret");
+    expect(surge.content).toContain("obfs=http");
+    expect(clash.proxies).toContainEqual(expect.objectContaining({
+      name: "Snell Exit",
+      type: "snell",
+      server: "snell.example.com",
+      port: 44046,
+      psk: "secret",
+      version: 4
+    }));
+  });
+
+  it("keeps the manually maintained node when it duplicates an upstream node", async () => {
+    const fetchMock = mockSubscription("Source Exit = socks5, 1.1.1.1, 1080, username=u, password=p");
+    const env = makeEnv();
+    const config = {
+      ...DEFAULT_CONFIG,
+      settings: {
+        ...DEFAULT_CONFIG.settings,
+        geoipRenameEnabled: false
+      },
+      groups: {
+        Proxy: "select, {all}"
+      },
+      sources: [{
+        id: "src1",
+        name: "Primary",
+        url: "https://example.com/sub",
+        fetchUserAgent: "surge" as const,
+        enabled: true
+      }],
+      proxyNodes: [chainExitProxyNode({
+        name: "Manual Exit",
+        username: "u",
+        password: "p"
+      })],
+      surge: {
+        ...DEFAULT_CONFIG.surge,
+        rules: ["FINAL,Proxy"]
+      }
+    };
+
+    const surge = await generateConfig(env, config, "surge", "https://subpilot.example.com/sync/token/");
+
+    expect(surge.content).toContain("Manual Exit = socks5, 1.1.1.1, 1080");
+    expect(surge.content).not.toContain("[Primary] Source Exit = socks5, 1.1.1.1, 1080");
   });
 
   it("does not generate Surge chain nodes for base proxies unsupported by Surge", async () => {
@@ -1312,8 +1822,8 @@ describe("generation", () => {
         geoipRenameEnabled: false
       },
       groups: {
-        Proxy: "select, {all exclude=Chain}",
-        [STATIC_EXIT_GROUP_NAME]: "select, {all filter=Chain}"
+        Proxy: "select, {all exclude=via}",
+        [STATIC_EXIT_GROUP_NAME]: "select, {all filter=via}"
       },
       sources: [{
         id: "src1",
@@ -1322,16 +1832,11 @@ describe("generation", () => {
         fetchUserAgent: "surge" as const,
         enabled: true
       }],
-      chain: {
-        exitProxy: {
-          protocol: "socks5" as const,
-          server: "1.1.1.1",
-          port: 1080,
-          username: "u",
-          password: "p"
-        },
-        filter: ["TW", "JP"]
-      },
+      proxyNodes: [chainExitProxyNode({
+        username: "u",
+        password: "p",
+        chainFilter: ["TW", "JP"]
+      })],
       surge: {
         ...DEFAULT_CONFIG.surge,
         rules: ["FINAL,Proxy"]
@@ -1342,11 +1847,11 @@ describe("generation", () => {
     const main = await generateConfig(env, config, "surge", "https://subpilot.example.com/sync/token/");
 
     expect(surge.content).not.toContain("[FP] TW 10 = vless");
-    expect(surge.content).not.toContain("[FP] TW 10 Chain");
+    expect(surge.content).not.toContain("[FP] TW 10 via");
     expect(surge.content).not.toContain("underlying-proxy=[FP] TW 10");
-    expect(surge.content).toContain("[FP] JP 1 Chain = socks5, 1.1.1.1, 1080");
+    expect(surge.content).toContain(`[FP] JP 1 via ${CHAIN_EXIT_PROXY_NAME} = socks5, 1.1.1.1, 1080`);
     expect(surge.content).toContain("underlying-proxy=[FP] JP 1");
-    expect(main.content).toContain(`${STATIC_EXIT_GROUP_NAME} = select, [FP] JP 1 Chain`);
+    expect(main.content).toContain(`${STATIC_EXIT_GROUP_NAME} = select, [FP] JP 1 via ${CHAIN_EXIT_PROXY_NAME}`);
     expect(main.content).not.toContain("policy-path=");
   });
 
@@ -1363,8 +1868,8 @@ describe("generation", () => {
         geoipRenameEnabled: true
       },
       groups: {
-        Proxy: "select, {all exclude=Chain}",
-        [STATIC_EXIT_GROUP_NAME]: "select, {all filter=Chain}"
+        Proxy: "select, {all exclude=via}",
+        [STATIC_EXIT_GROUP_NAME]: "select, {all filter=via}"
       },
       sources: [{
         id: "src1",
@@ -1373,16 +1878,11 @@ describe("generation", () => {
         fetchUserAgent: "surge" as const,
         enabled: true
       }],
-      chain: {
-        exitProxy: {
-          protocol: "socks5" as const,
-          server: "1.1.1.1",
-          port: 1080,
-          username: "u",
-          password: "p"
-        },
-        filter: ["TW"]
-      },
+      proxyNodes: [chainExitProxyNode({
+        username: "u",
+        password: "p",
+        chainFilter: ["TW"]
+      })],
       surge: {
         ...DEFAULT_CONFIG.surge,
         rules: ["FINAL,Proxy"]
@@ -1392,7 +1892,7 @@ describe("generation", () => {
     const surge = await generateConfig(env, config, "surge", "https://subpilot.example.com/sync/token/");
 
     expect(surge.content).toContain("[FP] TW 01 = trojan, tw.example.com, 443");
-    expect(surge.content).toContain("[FP] TW 01 Chain = socks5, 1.1.1.1, 1080");
+    expect(surge.content).toContain(`[FP] TW 01 via ${CHAIN_EXIT_PROXY_NAME} = socks5, 1.1.1.1, 1080`);
     expect(surge.content).toContain("underlying-proxy=[FP] TW 01");
     expect(surge.content).not.toContain("[FP] TW 02");
   });

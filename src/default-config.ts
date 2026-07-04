@@ -1,4 +1,4 @@
-import { CHAIN_EXIT_PROXY_NAME, STATIC_EXIT_GROUP_NAME, type AppConfig } from "./types";
+import { STATIC_EXIT_GROUP_NAME, type AppConfig } from "./types";
 import { DEFAULT_DISPLAY_TIME_ZONE } from "./util";
 
 export const DEFAULT_CONFIG: AppConfig = {
@@ -25,22 +25,16 @@ export const DEFAULT_CONFIG: AppConfig = {
     notificationTelegramWebhookSecret: ""
   },
   groups: {
-    Proxy: "select, Auto, {all exclude=Chain}",
-    Auto: "url-test, {all exclude=Chain}, url=https://www.gstatic.com/generate_204, interval=600",
+    Proxy: "select, Auto, {all exclude=via}",
+    Auto: "url-test, {all exclude=via}, url=https://www.gstatic.com/generate_204, interval=600",
     Disney: "select, {all filter=Disney}",
-    [STATIC_EXIT_GROUP_NAME]: `url-test, {all filter=Chain exclude=${CHAIN_EXIT_PROXY_NAME}}, url=https://www.gstatic.com/generate_204, interval=600`
+    [STATIC_EXIT_GROUP_NAME]: "url-test, {all filter=via}, url=https://www.gstatic.com/generate_204, interval=600"
   },
   disabledGroups: [],
   sources: [],
+  proxyNodes: [],
   chain: {
-    exitProxy: {
-      protocol: "socks5",
-      server: "",
-      port: 1080,
-      username: "",
-      password: ""
-    },
-    filter: ["JP", "KR", "TW"]
+    filter: []
   },
   surge: {
     skipProxy: [

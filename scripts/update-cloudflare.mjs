@@ -21,6 +21,7 @@ const MANAGED_PATHS = [
   "package-lock.json",
   "package.json",
   "public",
+  "README.en.md",
   "readme.md",
   "scripts",
   "src",

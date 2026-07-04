@@ -18,9 +18,10 @@
           </button>
           <a class="active" href="#status" data-page="status"><span data-i18n="navStatus">状态</span></a>
           <div class="menu-heading" data-i18n="navSystem">系统</div>
-          <a href="#settings" data-page="settings"><span data-i18n="navConfiguration">配置</span></a>
-          <a href="#groups" data-page="groups"><span data-i18n="navPolicyGroups">策略组</span></a>
+          <a href="#settings" data-page="settings"><span data-i18n="navConfiguration">基础系统配置</span></a>
+          <a href="#proxy-nodes" data-page="proxy-nodes"><span data-i18n="navProxyNodes">代理节点</span></a>
           <a href="#sources" data-page="sources"><span data-i18n="navSources">订阅源</span></a>
+          <a href="#groups" data-page="groups"><span data-i18n="navPolicyGroups">策略组</span></a>
           <a href="#surge" data-page="surge"><span data-i18n="navSurge">Surge</span></a>
           <a href="#clash" data-page="clash"><span data-i18n="navClash">Clash</span></a>
           <a href="#stash" data-page="stash"><span data-i18n="navStash">Stash</span></a>
@@ -259,34 +260,6 @@
                       <small data-i18n="updateCheckHelp">启用后，定时任务每天最多访问一次 GitHub Releases；如果已绑定 Telegram，有新版本时只提醒一次。也可以在状态页手动检查。</small>
                     </div>
                   </div>
-                  <div class="cbi-row">
-                    <label for="chainExitProtocol" data-i18n="chainExitProxy">链式出口节点</label>
-                    <div class="field chain-exit-grid">
-                      <select id="chainExitProtocol" aria-label="链式出口协议">
-                        <option value="http">http</option>
-                        <option value="https">https</option>
-                        <option value="socks5">socks5</option>
-                        <option value="socks5-tls">socks5-tls</option>
-                        <option value="ss">ss</option>
-                        <option value="snell">snell</option>
-                        <option value="trojan">trojan</option>
-                        <option value="vmess">vmess</option>
-                        <option value="hysteria2">hysteria2</option>
-                        <option value="tuic">tuic</option>
-                        <option value="anytls">anytls</option>
-                        <option value="trust-tunnel">trust-tunnel</option>
-                        <option value="ssh">ssh</option>
-                      </select>
-                      <input id="chainExitServer" type="text" placeholder="服务器地址" data-i18n-placeholder="chainExitServer">
-                      <input id="chainExitPort" type="number" min="1" max="65535" placeholder="端口" data-i18n-placeholder="chainExitPort">
-                      <input id="chainExitUsername" type="text" autocomplete="off" placeholder="用户名 / UUID / 加密方法" data-i18n-placeholder="chainExitUsername">
-                      <input id="chainExitPassword" type="password" autocomplete="new-password" placeholder="密码 / token / psk" data-i18n-placeholder="chainExitPassword">
-                      <label class="chain-filter-label" for="chainFilter" data-i18n="chainFilter">链式节点过滤器</label>
-                      <input id="chainFilter" type="text" placeholder="链式节点过滤器" data-i18n-placeholder="chainFilter">
-                      <small data-i18n="chainExitProxyHelp">节点名固定为 Chain Exit，生成配置时自动使用。</small>
-                      <small data-i18n="chainFilterHelp">逗号分隔，按最终节点名、地区或能力标签筛选。命中的节点会额外生成经 Chain Exit 出口的链式节点。</small>
-                    </div>
-                  </div>
                 </div>
               </section>
             </section>
@@ -331,6 +304,16 @@
                     <tbody id="sourcesBody"></tbody>
                   </table>
                 </div>
+              </section>
+            </section>
+
+            <section id="page-proxy-nodes" class="page-view hidden" data-page="proxy-nodes">
+              <section class="luci-box">
+                <div class="box-title row-title source-title">
+                  <span data-i18n="proxyNodesTitle">代理节点</span>
+                  <button id="addProxyNodeBtn" class="btn" type="button" data-i18n="addProxyNode">添加代理节点</button>
+                </div>
+                <div id="proxyNodesBody" class="proxy-node-list"></div>
               </section>
             </section>
 
@@ -449,11 +432,11 @@
                       <small data-i18n="excludeSimpleHostnamesHelp">启用后，不带点号的简单主机名不会交给远端 DNS，适合保留局域网主机名解析。</small>
                     </div>
                   </div>
-                  <div class="cbi-row">
+                  <div id="surgeEncryptedDnsFollowOutboundModeRow" class="cbi-row">
                     <label for="surgeEncryptedDnsFollowOutboundMode" data-i18n="encryptedDnsFollowOutboundMode">加密 DNS 跟随出站模式</label>
                     <div class="field checks">
                       <label class="check"><input id="surgeEncryptedDnsFollowOutboundMode" type="checkbox"> <span data-i18n="enabled">已启用</span></label>
-                      <small data-i18n="encryptedDnsFollowOutboundModeHelp">启用后，加密 DNS 查询会跟随当前出站模式，避免 DNS 流量绕过当前策略。</small>
+                      <small data-i18n="encryptedDnsFollowOutboundModeHelp">启用后，仅 Surge 自己发出的加密 DNS 查询会跟随当前出站模式，避免这部分 DNS 流量绕过当前策略。</small>
                     </div>
                   </div>
                 </div>
@@ -1106,7 +1089,7 @@
                   </div>
                 </div>
                 <div id="surgeOnlineValidation" class="validation-messages hidden"></div>
-                <pre id="previewOutput" data-empty="true">点击上方按钮生成预览。</pre>
+                <textarea id="previewOutput" class="line-editor generated-code config-code-textarea" rows="30" spellcheck="false" readonly data-empty="true">点击上方按钮生成预览。</textarea>
               </section>
             </section>
           </section>

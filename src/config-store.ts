@@ -1,10 +1,11 @@
 import { DEFAULT_CONFIG } from "./default-config";
 import { ensureKvSchema } from "./config-schema";
 import { decryptText, encryptText, sealSources, unsealSources } from "./crypto-store";
+import { parseConfiguredProxyNode } from "./parsers";
 import { getSecret, requireSecret } from "./secrets";
 import { pruneSourceCache } from "./source-cache";
 import { inferUrlRewriteMitmHostnames } from "./surge-url-rewrite";
-import { CHAIN_EXIT_PROTOCOLS, type AppConfig, type ChainExitProtocol, type NotificationChannel, type SourceConfig, type SurgeIpv6VifMode, type Target } from "./types";
+import { CHAIN_EXIT_PROTOCOLS, type AppConfig, type ChainExitProtocol, type NotificationChannel, type SourceConfig, type StaticProxyNodeConfig, type SurgeIpv6VifMode, type Target } from "./types";
 import { normalizeDisplayTimeZone, sha256Hex } from "./util";
 
 const CONFIG_UPDATED_AT_KEY = "config:updatedAt";
@@ -17,6 +18,8 @@ const GROUP_DISABLED_KEY = "config:groups:disabled";
 const GROUP_PREFIX = "config:groups:";
 const SOURCE_INDEX_KEY = "config:sources:index";
 const SOURCE_PREFIX = "config:sources:";
+const PROXY_NODE_INDEX_KEY = "config:proxyNodes:index";
+const PROXY_NODE_PREFIX = "config:proxyNodes:";
 const CHAIN_PREFIX = "config:chain:";
 const SURGE_PREFIX = "config:surge:";
 const CLASH_PREFIX = "config:clash:";
@@ -132,6 +135,7 @@ export async function saveConfig(env: Env, config: AppConfig): Promise<AppConfig
     saveGroups(env, normalized.groups),
     saveDisabledGroups(env, normalized.disabledGroups),
     saveSources(env, sealedSources),
+    saveProxyNodes(env, normalized.proxyNodes),
     saveChain(env, normalized.chain),
     saveSurge(env, normalized.surge),
     saveClash(env, normalized.clash),
@@ -205,6 +209,7 @@ export function normalizeConfig(input: AppConfig): AppConfig {
     groups,
     disabledGroups: normalizeDisabledGroups(input.disabledGroups, groups),
     sources: Array.isArray(input.sources) ? input.sources.map(normalizeSource) : [],
+    proxyNodes: Array.isArray(input.proxyNodes) ? normalizeProxyNodes(input.proxyNodes) : DEFAULT_CONFIG.proxyNodes,
     chain,
     surge: normalizeSurge(input.surge),
     clash: normalizeClash(input.clash),
@@ -356,6 +361,17 @@ export function validateManagedBaseUrl(config: { settings?: { managedBaseUrl?: u
   return null;
 }
 
+export function validateProxyPolicyNameConflicts(config: Partial<Pick<AppConfig, "groups" | "proxyNodes">>): string | null {
+  const groupNames = new Set(Object.keys(config.groups || {}).map((name) => name.trim()).filter(Boolean));
+  for (const proxyNode of Array.isArray(config.proxyNodes) ? config.proxyNodes : []) {
+    const name = parseConfiguredProxyNode(proxyNode)?.name.trim();
+    if (name && groupNames.has(name)) {
+      return `代理节点名称 ${name} 不能和策略组名称相同`;
+    }
+  }
+  return null;
+}
+
 function normalizeManagedBasePath(pathname: string): string {
   const trimmed = pathname.replace(/\/+$/, "");
   return trimmed || "/";
@@ -363,11 +379,12 @@ function normalizeManagedBasePath(pathname: string): string {
 
 async function loadStoredConfig(env: Env): Promise<AppConfig> {
   await ensureKvSchema(env);
-  const [settings, groups, disabledGroups, sources, chain, surge, clash, stash, updatedAt] = await Promise.all([
+  const [settings, groups, disabledGroups, sources, proxyNodes, chain, surge, clash, stash, updatedAt] = await Promise.all([
     loadSettings(env),
     loadGroups(env),
     loadDisabledGroups(env),
     loadSources(env),
+    loadProxyNodes(env),
     loadChain(env),
     loadSurge(env),
     loadClash(env),
@@ -381,6 +398,7 @@ async function loadStoredConfig(env: Env): Promise<AppConfig> {
     groups,
     disabledGroups,
     sources,
+    proxyNodes,
     chain,
     surge,
     clash,
@@ -482,19 +500,33 @@ async function saveSources(env: Env, sources: SourceConfig[]): Promise<void> {
   ]);
 }
 
-async function loadChain(env: Env): Promise<AppConfig["chain"]> {
-  const [exitProxy, filter] = await Promise.all([
-    getJson<unknown>(env, `${CHAIN_PREFIX}exitProxy`),
-    getJson<unknown>(env, `${CHAIN_PREFIX}filter`)
-  ]);
-  return normalizeChain({ exitProxy, filter });
+async function loadProxyNodes(env: Env): Promise<StaticProxyNodeConfig[]> {
+  const ids = await getJson<string[]>(env, PROXY_NODE_INDEX_KEY);
+  if (!ids) return DEFAULT_CONFIG.proxyNodes;
+
+  const nodes = await Promise.all(ids.map((id) => getJson<StaticProxyNodeConfig>(env, `${PROXY_NODE_PREFIX}${encodeKey(id)}`)));
+  return nodes.filter((node): node is StaticProxyNodeConfig => Boolean(node));
 }
 
-async function saveChain(env: Env, chain: AppConfig["chain"]): Promise<void> {
+async function saveProxyNodes(env: Env, nodes: StaticProxyNodeConfig[]): Promise<void> {
+  const previous = await getJson<string[]>(env, PROXY_NODE_INDEX_KEY) ?? [];
+  const ids = nodes.map((node) => node.id);
+  const nextIds = new Set(ids);
   await Promise.all([
-    putJson(env, `${CHAIN_PREFIX}exitProxy`, chain.exitProxy),
-    putJson(env, `${CHAIN_PREFIX}filter`, chain.filter)
+    putJson(env, PROXY_NODE_INDEX_KEY, ids),
+    ...nodes.map((node) => putJson(env, `${PROXY_NODE_PREFIX}${encodeKey(node.id)}`, node)),
+    ...previous
+      .filter((id) => !nextIds.has(id))
+      .map((id) => env.SUBPILOT_CONFIG.delete(`${PROXY_NODE_PREFIX}${encodeKey(id)}`))
   ]);
+}
+
+async function loadChain(_env: Env): Promise<AppConfig["chain"]> {
+  return normalizeChain(undefined);
+}
+
+async function saveChain(env: Env, _chain: AppConfig["chain"]): Promise<void> {
+  await env.SUBPILOT_CONFIG.delete(`${CHAIN_PREFIX}filter`);
 }
 
 async function loadSurge(env: Env): Promise<AppConfig["surge"]> {
@@ -566,11 +598,92 @@ function normalizeSourceFetchUserAgent(value: unknown): SourceConfig["fetchUserA
   return value === "clash" ? value : "surge";
 }
 
+function normalizeProxyNodes(nodes: StaticProxyNodeConfig[]): StaticProxyNodeConfig[] {
+  const seenIds = new Set<string>();
+  const seenNames = new Set<string>();
+  return nodes.flatMap((node, index) => {
+    const normalized = normalizeProxyNode(node, index, seenNames);
+    if (!normalized || seenIds.has(normalized.id)) return [];
+    seenIds.add(normalized.id);
+    return [normalized];
+  });
+}
+
+function normalizeProxyNode(value: unknown, index: number, seenNames: Set<string>): StaticProxyNodeConfig | null {
+  const record = value && typeof value === "object" ? value as Record<string, unknown> : {};
+  const config = normalizeProxyNodeConfig(record, index, seenNames);
+  if (!config) return null;
+  const id = normalizeProxyNodeId(record.id, index);
+  const chainExit = record.chainExit === true;
+  return {
+    id,
+    config,
+    chainFilter: filterArray(record.chainFilter, []),
+    enabled: record.enabled !== false,
+    chainExit,
+    includeInGroups: chainExit ? record.includeInGroups === true : true
+  };
+}
+
+function normalizeProxyNodeConfig(record: Record<string, unknown>, index: number, seenNames: Set<string>): string {
+  const config = typeof record.config === "string" ? record.config.trim() : "";
+  if (config) return config;
+  const protocol = chainExitProtocol(record.protocol, "socks5");
+  const rawName = typeof record.name === "string" ? record.name.trim() : "";
+  const name = uniqueProxyNodeName(rawName || `Proxy Node ${index + 1}`, seenNames);
+  const legacy = legacyProxyNodeParams(record);
+  return legacy ? `${name} = ${protocol}, ${legacy}` : "";
+}
+
+function legacyProxyNodeParams(record: Record<string, unknown>): string {
+  const server = typeof record.server === "string" ? record.server.trim() : "";
+  const port = clampNumber(record.port, 1, 65535, 0);
+  if (!server || !port) return "";
+  const protocol = chainExitProtocol(record.protocol, "socks5");
+  const username = typeof record.username === "string" ? record.username.trim() : "";
+  const password = typeof record.password === "string" ? record.password.trim() : "";
+  const parts = [server, String(port)];
+  if (protocol === "ss") {
+    if (username) parts.push(`encrypt-method=${username}`);
+    if (password) parts.push(`password=${password}`);
+  } else if (protocol === "snell") {
+    if (password) parts.push(`psk=${password}`);
+    parts.push("version=4");
+  } else if (protocol === "tuic") {
+    if (username) parts.push(`username=${username}`);
+    if (password) parts.push(`password=${password}`);
+  } else if (["trojan", "hysteria2", "anytls"].includes(protocol)) {
+    if (password) parts.push(`password=${password}`);
+  } else {
+    if (username) parts.push(`username=${username}`);
+    if (password) parts.push(`password=${password}`);
+  }
+  return parts.join(", ");
+}
+
+function normalizeProxyNodeId(value: unknown, index: number): string {
+  const raw = typeof value === "string" ? value.trim() : "";
+  const cleaned = raw.replace(/[^A-Za-z0-9_-]/g, "-").replace(/-+/g, "-").replace(/^-+|-+$/g, "");
+  return cleaned || `proxy-node-${index + 1}`;
+}
+
+function uniqueProxyNodeName(name: string, seenNames: Set<string>): string {
+  let candidate = name;
+  let suffix = 2;
+  while (seenNames.has(candidate)) {
+    candidate = `${name} ${suffix}`;
+    suffix += 1;
+  }
+  seenNames.add(candidate);
+  return candidate;
+}
+
 function normalizeSurge(input: Partial<AppConfig["surge"]> | undefined): AppConfig["surge"] {
   const surge = input ?? {};
   const urlRewrite = stringArray(surge.urlRewrite, DEFAULT_CONFIG.surge.urlRewrite);
   const mitm = normalizeSurgeMitm(surge.mitm);
   const inferredMitmHosts = inferUrlRewriteMitmHostnames(urlRewrite);
+  const encryptedDnsServer = stringArray(surge.encryptedDnsServer, DEFAULT_CONFIG.surge.encryptedDnsServer);
   return {
     skipProxy: stringArray(surge.skipProxy, DEFAULT_CONFIG.surge.skipProxy),
     dnsServer: stringArray(surge.dnsServer, DEFAULT_CONFIG.surge.dnsServer),
@@ -583,10 +696,10 @@ function normalizeSurge(input: Partial<AppConfig["surge"]> | undefined): AppConf
     ipv6Vif: surgeIpv6VifMode(surge.ipv6Vif, DEFAULT_CONFIG.surge.ipv6Vif),
     allowWifiAccess: surge.allowWifiAccess === true,
     tunExcludedRoutes: stringArray(surge.tunExcludedRoutes, DEFAULT_CONFIG.surge.tunExcludedRoutes),
-    encryptedDnsServer: stringArray(surge.encryptedDnsServer, DEFAULT_CONFIG.surge.encryptedDnsServer),
+    encryptedDnsServer,
     wifiAssist: surge.wifiAssist === true,
     excludeSimpleHostnames: surge.excludeSimpleHostnames !== false,
-    encryptedDnsFollowOutboundMode: surge.encryptedDnsFollowOutboundMode !== false,
+    encryptedDnsFollowOutboundMode: encryptedDnsServer.length > 0 && surge.encryptedDnsFollowOutboundMode !== false,
     ponteDeviceNames: normalizePonteDeviceNames(surge.ponteDeviceNames),
     hosts: stringArray(surge.hosts, DEFAULT_CONFIG.surge.hosts),
     urlRewrite,
@@ -735,22 +848,9 @@ function normalizeStashMitm(input: Partial<AppConfig["stash"]["mitm"]> | undefin
   };
 }
 
-function normalizeChain(input: { exitProxy?: unknown; filter?: unknown } | undefined): AppConfig["chain"] {
-  const chain = input ?? {};
+function normalizeChain(input: { filter?: unknown } | undefined): AppConfig["chain"] {
   return {
-    exitProxy: normalizeExitProxy(chain.exitProxy, DEFAULT_CONFIG.chain.exitProxy),
-    filter: filterArray(chain.filter, DEFAULT_CONFIG.chain.filter)
-  };
-}
-
-function normalizeExitProxy(value: unknown, fallback: AppConfig["chain"]["exitProxy"]): AppConfig["chain"]["exitProxy"] {
-  const record = value && typeof value === "object" ? value as Record<string, unknown> : {};
-  return {
-    protocol: chainExitProtocol(record.protocol, fallback.protocol),
-    server: typeof record.server === "string" ? record.server.trim() : fallback.server,
-    port: clampNumber(record.port, 1, 65535, fallback.port),
-    username: typeof record.username === "string" ? record.username.trim() : fallback.username,
-    password: typeof record.password === "string" ? record.password.trim() : fallback.password
+    filter: []
   };
 }
 

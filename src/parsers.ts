@@ -1,5 +1,5 @@
 import YAML from "yaml";
-import type { HostEntry, HostEntryValue, ProxyNode, ProxyParamValue } from "./types";
+import type { HostEntry, HostEntryValue, ProxyNode, ProxyParamValue, StaticProxyNodeConfig } from "./types";
 
 const URI_PROTOCOLS = ["trojan:", "vless:", "vmess:", "ss:", "hysteria2:", "hy2:", "tuic:", "anytls:"];
 const BOOLEAN_PROXY_PARAM_KEYS = new Set([
@@ -129,6 +129,43 @@ export function parseManualSurge(content: string): ProxyNode[] {
   return nodes;
 }
 
+export function parseConfiguredProxyNode(proxyNode: StaticProxyNodeConfig): ProxyNode | null {
+  const config = String(proxyNode.config || "").trim();
+  if (!config) return null;
+  return parseManualSurge(`[Proxy]\n${config}`)[0] ?? parseConfiguredClashNode(config);
+}
+
+function parseConfiguredClashNode(config: string): ProxyNode | null {
+  const record = readClashProxyRecord(config);
+  if (!record) return null;
+  return parseSubscription(YAML.stringify({ proxies: [record] }), "manual")[0] ?? null;
+}
+
+function readClashProxyRecord(config: string): Record<string, unknown> | null {
+  try {
+    const parsed = YAML.parse(config) as unknown;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      const record = parsed as Record<string, unknown>;
+      if (Array.isArray(record.proxies)) {
+        const [first] = record.proxies;
+        return first && typeof first === "object" && !Array.isArray(first)
+          ? first as Record<string, unknown>
+          : null;
+      }
+      return record;
+    }
+    if (Array.isArray(parsed)) {
+      const [first] = parsed;
+      return first && typeof first === "object" && !Array.isArray(first)
+        ? first as Record<string, unknown>
+        : null;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
 export function toSurgeLine(node: ProxyNode): string {
   if (node.surgeDetail) return `${node.name} = ${node.surgeDetail}`;
   const type = normalizeTypeForSurge(node.type);
@@ -150,6 +187,7 @@ export function toClashProxy(node: ProxyNode): Record<string, unknown> {
   if (node.password) base.password = node.password;
   if (node.uuid && !clashUsesUsername(type)) base.uuid = node.uuid;
   if (node.cipher) base.cipher = node.cipher;
+  if (type === "vmess" && base.cipher === undefined) base.cipher = "auto";
   if (node.type === "https" || node.type === "socks5-tls") base.tls = true;
   for (const [key, value] of Object.entries(node.params)) {
     if (["name", "type", "server", "port", "password", "uuid", "cipher"].includes(key) || value === "") continue;
@@ -274,7 +312,7 @@ export function parseSurgeLine(line: string): ProxyNode | null {
     server,
     port,
     password: asString(params.password),
-    uuid: asString(params.username),
+    uuid: asString(params.username) || asString(params.uuid),
     cipher: asString(params["encrypt-method"]),
     params,
     surgeDetail: paramsNormalized ? undefined : detail,
@@ -486,6 +524,9 @@ function mapSurgeParamToClash(key: string, type: string): string {
 }
 
 function normalizeClashParamValue(key: string, type: string, value: ProxyParamValue): ProxyParamValue {
+  if (isSnellType(type) && key === "version" && typeof value === "string" && /^\d+$/.test(value)) {
+    return Number(value);
+  }
   if (isHysteria2Type(type) && key === "ports" && typeof value === "string") {
     return value.split(";").map((item) => item.trim()).filter(Boolean).join(",");
   }
