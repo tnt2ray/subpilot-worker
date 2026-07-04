@@ -393,23 +393,29 @@ describe("proxy parsing", () => {
   });
 
   it("repairs common boolean parameter typos from upstream proxy inputs", () => {
-    const [uriNode] = parseSubscription("trojan://pass@tr.example.com:443?skip-cert-verify=tue&tfo=tue#TR", "src");
+    const [uriNode] = parseSubscription("trojan://pass@tr.example.com:443?skip-cert-verify=tue&tfo=tue&allowInsecure=ture&udpOverTcp=fasle#TR", "src");
     expect(toClashProxy(uriNode!)).toMatchObject({
       "skip-cert-verify": true,
-      tfo: true
+      tfo: true,
+      allowInsecure: true,
+      udpOverTcp: false
     });
     expect(toSurgeLine({ ...uriNode!, name: "TR" })).toBe(
-      "TR = trojan, tr.example.com, 443, password=pass, skip-cert-verify=true, tfo=true"
+      "TR = trojan, tr.example.com, 443, password=pass, skip-cert-verify=true, tfo=true, allowInsecure=true, udpOverTcp=false"
     );
 
-    const [surgeNode] = parseSubscription("TR = trojan,tr.example.com,443,password=p,skip-cert-verify=tue,udp-relay=tue,ws=tue", "src");
+    const [surgeNode] = parseSubscription("TR = trojan,tr.example.com,443,password=p,skip-cert-verify=tue,udp-relay=tue,ws=tue,vmess-aead=ture,mptcp=flase,reduce-rtt=treu,prefer-h3=yes", "src");
     expect(toClashProxy(surgeNode!)).toMatchObject({
       "skip-cert-verify": true,
       udp: true,
-      network: "ws"
+      network: "ws",
+      "vmess-aead": true,
+      mptcp: false,
+      "reduce-rtt": true,
+      "prefer-h3": true
     });
     expect(toSurgeLine({ ...surgeNode!, name: "TR" })).toBe(
-      "TR = trojan, tr.example.com, 443, password=p, skip-cert-verify=true, udp-relay=true, ws=true"
+      "TR = trojan, tr.example.com, 443, password=p, skip-cert-verify=true, udp-relay=true, ws=true, vmess-aead=true, mptcp=false, reduce-rtt=true, prefer-h3=true"
     );
 
     const [embeddedUriNode] = parseSubscription("Embedded = trojan://pass@tr.example.com:443?skip-cert-verify=tue#TR", "src");
@@ -433,6 +439,44 @@ describe("proxy parsing", () => {
     });
     expect(toSurgeLine({ ...yamlNode!, name: "TR" })).toBe(
       "TR = trojan, tr.example.com, 443, password=p, skip-cert-verify=true, udp-relay=true"
+    );
+
+    const [pluginNode] = parseSubscription([
+      "proxies:",
+      "  - name: SS",
+      "    type: ss",
+      "    server: ss.example.com",
+      "    port: 8388",
+      "    cipher: chacha20-ietf-poly1305",
+      "    password: p",
+      "    plugin: v2ray-plugin",
+      "    plugin-opts:",
+      "      mode: websocket",
+      "      tls: ture"
+    ].join("\n"), "src");
+    expect(toSurgeLine({ ...pluginNode!, name: "SS" })).toBe(
+      "SS = ss, ss.example.com, 8388, password=p, encrypt-method=chacha20-ietf-poly1305, ws=true, tls=true"
+    );
+
+    const [headerNode] = parseSubscription([
+      "proxies:",
+      "  - name: Header",
+      "    type: trojan",
+      "    server: tr.example.com",
+      "    port: 443",
+      "    password: p",
+      "    network: ws",
+      "    ws-opts:",
+      "      headers:",
+      "        Enabled: ture"
+    ].join("\n"), "src");
+    const headerProxy = toClashProxy(headerNode!);
+    expect((headerProxy["ws-opts"] as { headers: Record<string, unknown> }).headers.Enabled).toBe("ture");
+
+    const [unknownValueNode] = parseSubscription("Unknown = trojan,tr.example.com,443,password=p,enabled=maybe", "src");
+    expect(toClashProxy(unknownValueNode!)).toMatchObject({ enabled: "maybe" });
+    expect(toSurgeLine({ ...unknownValueNode!, name: "Unknown" })).toBe(
+      "Unknown = trojan,tr.example.com,443,password=p,enabled=maybe"
     );
   });
 });

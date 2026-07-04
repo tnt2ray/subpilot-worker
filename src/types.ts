@@ -209,6 +209,7 @@ export interface ProxyNode {
   params: Record<string, ProxyParamValue>;
   raw?: Record<string, ProxyParamValue> | undefined;
   surgeDetail?: string | undefined;
+  paramsNormalized?: boolean | undefined;
   sourceId?: string | undefined;
   sourceName?: string | undefined;
   featureTags?: string[] | undefined;
