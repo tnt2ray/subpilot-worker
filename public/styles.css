@@ -1269,6 +1269,47 @@ tr[data-group-type="subnet"] .group-editor-grid {
   color: var(--warning-strong);
 }
 
+.validation-messages .diagnostic-group {
+  display: grid;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid rgba(212, 160, 23, .26);
+  border-radius: var(--radius-sm);
+  background: rgba(212, 160, 23, .08);
+}
+
+.validation-messages .diagnostic-group summary {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.validation-messages .diagnostic-group summary::-webkit-details-marker {
+  display: none;
+}
+
+.validation-messages .diagnostic-summary {
+  min-width: 0;
+}
+
+.validation-messages .diagnostic-toggle {
+  flex: 0 0 auto;
+  color: var(--primary-active);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.validation-messages .diagnostic-detail-list {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding-left: 18px;
+  color: var(--body);
+}
+
 .validation-messages .success {
   color: var(--success-text);
 }

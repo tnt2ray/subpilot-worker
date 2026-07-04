@@ -18,6 +18,7 @@ SubPilot Worker 项目代码以 [GNU Affero General Public License v3.0 or later
 - 用独立字段维护 Surge、Clash 和 Stash 功能配置，不需要编辑整段模板。
 - 管理策略组、策略规则、规则集、DNS、TUN、MITM 和 URL Rewrite。
 - 提供 Surge / Clash / Stash 规则结构化编辑器，同时保留文本模式用于直接编辑生成内容。
+- 管理端预览可提示被前面规则覆盖、实际不会生效的规则，支持检查 Surge 规则集和 Clash / Stash rule-providers 内容。
 - Clash rule-providers 与 rules 联动：未引用的规则集会自动补入 rules，删除规则集时会同步移除对应规则。
 - 配置共享链式出口节点，并自动生成对应链式代理节点。
 - 轮换订阅读取 token，生成带稳定文件名的订阅链接。
@@ -203,6 +204,8 @@ npm run update
 策略组是 Surge、Clash 和 Stash 输出共同使用的出口选择基础。内置 `Proxy` 策略组名称固定，不可删除；其他策略组可在 `Policy Groups` 页面新增、改名、禁用或调整顺序。规则中的策略出口必须引用已配置的策略组，或引用目标客户端支持的内置策略，例如 `DIRECT`、`REJECT`、`REJECT-DROP`。
 
 Surge、Clash 和 Stash 的规则页默认使用结构化编辑器。结构化模式会按页面中的行顺序生成配置文本，并在下方显示生成结果；切换到文本模式后，可以直接编辑对应配置内容。保存前系统会校验规则类型、规则集引用、策略出口和兜底规则位置，避免写入明显无效的规则配置。
+
+在管理端生成 Surge、Clash 或 Stash 配置预览时，SubPilot 会按规则从上到下的匹配顺序做覆盖诊断。如果某条规则或规则集内的部分规则已经被前面的规则覆盖，预览区会显示诊断提示；第一层汇总是哪一段规则受到影响，展开“查看详情”后可以看到具体规则。诊断会尽量展开 Surge 的 `RULE-SET` / `DOMAIN-SET`，以及 Clash / Stash 的 `rule-providers`；远程规则集名称在提示中会简化为最后的文件名，便于阅读。
 
 Surge 规则集和单条规则使用不同语法。规则集行通常形如：
 

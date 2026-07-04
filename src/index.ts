@@ -6,7 +6,7 @@ import { generateConfig, generateForRequest, generateSurgeValidationConfig, infe
 import { createGeoIpCountryReader, GEOIP_MMDB_KV_KEY, GEOIP_MMDB_META_KV_KEY, resetGeoIpCountryReader } from "./geoip";
 import { LOGIN_PAGE_HTML } from "./login-page";
 import { notifySourceRefreshFailures, notifyVersionUpdateAvailable } from "./notifications";
-import { refreshSourceCache } from "./source-cache";
+import { refreshChangedSourceCache, refreshSourceCache } from "./source-cache";
 import { sanitizeSurgeValidationContent } from "./surge-validation-sanitize";
 import { configFileNameForTarget, syncPathForToken } from "./target-files";
 import { validateSurgeHosts } from "./surge-hosts";
@@ -136,7 +136,9 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
     if (surgeHostError) return badRequest(surgeHostError);
     const surgeUrlRewriteError = validateSurgeUrlRewrite(next);
     if (surgeUrlRewriteError) return badRequest(surgeUrlRewriteError);
-    return jsonResponse(await saveConfig(env, await reconcileTelegramWebhook(current, next, request.url)));
+    const saved = await saveConfig(env, await reconcileTelegramWebhook(current, next, request.url));
+    await refreshChangedSourceCache(env, current, saved);
+    return jsonResponse(saved);
   }
   if (url.pathname === "/api/config" && request.method === "PATCH") {
     const patch = await request.json().catch(() => null);
@@ -153,7 +155,9 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
     if (surgeHostError) return badRequest(surgeHostError);
     const surgeUrlRewriteError = validateSurgeUrlRewrite(next);
     if (surgeUrlRewriteError) return badRequest(surgeUrlRewriteError);
-    return jsonResponse(await saveConfig(env, await reconcileTelegramWebhook(current, next, request.url)));
+    const saved = await saveConfig(env, await reconcileTelegramWebhook(current, next, request.url));
+    await refreshChangedSourceCache(env, current, saved);
+    return jsonResponse(saved);
   }
   if (url.pathname === "/api/preview" && request.method === "POST") {
     const config = await loadConfig(env);

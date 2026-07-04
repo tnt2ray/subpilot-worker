@@ -68,7 +68,7 @@ export async function fetchCachedSource(env: Env, source: SourceConfig, userAgen
   const key = await sourceCacheKeyFor(source.url, userAgent);
   const cached = await env.SUBPILOT_CONFIG.get(key);
   if (cached !== null) return cached;
-  const content = await fetchSourceContent(source.url, userAgent);
+  const content = await fetchSourceContent(source.url, userAgent, source.id);
   await writeSourceCacheEntry(env, {
     key,
     content,
@@ -81,21 +81,43 @@ export async function fetchCachedSource(env: Env, source: SourceConfig, userAgen
 
 export async function refreshSourceCache(env: Env, config: AppConfig): Promise<SourceCacheRefreshResult> {
   const enabled = config.sources.filter((source) => source.enabled && source.url);
+  return refreshSourceCacheForSources(env, config, enabled, { pruneUnexpected: true });
+}
+
+export async function refreshChangedSourceCache(
+  env: Env,
+  previousConfig: AppConfig,
+  config: AppConfig
+): Promise<SourceCacheRefreshResult | null> {
+  const changed = changedEnabledSources(previousConfig, config);
+  if (changed.length === 0) return null;
+  return refreshSourceCacheForSources(env, config, changed, { pruneUnexpected: false });
+}
+
+async function refreshSourceCacheForSources(
+  env: Env,
+  config: AppConfig,
+  sourcesToRefresh: SourceConfig[],
+  options: { pruneUnexpected: boolean }
+): Promise<SourceCacheRefreshResult> {
   const existing = await readSourceCacheEntries(env);
   const existingByKey = new Map(existing.map((entry) => [entry.key, entry]));
   const expectedKeys = await sourceCacheKeysForEnabledSources(config);
-  const nextEntries = new Map<string, SourceCacheEntry>();
+  const nextEntries = new Map(existing
+    .filter((entry) => expectedKeys.has(entry.key))
+    .map((entry) => [entry.key, entry]));
   const warnings: string[] = [];
   const failures: SourceCacheRefreshFailure[] = [];
   let refreshed = 0;
   let cached = 0;
 
-  for (const source of enabled) {
+  for (const source of sourcesToRefresh) {
+    if (!source.enabled || !source.url) continue;
     const userAgent = sourceUserAgent(config, source);
     const key = await sourceCacheKeyFor(source.url, userAgent);
     const now = new Date().toISOString();
     try {
-      const content = await fetchSourceContent(source.url, userAgent);
+      const content = await fetchSourceContent(source.url, userAgent, source.id);
       const entry: SourceCacheEntry = {
         key,
         fetchedAt: now,
@@ -128,7 +150,9 @@ export async function refreshSourceCache(env: Env, config: AppConfig): Promise<S
     }
   }
 
-  const deleted = await pruneUnexpectedSourceCacheEntries(env, existing, expectedKeys);
+  const deleted = options.pruneUnexpected
+    ? await pruneUnexpectedSourceCacheEntries(env, existing, expectedKeys)
+    : 0;
 
   const entries = [...nextEntries.values()].sort((a, b) => b.fetchedAt.localeCompare(a.fetchedAt));
   await env.SUBPILOT_CONFIG.put(SOURCE_CACHE_META_INDEX_KEY, JSON.stringify(entries));
@@ -143,6 +167,18 @@ export async function refreshSourceCache(env: Env, config: AppConfig): Promise<S
     failures,
     sourceCache: await readSourceCacheStatus(env, config)
   };
+}
+
+function changedEnabledSources(previousConfig: AppConfig, config: AppConfig): SourceConfig[] {
+  const previousById = new Map(previousConfig.sources.map((source) => [source.id, source]));
+  return config.sources.filter((source) => {
+    if (!source.enabled || !source.url) return false;
+    const previous = previousById.get(source.id);
+    if (!previous || !previous.enabled || !previous.url) return true;
+    return previous.url !== source.url
+      || previous.fetchUserAgent !== source.fetchUserAgent
+      || sourceUserAgent(previousConfig, previous) !== sourceUserAgent(config, source);
+  });
 }
 
 export async function pruneSourceCache(env: Env, config: AppConfig): Promise<number> {
@@ -300,7 +336,7 @@ async function writeSourceCacheEntry(
   await Promise.all(writes);
 }
 
-async function fetchSourceContent(url: string, userAgent: string): Promise<string> {
+async function fetchSourceContent(url: string, userAgent: string, sourceId: string): Promise<string> {
   let lastError: unknown;
   for (let attempt = 0; attempt <= MAX_SOURCE_FETCH_RETRIES; attempt += 1) {
     try {
@@ -309,12 +345,20 @@ async function fetchSourceContent(url: string, userAgent: string): Promise<strin
         await response.body?.cancel().catch(() => undefined);
         throw new Error(`HTTP ${response.status}`);
       }
-      return await readResponseTextWithLimit(response, MAX_SOURCE_CONTENT_BYTES);
+      const content = await readResponseTextWithLimit(response, MAX_SOURCE_CONTENT_BYTES);
+      assertSourceContentHasNodes(content, sourceId);
+      return content;
     } catch (error) {
       lastError = error;
     }
   }
   throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+
+function assertSourceContentHasNodes(content: string, sourceId: string): void {
+  if (parseSubscription(content, sourceId).length <= 0) {
+    throw new Error("No proxy nodes found in upstream subscription");
+  }
 }
 
 async function readSourceCacheEntries(env: Env): Promise<SourceCacheEntry[]> {

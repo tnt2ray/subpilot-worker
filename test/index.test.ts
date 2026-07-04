@@ -1109,6 +1109,97 @@ describe("asset access control", () => {
     expect(kv.has("cache:sourceMeta:stale")).toBe(false);
   });
 
+  it("immediately refreshes changed and added source caches after saving config", async () => {
+    const kv = new Map<string, string>();
+    const fetchedAt = "2026-06-20T01:00:00.000Z";
+    const env = makeEnv(kv);
+    await saveConfig(env, {
+      ...DEFAULT_CONFIG,
+      sources: [
+        {
+          id: "stable",
+          name: "Stable",
+          url: "https://example.com/stable",
+          fetchUserAgent: "surge",
+          enabled: true
+        },
+        {
+          id: "changed",
+          name: "Changed",
+          url: "https://example.com/old",
+          fetchUserAgent: "surge",
+          enabled: true
+        }
+      ]
+    });
+    const stableKey = `cache:source:${await sha256Hex("https://example.com/stable|Surge iOS/3727")}`;
+    const oldChangedKey = `cache:source:${await sha256Hex("https://example.com/old|Surge iOS/3727")}`;
+    const changedKey = `cache:source:${await sha256Hex("https://example.com/new|Surge iOS/3727")}`;
+    const addedKey = `cache:source:${await sha256Hex("https://example.com/added|Surge iOS/3727")}`;
+    const stableEntry = { key: stableKey, fetchedAt, sourceId: "stable", sourceName: "Stable" };
+    const oldChangedEntry = { key: oldChangedKey, fetchedAt, sourceId: "changed", sourceName: "Changed" };
+    kv.set(stableKey, "Stable = trojan, stable.example.com, 443, password=p");
+    kv.set(oldChangedKey, "Old = trojan, old.example.com, 443, password=p");
+    kv.set(`cache:sourceMeta:${stableKey.slice("cache:source:".length)}`, JSON.stringify(stableEntry));
+    kv.set(`cache:sourceMeta:${oldChangedKey.slice("cache:source:".length)}`, JSON.stringify(oldChangedEntry));
+    kv.set("cache:sourceMeta:index", JSON.stringify([stableEntry, oldChangedEntry]));
+    const session = await createSession(env);
+    const headers = {
+      cookie: sessionCookie(session, true),
+      "content-type": "application/json"
+    };
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (request) => {
+      const target = String(request);
+      if (target === "https://example.com/new") {
+        return new Response("Changed = trojan, changed.example.com, 443, password=p");
+      }
+      if (target === "https://example.com/added") {
+        return new Response("Added = trojan, added.example.com, 443, password=p");
+      }
+      return new Response("unexpected source", { status: 500 });
+    });
+
+    const response = await worker.fetch(new Request("https://subpilot.example.com/api/config", {
+      method: "PATCH",
+      headers,
+      body: JSON.stringify({
+        sources: [
+          {
+            id: "stable",
+            name: "Stable",
+            url: "https://example.com/stable",
+            fetchUserAgent: "surge",
+            enabled: true
+          },
+          {
+            id: "changed",
+            name: "Changed",
+            url: "https://example.com/new",
+            fetchUserAgent: "surge",
+            enabled: true
+          },
+          {
+            id: "added",
+            name: "Added",
+            url: "https://example.com/added",
+            fetchUserAgent: "surge",
+            enabled: true
+          }
+        ]
+      })
+    }), env, ctx);
+
+    expect(response.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledWith("https://example.com/new", { headers: { "user-agent": "Surge iOS/3727" } });
+    expect(fetchMock).toHaveBeenCalledWith("https://example.com/added", { headers: { "user-agent": "Surge iOS/3727" } });
+    expect(fetchMock.mock.calls.some(([url]) => String(url) === "https://example.com/stable")).toBe(false);
+    expect(kv.get(stableKey)).toBe("Stable = trojan, stable.example.com, 443, password=p");
+    expect(kv.has(oldChangedKey)).toBe(false);
+    expect(kv.get(changedKey)).toBe("Changed = trojan, changed.example.com, 443, password=p");
+    expect(kv.get(addedKey)).toBe("Added = trojan, added.example.com, 443, password=p");
+  });
+
   it("keeps the previous source cache when all retry attempts fail", async () => {
     const kv = new Map<string, string>();
     const fetchedAt = "2026-06-20T01:00:00.000Z";
@@ -1164,6 +1255,86 @@ describe("asset access control", () => {
     }]);
     expect(fetchMock).toHaveBeenCalledTimes(4);
     expect(kv.get(sourceKey)).toBe("previous-content");
+  });
+
+  it("keeps the previous source cache and notifies when refreshed content has no nodes", async () => {
+    const kv = new Map<string, string>();
+    const fetchedAt = "2026-06-20T01:00:00.000Z";
+    const previousContent = "Proxy = trojan, proxy.example.com, 443, password=p";
+    const sourceKey = `cache:source:${await sha256Hex("https://example.com/sub|Surge iOS/3727")}`;
+    kv.set(sourceKey, previousContent);
+    kv.set(`cache:sourceMeta:${sourceKey.slice("cache:source:".length)}`, JSON.stringify({
+      key: sourceKey,
+      fetchedAt,
+      sourceId: "src1",
+      sourceName: "Primary"
+    }));
+    kv.set("cache:sourceMeta:index", JSON.stringify([{
+      key: sourceKey,
+      fetchedAt,
+      sourceId: "src1",
+      sourceName: "Primary"
+    }]));
+    const env = makeTestEnv(kv).env;
+    await saveConfig(env, {
+      ...DEFAULT_CONFIG,
+      settings: {
+        ...DEFAULT_CONFIG.settings,
+        notificationChannel: "telegram",
+        notificationTelegramChatId: "123456",
+        notificationTelegramBotToken: "telegram-token"
+      },
+      sources: [{
+        id: "src1",
+        name: "Primary",
+        url: "https://example.com/sub",
+        fetchUserAgent: "surge",
+        enabled: true
+      }]
+    });
+    const session = await createSession(env);
+    const headers = { cookie: sessionCookie(session, true) };
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response("subscription temporarily unavailable"))
+      .mockResolvedValueOnce(new Response("subscription temporarily unavailable"))
+      .mockResolvedValueOnce(new Response("subscription temporarily unavailable"))
+      .mockResolvedValueOnce(new Response("subscription temporarily unavailable"))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true })));
+
+    const refreshResponse = await worker.fetch(new Request("https://subpilot.example.com/api/cache/source/refresh", {
+      method: "POST",
+      headers
+    }), env, ctx);
+    const refreshed = await refreshResponse.json<{
+      refreshed: number;
+      failed: number;
+      cached: number;
+      warnings: string[];
+      failures: { sourceId: string; sourceName: string; reason: string; usedCachedContent: boolean }[];
+      sourceCache: { totalNodes: number; protocolCounts: Array<{ protocol: string; count: number }> };
+      notification: { telegram: string; warnings: string[] };
+    }>();
+
+    expect(refreshResponse.status).toBe(200);
+    expect(refreshed).toMatchObject({ refreshed: 0, failed: 1, cached: 1 });
+    expect(refreshed.warnings[0]).toContain("No proxy nodes found in upstream subscription");
+    expect(refreshed.failures).toEqual([{
+      sourceId: "src1",
+      sourceName: "Primary",
+      reason: "No proxy nodes found in upstream subscription",
+      usedCachedContent: true
+    }]);
+    expect(refreshed.sourceCache).toMatchObject({
+      totalNodes: 1,
+      protocolCounts: [{ protocol: "trojan", count: 1 }]
+    });
+    expect(refreshed.notification).toMatchObject({ telegram: "sent", warnings: [] });
+    expect(fetchMock).toHaveBeenCalledTimes(5);
+    expect(kv.get(sourceKey)).toBe(previousContent);
+    const telegramBody = JSON.parse(String(fetchMock.mock.calls[4]?.[1]?.body ?? "{}")) as { text?: string };
+    expect(telegramBody.text).toContain("No proxy nodes found in upstream subscription");
+    expect(telegramBody.text).toContain("处理：已沿用旧缓存");
+    expect(telegramBody.text).toContain("协议节点：trojan 1，总计 1");
   });
 
   it("sends Telegram notifications when a Telegram bot token is configured", async () => {

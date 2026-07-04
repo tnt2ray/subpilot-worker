@@ -1,11 +1,27 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { createContext, Script } from "node:vm";
 import { describe, expect, it } from "vitest";
 
 const root = join(import.meta.dirname, "..");
 
 function readPublicFile(name: string): string {
   return readFileSync(join(root, "public", name), "utf8");
+}
+
+function extractFunctionSource(source: string, name: string): string {
+  const start = source.indexOf(`function ${name}`);
+  if (start < 0) throw new Error(`Function ${name} not found`);
+  const bodyStart = source.indexOf("{", start);
+  if (bodyStart < 0) throw new Error(`Function ${name} body not found`);
+  let depth = 0;
+  for (let index = bodyStart; index < source.length; index += 1) {
+    const char = source[index];
+    if (char === "{") depth += 1;
+    if (char === "}") depth -= 1;
+    if (depth === 0) return source.slice(start, index + 1);
+  }
+  throw new Error(`Function ${name} body is incomplete`);
 }
 
 describe("admin static assets", () => {
@@ -47,6 +63,16 @@ describe("admin static assets", () => {
     expect(app).toContain('const PREVIEW_TARGETS = ["surge", "clash", "stash"]');
     expect(app).toContain('previewWarnings: "诊断提示："');
     expect(app).toContain("function renderPreviewWarnings(warnings)");
+    expect(app).toContain("function groupPreviewWarnings(warnings)");
+    expect(app).toContain("function prioritizePreviewWarningGroups(groups)");
+    expect(app).toContain("function parsePreviewCoverageWarning(message)");
+    expect(app).toContain("function formatPreviewCoverageSummary(group)");
+    expect(app).toContain("function simplifyPreviewRuleSetNames(message)");
+    expect(app).toContain("function formatRuleSetDisplayName(value)");
+    expect(app).toContain('class="diagnostic-group warning"');
+    expect(app).toContain("查看详情");
+    expect(css).toContain(".validation-messages .diagnostic-group");
+    expect(css).toContain(".validation-messages .diagnostic-detail-list");
 
     expect(html).toContain('id="displayTimeZone"');
     expect(html).toContain('value="Asia/Shanghai"');
@@ -80,5 +106,54 @@ describe("admin static assets", () => {
     expect(app).toContain('params["script-path"]');
     expect(app).toContain('type 必须是 http-request 或 http-response');
     expect(app).not.toContain("const validation = validateSurgeScriptLines(textToLines(refs.stashScripts.value));");
+  });
+
+  it("groups preview coverage warnings into expandable summaries", () => {
+    const app = readPublicFile("app.js");
+    const sandbox: {
+      result?: Array<{ summary: string; details: string[] }>;
+      simplified?: string;
+      URL: typeof URL;
+    } = { URL };
+    const context = createContext(sandbox);
+    const functions = [
+      "groupPreviewWarnings",
+      "prioritizePreviewWarningGroups",
+      "isPreviewRedundantWarningGroup",
+      "isPreviewOverflowWarningGroup",
+      "parsePreviewCoverageWarning",
+      "summarizeCoverageLabel",
+      "formatPreviewCoverageSummary",
+      "simplifyPreviewRuleSetNames",
+      "formatRuleSetDisplayName"
+    ].map((name) => extractFunctionSource(app, name)).join("\n");
+    const warnings = [
+      "Surge Rule 第 4 行规则集 https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Surge/Advertising/Advertising.list 内第 284 行 被前面的 第 4 行规则集 https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Surge/Advertising/Advertising.list 内第 283 行 覆盖（DOMAIN-KEYWORD,analytics 覆盖 DOMAIN-KEYWORD,app-analytics；策略同为 REJECT，当前规则冗余）。",
+      "Surge Rule 第 4 行规则集 https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Surge/Advertising/Advertising.list 内第 285 行 被前面的 第 4 行规则集 https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Surge/Advertising/Advertising.list 内第 283 行 覆盖（DOMAIN-KEYWORD,analytics 覆盖 DOMAIN-KEYWORD,event-analytics；策略同为 REJECT，当前规则冗余）。",
+      "Surge Rule 第 2 行 被前面的 第 1 行 覆盖（DOMAIN-SUFFIX,example.com 覆盖 DOMAIN,www.example.com；DIRECT 会优先生效，Proxy 不会生效）。",
+      "Surge Rule 覆盖诊断还有 2 条提示未显示。"
+    ];
+
+    new Script(`${functions}\nglobalThis.result = groupPreviewWarnings(${JSON.stringify(warnings)});`).runInContext(context);
+
+    expect(sandbox.result).toEqual([
+      {
+        summary: "Surge Rule 第 2 行 有部分规则被前面的第 1 行覆盖（DIRECT 会优先生效，Proxy 不会生效）。",
+        details: [warnings[2]]
+      },
+      {
+        summary: "Surge Rule 第 4 行规则集 Advertising.list 有部分规则被同一规则集内前面的规则覆盖，共 2 条（策略同为 REJECT，当前规则冗余）。",
+        details: [warnings[0], warnings[1]]
+      },
+      {
+        summary: warnings[3],
+        details: []
+      }
+    ]);
+
+    new Script(`globalThis.simplified = simplifyPreviewRuleSetNames(${JSON.stringify(warnings[0])});`).runInContext(context);
+
+    expect(sandbox.simplified).toContain("规则集 Advertising.list 内第 284 行");
+    expect(sandbox.simplified).not.toContain("raw.githubusercontent.com");
   });
 });
