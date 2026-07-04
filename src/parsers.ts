@@ -108,7 +108,8 @@ export function toClashProxy(node: ProxyNode): Record<string, unknown> {
   const base: Record<string, unknown> = node.raw ? { ...node.raw } : {};
   const wsOpts = clashWsOptionsFromParams(node.params);
   const nestedOpts = clashNestedOptionsFromParams(node.params);
-  const pluginOpts = clashPluginOptionsFromParams(node.params);
+  const snellObfsOpts = clashSnellObfsOptionsFromParams(node.type, node.params);
+  const pluginOpts = usesClashPluginOptions(node.type) ? clashPluginOptionsFromParams(node.params) : null;
   base.name = node.name;
   base.type = type;
   base.server = node.server;
@@ -119,15 +120,40 @@ export function toClashProxy(node: ProxyNode): Record<string, unknown> {
   if (node.type === "https" || node.type === "socks5-tls") base.tls = true;
   for (const [key, value] of Object.entries(node.params)) {
     if (["name", "type", "server", "port", "password", "uuid", "cipher"].includes(key) || value === "") continue;
-    if (["ws", "ws-path", "ws-headers"].includes(key)) continue;
-    if (key === "ws-opts" && wsOpts) continue;
-    if (isClashNestedParamKey(key)) continue;
-    if (pluginOpts && ["obfs", "obfs-host", "obfs-uri", "plugin-opts"].includes(key)) continue;
-    if (node.type === "tuic" && key === "token") continue;
+    if (["ws", "ws-path", "ws-headers"].includes(key)) {
+      delete base[key];
+      continue;
+    }
+    if (key === "ws-opts" && wsOpts) {
+      delete base[key];
+      continue;
+    }
+    if (isClashNestedParamKey(key)) {
+      delete base[key];
+      continue;
+    }
+    if (snellObfsOpts && ["obfs", "obfs-host", "obfs-uri", "obfs-opts"].includes(key)) {
+      delete base[key];
+      continue;
+    }
+    if (pluginOpts && ["obfs", "obfs-host", "obfs-uri", "plugin-opts"].includes(key)) {
+      delete base[key];
+      continue;
+    }
+    if (node.type === "tuic" && key === "token" && node.password) {
+      delete base[key];
+      continue;
+    }
     const mappedKey = mapSurgeParamToClash(key, node.type);
-    base[mappedKey] = normalizeClashParamValue(mappedKey, value);
+    if (mappedKey !== key) delete base[key];
+    base[mappedKey] = normalizeClashParamValue(mappedKey, node.type, value);
+  }
+  const obfsPassword = base["obfs-password"];
+  if (isHysteria2Type(node.type) && base.obfs === undefined && obfsPassword !== undefined && obfsPassword !== "") {
+    base.obfs = "salamander";
   }
   Object.assign(base, nestedOpts);
+  if (snellObfsOpts) base["obfs-opts"] = snellObfsOpts;
   if (pluginOpts) {
     base.plugin = base.plugin ?? node.params.plugin ?? "obfs";
     base["plugin-opts"] = pluginOpts;
@@ -337,15 +363,38 @@ function clashUsesUsername(type: string): boolean {
   return ["socks5", "http", "trust-tunnel", "ssh"].includes(normalizeTypeForClash(type));
 }
 
+function isSnellType(type: string): boolean {
+  return normalizeTypeForClash(type) === "snell";
+}
+
+function isHysteria2Type(type: string): boolean {
+  return normalizeTypeForClash(type) === "hysteria2";
+}
+
+function usesClashPluginOptions(type: string): boolean {
+  return normalizeTypeForClash(type) === "ss";
+}
+
 function mapSurgeParamToClash(key: string, type: string): string {
+  if (isHysteria2Type(type)) {
+    if (key === "download-bandwidth") return "down";
+    if (key === "upload-bandwidth") return "up";
+    if (key === "port-hopping") return "ports";
+    if (key === "port-hopping-interval") return "hop-interval";
+    if (key === "salamander-password") return "obfs-password";
+  }
   if (key === "underlying-proxy") return "dialer-proxy";
   if (key === "encrypt-method") return "cipher";
   if (key === "udp-relay") return "udp";
+  if (key === "server-cert-fingerprint-sha256") return "fingerprint";
   if (key === "username" && !clashUsesUsername(type)) return "uuid";
   return key;
 }
 
-function normalizeClashParamValue(key: string, value: ProxyParamValue): ProxyParamValue {
+function normalizeClashParamValue(key: string, type: string, value: ProxyParamValue): ProxyParamValue {
+  if (isHysteria2Type(type) && key === "ports" && typeof value === "string") {
+    return value.split(";").map((item) => item.trim()).filter(Boolean).join(",");
+  }
   if (["skip-cert-verify", "tls", "udp", "tfo"].includes(key)) return paramEnabled(value);
   if (key === "alpn") return normalizeClashAlpn(value);
   return value;
@@ -418,6 +467,14 @@ function clashPluginOptionsFromParams(params: ProxyNode["params"]): Record<strin
   return Object.keys(direct).length > 0 ? direct : null;
 }
 
+function clashSnellObfsOptionsFromParams(type: string, params: ProxyNode["params"]): Record<string, ProxyParamValue> | null {
+  if (!isSnellType(type)) return null;
+  const direct = isProxyParamRecord(params["obfs-opts"]) ? { ...params["obfs-opts"] } : {};
+  if (params.obfs !== undefined) direct.mode = params.obfs;
+  if (params["obfs-host"] !== undefined) direct.host = params["obfs-host"];
+  return Object.keys(direct).length > 0 ? direct : null;
+}
+
 function isClashNestedParamKey(key: string): boolean {
   return key === "reality-opts"
     || key === "grpc-opts"
@@ -485,8 +542,37 @@ function buildSurgeParams(node: ProxyNode): [string, string][] {
       case "dialer-proxy":
         add("underlying-proxy", value);
         break;
+      case "fingerprint":
+        add("server-cert-fingerprint-sha256", value);
+        break;
       case "servername":
         add("sni", value);
+        break;
+      case "down":
+        if (isHysteria2Type(node.type)) add("download-bandwidth", value);
+        else add(key, value);
+        break;
+      case "up":
+        if (isHysteria2Type(node.type)) add("upload-bandwidth", value);
+        else add(key, value);
+        break;
+      case "ports":
+        if (isHysteria2Type(node.type)) add("port-hopping", formatHysteria2SurgePorts(value));
+        else add(key, value);
+        break;
+      case "hop-interval":
+        if (isHysteria2Type(node.type)) add("port-hopping-interval", value);
+        else add(key, value);
+        break;
+      case "obfs":
+        if (!(isHysteria2Type(node.type) && value === "salamander")) add(key, value);
+        break;
+      case "obfs-password":
+        if (isHysteria2Type(node.type)) add("salamander-password", value);
+        else add(key, value);
+        break;
+      case "plugin":
+        if (!isTranslatedSurgePlugin(value)) add(key, value);
         break;
       case "network":
         if (value === "ws") add("ws", true);
@@ -497,6 +583,10 @@ function buildSurgeParams(node: ProxyNode): [string, string][] {
         break;
       case "plugin-opts":
         writePluginOpts(plugin, value, add);
+        break;
+      case "obfs-opts":
+        if (isSnellType(node.type)) writeSnellObfsOpts(value, add);
+        else add(key, value);
         break;
       case "grpc-opts":
         writeFlattenedParams("grpc", value, add);
@@ -535,19 +625,41 @@ function writePluginOpts(plugin: string, value: ProxyParamValue, add: (key: stri
     add("plugin-opts", value);
     return;
   }
+  const consumed = new Set<string>();
   if (plugin === "obfs" || plugin === "simple-obfs") {
     if (value.mode !== undefined) add("obfs", value.mode);
     if (value.host !== undefined) add("obfs-host", value.host);
     if (value.path !== undefined) add("obfs-uri", value.path);
+    consumed.add("mode");
+    consumed.add("host");
+    consumed.add("path");
   } else if (plugin === "v2ray-plugin") {
     if (value.mode === "websocket") add("ws", true);
     if (value.host !== undefined) add("ws-headers", `Host:${formatSurgeParamValue(value.host)}`);
     if (value.path !== undefined) add("ws-path", value.path);
     if (value.tls !== undefined) add("tls", value.tls);
+    consumed.add("mode");
+    consumed.add("host");
+    consumed.add("path");
+    consumed.add("tls");
   }
   for (const [key, item] of Object.entries(value)) {
+    if (consumed.has(key)) continue;
     writeFlattenedParams(`plugin-${key}`, item, add);
   }
+}
+
+function isTranslatedSurgePlugin(value: ProxyParamValue): boolean {
+  return value === "obfs" || value === "simple-obfs" || value === "v2ray-plugin";
+}
+
+function writeSnellObfsOpts(value: ProxyParamValue, add: (key: string, value: ProxyParamValue | undefined) => void): void {
+  if (!isProxyParamRecord(value)) {
+    add("obfs-opts", value);
+    return;
+  }
+  if (value.mode !== undefined) add("obfs", value.mode);
+  if (value.host !== undefined) add("obfs-host", value.host);
 }
 
 function writeFlattenedParams(prefix: string, value: ProxyParamValue, add: (key: string, value: ProxyParamValue | undefined) => void): void {
@@ -566,6 +678,12 @@ function formatSurgeParamValue(value: ProxyParamValue | undefined): string {
   if (Array.isArray(value)) return value.map(formatSurgeParamValue).filter(Boolean).join(";");
   if (typeof value === "object") return Object.entries(value).map(([key, item]) => `${key}:${formatSurgeParamValue(item)}`).join("|");
   return String(value);
+}
+
+function formatHysteria2SurgePorts(value: ProxyParamValue): ProxyParamValue {
+  return typeof value === "string"
+    ? value.split(/[,/]/).map((item) => item.trim()).filter(Boolean).join(";")
+    : value;
 }
 
 function formatHeaderParams(value: ProxyParamValue): string {

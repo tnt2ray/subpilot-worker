@@ -149,6 +149,85 @@ describe("proxy parsing", () => {
     expect(flattenedProxy).not.toHaveProperty("reality-short-id");
     expect((flattenedProxy["reality-opts"] as Record<string, unknown>).opts).toBeUndefined();
     expect((flattenedProxy["grpc-opts"] as Record<string, unknown>)["grpc-opts"]).toBeUndefined();
+
+    const [hy2Node] = parseManualSurge("[Proxy]\nHY2 = hy2,hy.example.com,443,password=p,download-bandwidth=200,upload-bandwidth=50,port-hopping=443;8443-9000,port-hopping-interval=15,salamander-password=obfs");
+    const hy2Proxy = toClashProxy(hy2Node!);
+    expect(hy2Proxy).toMatchObject({
+      name: "HY2",
+      type: "hysteria2",
+      server: "hy.example.com",
+      port: 443,
+      password: "p",
+      down: "200",
+      up: "50",
+      ports: "443,8443-9000",
+      "hop-interval": "15",
+      obfs: "salamander",
+      "obfs-password": "obfs"
+    });
+    expect(hy2Proxy).not.toHaveProperty("download-bandwidth");
+    expect(hy2Proxy).not.toHaveProperty("upload-bandwidth");
+    expect(hy2Proxy).not.toHaveProperty("port-hopping");
+    expect(hy2Proxy).not.toHaveProperty("port-hopping-interval");
+    expect(hy2Proxy).not.toHaveProperty("salamander-password");
+    expect(hy2Proxy).not.toHaveProperty("plugin");
+    expect(hy2Proxy).not.toHaveProperty("plugin-opts");
+
+    const [hy2RawNode] = parseSubscription([
+      "proxies:",
+      "  - name: HY2 Raw",
+      "    type: hysteria2",
+      "    server: hy.example.com",
+      "    port: 443",
+      "    password: p",
+      "    obfs: salamander",
+      "    obfs-password: obfs"
+    ].join("\n"), "src");
+    const hy2RawProxy = toClashProxy(hy2RawNode!);
+    expect(hy2RawProxy).toMatchObject({
+      type: "hysteria2",
+      obfs: "salamander",
+      "obfs-password": "obfs"
+    });
+    expect(hy2RawProxy).not.toHaveProperty("plugin");
+    expect(hy2RawProxy).not.toHaveProperty("plugin-opts");
+
+    const [tuicNode] = parseManualSurge("[Proxy]\nTUIC = tuic,tuic.example.com,443,token=tok,alpn=h3");
+    const tuicProxy = toClashProxy(tuicNode!);
+    expect(tuicProxy).toMatchObject({
+      name: "TUIC",
+      type: "tuic",
+      server: "tuic.example.com",
+      port: 443,
+      token: "tok",
+      alpn: ["h3"]
+    });
+    expect(tuicProxy).not.toHaveProperty("password");
+
+    const [snellNode] = parseManualSurge("[Proxy]\nSnell = snell,snell.example.com,44046,psk=secret,version=4,obfs=http,obfs-host=bing.com,obfs-uri=/");
+    const snellProxy = toClashProxy(snellNode!);
+    expect(snellProxy).toMatchObject({
+      name: "Snell",
+      type: "snell",
+      server: "snell.example.com",
+      port: 44046,
+      psk: "secret",
+      version: "4",
+      "obfs-opts": {
+        mode: "http",
+        host: "bing.com"
+      }
+    });
+    expect(snellProxy).not.toHaveProperty("plugin");
+    expect(snellProxy).not.toHaveProperty("plugin-opts");
+    expect(snellProxy).not.toHaveProperty("obfs");
+    expect(snellProxy).not.toHaveProperty("obfs-host");
+    expect(snellProxy).not.toHaveProperty("obfs-uri");
+
+    const [fingerprintNode] = parseManualSurge("[Proxy]\nTLS = trojan,tls.example.com,443,password=p,server-cert-fingerprint-sha256=abc123");
+    const fingerprintProxy = toClashProxy(fingerprintNode!);
+    expect(fingerprintProxy).toMatchObject({ fingerprint: "abc123" });
+    expect(fingerprintProxy).not.toHaveProperty("server-cert-fingerprint-sha256");
   });
 
   it("maps Clash YAML and URI auth fields into Surge and Clash target output", () => {
@@ -168,6 +247,7 @@ describe("proxy parsing", () => {
       "    udp: true",
       "    servername: edge.example.com",
       "    skip-cert-verify: true",
+      "    fingerprint: abc123",
       "    alpn:",
       "      - h2",
       "      - http/1.1",
@@ -191,6 +271,7 @@ describe("proxy parsing", () => {
       "udp-relay=true",
       "sni=edge.example.com",
       "skip-cert-verify=true",
+      "server-cert-fingerprint-sha256=abc123",
       "alpn=h2;http/1.1",
       "client-fingerprint=chrome",
       "underlying-proxy=Proxy",
@@ -198,6 +279,79 @@ describe("proxy parsing", () => {
       "ws-headers=Host:edge.example.com|X-Test:a",
       "reality-public-key=pubkey",
       "reality-short-id=sid"
+    ].join(", "));
+
+    const [hy2ClashNode] = parseSubscription([
+      "proxies:",
+      "  - name: HY2",
+      "    type: hysteria2",
+      "    server: hy.example.com",
+      "    port: 443",
+      "    password: p",
+      "    down: 200",
+      "    up: 50",
+      "    ports: 443,8443-9000",
+      "    hop-interval: 15",
+      "    obfs: salamander",
+      "    obfs-password: obfs"
+    ].join("\n"), "src");
+    expect(toSurgeLine({ ...hy2ClashNode!, name: "Primary HY2" })).toBe([
+      "Primary HY2 = hysteria2",
+      "hy.example.com",
+      "443",
+      "password=p",
+      "download-bandwidth=200",
+      "upload-bandwidth=50",
+      "port-hopping=443;8443-9000",
+      "port-hopping-interval=15",
+      "salamander-password=obfs"
+    ].join(", "));
+
+    const [snellClashNode] = parseSubscription([
+      "proxies:",
+      "  - name: Snell",
+      "    type: snell",
+      "    server: snell.example.com",
+      "    port: 44046",
+      "    psk: secret",
+      "    version: 4",
+      "    obfs-opts:",
+      "      mode: http",
+      "      host: bing.com"
+    ].join("\n"), "src");
+    expect(toSurgeLine({ ...snellClashNode!, name: "Primary Snell" })).toBe([
+      "Primary Snell = snell",
+      "snell.example.com",
+      "44046",
+      "psk=secret",
+      "version=4",
+      "obfs=http",
+      "obfs-host=bing.com"
+    ].join(", "));
+
+    const [ssPluginNode] = parseSubscription([
+      "proxies:",
+      "  - name: SS",
+      "    type: ss",
+      "    server: ss.example.com",
+      "    port: 8388",
+      "    cipher: chacha20-ietf-poly1305",
+      "    password: p",
+      "    plugin: obfs",
+      "    plugin-opts:",
+      "      mode: tls",
+      "      host: bing.com",
+      "      path: /"
+    ].join("\n"), "src");
+    expect(toSurgeLine({ ...ssPluginNode!, name: "Primary SS" })).toBe([
+      "Primary SS = ss",
+      "ss.example.com",
+      "8388",
+      "password=p",
+      "encrypt-method=chacha20-ietf-poly1305",
+      "obfs=tls",
+      "obfs-host=bing.com",
+      "obfs-uri=/"
     ].join(", "));
 
     const [alpnNode] = parseSubscription([
