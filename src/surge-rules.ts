@@ -1,4 +1,14 @@
 import type { AppConfig } from "./types";
+import { splitRuleLine as splitSurgeRuleLine } from "./rule-line";
+import {
+  collectCoverageWarnings,
+  CoverageWarningCollection,
+  dedupeCoverageReferences,
+  flattenResolvedCoverageEntries,
+  type CoverageEntry,
+  type CoverageRule
+} from "./rule-coverage-core";
+import { mapWithConcurrency, readResponseTextWithLimit } from "./util";
 
 const VALUELESS_RULE_TYPES = new Set(["FINAL", "MATCH"]);
 const RULE_SET_TYPES = new Set(["RULE-SET", "DOMAIN-SET"]);
@@ -96,20 +106,6 @@ interface TopLevelRuleSetReference {
   lineNumber: number;
 }
 
-interface CoverageRule {
-  kind: "rule";
-  type: string;
-  value: string;
-  policy: string;
-  label: string;
-}
-
-interface IpRange {
-  family: 4 | 6;
-  start: bigint;
-  end: bigint;
-}
-
 export function validateSurgeRules(config: Partial<Pick<AppConfig, "groups" | "surge">>): string | null {
   const knownPolicies = new Set([
     ...Object.keys(config.groups || {}),
@@ -131,41 +127,16 @@ export async function collectSurgeRuleCoverageWarnings(
 ): Promise<string[]> {
   const rules = Array.isArray(config.surge?.rules) ? config.surge.rules : [];
   const maxWarnings = Math.max(1, options.maxWarnings ?? DEFAULT_MAX_COVERAGE_WARNINGS);
-  const collection = new CoverageWarningCollection(maxWarnings);
+  const collection = new CoverageWarningCollection(maxWarnings, "Surge");
   const entries = await flattenSurgeRulesForCoverage(config, rules, options, collection);
-  const previousRules: CoverageRule[] = [];
-
-  for (const entry of entries) {
-    const cover = previousRules.find((previous) => ruleCoversRule(previous, entry));
-    if (cover) {
-      collection.push(formatCoverageWarning(entry, cover));
-    }
-    previousRules.push(entry);
-  }
+  collectCoverageWarnings(entries, collection, {
+    targetName: "Surge",
+    valuelessRuleTypes: VALUELESS_RULE_TYPES,
+    exactMatchRuleTypes: EXACT_MATCH_RULE_TYPES,
+    normalizeDomainValue: normalizeSurgeDomainValue
+  });
 
   return collection.messages;
-}
-
-class CoverageWarningCollection {
-  readonly messages: string[] = [];
-  private hidden = 0;
-
-  constructor(private readonly maxWarnings: number) {}
-
-  push(message: string): void {
-    if (this.messages.length < this.maxWarnings) {
-      this.messages.push(message);
-      return;
-    }
-    this.hidden += this.hidden === 0 ? 2 : 1;
-    const summary = `Surge Rule 覆盖诊断还有 ${this.hidden} 条提示未显示。`;
-    const lastIndex = this.messages.length - 1;
-    if (lastIndex >= 0 && this.messages[lastIndex]?.startsWith("Surge Rule 覆盖诊断还有 ")) {
-      this.messages[lastIndex] = summary;
-    } else if (lastIndex >= 0) {
-      this.messages[lastIndex] = summary;
-    }
-  }
 }
 
 async function flattenSurgeRulesForCoverage(
@@ -177,20 +148,10 @@ async function flattenSurgeRulesForCoverage(
   const parsed = rules.flatMap((line, index) => parseTopLevelRuleForCoverage(line, index + 1));
   const references = parsed.filter((entry): entry is TopLevelRuleSetReference => entry.kind === "rule-set");
   const resolvedRuleSets = await resolveRuleSetReferences(config, references, options, warnings);
-  const flattened: CoverageRule[] = [];
-
-  for (const entry of parsed) {
-    if (entry.kind === "rule") {
-      flattened.push(entry);
-      continue;
-    }
-    const resolved = resolvedRuleSets.get(ruleSetReferenceKey(entry));
-    if (resolved) flattened.push(...resolved);
-  }
-  return flattened;
+  return flattenResolvedCoverageEntries(parsed, resolvedRuleSets, ruleSetReferenceKey);
 }
 
-function parseTopLevelRuleForCoverage(line: string, lineNumber: number): Array<CoverageRule | TopLevelRuleSetReference> {
+function parseTopLevelRuleForCoverage(line: string, lineNumber: number): Array<CoverageEntry<TopLevelRuleSetReference>> {
   const trimmed = String(line || "").trim();
   if (!trimmed || isCommentLine(trimmed) || /^\[[^\]]+\]$/.test(trimmed)) return [];
   const parts = splitSurgeRuleLine(trimmed);
@@ -214,7 +175,7 @@ async function resolveRuleSetReferences(
   warnings: CoverageWarningCollection
 ): Promise<Map<string, CoverageRule[]>> {
   const resolved = new Map<string, CoverageRule[]>();
-  const unique = dedupeRuleSetReferences(references);
+  const unique = dedupeCoverageReferences(references, ruleSetReferenceKey);
   const external = unique.filter((reference) => !resolveInternalRuleSet(reference, resolved, warnings));
   if (external.length === 0) return resolved;
 
@@ -252,14 +213,6 @@ async function resolveRuleSetReferences(
     }
   });
   return resolved;
-}
-
-function dedupeRuleSetReferences(references: TopLevelRuleSetReference[]): TopLevelRuleSetReference[] {
-  const selected = new Map<string, TopLevelRuleSetReference>();
-  for (const reference of references) {
-    selected.set(ruleSetReferenceKey(reference), reference);
-  }
-  return [...selected.values()];
 }
 
 function resolveInternalRuleSet(
@@ -338,173 +291,11 @@ async function fetchRuleSetContent(url: string, userAgent: string, fetcher: Surg
     await response.body?.cancel().catch(() => undefined);
     throw new Error(`HTTP ${response.status}`);
   }
-  return readResponseTextWithLimit(response, MAX_RULE_SET_CONTENT_BYTES);
+  return readResponseTextWithLimit(response, MAX_RULE_SET_CONTENT_BYTES, "rule-set");
 }
 
-async function readResponseTextWithLimit(response: Response, maxBytes: number): Promise<string> {
-  const contentLength = response.headers.get("content-length");
-  if (contentLength && Number(contentLength) > maxBytes) throw new Error(`rule-set exceeds ${formatBytes(maxBytes)} limit`);
-  if (!response.body) return "";
-
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    if (!value) continue;
-    total += value.byteLength;
-    if (total > maxBytes) {
-      await reader.cancel().catch(() => undefined);
-      throw new Error(`rule-set exceeds ${formatBytes(maxBytes)} limit`);
-    }
-    chunks.push(value);
-  }
-
-  const bytes = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return new TextDecoder().decode(bytes);
-}
-
-async function mapWithConcurrency<T>(items: T[], concurrency: number, callback: (item: T) => Promise<void>): Promise<void> {
-  let nextIndex = 0;
-  const workers = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
-    while (nextIndex < items.length) {
-      const item = items[nextIndex];
-      nextIndex += 1;
-      if (item !== undefined) await callback(item);
-    }
-  });
-  await Promise.all(workers);
-}
-
-function ruleCoversRule(previous: CoverageRule, current: CoverageRule): boolean {
-  if (VALUELESS_RULE_TYPES.has(previous.type)) return true;
-  if (VALUELESS_RULE_TYPES.has(current.type)) return false;
-  if (isDomainRule(previous.type) && isDomainRule(current.type)) return domainRuleCovers(previous, current);
-  if (isIpCidrRule(previous.type) && isIpCidrRule(current.type)) return ipRuleCovers(previous, current);
-  if (EXACT_MATCH_RULE_TYPES.has(previous.type) && previous.type === current.type) {
-    return normalizeExactValue(previous.value) === normalizeExactValue(current.value);
-  }
-  return false;
-}
-
-function domainRuleCovers(previous: CoverageRule, current: CoverageRule): boolean {
-  const previousValue = normalizeDomainValue(previous.value);
-  const currentValue = normalizeDomainValue(current.value);
-  if (!previousValue || !currentValue) return false;
-
-  if (previous.type === "DOMAIN") {
-    return current.type === "DOMAIN" && previousValue === currentValue;
-  }
-  if (previous.type === "DOMAIN-SUFFIX") {
-    if (current.type === "DOMAIN") return domainMatchesSuffix(currentValue, previousValue);
-    if (current.type === "DOMAIN-SUFFIX") return suffixContainsSuffix(previousValue, currentValue);
-    return false;
-  }
-  if (previous.type === "DOMAIN-KEYWORD") {
-    return currentValue.includes(previousValue);
-  }
-  return false;
-}
-
-function ipRuleCovers(previous: CoverageRule, current: CoverageRule): boolean {
-  const previousRange = parseIpRange(previous.type, previous.value);
-  const currentRange = parseIpRange(current.type, current.value);
-  return Boolean(previousRange && currentRange
-    && previousRange.family === currentRange.family
-    && previousRange.start <= currentRange.start
-    && previousRange.end >= currentRange.end);
-}
-
-function parseIpRange(type: string, value: string): IpRange | null {
-  const family = type === "IP-CIDR6" ? 6 : 4;
-  const totalBits = family === 6 ? 128 : 32;
-  const [addressPart = "", prefixPart] = value.trim().split("/", 2);
-  const address = family === 6 ? parseIPv6Address(addressPart) : parseIPv4Address(addressPart);
-  if (address === null) return null;
-  const prefix = prefixPart === undefined || prefixPart === ""
-    ? totalBits
-    : Number(prefixPart);
-  if (!Number.isInteger(prefix) || prefix < 0 || prefix > totalBits) return null;
-  const blockSize = 1n << BigInt(totalBits - prefix);
-  const start = (address / blockSize) * blockSize;
-  return { family, start, end: start + blockSize - 1n };
-}
-
-function parseIPv4Address(value: string): bigint | null {
-  const parts = value.trim().split(".");
-  if (parts.length !== 4) return null;
-  let output = 0n;
-  for (const part of parts) {
-    if (!/^\d{1,3}$/.test(part)) return null;
-    const number = Number(part);
-    if (number < 0 || number > 255) return null;
-    output = (output << 8n) + BigInt(number);
-  }
-  return output;
-}
-
-function parseIPv6Address(value: string): bigint | null {
-  const address = value.trim().toLowerCase();
-  if (!address || address.includes(".")) return null;
-  const compressedParts = address.split("::");
-  if (compressedParts.length > 2) return null;
-  const head = compressedParts[0] ? compressedParts[0].split(":") : [];
-  const tail = compressedParts.length === 2 && compressedParts[1] ? compressedParts[1].split(":") : [];
-  const missing = compressedParts.length === 2 ? 8 - head.length - tail.length : 0;
-  if (missing < 0) return null;
-  const parts = compressedParts.length === 2
-    ? [...head, ...Array.from({ length: missing }, () => "0"), ...tail]
-    : head;
-  if (parts.length !== 8) return null;
-
-  let output = 0n;
-  for (const part of parts) {
-    if (!/^[0-9a-f]{1,4}$/i.test(part)) return null;
-    output = (output << 16n) + BigInt(Number.parseInt(part, 16));
-  }
-  return output;
-}
-
-function isDomainRule(type: string): boolean {
-  return type === "DOMAIN" || type === "DOMAIN-SUFFIX" || type === "DOMAIN-KEYWORD";
-}
-
-function isIpCidrRule(type: string): boolean {
-  return type === "IP-CIDR" || type === "IP-CIDR6";
-}
-
-function domainMatchesSuffix(domain: string, suffix: string): boolean {
-  return domain === suffix || domain.endsWith(`.${suffix}`);
-}
-
-function suffixContainsSuffix(previousSuffix: string, currentSuffix: string): boolean {
-  return currentSuffix === previousSuffix || currentSuffix.endsWith(`.${previousSuffix}`);
-}
-
-function normalizeDomainValue(value: string): string {
+function normalizeSurgeDomainValue(value: string): string {
   return value.trim().toLowerCase().replace(/^\*\./, "").replace(/\.$/, "");
-}
-
-function normalizeExactValue(value: string): string {
-  return value.trim().toLowerCase();
-}
-
-function formatCoverageWarning(current: CoverageRule, previous: CoverageRule): string {
-  const matcherText = `${formatMatcher(previous)} 覆盖 ${formatMatcher(current)}`;
-  if (current.policy === previous.policy) {
-    return `Surge Rule ${current.label} 被前面的 ${previous.label} 覆盖（${matcherText}；策略同为 ${current.policy}，当前规则冗余）。`;
-  }
-  return `Surge Rule ${current.label} 被前面的 ${previous.label} 覆盖（${matcherText}；${previous.policy} 会优先生效，${current.policy} 不会生效）。`;
-}
-
-function formatMatcher(rule: CoverageRule): string {
-  return VALUELESS_RULE_TYPES.has(rule.type) ? rule.type : `${rule.type},${rule.value}`;
 }
 
 function lineNumberLabel(lineNumber: number): string {
@@ -537,9 +328,6 @@ function isCommentLine(line: string): boolean {
   return line.startsWith("#") || line.startsWith(";") || line.startsWith("//");
 }
 
-function formatBytes(bytes: number): string {
-  return `${Math.floor(bytes / 1024 / 1024)} MiB`;
-}
 
 function validateFinalRuleOrder(rules: string[]): string | null {
   const effectiveRules = rules.map((rule, index) => {
@@ -614,24 +402,6 @@ function allowedRuleOptions(type: string): Set<string> {
   if (["IP-CIDR", "IP-CIDR6", "GEOIP"].includes(type)) return IP_RULE_OPTIONS;
   if (EXTENDED_MATCHING_RULE_TYPES.has(type)) return DOMAIN_SET_OPTIONS;
   return new Set();
-}
-
-function splitSurgeRuleLine(line: string): string[] {
-  const parts: string[] = [];
-  let current = "";
-  let depth = 0;
-  for (const char of line) {
-    if (char === "(") depth += 1;
-    if (char === ")") depth = Math.max(0, depth - 1);
-    if (char === "," && depth === 0) {
-      parts.push(current.trim());
-      current = "";
-      continue;
-    }
-    current += char;
-  }
-  if (current.trim() || parts.length > 0) parts.push(current.trim());
-  return parts;
 }
 
 function validatePolicy(policy: string, knownPolicies: Set<string>): string | null {

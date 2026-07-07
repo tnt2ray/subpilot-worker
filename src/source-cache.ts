@@ -1,18 +1,30 @@
-import { parseSubscription } from "./parsers";
+import { listKvKeys, readKvJson } from "./kv-helpers";
+import {
+  normalizeSourceCacheNodeCount,
+  normalizeSourceCacheProtocolCounts,
+  sourceCacheContentStats,
+  type SourceCacheProtocolCount
+} from "./source-cache-stats";
 import type { AppConfig, SourceConfig } from "./types";
-import { sha256Hex } from "./util";
+import { readResponseTextWithLimit, sha256Hex } from "./util";
 
-const SOURCE_CACHE_PREFIX = "cache:source:";
-const SOURCE_CACHE_META_PREFIX = "cache:sourceMeta:";
-const SOURCE_CACHE_META_INDEX_KEY = "cache:sourceMeta:index";
+export const SOURCE_CACHE_PREFIX = "cache:source:";
+export const SOURCE_CACHE_META_PREFIX = "cache:sourceMeta:";
+export const SOURCE_CACHE_META_INDEX_KEY = "cache:sourceMeta:index";
 const MAX_SOURCE_CONTENT_BYTES = 10 * 1024 * 1024;
 const MAX_SOURCE_FETCH_RETRIES = 3;
+
+export { sourceCacheContentStats } from "./source-cache-stats";
+export type { SourceCacheProtocolCount } from "./source-cache-stats";
 
 export interface SourceCacheEntry {
   key: string;
   fetchedAt: string;
   sourceId: string;
   sourceName: string;
+  contentAvailable: boolean;
+  nodeCount: number;
+  protocolCounts: SourceCacheProtocolCount[];
 }
 
 export interface SourceCacheStatus {
@@ -33,11 +45,6 @@ export interface SourceCacheSourceStatus {
   fetchedAt: string | null;
   nodeCount: number;
   protocolCounts: SourceCacheProtocolCount[];
-}
-
-export interface SourceCacheProtocolCount {
-  protocol: string;
-  count: number;
 }
 
 export interface SourceCacheRefreshFailure {
@@ -118,13 +125,13 @@ async function refreshSourceCacheForSources(
     const now = new Date().toISOString();
     try {
       const content = await fetchSourceContent(source.url, userAgent, source.id);
-      const entry: SourceCacheEntry = {
+      const entry = await writeSourceCacheEntry(env, {
         key,
+        content,
         fetchedAt: now,
         sourceId: source.id,
         sourceName: source.name
-      };
-      await writeSourceCacheEntry(env, { ...entry, content }, { updateIndex: false });
+      }, { updateIndex: false });
       nextEntries.set(key, entry);
       refreshed += 1;
     } catch (error) {
@@ -196,32 +203,23 @@ export async function readSourceCacheStatus(env: Env, config?: AppConfig): Promi
   const entries = await readSourceCacheEntries(env);
   const sorted = entries.map((entry) => entry.fetchedAt).sort();
   const updatedAt = sorted.length > 0 ? sorted[sorted.length - 1]! : null;
-  const sources = config ? await readSourceCacheSourceStatuses(env, config, entries) : [];
+  const sources = config ? await readSourceCacheSourceStatuses(config, entries) : [];
   const protocolCounts = new Map<string, number>();
   let totalNodes = 0;
   for (const source of sources) {
-    const protocols = "protocols" in source && Array.isArray(source.protocols) ? source.protocols : [];
     totalNodes += source.nodeCount;
-    for (const protocol of protocols) {
-      protocolCounts.set(protocol, (protocolCounts.get(protocol) ?? 0) + 1);
+    for (const item of source.protocolCounts) {
+      protocolCounts.set(item.protocol, (protocolCounts.get(item.protocol) ?? 0) + item.count);
     }
   }
-  const visibleSources = sources.map((source) => ({
-    sourceId: source.sourceId,
-    sourceName: source.sourceName,
-    cached: source.cached,
-    fetchedAt: source.fetchedAt,
-    nodeCount: source.nodeCount,
-    protocolCounts: countProtocols(source.protocols)
-  }));
-  const cachedSourceCount = visibleSources.filter((source) => source.cached).length;
+  const cachedSourceCount = sources.filter((source) => source.cached).length;
   return {
     count: entries.length,
     updatedAt,
-    expectedCount: visibleSources.length,
+    expectedCount: sources.length,
     cachedSourceCount,
-    allSourcesCached: visibleSources.length > 0 && cachedSourceCount === visibleSources.length,
-    sources: visibleSources,
+    allSourcesCached: sources.length > 0 && cachedSourceCount === sources.length,
+    sources,
     totalNodes,
     protocolCounts: [...protocolCounts.entries()]
       .map(([protocol, count]) => ({ protocol, count }))
@@ -230,52 +228,26 @@ export async function readSourceCacheStatus(env: Env, config?: AppConfig): Promi
 }
 
 async function readSourceCacheSourceStatuses(
-  env: Env,
   config: AppConfig,
   entries: SourceCacheEntry[]
-): Promise<Array<Omit<SourceCacheSourceStatus, "protocolCounts"> & { protocols: string[] }>> {
+): Promise<SourceCacheSourceStatus[]> {
   const entriesByKey = new Map(entries.map((entry) => [entry.key, entry]));
-  const statuses: Array<Omit<SourceCacheSourceStatus, "protocolCounts"> & { protocols: string[] }> = [];
+  const statuses: SourceCacheSourceStatus[] = [];
   for (const source of config.sources) {
     if (!source.enabled || !source.url) continue;
     const key = await sourceCacheKeyFor(source.url, sourceUserAgent(config, source));
     const entry = entriesByKey.get(key);
-    const content = entry ? await env.SUBPILOT_CONFIG.get(key) : null;
-    const protocols = content ? parseProtocols(content, source.id) : [];
+    const cached = entry?.contentAvailable === true;
     statuses.push({
       sourceId: source.id,
       sourceName: source.name,
-      cached: content !== null,
-      fetchedAt: content !== null ? entry?.fetchedAt ?? null : null,
-      nodeCount: protocols.length,
-      protocols
+      cached,
+      fetchedAt: cached ? entry?.fetchedAt ?? null : null,
+      nodeCount: cached ? entry?.nodeCount ?? 0 : 0,
+      protocolCounts: cached ? entry?.protocolCounts ?? [] : []
     });
   }
   return statuses;
-}
-
-function parseProtocols(content: string, sourceId: string): string[] {
-  try {
-    return parseSubscription(content, sourceId).map((node) => normalizeProtocol(node.type));
-  } catch {
-    return [];
-  }
-}
-
-function countProtocols(protocols: string[]): SourceCacheProtocolCount[] {
-  const counts = new Map<string, number>();
-  for (const protocol of protocols) {
-    counts.set(protocol, (counts.get(protocol) ?? 0) + 1);
-  }
-  return [...counts.entries()]
-    .map(([protocol, count]) => ({ protocol, count }))
-    .sort((left, right) => right.count - left.count || left.protocol.localeCompare(right.protocol));
-}
-
-function normalizeProtocol(value: string): string {
-  const protocol = value.trim().toLowerCase();
-  if (protocol === "hy2") return "hysteria2";
-  return protocol || "unknown";
 }
 
 async function sourceCacheKeysForEnabledSources(config: AppConfig): Promise<Set<string>> {
@@ -288,7 +260,7 @@ async function sourceCacheKeysForEnabledSources(config: AppConfig): Promise<Set<
 }
 
 async function pruneUnexpectedSourceCacheEntries(env: Env, existing: SourceCacheEntry[], expectedKeys: Set<string>): Promise<number> {
-  const contentKeys = await listKeys(env, SOURCE_CACHE_PREFIX);
+  const contentKeys = await listKvKeys(env, SOURCE_CACHE_PREFIX);
   const staleCacheKeys = new Set<string>();
   for (const entry of existing) {
     if (!expectedKeys.has(entry.key)) staleCacheKeys.add(entry.key);
@@ -317,10 +289,15 @@ function sourceCacheMetaKey(key: string): string {
 
 async function writeSourceCacheEntry(
   env: Env,
-  entry: SourceCacheEntry & { content: string },
+  entry: Omit<SourceCacheEntry, "contentAvailable" | "nodeCount" | "protocolCounts"> & { content: string },
   options: { updateIndex?: boolean } = {}
-): Promise<void> {
-  const { content, ...meta } = entry;
+): Promise<SourceCacheEntry> {
+  const { content, ...baseMeta } = entry;
+  const meta: SourceCacheEntry = {
+    ...baseMeta,
+    contentAvailable: true,
+    ...sourceCacheContentStats(content, entry.sourceId)
+  };
   const updateIndex = options.updateIndex !== false;
   const writes: Promise<unknown>[] = [
     env.SUBPILOT_CONFIG.put(entry.key, content),
@@ -334,6 +311,7 @@ async function writeSourceCacheEntry(
     writes.push(env.SUBPILOT_CONFIG.put(SOURCE_CACHE_META_INDEX_KEY, JSON.stringify(entries)));
   }
   await Promise.all(writes);
+  return meta;
 }
 
 async function fetchSourceContent(url: string, userAgent: string, sourceId: string): Promise<string> {
@@ -345,7 +323,7 @@ async function fetchSourceContent(url: string, userAgent: string, sourceId: stri
         await response.body?.cancel().catch(() => undefined);
         throw new Error(`HTTP ${response.status}`);
       }
-      const content = await readResponseTextWithLimit(response, MAX_SOURCE_CONTENT_BYTES);
+      const content = await readResponseTextWithLimit(response, MAX_SOURCE_CONTENT_BYTES, "Source subscription");
       assertSourceContentHasNodes(content, sourceId);
       return content;
     } catch (error) {
@@ -356,16 +334,16 @@ async function fetchSourceContent(url: string, userAgent: string, sourceId: stri
 }
 
 function assertSourceContentHasNodes(content: string, sourceId: string): void {
-  if (parseSubscription(content, sourceId).length <= 0) {
+  if (sourceCacheContentStats(content, sourceId).nodeCount <= 0) {
     throw new Error("No proxy nodes found in upstream subscription");
   }
 }
 
 async function readSourceCacheEntries(env: Env): Promise<SourceCacheEntry[]> {
-  const indexed = await readJson<unknown>(env, SOURCE_CACHE_META_INDEX_KEY);
+  const indexed = await readKvJson<unknown>(env, SOURCE_CACHE_META_INDEX_KEY);
   const indexedEntries = Array.isArray(indexed) ? indexed.flatMap(normalizeSourceCacheEntry) : [];
-  const metaKeys = await listKeys(env, SOURCE_CACHE_META_PREFIX);
-  const entries = await Promise.all(metaKeys.map((key) => readJson<unknown>(env, key)));
+  const metaKeys = await listKvKeys(env, SOURCE_CACHE_META_PREFIX);
+  const entries = await Promise.all(metaKeys.map((key) => readKvJson<unknown>(env, key)));
   return dedupeSourceCacheEntries([
     ...indexedEntries,
     ...entries.flatMap(normalizeSourceCacheEntry)
@@ -388,65 +366,14 @@ function normalizeSourceCacheEntry(value: unknown): SourceCacheEntry[] {
   const entry = value as Partial<SourceCacheEntry>;
   if (typeof entry.key !== "string" || !entry.key.startsWith(SOURCE_CACHE_PREFIX)) return [];
   if (typeof entry.fetchedAt !== "string" || Number.isNaN(new Date(entry.fetchedAt).getTime())) return [];
+  const protocolCounts = normalizeSourceCacheProtocolCounts(entry.protocolCounts);
   return [{
     key: entry.key,
     fetchedAt: entry.fetchedAt,
     sourceId: typeof entry.sourceId === "string" ? entry.sourceId : "",
-    sourceName: typeof entry.sourceName === "string" ? entry.sourceName : ""
+    sourceName: typeof entry.sourceName === "string" ? entry.sourceName : "",
+    contentAvailable: typeof entry.contentAvailable === "boolean" ? entry.contentAvailable : true,
+    nodeCount: normalizeSourceCacheNodeCount(entry.nodeCount, protocolCounts),
+    protocolCounts
   }];
-}
-
-async function listKeys(env: Env, prefix: string): Promise<string[]> {
-  const keys: string[] = [];
-  let cursor: string | undefined;
-  do {
-    const options: KVNamespaceListOptions = cursor ? { prefix, cursor } : { prefix };
-    const page = await env.SUBPILOT_CONFIG.list(options);
-    keys.push(...page.keys.map((key) => key.name));
-    cursor = page.list_complete ? undefined : page.cursor;
-  } while (cursor);
-  return keys;
-}
-
-async function readJson<T>(env: Env, key: string): Promise<T | null> {
-  const value = await env.SUBPILOT_CONFIG.get(key);
-  if (value === null) return null;
-  try {
-    return JSON.parse(value) as T;
-  } catch {
-    return null;
-  }
-}
-
-async function readResponseTextWithLimit(response: Response, maxBytes: number): Promise<string> {
-  const contentLength = response.headers.get("content-length");
-  if (contentLength && Number(contentLength) > maxBytes) throw new Error(`Source subscription exceeds ${formatBytes(maxBytes)} limit`);
-  if (!response.body) return "";
-
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    if (!value) continue;
-    total += value.byteLength;
-    if (total > maxBytes) {
-      await reader.cancel().catch(() => undefined);
-      throw new Error(`Source subscription exceeds ${formatBytes(maxBytes)} limit`);
-    }
-    chunks.push(value);
-  }
-
-  const bytes = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return new TextDecoder().decode(bytes);
-}
-
-function formatBytes(bytes: number): string {
-  return `${Math.floor(bytes / 1024 / 1024)} MiB`;
 }

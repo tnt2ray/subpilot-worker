@@ -1,7 +1,7 @@
-import type { SourceCacheProtocolCount, SourceCacheRefreshResult, SourceCacheStatus } from "./source-cache";
+import { formatSourceCacheStatusLines } from "./source-cache-format";
+import type { SourceCacheRefreshResult } from "./source-cache";
 import type { AppConfig } from "./types";
 import { getUpdateStatus, readNotifiedUpdateVersion, storeNotifiedUpdateVersion } from "./update-check";
-import { formatTimestampInTimeZone } from "./util";
 
 type RefreshTrigger = "manual" | "scheduled";
 
@@ -75,50 +75,6 @@ function formatSourceRefreshFailureMessage(result: SourceCacheRefreshResult, tri
     ...formatSourceCacheStatusLines(result.sourceCache, timeZone)
   ];
   return lines.join("\n").slice(0, 3500);
-}
-
-function formatSourceCacheStatusLines(sourceCache: SourceCacheStatus, timeZone: string): string[] {
-  if (sourceCache.expectedCount <= 0) {
-    return [
-      `上游缓存：${sourceCache.count} 条缓存，没有启用订阅源`,
-      `缓存更新时间：${formatNotificationTimestamp(sourceCache.updatedAt, timeZone)}`
-    ];
-  }
-  const missing = sourceCache.expectedCount - sourceCache.cachedSourceCount;
-  const coverage = missing > 0
-    ? `${sourceCache.cachedSourceCount} / ${sourceCache.expectedCount} 个启用源已缓存，缺 ${missing} 个`
-    : `${sourceCache.cachedSourceCount} / ${sourceCache.expectedCount} 个启用源已缓存，全部就绪`;
-  return [
-    `上游缓存：${coverage}`,
-    `协议节点：${formatProtocolCounts(sourceCache)}`,
-    `缓存更新时间：${formatNotificationTimestamp(sourceCache.updatedAt, timeZone)}`,
-    "订阅源缓存：",
-    ...sourceCache.sources.slice(0, 12).map((source) => formatSourceCacheSourceStatus(source, timeZone)),
-    ...(sourceCache.sources.length > 12 ? [`... 还有 ${sourceCache.sources.length - 12} 个订阅源未显示`] : [])
-  ];
-}
-
-function formatProtocolCounts(sourceCache: SourceCacheStatus): string {
-  return formatProtocolCountList(sourceCache.totalNodes, sourceCache.protocolCounts, true);
-}
-
-function formatProtocolCountList(totalNodes: number, protocolCounts: SourceCacheProtocolCount[], includeTotal: boolean): string {
-  if (totalNodes <= 0 || protocolCounts.length === 0) return "未解析到节点";
-  const parts = protocolCounts
-    .filter((item) => item.count > 0)
-    .map((item) => `${item.protocol} ${item.count}`);
-  if (includeTotal) parts.push(`总计 ${totalNodes}`);
-  return parts.length > 0 ? parts.join("，") : "未解析到节点";
-}
-
-function formatNotificationTimestamp(value: string | null, timeZone: string): string {
-  return formatTimestampInTimeZone(value, timeZone);
-}
-
-function formatSourceCacheSourceStatus(source: SourceCacheStatus["sources"][number], timeZone: string): string {
-  const name = source.sourceName || source.sourceId || "(未命名订阅源)";
-  if (!source.cached) return `- ${name}：未缓存`;
-  return `- ${name}：已缓存，${source.nodeCount} 个节点；协议 ${formatProtocolCountList(source.nodeCount, source.protocolCounts, false)}；${formatNotificationTimestamp(source.fetchedAt, timeZone)}`;
 }
 
 function formatSourceFailures(result: SourceCacheRefreshResult): string[] {

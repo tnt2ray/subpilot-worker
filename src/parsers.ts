@@ -1,54 +1,20 @@
 import YAML from "yaml";
-import type { HostEntry, HostEntryValue, ProxyNode, ProxyParamValue, StaticProxyNodeConfig } from "./types";
+import {
+  formatSurgeParamValue,
+  isBooleanProxyParamKey,
+  isProxyParamRecord,
+  normalizeBooleanProxyParamValue,
+  normalizeProxyParamKey,
+  normalizeProxyParams,
+  paramEnabled
+} from "./proxy-params";
+import { parseProxyUrl } from "./proxy-url-parser";
+import { asString, isProxyParamValue, sanitizeProxyRecord, toPort } from "./proxy-value";
+import { maybeDecodeBase64 } from "./subscription-text";
+import type { ProxyNode, ProxyParamValue, StaticProxyNodeConfig } from "./types";
 
-const URI_PROTOCOLS = ["trojan:", "vless:", "vmess:", "ss:", "hysteria2:", "hy2:", "tuic:", "anytls:"];
-const BOOLEAN_PROXY_PARAM_KEYS = new Set([
-  "allow-insecure",
-  "allowinsecure",
-  "disable",
-  "disabled",
-  "disable-sni",
-  "ech",
-  "enable",
-  "enabled",
-  "fast-open",
-  "fastopen",
-  "insecure",
-  "mptcp",
-  "multi-mode",
-  "mux",
-  "prefer-h3",
-  "reduce-rtt",
-  "skip-cert-verify",
-  "smux",
-  "tcp-fast-open",
-  "tfo",
-  "tls",
-  "udp",
-  "udp-over-tcp",
-  "udpovertcp",
-  "udp-relay",
-  "vmess-aead",
-  "ws"
-]);
-const TRUE_PROXY_PARAM_VALUES = new Set(["true", "1", "yes", "y", "on", "enable", "enabled"]);
-const FALSE_PROXY_PARAM_VALUES = new Set(["false", "0", "no", "n", "off", "disable", "disabled"]);
-const TRUE_PROXY_PARAM_TYPOS = new Set(["treu", "tru", "tue", "ture"]);
-const FALSE_PROXY_PARAM_TYPOS = new Set(["fales", "fals", "fasle", "flase", "flse"]);
-
-export function maybeDecodeBase64(content: string): string {
-  const trimmed = content.trim();
-  if (!trimmed || /[\s{}:[\],]/.test(trimmed.slice(0, 80))) return content;
-  try {
-    const padded = trimmed + "=".repeat((4 - (trimmed.length % 4)) % 4);
-    const decoded = atob(padded.replace(/-/g, "+").replace(/_/g, "/"));
-    const bytes = Uint8Array.from(decoded, (char) => char.charCodeAt(0));
-    const text = new TextDecoder().decode(bytes);
-    return text.includes("\n") || text.includes("://") ? text : content;
-  } catch {
-    return content;
-  }
-}
+export { parseHostEntries, parseSurgeHostLines } from "./host-entries";
+export { maybeDecodeBase64 } from "./subscription-text";
 
 export function parseSubscription(content: string, sourceId: string): ProxyNode[] {
   const decoded = maybeDecodeBase64(content);
@@ -56,54 +22,6 @@ export function parseSubscription(content: string, sourceId: string): ProxyNode[
     ...parseYamlProxies(decoded, sourceId),
     ...parseTextProxies(decoded, sourceId)
   ];
-}
-
-export function parseSurgeHostLines(content: string): string[] {
-  return parseSurgeHostEntries(maybeDecodeBase64(content)).map(renderHostEntryLine);
-}
-
-export function parseHostEntries(content: string): HostEntry[] {
-  const decoded = maybeDecodeBase64(content);
-  return dedupeHostEntries([
-    ...parseSurgeHostEntries(decoded),
-    ...parseClashHostEntries(decoded)
-  ]);
-}
-
-function parseSurgeHostEntries(content: string): HostEntry[] {
-  const lines = content.split(/\r?\n/);
-  const entries: HostEntry[] = [];
-  let inHost = false;
-  for (const raw of lines) {
-    const line = raw.trim();
-    if (/^\[host\]$/i.test(line)) {
-      inHost = true;
-      continue;
-    }
-    if (line.startsWith("[") && line.endsWith("]")) {
-      inHost = false;
-      continue;
-    }
-    if (inHost && line && !line.startsWith("#") && !line.startsWith(";")) {
-      const entry = parseHostLine(line);
-      if (entry) entries.push(entry);
-    }
-  }
-  return entries;
-}
-
-function parseClashHostEntries(content: string): HostEntry[] {
-  if (!/^\s*hosts\s*:/m.test(content)) return [];
-  try {
-    const data = YAML.parse(content) as { hosts?: unknown } | null;
-    if (!data?.hosts || typeof data.hosts !== "object" || Array.isArray(data.hosts)) return [];
-    return Object.entries(data.hosts as Record<string, unknown>).flatMap(([host, value]) => {
-      const normalized = normalizeHostValue(value);
-      return host && normalized !== undefined ? [{ host, value: normalized }] : [];
-    });
-  } catch {
-    return [];
-  }
 }
 
 export function parseManualSurge(content: string): ProxyNode[] {
@@ -320,167 +238,6 @@ export function parseSurgeLine(line: string): ProxyNode | null {
   };
 }
 
-function parseProxyUrl(value: string): ProxyNode | null {
-  if (!URI_PROTOCOLS.some((protocol) => value.startsWith(protocol))) return null;
-  if (value.startsWith("vmess://")) return parseVmess(value);
-  try {
-    const parsed = new URL(value);
-    const name = decodeURIComponent(parsed.hash.replace(/^#/, "")) || `${parsed.protocol.replace(":", "")}-${parsed.hostname}`;
-    const params: ProxyNode["params"] = {};
-    parsed.searchParams.forEach((v, k) => {
-      params[k] = v;
-    });
-    normalizeUriParams(params);
-    const paramsNormalized = normalizeProxyParams(params);
-    const auth = decodeURIComponent(parsed.username || "");
-    const secret = decodeURIComponent(parsed.password || "");
-    const type = parsed.protocol.replace(":", "");
-    const node: ProxyNode = {
-      name,
-      type,
-      server: parsed.hostname,
-      port: toPort(parsed.port) ?? defaultPortFor(type),
-      params,
-      paramsNormalized: paramsNormalized || undefined
-    };
-    if (type === "ss" && secret) {
-      node.cipher = auth;
-      node.password = secret;
-    } else if (type === "ss" && auth.includes(":")) {
-      const [cipher, password] = auth.split(/:(.*)/s);
-      node.cipher = cipher;
-      node.password = password;
-    } else if (type === "vless") {
-      node.uuid = auth;
-    } else if (type === "tuic") {
-      if (auth.includes(":") && !secret) {
-        const [uuid, password] = auth.split(/:(.*)/s);
-        node.uuid = uuid;
-        node.password = password;
-      } else {
-        node.uuid = auth;
-        node.password = secret;
-      }
-    } else if (["trojan", "hysteria2", "hy2", "anytls"].includes(type)) {
-      node.password = auth;
-    } else if (auth) {
-      node.password = auth;
-      node.uuid = auth;
-    }
-    return node.server ? node : null;
-  } catch {
-    return null;
-  }
-}
-
-function normalizeUriParams(params: ProxyNode["params"]): void {
-  const security = asString(params.security).toLowerCase();
-  if (security === "tls" || security === "reality") params.tls = true;
-  if (params.type !== undefined && params.network === undefined) params.network = params.type;
-  if (params.path !== undefined && params["ws-path"] === undefined) params["ws-path"] = params.path;
-  if (params.host !== undefined && params["ws-headers"] === undefined) params["ws-headers"] = `Host:${formatSurgeParamValue(params.host)}`;
-  if (params.serviceName !== undefined && params["grpc-service-name"] === undefined) params["grpc-service-name"] = params.serviceName;
-  if (params.fp !== undefined && params["client-fingerprint"] === undefined) params["client-fingerprint"] = params.fp;
-  const realityOpts = isProxyParamRecord(params["reality-opts"]) ? { ...params["reality-opts"] } : {};
-  if (params.pbk !== undefined && realityOpts["public-key"] === undefined) realityOpts["public-key"] = params.pbk;
-  if (params.sid !== undefined && realityOpts["short-id"] === undefined) realityOpts["short-id"] = params.sid;
-  if (Object.keys(realityOpts).length > 0) params["reality-opts"] = realityOpts;
-  delete params.security;
-  delete params.type;
-  delete params.path;
-  delete params.host;
-  delete params.serviceName;
-  delete params.fp;
-  delete params.pbk;
-  delete params.sid;
-}
-
-function normalizeProxyParams(params: ProxyNode["params"]): boolean {
-  let changed = false;
-  for (const [key, value] of Object.entries(params)) {
-    const normalized = normalizeProxyParamValue(key, value);
-    if (formatSurgeParamValue(value) !== formatSurgeParamValue(normalized)) changed = true;
-    params[key] = normalized;
-  }
-  return changed;
-}
-
-function normalizeProxyParamValue(key: string, value: ProxyParamValue): ProxyParamValue {
-  const normalizedKey = normalizeProxyParamKey(key);
-  if (Array.isArray(value)) return value.map((item) => normalizeProxyParamValue(key, item));
-  if (value && typeof value === "object") {
-    if (isHeaderParamContainer(normalizedKey)) return value;
-    return Object.fromEntries(Object.entries(value).map(([nestedKey, nestedValue]) => [
-      nestedKey,
-      normalizeProxyParamValue(nestedKey, nestedValue)
-    ]));
-  }
-  if (!isBooleanProxyParamKey(normalizedKey)) return value;
-  return normalizeBooleanProxyParamValue(value);
-}
-
-function normalizeBooleanProxyParamValue(value: ProxyParamValue): ProxyParamValue {
-  if (value === true || value === 1) return true;
-  if (value === false || value === 0) return false;
-  if (typeof value !== "string") return value;
-  const normalized = value.trim().toLowerCase();
-  if (TRUE_PROXY_PARAM_VALUES.has(normalized) || TRUE_PROXY_PARAM_TYPOS.has(normalized)) return true;
-  if (FALSE_PROXY_PARAM_VALUES.has(normalized) || FALSE_PROXY_PARAM_TYPOS.has(normalized)) return false;
-  return value;
-}
-
-function isBooleanProxyParamKey(normalizedKey: string): boolean {
-  return BOOLEAN_PROXY_PARAM_KEYS.has(normalizedKey)
-    || normalizedKey.endsWith("-enable")
-    || normalizedKey.endsWith("-enabled")
-    || normalizedKey.startsWith("enable-")
-    || normalizedKey.endsWith("-disable")
-    || normalizedKey.endsWith("-disabled")
-    || normalizedKey.startsWith("disable-");
-}
-
-function isHeaderParamContainer(normalizedKey: string): boolean {
-  return normalizedKey === "header"
-    || normalizedKey === "headers"
-    || normalizedKey.endsWith("-header")
-    || normalizedKey.endsWith("-headers");
-}
-
-function normalizeProxyParamKey(key: string): string {
-  return key.trim().toLowerCase().replace(/_/g, "-");
-}
-
-function parseVmess(value: string): ProxyNode | null {
-  try {
-    const decoded = atob(value.replace(/^vmess:\/\//, ""));
-    const data = JSON.parse(decoded) as Record<string, unknown>;
-    const server = asString(data.add);
-    const port = toPort(data.port);
-    if (!server || port === undefined) return null;
-    return {
-      name: asString(data.ps) || `vmess-${server}`,
-      type: "vmess",
-      server,
-      port,
-      uuid: asString(data.id),
-      cipher: "auto",
-      params: {
-        tls: asString(data.tls) === "tls",
-        network: asString(data.net) || "tcp",
-        "ws-path": asString(data.path),
-        "ws-headers": asString(data.host)
-      }
-    };
-  } catch {
-    return null;
-  }
-}
-
-function defaultPortFor(type: string): number {
-  if (type === "https" || type === "trojan") return 443;
-  return 80;
-}
-
 function normalizeTypeForSurge(type: string): string {
   return type === "hy2" ? "hysteria2" : type;
 }
@@ -645,13 +402,6 @@ function unquoteHeaderValue(value: string): string {
   return trimmed.match(/^"(.*)"$/s)?.[1] ?? trimmed;
 }
 
-function paramEnabled(value: ProxyParamValue | undefined): boolean {
-  if (value === true || value === 1) return true;
-  if (typeof value !== "string") return false;
-  const normalized = value.trim().toLowerCase();
-  return TRUE_PROXY_PARAM_VALUES.has(normalized) || TRUE_PROXY_PARAM_TYPOS.has(normalized);
-}
-
 function buildSurgeParams(node: ProxyNode): [string, string][] {
   const entries: [string, string][] = [];
   const added = new Set<string>();
@@ -814,13 +564,6 @@ function writeFlattenedParams(prefix: string, value: ProxyParamValue, add: (key:
   }
 }
 
-function formatSurgeParamValue(value: ProxyParamValue | undefined): string {
-  if (value === undefined || value === null) return "";
-  if (Array.isArray(value)) return value.map(formatSurgeParamValue).filter(Boolean).join(";");
-  if (typeof value === "object") return Object.entries(value).map(([key, item]) => `${key}:${formatSurgeParamValue(item)}`).join("|");
-  return String(value);
-}
-
 function formatHysteria2SurgePorts(value: ProxyParamValue): ProxyParamValue {
   return typeof value === "string"
     ? value.split(/[,/]/).map((item) => item.trim()).filter(Boolean).join(";")
@@ -832,67 +575,4 @@ function formatHeaderParams(value: ProxyParamValue): string {
   return Object.entries(value)
     .map(([key, item]) => `${key}:${formatSurgeParamValue(item)}`)
     .join("|");
-}
-
-function isProxyParamRecord(value: ProxyParamValue | undefined): value is { [key: string]: ProxyParamValue } {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
-function asString(value: unknown): string {
-  return typeof value === "string" ? value : "";
-}
-
-function isProxyParamValue(value: unknown): value is ProxyParamValue {
-  if (value === null) return true;
-  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return true;
-  if (Array.isArray(value)) return value.every(isProxyParamValue);
-  if (value && typeof value === "object") {
-    return Object.values(value as Record<string, unknown>).every(isProxyParamValue);
-  }
-  return false;
-}
-
-function sanitizeProxyRecord(record: Record<string, unknown>): Record<string, ProxyParamValue> {
-  return Object.fromEntries(
-    Object.entries(record).filter((entry): entry is [string, ProxyParamValue] => isProxyParamValue(entry[1]))
-  );
-}
-
-function parseHostLine(line: string): HostEntry | null {
-  const [host, value] = line.split(/=(.*)/s);
-  const key = host?.trim();
-  const target = value?.trim();
-  return key && target ? { host: key, value: target } : null;
-}
-
-function normalizeHostValue(value: unknown): HostEntryValue | undefined {
-  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return String(value);
-  if (Array.isArray(value)) {
-    const values = value
-      .filter((item): item is string | number | boolean => (
-        typeof item === "string" || typeof item === "number" || typeof item === "boolean"
-      ))
-      .map(String);
-    return values.length > 0 ? values : undefined;
-  }
-  return undefined;
-}
-
-function renderHostEntryLine(entry: HostEntry): string {
-  return `${entry.host} = ${Array.isArray(entry.value) ? entry.value.join(", ") : entry.value}`;
-}
-
-function dedupeHostEntries(entries: HostEntry[]): HostEntry[] {
-  const seen = new Set<string>();
-  return entries.filter((entry) => {
-    const key = `${entry.host}\0${JSON.stringify(entry.value)}`;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-}
-
-function toPort(value: unknown): number | undefined {
-  const parsed = Number(value);
-  return Number.isInteger(parsed) && parsed > 0 && parsed < 65536 ? parsed : undefined;
 }

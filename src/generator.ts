@@ -3,156 +3,23 @@ import { Buffer } from "node:buffer";
 import { parseClashRuleProvidersYaml } from "./clash-rule-providers";
 import { collectClashRuleCoverageWarnings } from "./clash-rules";
 import { loadConfig } from "./config-store";
-import { lookupIpRegion, type RegionInfo } from "./geoip";
-import { parseConfiguredProxyNode, parseHostEntries, parseSubscription, toClashProxy, toSurgeLine } from "./parsers";
+import { parseHostEntries } from "./host-entries";
+import { applyTransforms, buildChainNodes, buildConfiguredProxyNodes, isIPv4, isIPv6, nodeTagsForMatching, parseFeatureTagRules } from "./node-transforms";
+import { parseSubscription, toClashProxy, toSurgeLine } from "./parsers";
+import { buildClashGroups, buildSurgeGroups, type SurgeGroupOutput } from "./policy-groups";
+import { addMissingClashRuleProviderRules, filterClashRules, rewriteUnavailableGroupRuleTargets } from "./rule-targets";
 import { fetchCachedSource, sourceUserAgent } from "./source-cache";
+import { parseStashScriptLine } from "./stash-scripts";
 import { collectSurgeRuleCoverageWarnings } from "./surge-rules";
 import { syncPathForToken } from "./target-files";
-import { CHAIN_EXIT_PROXY_NAME, type AppConfig, type GenerationResult, type HostEntry, type HostEntryValue, type ProxyNode, type Target } from "./types";
+import type { AppConfig, GenerationResult, HostEntry, HostEntryValue, ProxyNode, Target } from "./types";
 
 (globalThis as typeof globalThis & { Buffer?: typeof Buffer }).Buffer ??= Buffer;
 
-const SURGE_PROTOCOLS = new Set(["http", "https", "socks5", "socks5-tls", "ss", "snell", "trojan", "vmess", "hysteria2", "hy2", "tuic", "anytls", "trust-tunnel", "ssh"]);
-const CLASH_PROTOCOLS = new Set([...SURGE_PROTOCOLS, "vless"]);
 const DEFAULT_SURGE_LOGLEVEL = "notify";
-const UNKNOWN_REGION_NAME = "ZZ";
-const CITY_COUNTRY_ALIASES = new Map<string, string>([
-  ["amsterdam", "NL"],
-  ["ashburn", "US"],
-  ["bangkok", "TH"],
-  ["beijing", "CN"],
-  ["chicago", "US"],
-  ["dallas", "US"],
-  ["frankfurt", "DE"],
-  ["guangzhou", "CN"],
-  ["hong-kong", "HK"],
-  ["jakarta", "ID"],
-  ["kuala-lumpur", "MY"],
-  ["london", "GB"],
-  ["los-angeles", "US"],
-  ["madrid", "ES"],
-  ["manila", "PH"],
-  ["melbourne", "AU"],
-  ["miami", "US"],
-  ["new-york", "US"],
-  ["osaka", "JP"],
-  ["paris", "FR"],
-  ["sao-paulo", "BR"],
-  ["seattle", "US"],
-  ["seoul", "KR"],
-  ["shanghai", "CN"],
-  ["shenzhen", "CN"],
-  ["singapore", "SG"],
-  ["sydney", "AU"],
-  ["taipei", "TW"],
-  ["tokyo", "JP"],
-  ["toronto", "CA"],
-  ["vancouver", "CA"],
-  ["washington", "US"],
-  ["hongkong", "HK"],
-  ["losangeles", "US"],
-  ["newyork", "US"],
-  ["saopaulo", "BR"],
-  ["kualalumpur", "MY"],
-  ["东京", "JP"],
-  ["東京", "JP"],
-  ["大阪", "JP"],
-  ["首尔", "KR"],
-  ["首爾", "KR"],
-  ["서울", "KR"],
-  ["香港", "HK"],
-  ["新加坡", "SG"],
-  ["台北", "TW"],
-  ["臺北", "TW"],
-  ["洛杉矶", "US"],
-  ["洛杉磯", "US"]
-]);
-const COUNTRY_CODES = new Set([
-  ...CITY_COUNTRY_ALIASES.values(),
-  "AE",
-  "CN",
-  "GB",
-  "HK",
-  "JP",
-  "KR",
-  "SG",
-  "TW",
-  "US"
-]);
-const COUNTRY_CODE_ALIASES = new Map<string, string>(
-  [...COUNTRY_CODES].map((code): [string, string] => [code.toLowerCase(), code])
-);
-const COUNTRY_NAME_ALIASES = new Map<string, string>([
-  ["jpn", "JP"],
-  ["japan", "JP"],
-  ["日本", "JP"],
-  ["kor", "KR"],
-  ["korea", "KR"],
-  ["south-korea", "KR"],
-  ["韩国", "KR"],
-  ["韓國", "KR"],
-  ["南韩", "KR"],
-  ["南韓", "KR"],
-  ["taiwan", "TW"],
-  ["台湾", "TW"],
-  ["台灣", "TW"],
-  ["hong-kong", "HK"],
-  ["hongkong", "HK"],
-  ["香港", "HK"],
-  ["singapore", "SG"],
-  ["新加坡", "SG"],
-  ["usa", "US"],
-  ["america", "US"],
-  ["united-states", "US"],
-  ["美国", "US"],
-  ["美國", "US"],
-  ["uk", "GB"],
-  ["united-kingdom", "GB"],
-  ["england", "GB"],
-  ["英国", "GB"],
-  ["英國", "GB"],
-  ["china", "CN"],
-  ["中国", "CN"],
-  ["中國", "CN"],
-  ["canada", "CA"],
-  ["加拿大", "CA"],
-  ["australia", "AU"],
-  ["澳大利亚", "AU"],
-  ["澳洲", "AU"],
-  ["germany", "DE"],
-  ["德国", "DE"],
-  ["德國", "DE"],
-  ["france", "FR"],
-  ["法国", "FR"],
-  ["法國", "FR"],
-  ["netherlands", "NL"],
-  ["holland", "NL"],
-  ["荷兰", "NL"],
-  ["荷蘭", "NL"],
-  ["thailand", "TH"],
-  ["泰国", "TH"],
-  ["泰國", "TH"],
-  ["indonesia", "ID"],
-  ["印尼", "ID"],
-  ["malaysia", "MY"],
-  ["马来西亚", "MY"],
-  ["馬來西亞", "MY"],
-  ["philippines", "PH"],
-  ["菲律宾", "PH"],
-  ["菲律賓", "PH"],
-  ["brazil", "BR"],
-  ["巴西", "BR"],
-  ["spain", "ES"],
-  ["西班牙", "ES"]
-]);
 interface FetchedSources {
   nodes: ProxyNode[];
   hostEntries: HostEntry[];
-}
-
-interface SurgeGroupOutput {
-  name: string;
-  line: string;
 }
 
 interface PreparedOutput {
@@ -237,25 +104,6 @@ async function prepareOutput(env: Env, config: AppConfig, target: Target): Promi
   };
 }
 
-function buildConfiguredProxyNodes(config: AppConfig): ProxyNode[] {
-  const featureTagRules = parseFeatureTagRules(config.settings.featureTagRules);
-  return config.proxyNodes
-    .filter((node) => node.enabled)
-    .flatMap((proxyNode) => {
-      const parsedNode = parseConfiguredProxyNode(proxyNode);
-      if (!parsedNode) return [];
-      return [{
-        ...parsedNode,
-        originalName: parsedNode.name,
-        manual: true,
-        chainExit: proxyNode.chainExit,
-        chainFilter: proxyNode.chainFilter,
-        includeInGroups: proxyNode.includeInGroups,
-        ...nodeTagsForMatching(parsedNode.name, parsedNode.matchLabels, featureTagRules)
-      }];
-    });
-}
-
 async function fetchAllSources(env: Env, config: AppConfig, target: Target, warnings: string[]): Promise<FetchedSources> {
   const enabled = config.sources.filter((source) => source.enabled && source.url);
   const featureTagRules = parseFeatureTagRules(config.settings.featureTagRules);
@@ -285,367 +133,6 @@ async function fetchAllSources(env: Env, config: AppConfig, target: Target, warn
   };
 }
 
-function filterNodesForTarget(nodes: ProxyNode[], target: Target): ProxyNode[] {
-  const supported = target === "surge"
-    ? SURGE_PROTOCOLS
-    : CLASH_PROTOCOLS;
-  return nodes.filter((node) => supported.has(node.type.toLowerCase()));
-}
-
-async function applyTransforms(
-  env: Env,
-  nodes: ProxyNode[],
-  config: AppConfig,
-  target: Target,
-  warnings: string[]
-): Promise<ProxyNode[]> {
-  const filtered = nodes.filter((node) => node.manual || !config.settings.excludeKeywords.some((keyword) => node.name.includes(keyword)));
-  const deduped = dedupeByFingerprint(filtered);
-  const supported = filterNodesForTarget(deduped, target);
-  return config.settings.geoipRenameEnabled
-    ? await renameByNodeRegion(env, supported, config.settings.featureTagRules, warnings)
-    : supported.map((node) => ({ ...node, name: prependSourceNameTag(node.name, node.sourceName) }));
-}
-
-async function renameByNodeRegion(env: Env, nodes: ProxyNode[], featureTagRuleLines: string[], warnings: string[]): Promise<ProxyNode[]> {
-  const featureTagRules = parseFeatureTagRules(featureTagRuleLines);
-  const counters = new Map<string, number>();
-  const renamed: ProxyNode[] = [];
-  for (const node of nodes) {
-    if (node.manual || node.name === CHAIN_EXIT_PROXY_NAME) {
-      renamed.push({ ...node });
-      continue;
-    }
-    const region = await inferRegionForNode(env, node, warnings);
-    const code = region.name;
-    const counterKey = `${sourceNameTag(node.sourceName)}\0${code}`;
-    const next = (counters.get(counterKey) ?? 0) + 1;
-    counters.set(counterKey, next);
-    const tags = node.featureTags ?? extractFeatureTags(node.name, featureTagRules);
-    const suffix = tags.length > 0 ? ` ${tags.join(" ")}` : "";
-    renamed.push({
-      ...node,
-      name: prependSourceNameTag(`${code} ${String(next).padStart(2, "0")}${suffix}`, node.sourceName),
-      matchLabels: mergeMatchLabels(node.matchLabels, region.labels)
-    });
-  }
-  return renamed;
-}
-
-function prependSourceNameTag(name: string, sourceName: string | undefined): string {
-  const tag = sourceNameTag(sourceName);
-  return tag ? `${tag} ${name}` : name;
-}
-
-function sourceNameTag(sourceName: string | undefined): string {
-  const trimmed = sourceName?.trim();
-  if (!trimmed) return "";
-  const unwrapped = trimmed.match(/^\[([^\]]+)\]$/)?.[1]?.trim() ?? trimmed;
-  return unwrapped ? `[${unwrapped}]` : "";
-}
-
-async function inferRegionForNode(env: Env, node: ProxyNode, warnings: string[]): Promise<RegionInfo> {
-  const server = normalizeServerAddress(node.server);
-  const nameRegion = inferRegionFromName(node.originalName ?? node.name);
-  if (isKnownRegion(nameRegion)) return nameRegion;
-  if (!isIpAddress(server)) return nameRegion;
-  try {
-    const region = await lookupIpRegion(env, server);
-    if (region) return region;
-  } catch (error) {
-    warnings.push(`${server}: ${error instanceof Error ? error.message : String(error)}`);
-    if (isKnownRegion(nameRegion)) return nameRegion;
-    return unknownRegion();
-  }
-  if (isKnownRegion(nameRegion)) return nameRegion;
-  warnings.push(`${server}: GeoIP lookup returned no region and original node name has no region`);
-  return unknownRegion();
-}
-
-function isKnownRegion(region: RegionInfo): boolean {
-  return region.name !== UNKNOWN_REGION_NAME;
-}
-
-function inferRegionFromName(name: string): RegionInfo {
-  const countryNameCode = findRegionAlias(name, COUNTRY_NAME_ALIASES);
-  if (countryNameCode) return countryRegion(countryNameCode);
-  const cityCountryCode = findRegionAlias(name, CITY_COUNTRY_ALIASES);
-  if (cityCountryCode) return countryRegion(cityCountryCode);
-  const flagCountryCode = extractFlagCountryCode(name);
-  if (flagCountryCode && COUNTRY_CODES.has(flagCountryCode)) return countryRegion(flagCountryCode);
-  const countryCode = findRegionAlias(name, COUNTRY_CODE_ALIASES);
-  if (countryCode) return countryRegion(countryCode);
-  return unknownRegion();
-}
-
-function findRegionAlias(name: string, aliases: Map<string, string>): string {
-  const tokens = latinRegionTokens(name);
-  for (const [alias, code] of aliases) {
-    if (aliasMatchesName(name, tokens, alias)) return code;
-  }
-  return "";
-}
-
-function aliasMatchesName(name: string, tokens: string[], alias: string): boolean {
-  if (/^[a-z0-9-]+$/.test(alias)) return latinAliasMatches(tokens, alias);
-  return name.includes(alias);
-}
-
-function latinAliasMatches(tokens: string[], alias: string): boolean {
-  const parts = alias.split("-").filter(Boolean);
-  if (parts.length === 0) return false;
-  if (parts.length === 1) return tokens.includes(parts[0]!);
-  return tokens.some((_, index) => parts.every((part, offset) => tokens[index + offset] === part))
-    || tokens.includes(parts.join(""));
-}
-
-function latinRegionTokens(value: string): string[] {
-  return value
-    .normalize("NFKD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toLowerCase()
-    .split(/[^a-z0-9]+/)
-    .filter(Boolean)
-    .filter((token, index, tokens) => !isTrafficUnitToken(token, tokens[index - 1]));
-}
-
-function isTrafficUnitToken(token: string, previousToken: string | undefined): boolean {
-  return Boolean(previousToken && /^\d+$/.test(previousToken) && /^(kb|mb|gb|tb|kib|mib|gib|tib)$/.test(token));
-}
-
-function extractFlagCountryCode(value: string): string {
-  for (let index = 0; index < value.length; index += 1) {
-    const first = value.codePointAt(index);
-    if (first === undefined || !isRegionalIndicator(first)) continue;
-    const secondIndex = index + codePointLength(first);
-    const second = value.codePointAt(secondIndex);
-    if (second === undefined || !isRegionalIndicator(second)) continue;
-    return String.fromCharCode(65 + first - 0x1f1e6, 65 + second - 0x1f1e6);
-  }
-  return "";
-}
-
-function isRegionalIndicator(codePoint: number): boolean {
-  return codePoint >= 0x1f1e6 && codePoint <= 0x1f1ff;
-}
-
-function codePointLength(codePoint: number): number {
-  return codePoint > 0xffff ? 2 : 1;
-}
-
-function countryRegion(countryCode: string): RegionInfo {
-  return { name: countryCode, labels: [countryCode] };
-}
-
-function unknownRegion(): RegionInfo {
-  return { name: UNKNOWN_REGION_NAME, labels: [UNKNOWN_REGION_NAME] };
-}
-
-function normalizeServerAddress(server: string): string {
-  const trimmed = server.trim();
-  const bracketed = trimmed.match(/^\[([^\]]+)\]$/);
-  return bracketed?.[1] ?? trimmed;
-}
-
-function asString(value: unknown): string {
-  return typeof value === "string" ? value : "";
-}
-
-async function getJsonCache<T>(env: Env, key: string): Promise<T | null> {
-  const value = await env.SUBPILOT_CONFIG.get(key);
-  if (value === null) return null;
-  try {
-    return JSON.parse(value) as T;
-  } catch {
-    return null;
-  }
-}
-
-async function putJsonCache(env: Env, key: string, value: unknown, ttlSeconds: number): Promise<void> {
-  await env.SUBPILOT_CONFIG.put(key, JSON.stringify(value), { expirationTtl: Math.max(30, ttlSeconds) });
-}
-
-function isIpAddress(value: string): boolean {
-  return isIPv4(value) || isIPv6(value);
-}
-
-function isIPv4(value: string): boolean {
-  const parts = value.split(".");
-  return parts.length === 4 && parts.every((part) => {
-    if (!/^\d{1,3}$/.test(part)) return false;
-    const number = Number(part);
-    return number >= 0 && number <= 255;
-  });
-}
-
-function isIPv6(value: string): boolean {
-  return /^[0-9a-f:]+$/i.test(value) && value.includes(":");
-}
-
-function dedupeByFingerprint(nodes: ProxyNode[]): ProxyNode[] {
-  const selected = new Map<string, ProxyNode>();
-  for (const node of nodes) {
-    const key = nodeFingerprint(node);
-    const existing = selected.get(key);
-    if (!existing) {
-      selected.set(key, node);
-      continue;
-    }
-    const featureTags = mergeFeatureTags(existing.featureTags, node.featureTags);
-    const matchLabels = mergeMatchLabels(existing.matchLabels, node.matchLabels);
-    const mergedBase = {
-      manual: existing.manual || node.manual || undefined,
-      chainExit: existing.chainExit || node.chainExit || undefined,
-      chainFilter: existing.chainFilter?.length ? existing.chainFilter : node.chainFilter,
-      includeInGroups: existing.includeInGroups === true || node.includeInGroups === true
-        ? true
-        : existing.includeInGroups === false || node.includeInGroups === false
-          ? false
-          : undefined
-    };
-    if (node.manual && !existing.manual) {
-      selected.set(key, { ...node, ...mergedBase, featureTags, matchLabels });
-    } else if (!node.manual && existing.manual) {
-      selected.set(key, { ...existing, ...mergedBase, featureTags, matchLabels });
-    } else if (nodeConfigWeight(node) > nodeConfigWeight(existing)) {
-      selected.set(key, { ...node, ...mergedBase, featureTags, matchLabels });
-    } else {
-      selected.set(key, { ...existing, ...mergedBase, featureTags, matchLabels });
-    }
-  }
-  return [...selected.values()];
-}
-
-interface FeatureTagRule {
-  tag: string;
-  keywords: string[];
-}
-
-function parseFeatureTagRules(lines: string[] = []): FeatureTagRule[] {
-  return lines.flatMap((line) => {
-    const [rawTag, rawKeywords] = line.split(/=(.*)/s);
-    const tag = sanitizeFeatureTag(rawTag ?? "");
-    if (!tag) return [];
-    const keywords = (rawKeywords === undefined ? [rawTag ?? ""] : rawKeywords.split(","))
-      .map((item) => item.trim())
-      .filter(Boolean);
-    return keywords.length > 0 ? [{ tag, keywords }] : [];
-  });
-}
-
-function extractFeatureTags(name: string, rules: FeatureTagRule[]): string[] {
-  return rules
-    .filter((rule) => rule.keywords.some((keyword) => featureKeywordMatches(name, keyword)))
-    .map((rule) => rule.tag);
-}
-
-function nodeTagsForMatching(name: string, matchLabels: string[] | undefined, featureTagRules: FeatureTagRule[]): { featureTags: string[]; matchLabels: string[] } {
-  const featureTags = extractFeatureTags(name, featureTagRules);
-  return {
-    featureTags,
-    matchLabels: mergeMatchLabels(matchLabels, [...inferRegionFromName(name).labels, ...featureTags])
-  };
-}
-
-function featureKeywordMatches(name: string, keyword: string): boolean {
-  return new RegExp(`(?:^|[^a-z0-9])${escapeRegExp(keyword)}(?:[^a-z0-9]|$)`, "i").test(name);
-}
-
-function sanitizeFeatureTag(value: string): string {
-  return value
-    .normalize("NFKD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[^a-z0-9]+/gi, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 24);
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function mergeFeatureTags(...sets: Array<string[] | undefined>): string[] {
-  return [...new Set(sets.flatMap((set) => set ?? []))];
-}
-
-function mergeMatchLabels(...sets: Array<string[] | undefined>): string[] {
-  return [...new Set(sets.flatMap((set) => set ?? []).map((item) => item.trim()).filter(Boolean))];
-}
-
-function nodeFingerprint(node: ProxyNode): string {
-  return [
-    canonicalProtocol(node.type),
-    node.server.toLowerCase(),
-    node.port ?? "",
-    node.password ?? "",
-    node.uuid ?? "",
-    node.cipher ?? "",
-    stableParamFingerprint(node.params)
-  ].join("|");
-}
-
-function stableParamFingerprint(value: ProxyNode["params"][string] | ProxyNode["params"]): string {
-  if (Array.isArray(value)) return `[${value.map(stableParamFingerprint).join(",")}]`;
-  if (value && typeof value === "object") {
-    return `{${Object.entries(value)
-      .sort(([left], [right]) => left.localeCompare(right))
-      .map(([key, item]) => `${JSON.stringify(key)}:${stableParamFingerprint(item)}`)
-      .join(",")}}`;
-  }
-  return JSON.stringify(value ?? null);
-}
-
-function canonicalProtocol(type: string): string {
-  return type.toLowerCase() === "hy2" ? "hysteria2" : type.toLowerCase();
-}
-
-function nodeConfigWeight(node: ProxyNode): number {
-  const params = Object.entries(node.params)
-    .filter(([key]) => !["name", "type", "server", "port"].includes(key))
-    .reduce((total, [, value]) => total + paramWeight(value), 0);
-  const password = node.password && node.params.password === undefined ? 1 : 0;
-  const uuid = node.uuid && node.params.uuid === undefined && node.params.username === undefined ? 1 : 0;
-  const cipher = node.cipher && node.params.cipher === undefined && node.params["encrypt-method"] === undefined ? 1 : 0;
-  return params + password + uuid + cipher;
-}
-
-function paramWeight(value: unknown): number {
-  if (value === null || value === undefined || value === "") return 0;
-  if (Array.isArray(value)) return value.reduce((total, item) => total + paramWeight(item), 0);
-  if (typeof value === "object") {
-    return Object.values(value).reduce((total, item) => total + paramWeight(item), 0);
-  }
-  return 1;
-}
-
-function buildChainNodes(nodes: ProxyNode[]): ProxyNode[] {
-  const exits = nodes.filter((node) => node.chainExit && node.chainFilter && node.chainFilter.length > 0);
-  if (exits.length === 0) return [];
-  return exits.flatMap((exit) => {
-    const bases = nodes.filter((node) => !node.chainExit && exit.chainFilter?.some((filter) => nodeMatchesFilter(node, filter)));
-    return bases.map((node) => ({
-      ...exit,
-      name: chainNodeName(node, exit),
-      originalName: chainNodeName(node, exit),
-      manual: false,
-      chainExit: false,
-      includeInGroups: true,
-      surgeDetail: undefined,
-      featureTags: node.featureTags,
-      matchLabels: mergeMatchLabels(node.matchLabels, ["via", exit.name]),
-      params: {
-        ...exit.params,
-        "underlying-proxy": node.name,
-        "dialer-proxy": node.name
-      }
-    }));
-  });
-}
-
-function chainNodeName(node: ProxyNode, exit: ProxyNode): string {
-  return `${node.name} via ${exit.name}`;
-}
-
 function buildSurge(config: AppConfig, nodes: ProxyNode[], sourceHostEntries: HostEntry[], requestUrl: string): string {
   return buildSurgeInline(config, nodes, sourceHostEntries, requestUrl);
 }
@@ -664,129 +151,205 @@ function buildSurgeInline(
   return `#!MANAGED-CONFIG ${managedUrl} interval=${config.surge.managedConfigIntervalSeconds} strict=true\n# Last Updated: ${beijingTimestamp()} (UTC+8)\n${variant}`;
 }
 
-function buildClash(config: AppConfig, nodes: ProxyNode[], sourceHostEntries: HostEntry[]): string {
+interface ClashLikeTunConfig {
+  enable: boolean;
+  stack: string;
+  autoRoute: boolean;
+  autoDetectInterface: boolean;
+  skipProxy: string[];
+}
+
+interface ClashLikeDnsConfig {
+  enable: boolean;
+  listen: string;
+  ipv6: boolean;
+  enhancedMode: string;
+  fakeIpRange: string;
+  defaultNameservers: string[];
+  nameservers: string[];
+  fallbackNameservers: string[];
+  fallbackFilterGeoip: boolean;
+  fallbackFilterIpcidr: string[];
+  fakeIpFilter: string[];
+}
+
+interface ClashLikeBaseConfig {
+  port: number;
+  socksPort: number;
+  mixedPort: number;
+  allowLan: boolean;
+  mode: string;
+  logLevel: string;
+  ipv6: boolean;
+  unifiedDelay: boolean;
+  tcpConcurrent: boolean;
+  externalController: string;
+  tun: ClashLikeTunConfig;
+  dns: ClashLikeDnsConfig;
+}
+
+function buildClashLikeBaseData(config: ClashLikeBaseConfig): Record<string, unknown> {
   const data: Record<string, unknown> = {
-    port: config.clash.port,
-    "socks-port": config.clash.socksPort,
-    "mixed-port": config.clash.mixedPort,
-    "allow-lan": config.clash.allowLan,
-    mode: config.clash.mode,
-    "log-level": config.clash.logLevel,
-    ipv6: config.clash.ipv6,
-    "unified-delay": config.clash.unifiedDelay,
-    "tcp-concurrent": config.clash.tcpConcurrent,
-    "external-controller": config.clash.externalController
+    port: config.port,
+    "socks-port": config.socksPort,
+    "mixed-port": config.mixedPort,
+    "allow-lan": config.allowLan,
+    mode: config.mode,
+    "log-level": config.logLevel,
+    ipv6: config.ipv6,
+    "unified-delay": config.unifiedDelay,
+    "tcp-concurrent": config.tcpConcurrent,
+    "external-controller": config.externalController
   };
-  if (config.clash.tun.enable) {
+  if (config.tun.enable) {
     data.tun = {
       enable: true,
-      stack: config.clash.tun.stack,
-      "auto-route": config.clash.tun.autoRoute,
-      "auto-detect-interface": config.clash.tun.autoDetectInterface,
-      "skip-proxy": config.clash.tun.skipProxy
+      stack: config.tun.stack,
+      "auto-route": config.tun.autoRoute,
+      "auto-detect-interface": config.tun.autoDetectInterface,
+      "skip-proxy": config.tun.skipProxy
     };
   }
-  if (config.clash.dnsEnabled) {
-    const dns: Record<string, unknown> = {
-      enable: true,
-      listen: config.clash.dnsListen,
-      ipv6: config.clash.dnsIpv6,
-      "enhanced-mode": config.clash.dnsEnhancedMode
-    };
-    if (config.clash.dnsEnhancedMode === "fake-ip") {
-      dns["fake-ip-range"] = config.clash.dnsFakeIpRange;
-      dns["fake-ip-filter"] = config.clash.fakeIpFilter;
+  if (config.dns.enable) {
+    data.dns = buildClashLikeDns(config.dns);
+  }
+  return data;
+}
+
+function buildClashLikeDns(config: ClashLikeDnsConfig): Record<string, unknown> {
+  const dns: Record<string, unknown> = {
+    enable: true,
+    listen: config.listen,
+    ipv6: config.ipv6,
+    "enhanced-mode": config.enhancedMode
+  };
+  if (config.enhancedMode === "fake-ip") {
+    dns["fake-ip-range"] = config.fakeIpRange;
+    dns["fake-ip-filter"] = config.fakeIpFilter;
+  }
+  Object.assign(dns, {
+    "default-nameserver": config.defaultNameservers,
+    nameserver: config.nameservers,
+    fallback: config.fallbackNameservers,
+    "fallback-filter": {
+      geoip: config.fallbackFilterGeoip,
+      ipcidr: config.fallbackFilterIpcidr
     }
-    Object.assign(dns, {
-      "default-nameserver": config.clash.defaultNameservers,
-      nameserver: config.clash.nameservers,
-      fallback: config.clash.fallbackNameservers,
-      "fallback-filter": {
-        geoip: config.clash.fallbackFilterGeoip,
-        ipcidr: config.clash.fallbackFilterIpcidr
-      }
-    });
-    data.dns = dns;
-  }
-  const hosts = hostEntriesToClashHosts(sourceHostEntries);
-  if (Object.keys(hosts).length > 0) data.hosts = hosts;
-  const ruleProviders = parseClashRuleProvidersYaml(config.clash.ruleProviders);
-  if (Object.keys(ruleProviders).length > 0) {
-    data["rule-providers"] = ruleProviders;
-  }
-  data.proxies = nodes.map(toClashProxy);
-  const proxyGroups = buildClashGroups(config, nodes);
-  data["proxy-groups"] = proxyGroups;
-  const rules = addMissingClashRuleProviderRules(
-    rewriteUnavailableGroupRuleTargets(config, filterClashRules(config.clash.rules), nodes, new Set(proxyGroups.map((group) => String(group.name)))),
-    Object.keys(ruleProviders)
-  );
-  data.rules = rules;
+  });
+  return dns;
+}
+
+function clashBaseConfig(config: AppConfig["clash"]): ClashLikeBaseConfig {
+  return {
+    port: config.port,
+    socksPort: config.socksPort,
+    mixedPort: config.mixedPort,
+    allowLan: config.allowLan,
+    mode: config.mode,
+    logLevel: config.logLevel,
+    ipv6: config.ipv6,
+    unifiedDelay: config.unifiedDelay,
+    tcpConcurrent: config.tcpConcurrent,
+    externalController: config.externalController,
+    tun: config.tun,
+    dns: {
+      enable: config.dnsEnabled,
+      listen: config.dnsListen,
+      ipv6: config.dnsIpv6,
+      enhancedMode: config.dnsEnhancedMode,
+      fakeIpRange: config.dnsFakeIpRange,
+      defaultNameservers: config.defaultNameservers,
+      nameservers: config.nameservers,
+      fallbackNameservers: config.fallbackNameservers,
+      fallbackFilterGeoip: config.fallbackFilterGeoip,
+      fallbackFilterIpcidr: config.fallbackFilterIpcidr,
+      fakeIpFilter: config.fakeIpFilter
+    }
+  };
+}
+
+function stashBaseConfig(config: AppConfig["stash"]): ClashLikeBaseConfig {
+  return {
+    port: config.port,
+    socksPort: config.socksPort,
+    mixedPort: config.mixedPort,
+    allowLan: config.allowLan,
+    mode: config.mode,
+    logLevel: config.logLevel,
+    ipv6: config.ipv6,
+    unifiedDelay: config.unifiedDelay,
+    tcpConcurrent: config.tcpConcurrent,
+    externalController: config.externalController,
+    tun: config.tun,
+    dns: {
+      enable: config.dns.enable,
+      listen: config.dns.listen,
+      ipv6: config.dns.ipv6,
+      enhancedMode: config.dns.enhancedMode,
+      fakeIpRange: config.dns.fakeIpRange,
+      defaultNameservers: config.dns.defaultNameservers,
+      nameservers: config.dns.nameservers,
+      fallbackNameservers: config.dns.fallbackNameservers,
+      fallbackFilterGeoip: config.dns.fallbackFilterGeoip,
+      fallbackFilterIpcidr: config.dns.fallbackFilterIpcidr,
+      fakeIpFilter: config.dns.fakeIpFilter
+    }
+  };
+}
+
+function buildClash(config: AppConfig, nodes: ProxyNode[], sourceHostEntries: HostEntry[]): string {
+  const data = buildClashLikeConfigData(config, nodes, {
+    baseConfig: clashBaseConfig(config.clash),
+    hosts: hostEntriesToClashHosts(sourceHostEntries),
+    ruleProvidersYaml: config.clash.ruleProviders,
+    rules: config.clash.rules
+  });
   return `# Last Updated: ${beijingTimestamp()} (UTC+8)\n${YAML.stringify(data)}`;
 }
 
 function buildStash(config: AppConfig, nodes: ProxyNode[], sourceHostEntries: HostEntry[], requestUrl: string, warnings: string[]): string {
-  const data: Record<string, unknown> = {
-    port: config.stash.port,
-    "socks-port": config.stash.socksPort,
-    "mixed-port": config.stash.mixedPort,
-    "allow-lan": config.stash.allowLan,
-    mode: config.stash.mode,
-    "log-level": config.stash.logLevel,
-    ipv6: config.stash.ipv6,
-    "unified-delay": config.stash.unifiedDelay,
-    "tcp-concurrent": config.stash.tcpConcurrent,
-    "external-controller": config.stash.externalController
-  };
-  if (config.stash.tun.enable) {
-    data.tun = {
-      enable: true,
-      stack: config.stash.tun.stack,
-      "auto-route": config.stash.tun.autoRoute,
-      "auto-detect-interface": config.stash.tun.autoDetectInterface,
-      "skip-proxy": config.stash.tun.skipProxy
-    };
-  }
-  if (config.stash.dns.enable) {
-    const dns: Record<string, unknown> = {
-      enable: true,
-      listen: config.stash.dns.listen,
-      ipv6: config.stash.dns.ipv6,
-      "enhanced-mode": config.stash.dns.enhancedMode
-    };
-    if (config.stash.dns.enhancedMode === "fake-ip") {
-      dns["fake-ip-range"] = config.stash.dns.fakeIpRange;
-      dns["fake-ip-filter"] = config.stash.dns.fakeIpFilter;
-    }
-    Object.assign(dns, {
-      "default-nameserver": config.stash.dns.defaultNameservers,
-      nameserver: config.stash.dns.nameservers,
-      fallback: config.stash.dns.fallbackNameservers,
-      "fallback-filter": {
-        geoip: config.stash.dns.fallbackFilterGeoip,
-        ipcidr: config.stash.dns.fallbackFilterIpcidr
-      }
-    });
-    data.dns = dns;
-  }
-  const hosts = hostEntriesToStashHosts(config.stash.hosts, sourceHostEntries);
-  if (Object.keys(hosts).length > 0) data.hosts = hosts;
   const http = buildStashHttp(config, warnings);
-  if (Object.keys(http.http).length > 0) data.http = http.http;
-  if (Object.keys(http.scriptProviders).length > 0) data["script-providers"] = http.scriptProviders;
-  const ruleProviders = parseClashRuleProvidersYaml(config.stash.ruleProviders);
+  const data = buildClashLikeConfigData(config, nodes, {
+    baseConfig: stashBaseConfig(config.stash),
+    hosts: hostEntriesToStashHosts(config.stash.hosts, sourceHostEntries),
+    ruleProvidersYaml: config.stash.ruleProviders,
+    rules: config.stash.rules,
+    extraSections: {
+      ...(Object.keys(http.http).length > 0 ? { http: http.http } : {}),
+      ...(Object.keys(http.scriptProviders).length > 0 ? { "script-providers": http.scriptProviders } : {})
+    }
+  });
+  return `#SUBSCRIBED ${buildManagedUrl(config, requestUrl)}\n# Last Updated: ${beijingTimestamp()} (UTC+8)\n${YAML.stringify(data)}`;
+}
+
+interface ClashLikeConfigDataOptions {
+  baseConfig: ClashLikeBaseConfig;
+  hosts: Record<string, HostEntryValue>;
+  ruleProvidersYaml: string;
+  rules: string[];
+  extraSections?: Record<string, unknown>;
+}
+
+function buildClashLikeConfigData(
+  config: AppConfig,
+  nodes: ProxyNode[],
+  options: ClashLikeConfigDataOptions
+): Record<string, unknown> {
+  const data = buildClashLikeBaseData(options.baseConfig);
+  if (Object.keys(options.hosts).length > 0) data.hosts = options.hosts;
+  Object.assign(data, options.extraSections ?? {});
+  const ruleProviders = parseClashRuleProvidersYaml(options.ruleProvidersYaml);
   if (Object.keys(ruleProviders).length > 0) {
     data["rule-providers"] = ruleProviders;
   }
   data.proxies = nodes.map(toClashProxy);
   const proxyGroups = buildClashGroups(config, nodes);
   data["proxy-groups"] = proxyGroups;
-  const rules = addMissingClashRuleProviderRules(
-    rewriteUnavailableGroupRuleTargets(config, filterClashRules(config.stash.rules), nodes, new Set(proxyGroups.map((group) => String(group.name)))),
+  data.rules = addMissingClashRuleProviderRules(
+    rewriteUnavailableGroupRuleTargets(config, filterClashRules(options.rules), nodes, new Set(proxyGroups.map((group) => String(group.name)))),
     Object.keys(ruleProviders)
   );
-  data.rules = rules;
-  return `#SUBSCRIBED ${buildManagedUrl(config, requestUrl)}\n# Last Updated: ${beijingTimestamp()} (UTC+8)\n${YAML.stringify(data)}`;
+  return data;
 }
 
 function hostEntriesToClashHosts(entries: HostEntry[]): Record<string, HostEntryValue> {
@@ -848,77 +411,6 @@ function buildStashHttp(config: AppConfig, warnings: string[]): StashHttpOutput 
   return { http, scriptProviders };
 }
 
-interface ParsedStashScript {
-  name: string;
-  type: "request" | "response";
-  match: string;
-  requireBody: boolean;
-  maxSize: number;
-  url: string;
-}
-
-function parseStashScriptLine(line: string, lineNumber: number, warnings: string[]): ParsedStashScript | null {
-  const trimmed = line.trim();
-  if (!trimmed || trimmed.startsWith("#") || trimmed.startsWith(";")) return null;
-  const separatorIndex = trimmed.indexOf("=");
-  const name = separatorIndex > 0 ? trimmed.slice(0, separatorIndex).trim() : "";
-  const params = separatorIndex > 0 ? parseStashScriptParams(trimmed.slice(separatorIndex + 1)) : {};
-  const typeValue = params.type?.toLowerCase() ?? "";
-  const type = typeValue === "http-request"
-    ? "request"
-    : typeValue === "http-response"
-      ? "response"
-      : null;
-  const match = params.pattern ?? "";
-  const url = params["script-path"] ?? "";
-  const maxSize = Number(params["max-size"] ?? "0");
-  if (!name || !type || !match || !isHttpUrl(url) || !Number.isFinite(maxSize) || maxSize < 0) {
-    warnings.push(`Stash script line ${lineNumber}: skipped invalid script definition`);
-    return null;
-  }
-  return {
-    name,
-    type,
-    match,
-    requireBody: parseStashBoolean(params["requires-body"]),
-    maxSize: Math.floor(maxSize),
-    url
-  };
-}
-
-function parseStashScriptParams(value: string): Record<string, string> {
-  const params: Record<string, string> = {};
-  const parts: string[] = [];
-  for (const rawPart of value.split(",")) {
-    const part = rawPart.trim();
-    if (!part) continue;
-    if (parts.length > 0 && !/^[A-Za-z][\w-]*=/.test(part)) {
-      parts[parts.length - 1] = `${parts[parts.length - 1]},${rawPart}`;
-      continue;
-    }
-    parts.push(part);
-  }
-  for (const part of parts) {
-    const [key, raw] = part.split(/=(.*)/s);
-    const normalizedKey = key?.trim().toLowerCase();
-    const valuePart = raw?.trim();
-    if (normalizedKey && valuePart !== undefined) params[normalizedKey] = valuePart;
-  }
-  return params;
-}
-
-function parseStashBoolean(value: string | undefined): boolean {
-  return ["1", "true", "yes"].includes(String(value ?? "").trim().toLowerCase());
-}
-
-function isHttpUrl(value: string): boolean {
-  try {
-    const url = new URL(value);
-    return url.protocol === "http:" || url.protocol === "https:";
-  } catch {
-    return false;
-  }
-}
 
 function renderHostEntryLine(entry: HostEntry): string {
   return `${entry.host} = ${Array.isArray(entry.value) ? entry.value.join(", ") : entry.value}`;
@@ -983,174 +475,6 @@ function readTokenFromPath(pathname: string, managedBasePath: string): string {
     ? pathname
     : pathname.startsWith(`${basePath}/`) ? pathname.slice(basePath.length) : "";
   return remainder.split("/").filter(Boolean)[0] ?? "";
-}
-
-function isSurgeTarget(target: Target): boolean {
-  return target === "surge";
-}
-
-function buildSurgeGroups(config: AppConfig, nodes: ProxyNode[]): SurgeGroupOutput[] {
-  const disabledGroups = new Set(config.disabledGroups);
-  return activeGroupEntries(config, "surge").flatMap(([name, spec]) => {
-    const [type, ...items] = splitGroupSpec(spec);
-    const groupType = type || "select";
-    const resolved = groupType === "subnet"
-      ? resolveSubnetGroupItems(items, name, disabledGroups, nodes)
-      : resolveGroupItems(items, nodes).filter((item) => isAllowedGroupItem(item) && !disabledGroups.has(item));
-    const outputItems = groupType === "url-test" ? resolved.filter((item) => !item.includes("=")) : resolved;
-    if (!shouldEmitPolicyGroup(name, groupType, outputItems)) return [];
-    return [{ name, line: `${name} = ${[mapSurgeGroupType(groupType), ...outputItems].join(", ")}` }];
-  });
-}
-
-function buildClashGroups(config: AppConfig, nodes: ProxyNode[]): Record<string, unknown>[] {
-  const disabledGroups = new Set(config.disabledGroups);
-  return activeGroupEntries(config, "clash").flatMap(([name, spec]) => {
-    const [type, ...items] = splitGroupSpec(spec);
-    const groupType = type || "select";
-    const proxies = resolveGroupItems(items, nodes).filter((item) => !item.includes("=") && isAllowedGroupItem(item) && !disabledGroups.has(item));
-    if (!shouldEmitPolicyGroup(name, groupType, proxies)) return [];
-    const options = Object.fromEntries(items.filter((item) => item.includes("=")).map((item) => item.split(/=(.*)/s) as [string, string]));
-    return [{
-      name,
-      type: mapClashGroupType(groupType),
-      proxies,
-      ...options
-    }];
-  });
-}
-
-function shouldEmitPolicyGroup(name: string, type: string, resolvedItems: string[]): boolean {
-  return name === "Proxy" || type === "subnet" || resolvedItems.length > 0;
-}
-
-function activeGroupEntries(config: AppConfig, target: "surge" | "clash"): [string, string][] {
-  const disabledGroups = new Set(config.disabledGroups);
-  return Object.entries(config.groups).filter(([name, spec]) => {
-    if (disabledGroups.has(name)) return false;
-    return target === "surge" || !isSurgeOnlyGroupSpec(spec);
-  });
-}
-
-function splitGroupSpec(spec: string): string[] {
-  const parts: string[] = [];
-  let current = "";
-  let braceDepth = 0;
-  for (const char of spec) {
-    if (char === "{") braceDepth += 1;
-    if (char === "}") braceDepth = Math.max(0, braceDepth - 1);
-    if (char === "," && braceDepth === 0) {
-      if (current.trim()) parts.push(current.trim());
-      current = "";
-      continue;
-    }
-    current += char;
-  }
-  if (current.trim()) parts.push(current.trim());
-  return parts;
-}
-
-function resolveGroupItems(items: string[], nodes: ProxyNode[]): string[] {
-  const output: string[] = [];
-  const excludedChainExitNames = new Set(nodes.filter((node) => isChainExitExcludedFromGroups(node)).map((node) => node.name));
-  const includableNodeNames = new Set(nodes.filter(nodeCanEnterGroups).map((node) => node.name));
-  for (const item of items) {
-    const match = matchExternalPolicyPlaceholder(item);
-    if (!match) {
-      if (excludedChainExitNames.has(item)) continue;
-      if (item === CHAIN_EXIT_PROXY_NAME && !includableNodeNames.has(item)) continue;
-      output.push(item);
-      continue;
-    }
-    const filters = match[1]?.split(",").map((part) => part.trim()).filter(Boolean) ?? [];
-    const excludes = match[2]?.split(",").map((part) => part.trim()).filter(Boolean) ?? [];
-    output.push(...nodes
-      .filter(nodeCanEnterGroups)
-      .filter((node) => filters.length === 0 || filters.some((filter) => nodeMatchesFilter(node, filter)))
-      .filter((node) => excludes.every((exclude) => !nodeMatchesFilter(node, exclude)))
-      .map((node) => node.name));
-  }
-  return [...new Set(output)];
-}
-
-function nodeCanEnterGroups(node: ProxyNode): boolean {
-  return !node.chainExit || node.includeInGroups === true;
-}
-
-function isChainExitExcludedFromGroups(node: ProxyNode): boolean {
-  return node.chainExit === true && node.includeInGroups !== true;
-}
-
-function matchExternalPolicyPlaceholder(item: string): RegExpMatchArray | null {
-  return item.match(/^\{all(?:\s+filter=([^}]*?)(?=\s+exclude=|}))?(?:\s+exclude=([^}]+))?\}$/);
-}
-
-function resolveSubnetGroupItems(items: string[], groupName: string, disabledGroups: Set<string>, nodes: ProxyNode[]): string[] {
-  const output: string[] = [];
-  let hasDefault = false;
-  const excludedChainExitNames = new Set(nodes.filter((node) => isChainExitExcludedFromGroups(node)).map((node) => node.name));
-  const includableNodeNames = new Set(nodes.filter(nodeCanEnterGroups).map((node) => node.name));
-  for (const item of items) {
-    const option = parseGroupOption(item);
-    if (!option) continue;
-    if (!isSubnetGroupOption(option.key)) continue;
-    if (!isAllowedSubnetPolicy(option.value, groupName, disabledGroups, excludedChainExitNames, includableNodeNames)) continue;
-    const isDefault = option.key.toLowerCase() === "default";
-    if (isDefault) {
-      if (hasDefault) continue;
-      hasDefault = true;
-    }
-    const line = `${option.key}=${option.value}`;
-    output.push(line);
-  }
-  if (!hasDefault) {
-    output.unshift("default=Proxy");
-  }
-  return output;
-}
-
-function parseGroupOption(item: string): { key: string; value: string } | null {
-  const match = item.match(/^([^=,{}]+)=(.*)$/s);
-  if (!match) return null;
-  const key = (match[1] ?? "").trim();
-  const value = (match[2] ?? "").trim();
-  if (!key || !value) return null;
-  return { key, value };
-}
-
-function isSubnetGroupOption(key: string): boolean {
-  return key.toLowerCase() === "default" || /^(SSID|BSSID|ROUTER):.+$/i.test(key) || /^TYPE:(WIFI|WIRED|CELLULAR)$/i.test(key);
-}
-
-function isAllowedSubnetPolicy(
-  policy: string,
-  groupName: string,
-  disabledGroups: Set<string>,
-  excludedChainExitNames: Set<string>,
-  includableNodeNames: Set<string>
-): boolean {
-  return policy !== groupName
-    && !excludedChainExitNames.has(policy)
-    && (policy !== CHAIN_EXIT_PROXY_NAME || includableNodeNames.has(policy))
-    && !disabledGroups.has(policy);
-}
-
-function nodeMatchesFilter(node: ProxyNode, filter: string): boolean {
-  const normalizedFilter = filter.toLowerCase();
-  return [node.name, ...(node.matchLabels ?? [])].some((value) => value.toLowerCase().includes(normalizedFilter));
-}
-
-function isAllowedGroupItem(item: string): boolean {
-  return item !== "Proxy";
-}
-
-function mapSurgeGroupType(type: string): string {
-  if (type === "url-test") return "smart";
-  return type;
-}
-
-function mapClashGroupType(type: string): string {
-  return type;
 }
 
 function renderSurgeInlineProfile(
@@ -1234,79 +558,6 @@ function appendSurgeRuleSection(sections: string[], config: AppConfig, nodes: Pr
 
 function renderSection(name: string, lines: string[]): string {
   return [`[${name}]`, ...lines].join("\n");
-}
-
-const BUILT_IN_RULE_POLICIES = new Set([
-  "DIRECT",
-  "REJECT",
-  "REJECT-DROP",
-  "REJECT-NO-DROP",
-  "REJECT-TINYGIF"
-]);
-
-function rewriteUnavailableGroupRuleTargets(config: AppConfig, rules: string[], nodes: ProxyNode[], groupNames: Set<string>): string[] {
-  const disabledGroups = new Set(config.disabledGroups);
-  const proxyNames = new Set(nodes.map((node) => node.name));
-  return rules.map((rule) => {
-    const parts = rule.split(",");
-    const targetIndex = ruleTargetIndex(parts);
-    if (targetIndex === null) return rule;
-    const target = parts[targetIndex]?.trim() ?? "";
-    if (!target || isAvailableRuleTarget(target, groupNames, disabledGroups, proxyNames)) return rule;
-    parts[targetIndex] = "Proxy";
-    return parts.join(",");
-  });
-}
-
-function filterClashRules(rules: string[]): string[] {
-  return rules.filter((rule) => !usesSurgeSubnetRule(rule));
-}
-
-function addMissingClashRuleProviderRules(rules: string[], providerNames: string[]): string[] {
-  if (providerNames.length === 0) return rules;
-  const usedProviders = new Set(rules.flatMap((rule) => {
-    const parts = rule.split(",");
-    return parts[0]?.trim().toUpperCase() === "RULE-SET" && parts[1]?.trim()
-      ? [parts[1].trim()]
-      : [];
-  }));
-  const missingRules = providerNames
-    .filter((name) => !usedProviders.has(name))
-    .map((name) => `RULE-SET,${name},Proxy`);
-  if (missingRules.length === 0) return rules;
-  const matchIndex = rules.findIndex((rule) => {
-    const type = rule.split(",")[0]?.trim().toUpperCase();
-    return type === "MATCH" || type === "FINAL";
-  });
-  if (matchIndex < 0) return [...rules, ...missingRules];
-  return [
-    ...rules.slice(0, matchIndex),
-    ...missingRules,
-    ...rules.slice(matchIndex)
-  ];
-}
-
-function isSurgeOnlyGroupSpec(spec: string): boolean {
-  const [type = "select"] = splitGroupSpec(spec);
-  return type === "subnet";
-}
-
-function usesSurgeSubnetRule(rule: string): boolean {
-  return /(?:^|[,(])\s*SUBNET(?:\s*[:,)]|,)/i.test(rule);
-}
-
-function ruleTargetIndex(parts: string[]): number | null {
-  const type = parts[0]?.trim().toUpperCase();
-  if (!type || type.startsWith("#")) return null;
-  if (type === "AND" || type === "OR" || type === "NOT") return null;
-  if ((type === "FINAL" || type === "MATCH") && parts.length >= 2) return 1;
-  if (parts.length >= 3) return 2;
-  return null;
-}
-
-function isAvailableRuleTarget(target: string, activeGroups: Set<string>, disabledGroups: Set<string>, proxyNames: Set<string>): boolean {
-  if (disabledGroups.has(target)) return false;
-  return activeGroups.has(target) || proxyNames.has(target) || BUILT_IN_RULE_POLICIES.has(target.toUpperCase());
 }
 
 function beijingTimestamp(): string {

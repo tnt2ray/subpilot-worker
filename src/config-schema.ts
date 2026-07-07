@@ -1,10 +1,20 @@
 import { DEFAULT_CONFIG } from "./default-config";
+import { listKvKeys, readKvJson } from "./kv-helpers";
+import {
+  SOURCE_CACHE_META_INDEX_KEY,
+  SOURCE_CACHE_META_PREFIX,
+  SOURCE_CACHE_PREFIX,
+  sourceCacheContentStats,
+  type SourceCacheEntry
+} from "./source-cache";
 import { CHAIN_EXIT_PROTOCOLS, CHAIN_EXIT_PROXY_NAME, type ChainExitProtocol, type StaticProxyNodeConfig } from "./types";
 import { DEFAULT_DISPLAY_TIME_ZONE } from "./util";
 
-export const CURRENT_KV_SCHEMA_VERSION = 9;
+export const CURRENT_KV_SCHEMA_VERSION = 10;
 export const CONFIG_SCHEMA_VERSION_KEY = "config:schemaVersion";
 const LEGACY_DEFAULT_CHAIN_FILTER = ["JP", "KR", "TW"];
+
+type SourceCacheMigrationEntry = Omit<SourceCacheEntry, "contentAvailable" | "nodeCount" | "protocolCounts">;
 
 type MigrationStep = {
   from: number;
@@ -40,13 +50,13 @@ const MIGRATIONS: MigrationStep[] = [
     to: 4,
     run: async (env) => {
       const oldExitProxyKey = "config:chain:exitProxy";
-      const oldExitProxy = await readJson<Record<string, unknown>>(env, oldExitProxyKey);
+      const oldExitProxy = await readKvJson<Record<string, unknown>>(env, oldExitProxyKey);
       const legacyChainFilter = await readLegacyChainFilter(env);
       const migratedNode = normalizeLegacyExitProxy(oldExitProxy, legacyChainFilter);
       if (migratedNode) {
         const indexKey = "config:proxyNodes:index";
         const nodeKey = `config:proxyNodes:${encodeURIComponent(migratedNode.id)}`;
-        const previousIndexValue = await readJson<unknown>(env, indexKey);
+        const previousIndexValue = await readKvJson<unknown>(env, indexKey);
         const previousIndex = Array.isArray(previousIndexValue)
           ? previousIndexValue.map((item) => typeof item === "string" ? item : "").filter(Boolean)
           : [];
@@ -66,13 +76,13 @@ const MIGRATIONS: MigrationStep[] = [
     to: 5,
     run: async (env) => {
       const indexKey = "config:proxyNodes:index";
-      const indexValue = await readJson<unknown>(env, indexKey);
+      const indexValue = await readKvJson<unknown>(env, indexKey);
       const ids = Array.isArray(indexValue)
         ? indexValue.map((item) => typeof item === "string" ? item : "").filter(Boolean)
         : [];
       await Promise.all(ids.map(async (id, index) => {
         const nodeKey = `config:proxyNodes:${encodeURIComponent(id)}`;
-        const node = await readJson<Record<string, unknown>>(env, nodeKey);
+        const node = await readKvJson<Record<string, unknown>>(env, nodeKey);
         const migrated = migrateProxyNodeConfig(node, index);
         if (migrated) {
           await env.SUBPILOT_CONFIG.put(nodeKey, JSON.stringify(migrated));
@@ -86,13 +96,13 @@ const MIGRATIONS: MigrationStep[] = [
     run: async (env) => {
       const legacyChainFilter = await readLegacyChainFilter(env);
       const indexKey = "config:proxyNodes:index";
-      const indexValue = await readJson<unknown>(env, indexKey);
+      const indexValue = await readKvJson<unknown>(env, indexKey);
       const ids = Array.isArray(indexValue)
         ? indexValue.map((item) => typeof item === "string" ? item : "").filter(Boolean)
         : [];
       await Promise.all(ids.map(async (id) => {
         const nodeKey = `config:proxyNodes:${encodeURIComponent(id)}`;
-        const node = await readJson<Record<string, unknown>>(env, nodeKey);
+        const node = await readKvJson<Record<string, unknown>>(env, nodeKey);
         const migrated = migrateProxyNodeChainFilter(node, legacyChainFilter);
         if (migrated) {
           await env.SUBPILOT_CONFIG.put(nodeKey, JSON.stringify(migrated));
@@ -122,6 +132,13 @@ const MIGRATIONS: MigrationStep[] = [
       await migrateGroupSpecs(env, migrateChainSelectorSpec);
       await migrateLegacyChainExitExcludes(env);
       await migrateProxyNodeGroupInclusion(env);
+    }
+  },
+  {
+    from: 9,
+    to: 10,
+    run: async (env) => {
+      await migrateSourceCacheMetadataStats(env);
     }
   }
 ];
@@ -191,18 +208,8 @@ function writeStoredSchemaVersion(env: Env, version: number): Promise<void> {
   return env.SUBPILOT_CONFIG.put(CONFIG_SCHEMA_VERSION_KEY, String(version));
 }
 
-async function readJson<T>(env: Env, key: string): Promise<T | null> {
-  const value = await env.SUBPILOT_CONFIG.get(key);
-  if (value === null) return null;
-  try {
-    return JSON.parse(value) as T;
-  } catch {
-    return null;
-  }
-}
-
 async function readLegacyChainFilter(env: Env): Promise<string[]> {
-  const value = await readJson<unknown>(env, "config:chain:filter");
+  const value = await readKvJson<unknown>(env, "config:chain:filter");
   return legacyFilterArray(value, LEGACY_DEFAULT_CHAIN_FILTER);
 }
 
@@ -316,13 +323,13 @@ async function migrateLegacyChainExitExcludes(env: Env): Promise<void> {
 
 async function migrateProxyNodeGroupInclusion(env: Env): Promise<void> {
   const indexKey = "config:proxyNodes:index";
-  const indexValue = await readJson<unknown>(env, indexKey);
+  const indexValue = await readKvJson<unknown>(env, indexKey);
   const ids = Array.isArray(indexValue)
     ? indexValue.map((item) => typeof item === "string" ? item : "").filter(Boolean)
     : [];
   await Promise.all(ids.map(async (id) => {
     const nodeKey = `config:proxyNodes:${encodeURIComponent(id)}`;
-    const node = await readJson<Record<string, unknown>>(env, nodeKey);
+    const node = await readKvJson<Record<string, unknown>>(env, nodeKey);
     const migrated = migrateProxyNodeGroupInclusionRecord(node);
     if (migrated) {
       await env.SUBPILOT_CONFIG.put(nodeKey, JSON.stringify(migrated));
@@ -331,7 +338,7 @@ async function migrateProxyNodeGroupInclusion(env: Env): Promise<void> {
 }
 
 async function migrateGroupSpecs(env: Env, transform: (spec: string) => string): Promise<void> {
-  const indexValue = await readJson<unknown>(env, "config:groups:index");
+  const indexValue = await readKvJson<unknown>(env, "config:groups:index");
   const names = Array.isArray(indexValue)
     ? indexValue.map((item) => typeof item === "string" ? item : "").filter(Boolean)
     : [];
@@ -394,6 +401,60 @@ function migrateProxyNodeGroupInclusionRecord(value: Record<string, unknown> | n
     chainExit,
     includeInGroups: chainExit ? value.includeInGroups === true : true
   };
+}
+
+async function migrateSourceCacheMetadataStats(env: Env): Promise<void> {
+  const metaKeys = (await listKvKeys(env, SOURCE_CACHE_META_PREFIX)).filter((key) => key !== SOURCE_CACHE_META_INDEX_KEY);
+  const migratedByCacheKey = new Map<string, SourceCacheEntry>();
+
+  await Promise.all(metaKeys.map(async (metaKey) => {
+    const entry = normalizeSourceCacheMigrationEntry(await readKvJson<unknown>(env, metaKey))[0];
+    if (!entry) return;
+    const migrated = await addSourceCacheStats(env, entry);
+    migratedByCacheKey.set(migrated.key, migrated);
+    await env.SUBPILOT_CONFIG.put(metaKey, JSON.stringify(migrated));
+  }));
+
+  const indexed = await readKvJson<unknown>(env, SOURCE_CACHE_META_INDEX_KEY);
+  if (!Array.isArray(indexed)) return;
+  const migratedIndex = await Promise.all(indexed.flatMap(normalizeSourceCacheMigrationEntry).map(async (entry) => {
+    const cached = migratedByCacheKey.get(entry.key);
+    return cached ?? addSourceCacheStats(env, entry);
+  }));
+  await env.SUBPILOT_CONFIG.put(SOURCE_CACHE_META_INDEX_KEY, JSON.stringify(dedupeSourceCacheMigrationEntries(migratedIndex)));
+}
+
+async function addSourceCacheStats(env: Env, entry: SourceCacheMigrationEntry): Promise<SourceCacheEntry> {
+  const content = await env.SUBPILOT_CONFIG.get(entry.key);
+  return {
+    ...entry,
+    contentAvailable: content !== null,
+    ...(content ? sourceCacheContentStats(content, entry.sourceId) : { nodeCount: 0, protocolCounts: [] })
+  };
+}
+
+function normalizeSourceCacheMigrationEntry(value: unknown): SourceCacheMigrationEntry[] {
+  if (!value || typeof value !== "object") return [];
+  const entry = value as Partial<SourceCacheMigrationEntry>;
+  if (typeof entry.key !== "string" || !entry.key.startsWith(SOURCE_CACHE_PREFIX)) return [];
+  if (typeof entry.fetchedAt !== "string" || Number.isNaN(new Date(entry.fetchedAt).getTime())) return [];
+  return [{
+    key: entry.key,
+    fetchedAt: entry.fetchedAt,
+    sourceId: typeof entry.sourceId === "string" ? entry.sourceId : "",
+    sourceName: typeof entry.sourceName === "string" ? entry.sourceName : ""
+  }];
+}
+
+function dedupeSourceCacheMigrationEntries(entries: SourceCacheEntry[]): SourceCacheEntry[] {
+  const selected = new Map<string, SourceCacheEntry>();
+  for (const entry of entries) {
+    const existing = selected.get(entry.key);
+    if (!existing || entry.fetchedAt > existing.fetchedAt) {
+      selected.set(entry.key, entry);
+    }
+  }
+  return [...selected.values()];
 }
 
 function pendingSchemaVersions(stored: number): number[] {

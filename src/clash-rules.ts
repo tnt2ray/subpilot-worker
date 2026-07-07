@@ -1,6 +1,16 @@
 import YAML from "yaml";
 import { parseClashRuleProvidersYaml } from "./clash-rule-providers";
+import { splitRuleLine } from "./rule-line";
+import {
+  collectCoverageWarnings,
+  CoverageWarningCollection,
+  dedupeCoverageReferences,
+  flattenResolvedCoverageEntries,
+  type CoverageEntry,
+  type CoverageRule
+} from "./rule-coverage-core";
 import type { AppConfig, Target } from "./types";
+import { mapWithConcurrency, readResponseTextWithLimit } from "./util";
 
 const MAX_PROVIDER_CONTENT_BYTES = 2 * 1024 * 1024;
 const MAX_EXTERNAL_PROVIDER_FETCHES = 80;
@@ -58,20 +68,6 @@ interface RuleSetReference {
   label: string;
 }
 
-interface CoverageRule {
-  kind: "rule";
-  type: string;
-  value: string;
-  policy: string;
-  label: string;
-}
-
-interface IpRange {
-  family: 4 | 6;
-  start: bigint;
-  end: bigint;
-}
-
 export async function collectClashRuleCoverageWarnings(
   config: Pick<AppConfig, "settings" | "clash" | "stash">,
   target: ClashDiagnosticsTarget,
@@ -84,33 +80,14 @@ export async function collectClashRuleCoverageWarnings(
   const maxWarnings = Math.max(1, options.maxWarnings ?? DEFAULT_MAX_COVERAGE_WARNINGS);
   const collection = new CoverageWarningCollection(maxWarnings, diagnosticsName(target));
   const entries = await flattenRulesForCoverage(ruleLines, providers, config, target, options, collection);
-  const previousRules: CoverageRule[] = [];
-
-  for (const entry of entries) {
-    const cover = previousRules.find((previous) => ruleCoversRule(previous, entry));
-    if (cover) collection.push(formatCoverageWarning(diagnosticsName(target), entry, cover));
-    previousRules.push(entry);
-  }
+  collectCoverageWarnings(entries, collection, {
+    targetName: diagnosticsName(target),
+    valuelessRuleTypes: VALUELESS_RULE_TYPES,
+    exactMatchRuleTypes: EXACT_MATCH_RULE_TYPES,
+    normalizeDomainValue
+  });
 
   return collection.messages;
-}
-
-class CoverageWarningCollection {
-  readonly messages: string[] = [];
-  private hidden = 0;
-
-  constructor(private readonly maxWarnings: number, private readonly targetName: string) {}
-
-  push(message: string): void {
-    if (this.messages.length < this.maxWarnings) {
-      this.messages.push(message);
-      return;
-    }
-    this.hidden += this.hidden === 0 ? 2 : 1;
-    const summary = `${this.targetName} Rule 覆盖诊断还有 ${this.hidden} 条提示未显示。`;
-    const lastIndex = this.messages.length - 1;
-    if (lastIndex >= 0) this.messages[lastIndex] = summary;
-  }
 }
 
 async function flattenRulesForCoverage(
@@ -124,20 +101,10 @@ async function flattenRulesForCoverage(
   const parsed = lines.flatMap((line, index) => parseTopLevelRule(line, index + 1));
   const references = parsed.filter((entry): entry is RuleSetReference => entry.kind === "rule-set");
   const resolvedProviders = await resolveProviderReferences(references, providers, config, target, options, warnings);
-  const flattened: CoverageRule[] = [];
-
-  for (const entry of parsed) {
-    if (entry.kind === "rule") {
-      flattened.push(entry);
-      continue;
-    }
-    const resolved = resolvedProviders.get(providerReferenceKey(entry));
-    if (resolved) flattened.push(...resolved);
-  }
-  return flattened;
+  return flattenResolvedCoverageEntries(parsed, resolvedProviders, providerReferenceKey);
 }
 
-function parseTopLevelRule(line: string, lineNumber: number): Array<CoverageRule | RuleSetReference> {
+function parseTopLevelRule(line: string, lineNumber: number): Array<CoverageEntry<RuleSetReference>> {
   const trimmed = String(line || "").trim();
   if (!trimmed || isCommentLine(trimmed)) return [];
   const parts = splitRuleLine(trimmed);
@@ -176,7 +143,7 @@ async function resolveProviderReferences(
   warnings: CoverageWarningCollection
 ): Promise<Map<string, CoverageRule[]>> {
   const resolved = new Map<string, CoverageRule[]>();
-  const unique = dedupeProviderReferences(references);
+  const unique = dedupeCoverageReferences(references, providerReferenceKey);
   const toFetch = unique.slice(0, MAX_EXTERNAL_PROVIDER_FETCHES);
   const skipped = unique.slice(MAX_EXTERNAL_PROVIDER_FETCHES);
   const targetName = diagnosticsName(target);
@@ -341,144 +308,7 @@ async function fetchProviderContent(url: string, userAgent: string, fetcher: Fet
     await response.body?.cancel().catch(() => undefined);
     throw new Error(`HTTP ${response.status}`);
   }
-  return readResponseTextWithLimit(response, MAX_PROVIDER_CONTENT_BYTES);
-}
-
-async function readResponseTextWithLimit(response: Response, maxBytes: number): Promise<string> {
-  const contentLength = response.headers.get("content-length");
-  if (contentLength && Number(contentLength) > maxBytes) throw new Error(`rule provider exceeds ${formatBytes(maxBytes)} limit`);
-  if (!response.body) return "";
-
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    if (!value) continue;
-    total += value.byteLength;
-    if (total > maxBytes) {
-      await reader.cancel().catch(() => undefined);
-      throw new Error(`rule provider exceeds ${formatBytes(maxBytes)} limit`);
-    }
-    chunks.push(value);
-  }
-
-  const bytes = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return new TextDecoder().decode(bytes);
-}
-
-async function mapWithConcurrency<T>(items: T[], concurrency: number, callback: (item: T) => Promise<void>): Promise<void> {
-  let nextIndex = 0;
-  const workers = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
-    while (nextIndex < items.length) {
-      const item = items[nextIndex];
-      nextIndex += 1;
-      if (item !== undefined) await callback(item);
-    }
-  });
-  await Promise.all(workers);
-}
-
-function dedupeProviderReferences(references: RuleSetReference[]): RuleSetReference[] {
-  const selected = new Map<string, RuleSetReference>();
-  for (const reference of references) selected.set(providerReferenceKey(reference), reference);
-  return [...selected.values()];
-}
-
-function ruleCoversRule(previous: CoverageRule, current: CoverageRule): boolean {
-  if (VALUELESS_RULE_TYPES.has(previous.type)) return true;
-  if (VALUELESS_RULE_TYPES.has(current.type)) return false;
-  if (DOMAIN_RULE_TYPES.has(previous.type) && DOMAIN_RULE_TYPES.has(current.type)) return domainRuleCovers(previous, current);
-  if (IP_CIDR_RULE_TYPES.has(previous.type) && IP_CIDR_RULE_TYPES.has(current.type)) return ipRuleCovers(previous, current);
-  if (EXACT_MATCH_RULE_TYPES.has(previous.type) && previous.type === current.type) {
-    return normalizeExactValue(previous.value) === normalizeExactValue(current.value);
-  }
-  return false;
-}
-
-function domainRuleCovers(previous: CoverageRule, current: CoverageRule): boolean {
-  const previousValue = normalizeDomainValue(previous.value);
-  const currentValue = normalizeDomainValue(current.value);
-  if (!previousValue || !currentValue) return false;
-  if (previous.type === "DOMAIN") return current.type === "DOMAIN" && previousValue === currentValue;
-  if (previous.type === "DOMAIN-SUFFIX") {
-    if (current.type === "DOMAIN") return currentValue === previousValue || currentValue.endsWith(`.${previousValue}`);
-    if (current.type === "DOMAIN-SUFFIX") return currentValue === previousValue || currentValue.endsWith(`.${previousValue}`);
-  }
-  if (previous.type === "DOMAIN-KEYWORD") return currentValue.includes(previousValue);
-  return false;
-}
-
-function ipRuleCovers(previous: CoverageRule, current: CoverageRule): boolean {
-  const previousRange = parseIpRange(previous.type, previous.value);
-  const currentRange = parseIpRange(current.type, current.value);
-  return Boolean(previousRange && currentRange
-    && previousRange.family === currentRange.family
-    && previousRange.start <= currentRange.start
-    && previousRange.end >= currentRange.end);
-}
-
-function parseIpRange(type: string, value: string): IpRange | null {
-  const family = type === "IP-CIDR6" ? 6 : 4;
-  const totalBits = family === 6 ? 128 : 32;
-  const [addressPart = "", prefixPart] = value.trim().split("/", 2);
-  const address = family === 6 ? parseIPv6Address(addressPart) : parseIPv4Address(addressPart);
-  if (address === null) return null;
-  const prefix = prefixPart === undefined || prefixPart === "" ? totalBits : Number(prefixPart);
-  if (!Number.isInteger(prefix) || prefix < 0 || prefix > totalBits) return null;
-  const blockSize = 1n << BigInt(totalBits - prefix);
-  const start = (address / blockSize) * blockSize;
-  return { family, start, end: start + blockSize - 1n };
-}
-
-function parseIPv4Address(value: string): bigint | null {
-  const parts = value.trim().split(".");
-  if (parts.length !== 4) return null;
-  let output = 0n;
-  for (const part of parts) {
-    if (!/^\d{1,3}$/.test(part)) return null;
-    const number = Number(part);
-    if (number < 0 || number > 255) return null;
-    output = (output << 8n) + BigInt(number);
-  }
-  return output;
-}
-
-function parseIPv6Address(value: string): bigint | null {
-  const address = value.trim().toLowerCase();
-  if (!address || address.includes(".")) return null;
-  const compressedParts = address.split("::");
-  if (compressedParts.length > 2) return null;
-  const head = compressedParts[0] ? compressedParts[0].split(":") : [];
-  const tail = compressedParts.length === 2 && compressedParts[1] ? compressedParts[1].split(":") : [];
-  const missing = compressedParts.length === 2 ? 8 - head.length - tail.length : 0;
-  if (missing < 0) return null;
-  const parts = compressedParts.length === 2 ? [...head, ...Array.from({ length: missing }, () => "0"), ...tail] : head;
-  if (parts.length !== 8) return null;
-  let output = 0n;
-  for (const part of parts) {
-    if (!/^[0-9a-f]{1,4}$/i.test(part)) return null;
-    output = (output << 16n) + BigInt(Number.parseInt(part, 16));
-  }
-  return output;
-}
-
-function formatCoverageWarning(targetName: string, current: CoverageRule, previous: CoverageRule): string {
-  const matcherText = `${formatMatcher(previous)} 覆盖 ${formatMatcher(current)}`;
-  if (current.policy === previous.policy) {
-    return `${targetName} Rule ${current.label} 被前面的 ${previous.label} 覆盖（${matcherText}；策略同为 ${current.policy}，当前规则冗余）。`;
-  }
-  return `${targetName} Rule ${current.label} 被前面的 ${previous.label} 覆盖（${matcherText}；${previous.policy} 会优先生效，${current.policy} 不会生效）。`;
-}
-
-function formatMatcher(rule: CoverageRule): string {
-  return VALUELESS_RULE_TYPES.has(rule.type) ? rule.type : `${rule.type},${rule.value}`;
+  return readResponseTextWithLimit(response, MAX_PROVIDER_CONTENT_BYTES, "rule provider");
 }
 
 function ruleSetLineLabel(reference: RuleSetReference, ruleSetLineNumber: number): string {
@@ -489,30 +319,8 @@ function providerReferenceKey(reference: RuleSetReference): string {
   return `${reference.name}\0${reference.policy}`;
 }
 
-function splitRuleLine(line: string): string[] {
-  const parts: string[] = [];
-  let current = "";
-  let depth = 0;
-  for (const char of line) {
-    if (char === "(") depth += 1;
-    if (char === ")") depth = Math.max(0, depth - 1);
-    if (char === "," && depth === 0) {
-      parts.push(current.trim());
-      current = "";
-      continue;
-    }
-    current += char;
-  }
-  if (current.trim() || parts.length > 0) parts.push(current.trim());
-  return parts;
-}
-
 function normalizeDomainValue(value: string): string {
   return value.trim().toLowerCase().replace(/^\+\./, "").replace(/^\*\./, "").replace(/\.$/, "");
-}
-
-function normalizeExactValue(value: string): string {
-  return value.trim().toLowerCase();
 }
 
 function diagnosticsName(target: ClashDiagnosticsTarget): string {
@@ -521,8 +329,4 @@ function diagnosticsName(target: ClashDiagnosticsTarget): string {
 
 function isCommentLine(line: string): boolean {
   return line.startsWith("#") || line.startsWith(";") || line.startsWith("//");
-}
-
-function formatBytes(bytes: number): string {
-  return `${Math.floor(bytes / 1024 / 1024)} MiB`;
 }

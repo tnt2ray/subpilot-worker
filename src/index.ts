@@ -3,18 +3,21 @@ import { runKvMigrations } from "./config-schema";
 import { loadConfig, normalizeTarget, saveConfig, validateManagedBaseUrl, validateProxyPolicyNameConflicts, withInferredManagedBaseUrl } from "./config-store";
 import { readConfigFetchStats, recordConfigFetch } from "./fetch-stats";
 import { generateConfig, generateForRequest, generateSurgeValidationConfig, inferTarget } from "./generator";
-import { createGeoIpCountryReader, GEOIP_MMDB_KV_KEY, GEOIP_MMDB_META_KV_KEY, resetGeoIpCountryReader } from "./geoip";
+import { handleGeoIpMmdbUpload, readGeoIpMmdbStatus } from "./geoip-admin";
 import { LOGIN_PAGE_HTML } from "./login-page";
 import { notifySourceRefreshFailures, notifyVersionUpdateAvailable } from "./notifications";
+import { splitRuleLine } from "./rule-line";
 import { refreshChangedSourceCache, refreshSourceCache } from "./source-cache";
+import { validateStashScripts } from "./stash-scripts";
 import { sanitizeSurgeValidationContent } from "./surge-validation-sanitize";
 import { configFileNameForTarget, syncPathForToken } from "./target-files";
 import { validateSurgeHosts } from "./surge-hosts";
 import { SURGE_BUILT_IN_POLICIES, validateSurgeRules } from "./surge-rules";
 import { validateSurgeUrlRewrite } from "./surge-url-rewrite";
+import { handleTelegramBindCode, handleTelegramUnbind, handleTelegramWebhook, reconcileTelegramWebhook } from "./telegram";
 import { readCachedUpdateStatus, getUpdateStatus } from "./update-check";
 import { APP_VERSION, RELEASE_REPOSITORY } from "./version";
-import { formatTimestampInTimeZone, badRequest, forbidden, jsonResponse, notFound, randomToken, sha256Hex, textResponse, timingSafeEqualString, unauthorized } from "./util";
+import { badRequest, forbidden, jsonResponse, notFound, sha256Hex, textResponse, unauthorized } from "./util";
 
 type LoadedConfig = Awaited<ReturnType<typeof loadConfig>>;
 
@@ -128,16 +131,8 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
     if (!config || typeof config !== "object") return badRequest("Invalid config body");
     const current = await loadConfig(env);
     const next = config as Awaited<ReturnType<typeof loadConfig>>;
-    const nameConflictError = validateProxyPolicyNameConflicts(next);
-    if (nameConflictError) return badRequest(nameConflictError);
-    const error = validateManagedBaseUrl(next);
-    if (error) return badRequest(error);
-    const surgeRuleError = validateSurgeRules(next);
-    if (surgeRuleError) return badRequest(surgeRuleError);
-    const surgeHostError = validateSurgeHosts(next);
-    if (surgeHostError) return badRequest(surgeHostError);
-    const surgeUrlRewriteError = validateSurgeUrlRewrite(next);
-    if (surgeUrlRewriteError) return badRequest(surgeUrlRewriteError);
+    const validationError = validateConfigForSave(next);
+    if (validationError) return badRequest(validationError);
     const saved = await saveConfig(env, await reconcileTelegramWebhook(current, next, request.url));
     await refreshChangedSourceCache(env, current, saved);
     return jsonResponse(saved);
@@ -149,16 +144,8 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
     const config = withInferredManagedBaseUrl(current, request.url);
     const normalizedPatch = patch as Partial<Awaited<ReturnType<typeof loadConfig>>>;
     const next = sanitizeConfigAfterPatch(mergeConfigPatch(config, normalizedPatch), normalizedPatch);
-    const nameConflictError = validateProxyPolicyNameConflicts(next);
-    if (nameConflictError) return badRequest(nameConflictError);
-    const error = validateManagedBaseUrl(next);
-    if (error) return badRequest(error);
-    const surgeRuleError = validateSurgeRules(next);
-    if (surgeRuleError) return badRequest(surgeRuleError);
-    const surgeHostError = validateSurgeHosts(next);
-    if (surgeHostError) return badRequest(surgeHostError);
-    const surgeUrlRewriteError = validateSurgeUrlRewrite(next);
-    if (surgeUrlRewriteError) return badRequest(surgeUrlRewriteError);
+    const validationError = validateConfigForSave(next);
+    if (validationError) return badRequest(validationError);
     const saved = await saveConfig(env, await reconcileTelegramWebhook(current, next, request.url));
     await refreshChangedSourceCache(env, current, saved);
     return jsonResponse(saved);
@@ -195,534 +182,16 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
     const token = await rotateReadToken(env);
     return jsonResponse({ token, hash: await sha256Hex(token) });
   }
-  ctx.waitUntil(Promise.resolve());
   return notFound();
 }
 
-interface TelegramChatOption {
-  id: string;
-  type: string;
-  label: string;
-  title?: string | undefined;
-  username?: string | undefined;
-  firstName?: string | undefined;
-  lastName?: string | undefined;
-}
-
-interface TelegramCommand {
-  name: string;
-  args: string;
-}
-
-const TELEGRAM_BIND_KEY = "auth:telegram_bind";
-const TELEGRAM_BIND_TTL_MS = 10 * 60 * 1000;
-const TELEGRAM_RECENT_FETCH_LIMIT = 5;
-const MAX_MMDB_BYTES = 25 * 1024 * 1024;
-
-interface GeoIpMmdbMeta {
-  fileName: string;
-  size: number;
-  updatedAt: string;
-}
-
-async function readGeoIpMmdbStatus(env: Env): Promise<{ uploaded: boolean } & Partial<GeoIpMmdbMeta>> {
-  const [meta, hasData] = await Promise.all([
-    env.SUBPILOT_CONFIG.get(GEOIP_MMDB_META_KV_KEY, "json") as Promise<Partial<GeoIpMmdbMeta> | null>,
-    hasKvKey(env, GEOIP_MMDB_KV_KEY)
-  ]);
-  if (!hasData) return { uploaded: false };
-  if (!meta || typeof meta !== "object") return { uploaded: false };
-  const fileName = typeof meta.fileName === "string" ? meta.fileName : "";
-  const size = typeof meta.size === "number" && Number.isFinite(meta.size) ? meta.size : 0;
-  const updatedAt = typeof meta.updatedAt === "string" ? meta.updatedAt : "";
-  return { uploaded: true, fileName, size, updatedAt };
-}
-
-async function handleGeoIpMmdbUpload(request: Request, env: Env): Promise<Response> {
-  const form = await request.formData().catch(() => null);
-  const file = form?.get("file");
-  if (!(file instanceof File)) return badRequest("Missing MMDB file");
-  if (file.size <= 0) return badRequest("MMDB file is empty");
-  if (file.size > MAX_MMDB_BYTES) return badRequest("MMDB file exceeds 25 MiB KV value limit");
-
-  const data = await file.arrayBuffer();
-  try {
-    createGeoIpCountryReader(data);
-  } catch {
-    return badRequest("Invalid MMDB file");
-  }
-
-  const meta: GeoIpMmdbMeta = {
-    fileName: file.name || "GeoIP.mmdb",
-    size: file.size,
-    updatedAt: new Date().toISOString()
-  };
-  await env.SUBPILOT_CONFIG.put(GEOIP_MMDB_KV_KEY, data);
-  await env.SUBPILOT_CONFIG.put(GEOIP_MMDB_META_KV_KEY, JSON.stringify(meta));
-  await deleteGeoIpLocationCache(env);
-  resetGeoIpCountryReader();
-  return jsonResponse({ uploaded: true, ...meta });
-}
-
-async function hasKvKey(env: Env, key: string): Promise<boolean> {
-  const page = await env.SUBPILOT_CONFIG.list({ prefix: key });
-  return page.keys.some((entry) => entry.name === key);
-}
-
-async function deleteGeoIpLocationCache(env: Env): Promise<void> {
-  let cursor: string | undefined;
-  do {
-    const options: KVNamespaceListOptions = cursor
-      ? { prefix: "cache:geoip:location:", cursor }
-      : { prefix: "cache:geoip:location:" };
-    const page = await env.SUBPILOT_CONFIG.list(options);
-    await Promise.all(page.keys.map((key) => env.SUBPILOT_CONFIG.delete(key.name)));
-    cursor = page.list_complete ? undefined : page.cursor;
-  } while (cursor);
-}
-
-async function handleTelegramBindCode(request: Request, env: Env): Promise<Response> {
-  const body = await request.json<{ token?: string }>().catch((): { token?: string } => ({}));
-  const config = await loadConfig(env);
-  const token = (typeof body.token === "string" ? body.token.trim() : "") || config.settings.notificationTelegramBotToken.trim();
-  if (!token) return badRequest("Telegram bot token is required");
-
-  const next = await reconcileTelegramWebhook(config, {
-    ...config,
-    settings: {
-      ...config.settings,
-      notificationChannel: "telegram",
-      notificationTelegramBotToken: token
-    }
-  }, request.url);
-  const saved = await saveConfig(env, next);
-  const code = randomTelegramBindCode();
-  const expiresAt = new Date(Date.now() + TELEGRAM_BIND_TTL_MS).toISOString();
-  await storeTelegramBindCode(env, code, expiresAt);
-  return jsonResponse({
-    code,
-    command: `/bind ${code}`,
-    expiresAt,
-    config: withInferredManagedBaseUrl(saved, request.url)
-  });
-}
-
-async function handleTelegramUnbind(request: Request, env: Env): Promise<Response> {
-  const config = await loadConfig(env);
-  await env.SUBPILOT_CONFIG.delete(TELEGRAM_BIND_KEY);
-  const saved = await saveConfig(env, {
-    ...config,
-    settings: {
-      ...config.settings,
-      notificationTelegramChatId: ""
-    }
-  });
-  return jsonResponse(withInferredManagedBaseUrl(saved, request.url));
-}
-
-async function handleTelegramWebhook(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-  const config = await loadConfig(env);
-  const expectedSecret = config.settings.notificationTelegramWebhookSecret.trim();
-  const receivedSecret = request.headers.get("x-telegram-bot-api-secret-token") ?? "";
-  if (!expectedSecret || !receivedSecret || !await timingSafeEqualString(receivedSecret, expectedSecret)) {
-    return forbidden("Invalid Telegram webhook secret");
-  }
-
-  const update = await request.json().catch(() => null);
-  const message = telegramTextMessageCandidate(update);
-  const code = message ? telegramBindCode(message.text) : "";
-  const chat = message ? normalizeTelegramChat(message.chat) : null;
-  const command = message ? telegramBotCommand(message.text) : null;
-  const boundChatId = config.settings.notificationTelegramChatId.trim();
-  if (message && chat && isTelegramBindAttempt(message.text) && boundChatId) {
-    return jsonResponse({ ok: true });
-  }
-  if (message && chat && code && await consumeTelegramBindCode(env, code)) {
-    await saveConfig(env, {
-      ...config,
-      settings: {
-        ...config.settings,
-        notificationChannel: "telegram",
-        notificationTelegramChatId: chat.id
-      }
-    });
-    await sendTelegramBotMessage(config.settings.notificationTelegramBotToken.trim(), chat.id, "SubPilot Telegram 通知已绑定成功。").catch(logTelegramFeedbackFailure);
-  } else if (message && chat && isTelegramBindAttempt(message.text)) {
-    await sendTelegramBotMessage(config.settings.notificationTelegramBotToken.trim(), chat.id, "绑定失败：请在 SubPilot 后台重新生成绑定命令，并在 10 分钟内发送完整的 /bind 命令。").catch(logTelegramFeedbackFailure);
-  } else if (chat && command) {
-    if (!boundChatId || !await timingSafeEqualString(chat.id, boundChatId)) {
-      return jsonResponse({ ok: true });
-    }
-    ctx.waitUntil(handleTelegramCommand(env, config, chat, command).catch(logTelegramCommandFailure));
-  }
-  return jsonResponse({ ok: true });
-}
-
-async function handleTelegramCommand(
-  env: Env,
-  config: Awaited<ReturnType<typeof loadConfig>>,
-  chat: TelegramChatOption,
-  command: TelegramCommand
-): Promise<void> {
-  const token = config.settings.notificationTelegramBotToken.trim();
-  if (!token) return;
-
-  switch (command.name) {
-    case "help":
-    case "start":
-      await sendTelegramBotMessage(token, chat.id, formatTelegramHelpMessage());
-      return;
-    case "status":
-      await sendTelegramBotMessage(token, chat.id, formatTelegramStatusMessage(config, await readConfigFetchStats(env, config)));
-      return;
-    case "sources":
-      await sendTelegramBotMessage(token, chat.id, formatTelegramSourcesMessage(config));
-      return;
-    case "recent":
-      await sendTelegramBotMessage(token, chat.id, formatTelegramRecentFetchesMessage(await readConfigFetchStats(env), config.settings.displayTimeZone));
-      return;
-    case "refresh":
-      await sendTelegramBotMessage(token, chat.id, "开始强制重新拉取上游订阅源。完成后会发送结果。").catch(logTelegramCommandFailure);
-      await handleTelegramRefreshCommand(env, chat.id);
-      return;
-    default:
-      await sendTelegramBotMessage(token, chat.id, `未知命令：/${command.name}\n\n${formatTelegramHelpMessage()}`);
-  }
-}
-
-async function handleTelegramRefreshCommand(env: Env, chatId: string): Promise<void> {
-  const config = await loadConfig(env);
-  const token = config.settings.notificationTelegramBotToken.trim();
-  if (!token) return;
-  try {
-    const result = await refreshSourceCache(env, config);
-    await sendTelegramBotMessage(token, chatId, formatTelegramRefreshResultMessage(result, config.settings.displayTimeZone));
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    await sendTelegramBotMessage(token, chatId, `上游订阅源强制获取失败：${message}`).catch(logTelegramCommandFailure);
-  }
-}
-
-function formatTelegramHelpMessage(): string {
-  return [
-    "SubPilot bot 命令：",
-    "/status - 查看订阅与缓存概览",
-    "/sources - 查看订阅源启用状态",
-    "/recent - 查看最近配置拉取记录",
-    "/refresh - 强制重新拉取上游订阅源",
-    "/help - 查看命令列表"
-  ].join("\n");
-}
-
-function formatTelegramStatusMessage(
-  config: Awaited<ReturnType<typeof loadConfig>>,
-  stats: Awaited<ReturnType<typeof readConfigFetchStats>>
-): string {
-  const enabledSources = config.sources.filter((source) => source.enabled && source.url).length;
-  const disabledSources = config.sources.filter((source) => !source.enabled || !source.url).length;
-  return [
-    "SubPilot 状态",
-    `订阅源：启用 ${enabledSources} / 停用 ${disabledSources}`,
-    ...formatTelegramSourceCacheLines(stats.sourceCache, config.settings.displayTimeZone),
-    `最近 Surge 配置获取：${formatTelegramTimestamp(stats.lastFetched.surge, config.settings.displayTimeZone)}`,
-    `最近 Clash 配置获取：${formatTelegramTimestamp(stats.lastFetched.clash, config.settings.displayTimeZone)}`,
-    `最近 Stash 配置获取：${formatTelegramTimestamp(stats.lastFetched.stash, config.settings.displayTimeZone)}`
-  ].join("\n");
-}
-
-function formatTelegramSourceCacheLines(sourceCache: Awaited<ReturnType<typeof readConfigFetchStats>>["sourceCache"], timeZone: string): string[] {
-  if (sourceCache.expectedCount <= 0) {
-    return [
-      `上游缓存：${sourceCache.count} 条缓存，没有启用订阅源`,
-      `缓存更新时间：${formatTelegramTimestamp(sourceCache.updatedAt, timeZone)}`
-    ];
-  }
-  const missing = sourceCache.expectedCount - sourceCache.cachedSourceCount;
-  const sourceSummary = missing > 0
-    ? `${sourceCache.cachedSourceCount} / ${sourceCache.expectedCount} 个启用源已缓存，缺 ${missing} 个`
-    : `${sourceCache.cachedSourceCount} / ${sourceCache.expectedCount} 个启用源已缓存，全部就绪`;
-  return [
-    `上游缓存：${sourceSummary}`,
-    `缓存条目：${sourceCache.count} 条`,
-    `缓存更新时间：${formatTelegramTimestamp(sourceCache.updatedAt, timeZone)}`,
-    `协议节点：${formatTelegramProtocolCounts(sourceCache)}`,
-    "订阅源缓存：",
-    ...sourceCache.sources.slice(0, 12).map((source) => formatTelegramSourceCacheStatus(source, timeZone)),
-    ...(sourceCache.sources.length > 12 ? [`... 还有 ${sourceCache.sources.length - 12} 个订阅源未显示`] : [])
-  ];
-}
-
-function formatTelegramProtocolCounts(sourceCache: Awaited<ReturnType<typeof readConfigFetchStats>>["sourceCache"]): string {
-  return formatTelegramProtocolCountList(sourceCache.totalNodes, sourceCache.protocolCounts, true);
-}
-
-function formatTelegramProtocolCountList(
-  totalNodes: number,
-  protocolCounts: Awaited<ReturnType<typeof readConfigFetchStats>>["sourceCache"]["protocolCounts"],
-  includeTotal: boolean
-): string {
-  if (totalNodes <= 0 || protocolCounts.length === 0) return "未解析到节点";
-  const parts = protocolCounts
-    .filter((item) => item.count > 0)
-    .map((item) => `${item.protocol} ${item.count}`);
-  if (includeTotal) parts.push(`总计 ${totalNodes}`);
-  return parts.length > 0 ? parts.join("，") : "未解析到节点";
-}
-
-function formatTelegramSourceCacheStatus(source: Awaited<ReturnType<typeof readConfigFetchStats>>["sourceCache"]["sources"][number], timeZone: string): string {
-  const name = source.sourceName || source.sourceId || "(未命名订阅源)";
-  if (!source.cached) return `- ${name}：未缓存`;
-  return `- ${name}：已缓存，${source.nodeCount} 个节点；协议 ${formatTelegramProtocolCountList(source.nodeCount, source.protocolCounts, false)}；${formatTelegramTimestamp(source.fetchedAt, timeZone)}`;
-}
-
-function formatTelegramSourcesMessage(config: Awaited<ReturnType<typeof loadConfig>>): string {
-  const sources = config.sources;
-  if (sources.length === 0) return "当前没有配置订阅源。";
-  const lines = sources.slice(0, 25).map((source, index) => {
-    const enabled = source.enabled && source.url ? "启用" : "停用";
-    const name = source.name.trim() || source.id || `订阅源 ${index + 1}`;
-    return `${index + 1}. ${name}：${enabled}，UA ${source.fetchUserAgent}`;
-  });
-  if (sources.length > lines.length) lines.push(`... 还有 ${sources.length - lines.length} 个订阅源未显示`);
-  return ["订阅源状态：", ...lines].join("\n");
-}
-
-function formatTelegramRecentFetchesMessage(stats: Awaited<ReturnType<typeof readConfigFetchStats>>, timeZone: string): string {
-  if (stats.recentUserAgents.length === 0) return "还没有订阅配置拉取记录。";
-  return [
-    "最近配置拉取：",
-    ...stats.recentUserAgents.slice(0, TELEGRAM_RECENT_FETCH_LIMIT).map((record, index) => {
-      const location = record.location.label ? `，${record.location.label}` : "";
-      return `${index + 1}. ${formatTelegramFetchTargetLabel(record.target)}，${formatTelegramTimestamp(record.fetchedAt, timeZone)}${location}，UA：${truncateTelegramLine(record.userAgent, 80)}`;
-    })
-  ].join("\n");
-}
-
-function formatTelegramFetchTargetLabel(target: string): string {
-  if (target === "surge") return "Surge 配置";
-  if (target === "clash") return "Clash 配置";
-  if (target === "stash") return "Stash 配置";
-  return target;
-}
-
-function formatTelegramRefreshResultMessage(result: Awaited<ReturnType<typeof refreshSourceCache>>, timeZone: string): string {
-  const lines = [
-    "上游订阅源强制获取完成",
-    `刷新成功：${result.refreshed}`,
-    `刷新失败：${result.failed}`,
-    `沿用旧缓存：${result.cached}`,
-    `清理非当前启用源缓存：${result.deleted}`,
-    `完成时间：${formatTelegramTimestamp(result.updatedAt, timeZone)}`,
-    "",
-    ...formatTelegramSourceCacheLines(result.sourceCache, timeZone)
-  ];
-  if (result.failures.length > 0) {
-    lines.push("", "失败订阅源：");
-    lines.push(...result.failures.slice(0, 10).map((failure) => {
-      const cacheStatus = failure.usedCachedContent ? "已沿用旧缓存" : "无可用旧缓存";
-      return `- ${failure.sourceName || failure.sourceId || "(未命名订阅源)"}：${failure.reason}；${cacheStatus}`;
-    }));
-    if (result.failures.length > 10) lines.push(`... 还有 ${result.failures.length - 10} 个失败项未显示`);
-  }
-  return lines.join("\n").slice(0, 3500);
-}
-
-function formatTelegramTimestamp(value: string | null | undefined, timeZone: string): string {
-  return formatTimestampInTimeZone(value, timeZone);
-}
-
-function truncateTelegramLine(value: string, maxLength: number): string {
-  return value.length > maxLength ? `${value.slice(0, maxLength - 1)}…` : value;
-}
-
-function randomTelegramBindCode(): string {
-  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-  const bytes = new Uint8Array(10);
-  crypto.getRandomValues(bytes);
-  return [...bytes].map((byte) => alphabet[byte % alphabet.length]).join("");
-}
-
-async function storeTelegramBindCode(env: Env, code: string, expiresAt: string): Promise<void> {
-  await env.SUBPILOT_CONFIG.put(TELEGRAM_BIND_KEY, JSON.stringify({
-    codeHash: await sha256Hex(code),
-    expiresAt
-  }));
-}
-
-async function consumeTelegramBindCode(env: Env, code: string): Promise<boolean> {
-  const stored = await env.SUBPILOT_CONFIG.get(TELEGRAM_BIND_KEY, "json") as { codeHash?: unknown; expiresAt?: unknown } | null;
-  if (!stored || typeof stored.codeHash !== "string" || typeof stored.expiresAt !== "string") return false;
-  if (Date.parse(stored.expiresAt) <= Date.now()) {
-    await env.SUBPILOT_CONFIG.delete(TELEGRAM_BIND_KEY);
-    return false;
-  }
-  const ok = await timingSafeEqualString(await sha256Hex(code), stored.codeHash);
-  if (ok) await env.SUBPILOT_CONFIG.delete(TELEGRAM_BIND_KEY);
-  return ok;
-}
-
-async function reconcileTelegramWebhook(
-  current: Awaited<ReturnType<typeof loadConfig>>,
-  next: Awaited<ReturnType<typeof loadConfig>>,
-  requestUrl: string
-): Promise<Awaited<ReturnType<typeof loadConfig>>> {
-  const currentToken = current.settings.notificationTelegramBotToken.trim();
-  const nextToken = next.settings.notificationTelegramBotToken.trim();
-  const shouldEnableWebhook = Boolean(nextToken);
-
-  if (!shouldEnableWebhook) {
-    if (currentToken && current.settings.notificationTelegramWebhookSecret.trim()) {
-      await deleteTelegramWebhook(currentToken);
-    }
-    return {
-      ...next,
-      settings: {
-        ...next.settings,
-        notificationTelegramWebhookSecret: ""
-      }
-    };
-  }
-
-  const currentSecret = next.settings.notificationTelegramWebhookSecret.trim();
-  const secret = currentSecret || randomToken(32);
-  await setTelegramWebhook(nextToken, telegramWebhookUrl(requestUrl), secret);
-  if (currentToken && currentToken !== nextToken) {
-    await deleteTelegramWebhook(currentToken).catch((error) => {
-      console.warn(JSON.stringify({ level: "warn", message: `Failed to delete previous Telegram webhook: ${error instanceof Error ? error.message : String(error)}` }));
-    });
-  }
-  return {
-    ...next,
-    settings: {
-      ...next.settings,
-      notificationTelegramWebhookSecret: secret
-    }
-  };
-}
-
-function telegramWebhookUrl(requestUrl: string): string {
-  const url = new URL(requestUrl);
-  url.pathname = "/api/telegram/webhook";
-  url.search = "";
-  url.hash = "";
-  return url.toString();
-}
-
-async function setTelegramWebhook(token: string, url: string, secret: string): Promise<void> {
-  const body = new URLSearchParams({
-    url,
-    secret_token: secret,
-    drop_pending_updates: "true",
-    allowed_updates: JSON.stringify(["message", "edited_message", "channel_post", "edited_channel_post"])
-  });
-  const response = await globalThis.fetch(`https://api.telegram.org/bot${token}/setWebhook`, {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body
-  });
-  await assertTelegramOk(response, "Telegram setWebhook failed");
-}
-
-async function deleteTelegramWebhook(token: string): Promise<void> {
-  const body = new URLSearchParams({ drop_pending_updates: "true" });
-  const response = await globalThis.fetch(`https://api.telegram.org/bot${token}/deleteWebhook`, {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body
-  });
-  await assertTelegramOk(response, "Telegram deleteWebhook failed");
-}
-
-async function sendTelegramBotMessage(token: string, chatId: string, text: string): Promise<void> {
-  if (!token || !chatId) return;
-  const response = await globalThis.fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      chat_id: chatId,
-      text,
-      disable_web_page_preview: true
-    })
-  });
-  await assertTelegramOk(response, "Telegram sendMessage failed");
-}
-
-function logTelegramFeedbackFailure(error: unknown): void {
-  console.warn(JSON.stringify({ level: "warn", message: `Telegram binding feedback failed: ${error instanceof Error ? error.message : String(error)}` }));
-}
-
-function logTelegramCommandFailure(error: unknown): void {
-  console.warn(JSON.stringify({ level: "warn", message: `Telegram command handling failed: ${error instanceof Error ? error.message : String(error)}` }));
-}
-
-async function assertTelegramOk(response: Response, fallback: string): Promise<void> {
-  const result = await response.json<{ ok?: unknown; description?: unknown }>().catch(() => null);
-  if (response.ok && result?.ok === true) return;
-  const description = typeof result?.description === "string" ? result.description : `HTTP ${response.status}`;
-  throw new Error(`${fallback}: ${description}`);
-}
-
-function telegramTextMessageCandidate(update: unknown): { chat: unknown; text: string } | null {
-  const record = objectRecord(update);
-  if (!record) return null;
-  for (const key of ["message", "edited_message", "channel_post", "edited_channel_post"]) {
-    const message = objectRecord(record[key]);
-    if (!message) continue;
-    const chat = message.chat;
-    const text = [stringProperty(message, "text"), stringProperty(message, "caption")].filter(Boolean).join("\n");
-    if (chat !== undefined && text) return { chat, text };
-  }
-  return null;
-}
-
-function telegramBindCode(text: string): string {
-  return text.trim().match(/^\/bind(?:@[A-Za-z0-9_]+)?\s+([A-Za-z0-9_-]{6,32})$/i)?.[1]?.toUpperCase() ?? "";
-}
-
-function isTelegramBindAttempt(text: string): boolean {
-  return /^\/bind(?:@[A-Za-z0-9_]+)?(?:\s|$)/i.test(text.trim());
-}
-
-function telegramBotCommand(text: string): TelegramCommand | null {
-  const match = text.trim().match(/^\/([A-Za-z0-9_]+)(?:@[A-Za-z0-9_]+)?(?:\s+([\s\S]*))?$/);
-  if (!match) return null;
-  return {
-    name: match[1]!.toLowerCase(),
-    args: (match[2] ?? "").trim()
-  };
-}
-
-function normalizeTelegramChat(value: unknown): TelegramChatOption | null {
-  const chat = objectRecord(value);
-  if (!chat) return null;
-  const idValue = chat.id;
-  if (typeof idValue !== "number" && typeof idValue !== "string") return null;
-  const id = String(idValue);
-  const type = stringProperty(chat, "type") || "unknown";
-  const title = stringProperty(chat, "title");
-  const username = stringProperty(chat, "username");
-  const firstName = stringProperty(chat, "first_name");
-  const lastName = stringProperty(chat, "last_name");
-  const displayName = title || [firstName, lastName].filter(Boolean).join(" ") || username || id;
-  const usernameSuffix = username ? ` @${username}` : "";
-  return {
-    id,
-    type,
-    label: `${displayName}${usernameSuffix} (${type}, ${id})`,
-    ...(title ? { title } : {}),
-    ...(username ? { username } : {}),
-    ...(firstName ? { firstName } : {}),
-    ...(lastName ? { lastName } : {})
-  };
-}
-
-function objectRecord(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
-}
-
-function stringProperty(record: Record<string, unknown>, key: string): string {
-  const value = record[key];
-  return typeof value === "string" ? value.trim() : "";
+function validateConfigForSave(config: LoadedConfig): string | null {
+  return validateProxyPolicyNameConflicts(config)
+    || validateManagedBaseUrl(config)
+    || validateSurgeRules(config)
+    || validateSurgeHosts(config)
+    || validateSurgeUrlRewrite(config)
+    || validateStashScripts(config);
 }
 
 async function validateSurgeOnline(content: string): Promise<{ valid: boolean; error?: string }> {
@@ -889,7 +358,7 @@ function sanitizeRuleTargets(config: LoadedConfig): { surge: string[]; clash: st
 
 function rewriteRulesToAvailablePolicies(rules: string[], availablePolicies: Set<string>): string[] {
   return rules.map((rule) => {
-    const parts = rule.split(",");
+    const parts = splitRuleLine(rule);
     const targetIndex = ruleTargetIndex(parts);
     if (targetIndex === null) return rule;
     const target = parts[targetIndex]?.trim() ?? "";

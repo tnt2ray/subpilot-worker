@@ -1,33 +1,11 @@
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { createContext, Script } from "node:vm";
 import { describe, expect, it } from "vitest";
-
-const root = join(import.meta.dirname, "..");
-
-function readPublicFile(name: string): string {
-  return readFileSync(join(root, "public", name), "utf8");
-}
-
-function extractFunctionSource(source: string, name: string): string {
-  const start = source.indexOf(`function ${name}`);
-  if (start < 0) throw new Error(`Function ${name} not found`);
-  const bodyStart = source.indexOf("{", start);
-  if (bodyStart < 0) throw new Error(`Function ${name} body not found`);
-  let depth = 0;
-  for (let index = bodyStart; index < source.length; index += 1) {
-    const char = source[index];
-    if (char === "{") depth += 1;
-    if (char === "}") depth -= 1;
-    if (depth === 0) return source.slice(start, index + 1);
-  }
-  throw new Error(`Function ${name} body is incomplete`);
-}
+import { extractFunctionSource, readAdminAppBundle, readPublicFile } from "./helpers/public-assets";
 
 describe("admin static assets", () => {
   it("keeps the admin static asset contract", () => {
     const html = readPublicFile("index.html");
-    const app = readPublicFile("app.js");
+    const app = readAdminAppBundle();
     const css = readPublicFile("styles.css");
 
     expect(html).not.toContain("/vendor/codemirror/codemirror.css");
@@ -104,6 +82,9 @@ describe("admin static assets", () => {
 
     expect(app).toContain("function validateStashScriptLines(lines)");
     expect(app).toContain("function parseStashScriptParams(value)");
+    expect(app).toContain("function splitPolicyGroupSpec(spec)");
+    expect(app).toContain("function parseAllSelector(item)");
+    expect(app).toContain("function parseGroupOption(item)");
     expect(app).toContain('const validation = validateStashScriptLines(textToLines(refs.stashScripts.value));');
     expect(app).toContain('params["script-path"]');
     expect(app).toContain('type 必须是 http-request 或 http-response');
@@ -111,7 +92,7 @@ describe("admin static assets", () => {
   });
 
   it("groups preview coverage warnings into expandable summaries", () => {
-    const app = readPublicFile("app.js");
+    const app = readPublicFile("app-preview-warnings.js");
     const sandbox: {
       result?: Array<{ summary: string; details: string[] }>;
       simplified?: string;
@@ -160,12 +141,13 @@ describe("admin static assets", () => {
   });
 
   it("accepts Surge proxy node drafts with keyed params after port", () => {
-    const app = readPublicFile("app.js");
+    const constants = readPublicFile("app-constants.js");
+    const drafts = readPublicFile("app-proxy-node-drafts.js");
     const sandbox: {
       result?: Array<{ valid: boolean; name: string }>;
     } = {};
     const context = createContext(sandbox);
-    const uriPattern = app.match(/const PROXY_NODE_URI_PATTERN = [^;]+;/)?.[0];
+    const uriPattern = constants.match(/export const PROXY_NODE_URI_PATTERN = [^;]+;/)?.[0]?.replace(/^export /, "");
     if (!uriPattern) throw new Error("PROXY_NODE_URI_PATTERN not found");
     const functions = [
       uriPattern,
@@ -174,7 +156,7 @@ describe("admin static assets", () => {
       "parseSurgeProxyNodeDraft",
       "readProxyNodeYamlScalar",
       "parseClashProxyNodeDraft"
-    ].map((item) => item.startsWith("const ") ? item : extractFunctionSource(app, item)).join("\n");
+    ].map((item) => item.startsWith("const ") ? item : extractFunctionSource(drafts, item)).join("\n");
     const lines = [
       "Chain Exit = socks5, 207.97.145.15, 443, username=ed221103117, password=sxVQPhwY",
       "DMIT = snell, 191.223.220.184, 42821, psk=7aa28cb89c5e5ca38b3bb8c0a30079035525c00175891727, version=6, mode=default, reuse=true, tfo=true"

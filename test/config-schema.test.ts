@@ -240,6 +240,47 @@ describe("KV schema migrations", () => {
       chainExit: false,
       includeInGroups: true
     });
+
+    const cachedSourceEntry = {
+      key: "cache:source:cached",
+      fetchedAt: "2026-06-20T01:00:00.000Z",
+      sourceId: "src1",
+      sourceName: "Primary"
+    };
+    const missingSourceEntry = {
+      key: "cache:source:missing",
+      fetchedAt: "2026-06-20T01:05:00.000Z",
+      sourceId: "src2",
+      sourceName: "Missing"
+    };
+    const { env: v9SourceCacheEnv, kv: v9SourceCacheKv } = makeTestEnv(new Map([
+      [CONFIG_SCHEMA_VERSION_KEY, "9"],
+      ["cache:source:cached", "Proxy A = trojan, a.example.com, 443, password=p\nProxy B = trojan, b.example.com, 443, password=p"],
+      ["cache:sourceMeta:cached", JSON.stringify(cachedSourceEntry)],
+      ["cache:sourceMeta:missing", JSON.stringify(missingSourceEntry)],
+      ["cache:sourceMeta:index", JSON.stringify([cachedSourceEntry, missingSourceEntry])]
+    ]));
+
+    await runKvMigrations(v9SourceCacheEnv);
+
+    const migratedCachedSourceEntry = {
+      ...cachedSourceEntry,
+      contentAvailable: true,
+      nodeCount: 2,
+      protocolCounts: [{ protocol: "trojan", count: 2 }]
+    };
+    const migratedMissingSourceEntry = {
+      ...missingSourceEntry,
+      contentAvailable: false,
+      nodeCount: 0,
+      protocolCounts: []
+    };
+    expect(JSON.parse(String(v9SourceCacheKv.get("cache:sourceMeta:cached") ?? "{}"))).toEqual(migratedCachedSourceEntry);
+    expect(JSON.parse(String(v9SourceCacheKv.get("cache:sourceMeta:missing") ?? "{}"))).toEqual(migratedMissingSourceEntry);
+    expect(JSON.parse(String(v9SourceCacheKv.get("cache:sourceMeta:index") ?? "[]"))).toEqual([
+      migratedCachedSourceEntry,
+      migratedMissingSourceEntry
+    ]);
   });
 
   it("rejects KV created by a newer unsupported Worker", async () => {

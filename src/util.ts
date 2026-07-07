@@ -13,6 +13,55 @@ export function textResponse(content: string, contentType = "text/plain; charset
   });
 }
 
+export async function readResponseTextWithLimit(response: Response, maxBytes: number, errorSubject: string): Promise<string> {
+  const contentLength = response.headers.get("content-length");
+  if (contentLength && Number(contentLength) > maxBytes) throw new Error(`${errorSubject} exceeds ${formatBytes(maxBytes)} limit`);
+  if (!response.body) return "";
+
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (!value) continue;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel().catch(() => undefined);
+      throw new Error(`${errorSubject} exceeds ${formatBytes(maxBytes)} limit`);
+    }
+    chunks.push(value);
+  }
+
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(bytes);
+}
+
+export async function mapWithConcurrency<T>(
+  items: T[],
+  concurrency: number,
+  callback: (item: T) => Promise<void>
+): Promise<void> {
+  let nextIndex = 0;
+  const workers = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+    while (nextIndex < items.length) {
+      const item = items[nextIndex];
+      nextIndex += 1;
+      if (item !== undefined) await callback(item);
+    }
+  });
+  await Promise.all(workers);
+}
+
+function formatBytes(bytes: number): string {
+  return `${Math.floor(bytes / 1024 / 1024)} MiB`;
+}
+
 export function badRequest(message: string): Response {
   return jsonResponse({ error: message }, { status: 400 });
 }

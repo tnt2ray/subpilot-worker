@@ -4,6 +4,7 @@ import { cpSync, existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } f
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { platform, tmpdir } from "node:os";
+import { capture, run } from "./lib/commands.mjs";
 
 const RELEASE_REPOSITORY = "tnt2ray/subpilot-worker";
 const RELEASE_API_URL = `https://api.github.com/repos/${RELEASE_REPOSITORY}/releases/latest`;
@@ -37,21 +38,6 @@ function githubHeaders(extra = {}) {
     ...(token ? { authorization: `Bearer ${token}` } : {}),
     ...extra
   };
-}
-
-function run(command, args, options = {}) {
-  const result = spawnSync(command, args, { stdio: "inherit", ...options });
-  if (result.status !== 0) process.exit(result.status ?? 1);
-}
-
-function capture(command, args) {
-  const result = spawnSync(command, args, { encoding: "utf8" });
-  if (result.status !== 0) {
-    process.stderr.write(result.stdout ?? "");
-    process.stderr.write(result.stderr ?? "");
-    process.exit(result.status ?? 1);
-  }
-  return result.stdout ?? "";
 }
 
 function ensureCleanTrackedChanges() {

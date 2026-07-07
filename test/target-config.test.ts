@@ -227,6 +227,55 @@ describe("target inference", () => {
       ...DEFAULT_CONFIG,
       settings: {
         ...DEFAULT_CONFIG.settings,
+        managedBaseUrl: "https://subpilot.example.com/app-constants.js/"
+      }
+    })).toBe("Managed base URL path /app-constants.js is reserved");
+    expect(validateManagedBaseUrl({
+      ...DEFAULT_CONFIG,
+      settings: {
+        ...DEFAULT_CONFIG.settings,
+        managedBaseUrl: "https://subpilot.example.com/app-i18n.js/"
+      }
+    })).toBe("Managed base URL path /app-i18n.js is reserved");
+    expect(validateManagedBaseUrl({
+      ...DEFAULT_CONFIG,
+      settings: {
+        ...DEFAULT_CONFIG.settings,
+        managedBaseUrl: "https://subpilot.example.com/app-policy-group-spec.js/"
+      }
+    })).toBe("Managed base URL path /app-policy-group-spec.js is reserved");
+    expect(validateManagedBaseUrl({
+      ...DEFAULT_CONFIG,
+      settings: {
+        ...DEFAULT_CONFIG.settings,
+        managedBaseUrl: "https://subpilot.example.com/app-preview-warnings.js/"
+      }
+    })).toBe("Managed base URL path /app-preview-warnings.js is reserved");
+    expect(validateManagedBaseUrl({
+      ...DEFAULT_CONFIG,
+      settings: {
+        ...DEFAULT_CONFIG.settings,
+        managedBaseUrl: "https://subpilot.example.com/app-validation.js/"
+      }
+    })).toBe("Managed base URL path /app-validation.js is reserved");
+    expect(validateManagedBaseUrl({
+      ...DEFAULT_CONFIG,
+      settings: {
+        ...DEFAULT_CONFIG.settings,
+        managedBaseUrl: "https://subpilot.example.com/app-proxy-node-drafts.js/"
+      }
+    })).toBe("Managed base URL path /app-proxy-node-drafts.js is reserved");
+    expect(validateManagedBaseUrl({
+      ...DEFAULT_CONFIG,
+      settings: {
+        ...DEFAULT_CONFIG.settings,
+        managedBaseUrl: "https://subpilot.example.com/app-yaml.js/"
+      }
+    })).toBe("Managed base URL path /app-yaml.js is reserved");
+    expect(validateManagedBaseUrl({
+      ...DEFAULT_CONFIG,
+      settings: {
+        ...DEFAULT_CONFIG.settings,
         managedBaseUrl: "https://subpilot.example.com/sywwqnc/"
       }
     })).toBeNull();

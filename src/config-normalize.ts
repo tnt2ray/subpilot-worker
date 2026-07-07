@@ -1,0 +1,464 @@
+import { DEFAULT_CONFIG } from "./default-config";
+import { isAllPolicySelector, parseGroupOption, splitGroupSpec } from "./policy-group-spec";
+import { inferUrlRewriteMitmHostnames } from "./surge-url-rewrite";
+import { CHAIN_EXIT_PROTOCOLS, type AppConfig, type ChainExitProtocol, type NotificationChannel, type SourceConfig, type StaticProxyNodeConfig, type SurgeIpv6VifMode, type Target } from "./types";
+import { normalizeDisplayTimeZone } from "./util";
+
+const SURGE_IPV6_VIF_MODES = ["off", "auto", "always"] as const satisfies readonly SurgeIpv6VifMode[];
+type ClashLikeBaseConfig = Pick<
+  AppConfig["clash"],
+  "port" | "socksPort" | "mixedPort" | "allowLan" | "mode" | "logLevel" | "ipv6" | "unifiedDelay" | "tcpConcurrent" | "externalController"
+>;
+type ClashLikeTunConfig = AppConfig["clash"]["tun"];
+type ClashLikeDnsConfig = AppConfig["stash"]["dns"];
+type LoosePartial<T> = { [Key in keyof T]?: T[Key] | undefined };
+
+function notificationChannelFromTelegramToken(token: string): NotificationChannel {
+  return token.trim() ? "telegram" : "off";
+}
+
+export function normalizeTarget(value: string | null | undefined): Target | null {
+  const lowered = String(value ?? "").toLowerCase();
+  if (lowered === "surge" || lowered === "clash" || lowered === "stash") return lowered;
+  return null;
+}
+
+export function normalizeConfig(input: AppConfig): AppConfig {
+  const chain = normalizeChain(input.chain);
+  const groups = normalizeGroups(typeof input.groups === "object" && input.groups ? input.groups : DEFAULT_CONFIG.groups);
+  const notificationTelegramBotToken = stringValue(input.settings?.notificationTelegramBotToken, "");
+  return {
+    version: 1,
+    settings: {
+      managedBaseUrl: stringValue(input.settings?.managedBaseUrl, DEFAULT_CONFIG.settings.managedBaseUrl),
+      userAgentSurge: input.settings?.userAgentSurge || DEFAULT_CONFIG.settings.userAgentSurge,
+      userAgentClash: input.settings?.userAgentClash || DEFAULT_CONFIG.settings.userAgentClash,
+      excludeKeywords: Array.isArray(input.settings?.excludeKeywords) ? input.settings.excludeKeywords : [],
+      geoipRenameEnabled: input.settings?.geoipRenameEnabled !== false,
+      featureTagRules: stringArray(input.settings?.featureTagRules, DEFAULT_CONFIG.settings.featureTagRules),
+      updateCheckEnabled: input.settings?.updateCheckEnabled === true,
+      displayTimeZone: normalizeDisplayTimeZone(input.settings?.displayTimeZone),
+      notificationChannel: notificationChannelFromTelegramToken(notificationTelegramBotToken),
+      notificationTelegramChatId: notificationTelegramBotToken ? stringValue(input.settings?.notificationTelegramChatId, "") : "",
+      notificationTelegramBotToken,
+      notificationTelegramWebhookSecret: notificationTelegramBotToken ? stringValue(input.settings?.notificationTelegramWebhookSecret, "") : ""
+    },
+    groups,
+    disabledGroups: normalizeDisabledGroups(input.disabledGroups, groups),
+    sources: Array.isArray(input.sources) ? input.sources.map(normalizeSource) : [],
+    proxyNodes: Array.isArray(input.proxyNodes) ? normalizeProxyNodes(input.proxyNodes) : DEFAULT_CONFIG.proxyNodes,
+    chain,
+    surge: normalizeSurge(input.surge),
+    clash: normalizeClash(input.clash),
+    stash: normalizeStash(input.stash),
+    updatedAt: input.updatedAt
+  };
+}
+
+function normalizeGroups(input: Record<string, string>): Record<string, string> {
+  const groupNames = new Set(Object.keys(input));
+  return Object.fromEntries(Object.entries(input).map(([name, spec]) => [
+    name,
+    normalizeGroupSpec(name, spec, groupNames)
+  ]));
+}
+
+function normalizeGroupSpec(name: string, spec: string, groupNames: Set<string>): string {
+  const [type = "select", ...items] = splitGroupSpec(String(spec));
+  if (isSubnetGroupType(type)) {
+    const filtered: string[] = [];
+    let hasDefault = false;
+    for (const item of items) {
+      if (!isSubnetGroupOption(item, name)) continue;
+      const isDefault = parseGroupOption(item)?.key.toLowerCase() === "default";
+      if (isDefault) {
+        if (hasDefault) continue;
+        hasDefault = true;
+      }
+      filtered.push(item);
+    }
+    if (!hasDefault) {
+      filtered.unshift("default=Proxy");
+    }
+    return [type, ...filtered].join(", ");
+  }
+  const filtered = items.filter((item, index) => {
+    if (item === "Proxy" || item === name) return false;
+    if (groupNames.has(item)) return items.indexOf(item) === index;
+    return isGroupOption(item) || isAllSelector(item);
+  });
+  return [type, ...filtered].join(", ");
+}
+
+function isAllSelector(item: string): boolean {
+  return isAllPolicySelector(item);
+}
+
+function isGroupOption(item: string): boolean {
+  const option = parseGroupOption(item);
+  return Boolean(option);
+}
+
+function isSubnetGroupType(type: string): boolean {
+  return type === "subnet";
+}
+
+function isSubnetGroupOption(item: string, groupName: string): boolean {
+  const option = parseGroupOption(item);
+  if (!option) return false;
+  const key = option.key;
+  const value = option.value;
+  if (!value || value === groupName) return false;
+  return key.toLowerCase() === "default" || isSubnetConditionKey(key);
+}
+
+function isSubnetConditionKey(key: string): boolean {
+  return /^(SSID|BSSID|ROUTER):.+$/i.test(key) || /^TYPE:(WIFI|WIRED|CELLULAR)$/i.test(key);
+}
+
+function normalizeDisabledGroups(input: unknown, groups: Record<string, string>): string[] {
+  if (!Array.isArray(input)) return DEFAULT_CONFIG.disabledGroups;
+  const knownGroups = new Set(Object.keys(groups));
+  const output: string[] = [];
+  for (const item of input) {
+    const name = typeof item === "string" ? item.trim() : "";
+    if (!name || name === "Proxy" || !knownGroups.has(name) || output.includes(name)) continue;
+    output.push(name);
+  }
+  return output;
+}
+
+export function inferManagedBaseUrl(requestUrl: string): string {
+  return `${new URL(requestUrl).origin}/sync`;
+}
+
+export function withInferredManagedBaseUrl(config: AppConfig, requestUrl: string): AppConfig {
+  const managedBaseUrl = config.settings.managedBaseUrl.trim();
+  if (managedBaseUrl) {
+    return {
+      ...config,
+      settings: {
+        ...config.settings,
+        managedBaseUrl
+      }
+    };
+  }
+
+  return {
+    ...config,
+    settings: {
+      ...config.settings,
+      managedBaseUrl: inferManagedBaseUrl(requestUrl)
+    }
+  };
+}
+
+export function normalizeSource(source: SourceConfig): SourceConfig {
+  return {
+    id: source.id || crypto.randomUUID(),
+    name: source.name || "source",
+    url: source.url || "",
+    urlEncrypted: source.urlEncrypted,
+    fetchUserAgent: normalizeSourceFetchUserAgent(source.fetchUserAgent),
+    enabled: source.enabled !== false
+  };
+}
+
+function normalizeSourceFetchUserAgent(value: unknown): SourceConfig["fetchUserAgent"] {
+  return value === "clash" ? value : "surge";
+}
+
+function normalizeProxyNodes(nodes: StaticProxyNodeConfig[]): StaticProxyNodeConfig[] {
+  const seenIds = new Set<string>();
+  const seenNames = new Set<string>();
+  return nodes.flatMap((node, index) => {
+    const normalized = normalizeProxyNode(node, index, seenNames);
+    if (!normalized || seenIds.has(normalized.id)) return [];
+    seenIds.add(normalized.id);
+    return [normalized];
+  });
+}
+
+function normalizeProxyNode(value: unknown, index: number, seenNames: Set<string>): StaticProxyNodeConfig | null {
+  const record = value && typeof value === "object" ? value as Record<string, unknown> : {};
+  const config = normalizeProxyNodeConfig(record, index, seenNames);
+  if (!config) return null;
+  const id = normalizeProxyNodeId(record.id, index);
+  const chainExit = record.chainExit === true;
+  return {
+    id,
+    config,
+    chainFilter: filterArray(record.chainFilter, []),
+    enabled: record.enabled !== false,
+    chainExit,
+    includeInGroups: chainExit ? record.includeInGroups === true : true
+  };
+}
+
+function normalizeProxyNodeConfig(record: Record<string, unknown>, index: number, seenNames: Set<string>): string {
+  const config = typeof record.config === "string" ? record.config.trim() : "";
+  if (config) return config;
+  const protocol = chainExitProtocol(record.protocol, "socks5");
+  const rawName = typeof record.name === "string" ? record.name.trim() : "";
+  const name = uniqueProxyNodeName(rawName || `Proxy Node ${index + 1}`, seenNames);
+  const legacy = legacyProxyNodeParams(record);
+  return legacy ? `${name} = ${protocol}, ${legacy}` : "";
+}
+
+function legacyProxyNodeParams(record: Record<string, unknown>): string {
+  const server = typeof record.server === "string" ? record.server.trim() : "";
+  const port = clampNumber(record.port, 1, 65535, 0);
+  if (!server || !port) return "";
+  const protocol = chainExitProtocol(record.protocol, "socks5");
+  const username = typeof record.username === "string" ? record.username.trim() : "";
+  const password = typeof record.password === "string" ? record.password.trim() : "";
+  const parts = [server, String(port)];
+  if (protocol === "ss") {
+    if (username) parts.push(`encrypt-method=${username}`);
+    if (password) parts.push(`password=${password}`);
+  } else if (protocol === "snell") {
+    if (password) parts.push(`psk=${password}`);
+    parts.push("version=4");
+  } else if (protocol === "tuic") {
+    if (username) parts.push(`username=${username}`);
+    if (password) parts.push(`password=${password}`);
+  } else if (["trojan", "hysteria2", "anytls"].includes(protocol)) {
+    if (password) parts.push(`password=${password}`);
+  } else {
+    if (username) parts.push(`username=${username}`);
+    if (password) parts.push(`password=${password}`);
+  }
+  return parts.join(", ");
+}
+
+function normalizeProxyNodeId(value: unknown, index: number): string {
+  const raw = typeof value === "string" ? value.trim() : "";
+  const cleaned = raw.replace(/[^A-Za-z0-9_-]/g, "-").replace(/-+/g, "-").replace(/^-+|-+$/g, "");
+  return cleaned || `proxy-node-${index + 1}`;
+}
+
+function uniqueProxyNodeName(name: string, seenNames: Set<string>): string {
+  let candidate = name;
+  let suffix = 2;
+  while (seenNames.has(candidate)) {
+    candidate = `${name} ${suffix}`;
+    suffix += 1;
+  }
+  seenNames.add(candidate);
+  return candidate;
+}
+
+export function normalizeSurge(input: Partial<AppConfig["surge"]> | undefined): AppConfig["surge"] {
+  const surge = input ?? {};
+  const urlRewrite = stringArray(surge.urlRewrite, DEFAULT_CONFIG.surge.urlRewrite);
+  const mitm = normalizeSurgeMitm(surge.mitm);
+  const inferredMitmHosts = inferUrlRewriteMitmHostnames(urlRewrite);
+  const encryptedDnsServer = stringArray(surge.encryptedDnsServer, DEFAULT_CONFIG.surge.encryptedDnsServer);
+  return {
+    skipProxy: stringArray(surge.skipProxy, DEFAULT_CONFIG.surge.skipProxy),
+    dnsServer: stringArray(surge.dnsServer, DEFAULT_CONFIG.surge.dnsServer),
+    alwaysRealIp: stringArray(surge.alwaysRealIp, DEFAULT_CONFIG.surge.alwaysRealIp),
+    managedConfigIntervalSeconds: clampNumber(surge.managedConfigIntervalSeconds, 300, 604800, DEFAULT_CONFIG.surge.managedConfigIntervalSeconds),
+    internetTestUrl: stringValue(surge.internetTestUrl, DEFAULT_CONFIG.surge.internetTestUrl),
+    proxyTestUrl: stringValue(surge.proxyTestUrl, DEFAULT_CONFIG.surge.proxyTestUrl),
+    showErrorPageForReject: surge.showErrorPageForReject !== false,
+    ipv6: surge.ipv6 !== false,
+    ipv6Vif: surgeIpv6VifMode(surge.ipv6Vif, DEFAULT_CONFIG.surge.ipv6Vif),
+    allowWifiAccess: surge.allowWifiAccess === true,
+    tunExcludedRoutes: stringArray(surge.tunExcludedRoutes, DEFAULT_CONFIG.surge.tunExcludedRoutes),
+    encryptedDnsServer,
+    wifiAssist: surge.wifiAssist === true,
+    excludeSimpleHostnames: surge.excludeSimpleHostnames !== false,
+    encryptedDnsFollowOutboundMode: encryptedDnsServer.length > 0 && surge.encryptedDnsFollowOutboundMode !== false,
+    ponteDeviceNames: normalizePonteDeviceNames(surge.ponteDeviceNames),
+    hosts: stringArray(surge.hosts, DEFAULT_CONFIG.surge.hosts),
+    urlRewrite,
+    scripts: stringArray(surge.scripts, DEFAULT_CONFIG.surge.scripts),
+    mitm: {
+      ...mitm,
+      hostname: [...new Set([...mitm.hostname, ...inferredMitmHosts])]
+    },
+    rules: stringArray(surge.rules, DEFAULT_CONFIG.surge.rules)
+  };
+}
+
+function normalizeSurgeMitm(input: Partial<AppConfig["surge"]["mitm"]> | undefined): AppConfig["surge"]["mitm"] {
+  const mitm = input ?? {};
+  return {
+    skipServerCertVerify: mitm.skipServerCertVerify !== false,
+    h2: mitm.h2 !== false,
+    hostname: stringArray(mitm.hostname, DEFAULT_CONFIG.surge.mitm.hostname),
+    caPassphrase: typeof mitm.caPassphrase === "string" ? mitm.caPassphrase.trim() : DEFAULT_CONFIG.surge.mitm.caPassphrase,
+    caP12: typeof mitm.caP12 === "string" ? mitm.caP12.trim() : DEFAULT_CONFIG.surge.mitm.caP12
+  };
+}
+
+function normalizePonteDeviceNames(value: unknown): string[] {
+  if (!Array.isArray(value)) return DEFAULT_CONFIG.surge.ponteDeviceNames;
+  return [...new Set(value
+    .map((item) => String(item).trim().replace(/^DEVICE:/i, "").trim())
+    .filter((item) => item && !/[,\r\n[\]]/.test(item)))];
+}
+
+export function normalizeClash(input: Partial<AppConfig["clash"]> | undefined): AppConfig["clash"] {
+  const clash = input ?? {};
+  const base = normalizeClashLikeBase(clash, DEFAULT_CONFIG.clash);
+  const dns = normalizeClashLikeDns({
+    enable: clash.dnsEnabled,
+    listen: clash.dnsListen,
+    ipv6: clash.dnsIpv6,
+    enhancedMode: clash.dnsEnhancedMode,
+    fakeIpRange: clash.dnsFakeIpRange,
+    defaultNameservers: clash.defaultNameservers,
+    nameservers: clash.nameservers,
+    fallbackNameservers: clash.fallbackNameservers,
+    fallbackFilterGeoip: clash.fallbackFilterGeoip,
+    fallbackFilterIpcidr: clash.fallbackFilterIpcidr,
+    fakeIpFilter: clash.fakeIpFilter
+  }, {
+    enable: DEFAULT_CONFIG.clash.dnsEnabled,
+    listen: DEFAULT_CONFIG.clash.dnsListen,
+    ipv6: DEFAULT_CONFIG.clash.dnsIpv6,
+    enhancedMode: DEFAULT_CONFIG.clash.dnsEnhancedMode,
+    fakeIpRange: DEFAULT_CONFIG.clash.dnsFakeIpRange,
+    defaultNameservers: DEFAULT_CONFIG.clash.defaultNameservers,
+    nameservers: DEFAULT_CONFIG.clash.nameservers,
+    fallbackNameservers: DEFAULT_CONFIG.clash.fallbackNameservers,
+    fallbackFilterGeoip: DEFAULT_CONFIG.clash.fallbackFilterGeoip,
+    fallbackFilterIpcidr: DEFAULT_CONFIG.clash.fallbackFilterIpcidr,
+    fakeIpFilter: DEFAULT_CONFIG.clash.fakeIpFilter
+  });
+  return {
+    ...base,
+    tun: normalizeClashLikeTun(clash.tun, DEFAULT_CONFIG.clash.tun),
+    dnsEnabled: dns.enable,
+    dnsListen: dns.listen,
+    dnsIpv6: dns.ipv6,
+    dnsEnhancedMode: dns.enhancedMode,
+    dnsFakeIpRange: dns.fakeIpRange,
+    defaultNameservers: dns.defaultNameservers,
+    nameservers: dns.nameservers,
+    fallbackNameservers: dns.fallbackNameservers,
+    fallbackFilterGeoip: dns.fallbackFilterGeoip,
+    fallbackFilterIpcidr: dns.fallbackFilterIpcidr,
+    fakeIpFilter: dns.fakeIpFilter,
+    ruleProviders: normalizeRuleProviders(clash.ruleProviders, DEFAULT_CONFIG.clash.ruleProviders),
+    rules: stringArray(clash.rules, DEFAULT_CONFIG.clash.rules)
+  };
+}
+
+export function normalizeStash(input: Partial<AppConfig["stash"]> | undefined): AppConfig["stash"] {
+  const stash = input ?? {};
+  return {
+    ...normalizeClashLikeBase(stash, DEFAULT_CONFIG.stash),
+    tun: normalizeClashLikeTun(stash.tun, DEFAULT_CONFIG.stash.tun),
+    dns: normalizeStashDns(stash.dns),
+    ruleProviders: normalizeRuleProviders(stash.ruleProviders, DEFAULT_CONFIG.stash.ruleProviders),
+    rules: stringArray(stash.rules, DEFAULT_CONFIG.stash.rules),
+    hosts: stringArray(stash.hosts, DEFAULT_CONFIG.stash.hosts),
+    urlRewrite: stringArray(stash.urlRewrite, DEFAULT_CONFIG.stash.urlRewrite),
+    scripts: stringArray(stash.scripts, DEFAULT_CONFIG.stash.scripts),
+    mitm: normalizeStashMitm(stash.mitm)
+  };
+}
+
+function normalizeStashDns(input: Partial<AppConfig["stash"]["dns"]> | undefined): AppConfig["stash"]["dns"] {
+  return normalizeClashLikeDns(input ?? {}, DEFAULT_CONFIG.stash.dns);
+}
+
+function normalizeClashLikeBase(input: LoosePartial<ClashLikeBaseConfig>, defaults: ClashLikeBaseConfig): ClashLikeBaseConfig {
+  return {
+    port: clampNumber(input.port, 1, 65535, defaults.port),
+    socksPort: clampNumber(input.socksPort, 1, 65535, defaults.socksPort),
+    mixedPort: clampNumber(input.mixedPort, 1, 65535, defaults.mixedPort),
+    allowLan: input.allowLan === true,
+    mode: stringValue(input.mode, defaults.mode),
+    logLevel: stringValue(input.logLevel, defaults.logLevel),
+    ipv6: input.ipv6 !== false,
+    unifiedDelay: input.unifiedDelay !== false,
+    tcpConcurrent: input.tcpConcurrent !== false,
+    externalController: stringValue(input.externalController, defaults.externalController)
+  };
+}
+
+function normalizeClashLikeTun(input: LoosePartial<ClashLikeTunConfig> | undefined, defaults: ClashLikeTunConfig): ClashLikeTunConfig {
+  const tun = input ?? {};
+  return {
+    enable: tun.enable !== false,
+    stack: stringValue(tun.stack, defaults.stack),
+    autoRoute: tun.autoRoute !== false,
+    autoDetectInterface: tun.autoDetectInterface !== false,
+    skipProxy: stringArray(tun.skipProxy, defaults.skipProxy)
+  };
+}
+
+function normalizeClashLikeDns(input: LoosePartial<ClashLikeDnsConfig>, defaults: ClashLikeDnsConfig): ClashLikeDnsConfig {
+  const dns = input ?? {};
+  return {
+    enable: dns.enable !== false,
+    listen: stringValue(dns.listen, defaults.listen),
+    ipv6: dns.ipv6 !== false,
+    enhancedMode: normalizeDnsEnhancedMode(dns.enhancedMode, defaults.enhancedMode),
+    fakeIpRange: stringValue(dns.fakeIpRange, defaults.fakeIpRange),
+    defaultNameservers: stringArray(dns.defaultNameservers, defaults.defaultNameservers),
+    nameservers: stringArray(dns.nameservers, defaults.nameservers),
+    fallbackNameservers: stringArray(dns.fallbackNameservers, defaults.fallbackNameservers),
+    fallbackFilterGeoip: dns.fallbackFilterGeoip !== false,
+    fallbackFilterIpcidr: stringArray(dns.fallbackFilterIpcidr, defaults.fallbackFilterIpcidr),
+    fakeIpFilter: stringArray(dns.fakeIpFilter, defaults.fakeIpFilter)
+  };
+}
+
+function normalizeDnsEnhancedMode(value: unknown, fallback: string): string {
+  return value === "fake-ip" || value === "redir-host" ? value : fallback;
+}
+
+function normalizeRuleProviders(input: unknown, fallback: string): string {
+  if (input === undefined || input === null) return fallback;
+  return typeof input === "string" ? input.trimEnd() : fallback;
+}
+
+function normalizeStashMitm(input: Partial<AppConfig["stash"]["mitm"]> | undefined): AppConfig["stash"]["mitm"] {
+  const mitm = input ?? {};
+  return {
+    hostname: stringArray(mitm.hostname, DEFAULT_CONFIG.stash.mitm.hostname)
+  };
+}
+
+export function normalizeChain(_input: { filter?: unknown } | undefined): AppConfig["chain"] {
+  return {
+    filter: []
+  };
+}
+
+function chainExitProtocol(value: unknown, fallback: ChainExitProtocol): ChainExitProtocol {
+  return typeof value === "string" && CHAIN_EXIT_PROTOCOLS.includes(value as ChainExitProtocol)
+    ? value as ChainExitProtocol
+    : fallback;
+}
+
+function surgeIpv6VifMode(value: unknown, fallback: SurgeIpv6VifMode): SurgeIpv6VifMode {
+  return typeof value === "string" && SURGE_IPV6_VIF_MODES.includes(value as SurgeIpv6VifMode)
+    ? value as SurgeIpv6VifMode
+    : fallback;
+}
+
+function filterArray(value: unknown, fallback: string[]): string[] {
+  if (!Array.isArray(value)) return fallback;
+  return [...new Set(value.map((item) => typeof item === "string" ? item.trim() : "").filter(Boolean))];
+}
+
+function stringValue(value: unknown, fallback: string): string {
+  return typeof value === "string" && value.trim() ? value.trim() : fallback;
+}
+
+function stringArray(value: unknown, fallback: string[]): string[] {
+  if (!Array.isArray(value)) return fallback;
+  return value.map((item) => String(item).trim()).filter(Boolean);
+}
+
+function clampNumber(value: unknown, min: number, max: number, fallback: number): number {
+  const parsed = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(min, Math.min(max, Math.floor(parsed)));
+}

@@ -4,30 +4,15 @@ import { createHash, randomBytes } from "node:crypto";
 import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { spawnSync } from "node:child_process";
 import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
+import { capture, run } from "./lib/commands.mjs";
 
 const CONFIG_PATH = "wrangler.jsonc";
 const TEMPLATE_PATH = "wrangler.example.jsonc";
 const PLACEHOLDER_KV_ID = "00000000000000000000000000000000";
 const DEFAULT_SOURCE_REFRESH_HOURS = 12;
 const args = new Set(process.argv.slice(2));
-
-function run(command, commandArgs, options = {}) {
-  const result = spawnSync(command, commandArgs, { stdio: "inherit", ...options });
-  if (result.status !== 0) process.exit(result.status ?? 1);
-}
-
-function capture(command, commandArgs) {
-  const result = spawnSync(command, commandArgs, { encoding: "utf8" });
-  if (result.status !== 0) {
-    process.stderr.write(result.stdout ?? "");
-    process.stderr.write(result.stderr ?? "");
-    process.exit(result.status ?? 1);
-  }
-  return `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
-}
 
 function stripAnsi(value) {
   return value.replace(/\u001b\[[0-9;]*m/g, "");
@@ -149,7 +134,7 @@ async function ensureKvNamespace() {
     return;
   }
 
-  const outputText = capture("wrangler", ["kv", "namespace", "create", "SUBPILOT_CONFIG"]);
+  const outputText = capture("wrangler", ["kv", "namespace", "create", "SUBPILOT_CONFIG"], { includeStderr: true });
   const namespaceId = extractNamespaceId(outputText);
   if (!namespaceId) {
     process.stderr.write("Could not parse KV namespace id from Wrangler output.\n");
@@ -208,7 +193,7 @@ function putSecrets(adminToken, encryptionKey) {
   }
 }
 
-capture("wrangler", ["--version"]);
+capture("wrangler", ["--version"], { includeStderr: true });
 const createdConfig = ensureConfigFile();
 replaceWorkerName(process.env.SUBPILOT_WORKER_NAME);
 await ensureKvNamespace();

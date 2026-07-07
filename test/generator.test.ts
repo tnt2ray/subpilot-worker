@@ -263,6 +263,39 @@ describe("generation", () => {
     });
   });
 
+  it("converts reuse to a boolean when rendering manual snell nodes for Clash-like targets", async () => {
+    const env = makeEnv();
+    const config = {
+      ...DEFAULT_CONFIG,
+      settings: {
+        ...DEFAULT_CONFIG.settings,
+        geoipRenameEnabled: false
+      },
+      proxyNodes: [chainExitProxyNode({
+        id: "snell",
+        config: "DMIT = snell, 191.223.220.184, 42821, psk=secret, version=4, reuse=true, tfo=true",
+        chainFilter: [],
+        chainExit: false
+      })]
+    };
+
+    for (const target of ["clash", "stash"] as const) {
+      const result = await generateConfig(env, config, target, "https://subpilot.example.com/sync/token/");
+      const [proxy] = (YAML.parse(result.content) as { proxies: Record<string, unknown>[] }).proxies;
+
+      expect(proxy).toMatchObject({
+        name: "DMIT",
+        type: "snell",
+        psk: "secret",
+        version: 4,
+        reuse: true,
+        tfo: true
+      });
+      expect(result.content).toContain("reuse: true");
+      expect(result.content).not.toContain('reuse: "true"');
+    }
+  });
+
   it("keeps same protocol server and port nodes when their proxy parameters differ", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
       if (url === "https://example.com/simple") {
@@ -707,6 +740,57 @@ describe("generation", () => {
     expect(surge.content).toContain("RULE-SET,https://example.com/disney.list,Proxy");
     expect(clashParsed["proxy-groups"].some((group) => group.name === "Disney")).toBe(false);
     expect(clashParsed.rules).toContain("RULE-SET,Disney,Proxy");
+  });
+
+  it("rewrites unavailable rule targets with commas inside parentheses", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("JP 1 = trojan, jp.example.com, 443, password=p"));
+    const env = makeEnv();
+    const config = {
+      ...DEFAULT_CONFIG,
+      settings: {
+        ...DEFAULT_CONFIG.settings,
+        geoipRenameEnabled: false
+      },
+      groups: {
+        Proxy: "select, {all}"
+      },
+      sources: [{
+        id: "src1",
+        name: "Primary",
+        url: "https://example.com/sub",
+        fetchUserAgent: "surge" as const,
+        enabled: true
+      }],
+      surge: {
+        ...DEFAULT_CONFIG.surge,
+        rules: [
+          "URL-REGEX,^https://example.com/(a,b),Removed",
+          "FINAL,Proxy"
+        ]
+      },
+      clash: {
+        ...DEFAULT_CONFIG.clash,
+        rules: [
+          "URL-REGEX,^https://example.com/(a,b),Removed",
+          "MATCH,Proxy"
+        ]
+      },
+      stash: {
+        ...DEFAULT_CONFIG.stash,
+        rules: [
+          "URL-REGEX,^https://example.com/(a,b),Removed",
+          "MATCH,Proxy"
+        ]
+      }
+    };
+
+    const surge = await generateConfig(env, config, "surge", "https://subpilot.example.com/sync/token/");
+    const clash = YAML.parse((await generateConfig(env, config, "clash", "https://subpilot.example.com/sync/token/")).content) as { rules: string[] };
+    const stash = YAML.parse((await generateConfig(env, config, "stash", "https://subpilot.example.com/sync/token/")).content) as { rules: string[] };
+
+    expect(surge.content).toContain("URL-REGEX,^https://example.com/(a,b),Proxy");
+    expect(clash.rules).toContain("URL-REGEX,^https://example.com/(a,b),Proxy");
+    expect(stash.rules).toContain("URL-REGEX,^https://example.com/(a,b),Proxy");
   });
 
   it("adds Proxy fallback rules for Clash rule providers missing from rules", async () => {

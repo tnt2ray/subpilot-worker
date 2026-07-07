@@ -1,3 +1,40 @@
+import {
+  CODE_EDITOR_PAGES,
+  CONFIG_BARE_VALUE_PATTERN,
+  CONFIG_IPV4_CIDR_PATTERN,
+  CONFIG_IPV4_PATTERN,
+  CONFIG_NUMBER_PATTERN,
+  CONFIG_PROXY_PARAM_KEY_PATTERN,
+  CONFIG_PROXY_PROTOCOL_PATTERN,
+  DEFAULT_CLASH_LOG_LEVEL,
+  DEFAULT_CLASH_MODE,
+  DEFAULT_DISPLAY_TIME_ZONE,
+  EDITABLE_PAGES,
+  FETCH_RECORDS_PAGE_SIZE,
+  PAGES,
+  PROXY_NODE_PROTOCOLS,
+} from "./app-constants.js";
+import { I18N } from "./app-i18n.js";
+import { parseAllSelector, parseGroupOption, splitPolicyGroupSpec } from "./app-policy-group-spec.js";
+import { parseProxyNodeConfigDraft } from "./app-proxy-node-drafts.js";
+import { groupPreviewWarnings, simplifyPreviewRuleSetNames } from "./app-preview-warnings.js";
+import {
+  splitSurgeHostLine,
+  splitSurgeUrlRewriteLine,
+  validateStashScriptLines,
+  validateSurgeHostLines,
+  validateSurgeUrlRewriteLines
+} from "./app-validation.js";
+import {
+  parseYamlPair,
+  quoteYamlKey,
+  quoteYamlListItem,
+  quoteYamlScalar,
+  stripYamlComment,
+  unquoteYamlScalar,
+  yamlIndent
+} from "./app-yaml.js";
+
 let state = null;
 let lastSavedState = null;
 let fetchStats = null;
@@ -15,484 +52,8 @@ let saveStatusResetTimer = 0;
 let telegramBindPollTimer = 0;
 let codeMirrorLoadPromise = null;
 
-const PAGES = ["status", "settings", "proxy-nodes", "sources", "groups", "surge", "clash", "stash", "tokens"];
-const EDITABLE_PAGES = new Set(["settings", "groups", "sources", "proxy-nodes", "surge", "clash", "stash"]);
-const CODE_EDITOR_PAGES = new Set(["proxy-nodes", "surge", "clash", "stash", "tokens"]);
-const PROXY_NODE_PROTOCOLS = ["http", "https", "socks5", "socks5-tls", "ss", "snell", "trojan", "vmess", "hysteria2", "tuic", "anytls", "trust-tunnel", "ssh"];
-const PROXY_NODE_URI_PATTERN = /^(?:trojan|vless|vmess|ss|hysteria2|hy2|tuic|anytls):\/\//i;
-const CONFIG_PROXY_PROTOCOL_PATTERN = /(?:socks5-tls|trust-tunnel|hysteria2|hysteria|anytls|socks5|trojan|vmess|vless|snell|https|http|tuic|hy2|ss|ssh)(?=\s*(?:,|#|;|\]|\)|$))/i;
-const CONFIG_PROXY_PARAM_KEY_PATTERN = /(?:allow-insecure|alterId|alpn|client-fingerprint|cipher|down|encrypt-method|fast-open|fingerprint|flow|grpc-opts|h2-opts|headers|host|http-opts|ip-version|network|obfs|obfs-host|obfs-password|obfs-opts|obfs-uri|passwd|password|path|plugin|plugin-opts|psk|reality-opts|salamander-password|security|server-cert-fingerprint-sha256|servername|skip-cert-verify|skip-server-cert-verify|sni|spx|tls|token|tfo|udp|udp-relay|up|uuid|username|version|ws|ws-headers|ws-opts|ws-path)(?=\s*[:=])/i;
-const CONFIG_IPV4_CIDR_PATTERN = /\d{1,3}(?:\.\d{1,3}){3}\/\d{1,2}(?=\s*(?:,|#|;|\]|\)|$))/;
-const CONFIG_IPV4_PATTERN = /\d{1,3}(?:\.\d{1,3}){3}(?=\s*(?:,|#|;|\]|\)|$))/;
-const CONFIG_NUMBER_PATTERN = /-?\d+(?:\.\d+)?(?=\s*(?:,|#|;|\]|\)|$))/;
-const CONFIG_BARE_VALUE_PATTERN = /[A-Za-z_][\w.-]*(?=\s*(?:,|#|;|\]|\)|$))/;
-const FETCH_RECORDS_PAGE_SIZE = 10;
-const DEFAULT_DISPLAY_TIME_ZONE = "Asia/Shanghai";
-const DEFAULT_CLASH_MODE = "Rule";
-const DEFAULT_CLASH_LOG_LEVEL = "info";
 let activePage = getPageFromHash();
 const renderedPages = new Set();
-
-const I18N = {
-  title: "SubPilot 控制台",
-  navStatus: "状态",
-  navSystem: "系统",
-  navConfiguration: "基础系统配置",
-  navPolicyGroups: "策略组",
-  navSources: "订阅源",
-  navProxyNodes: "代理节点",
-  navSurge: "Surge",
-  navClash: "Clash",
-  navStash: "Stash",
-  navAccess: "访问",
-  navTokens: "配置链接",
-  pageStatusTitle: "状态",
-  pageStatusDescription: "查看服务状态、订阅数量和最近获取记录。",
-  pageSettingsTitle: "基础系统配置",
-  pageSettingsDescription: "编辑生成行为、上游请求头和缓存策略。",
-  pageGroupsTitle: "策略组",
-  pageGroupsDescription: "按输出顺序编辑 Surge 与 Clash 的策略组。",
-  pageSourcesTitle: "订阅源",
-  pageSourcesDescription: "管理上游订阅地址和拉取方式；启用的订阅会参与配置生成。",
-  pageProxyNodesTitle: "代理节点",
-  pageProxyNodesDescription: "管理手动维护的代理节点，并为链式出口配置独立过滤器。",
-  pageSurgeTitle: "Surge",
-  pageSurgeDescription: "管理 Surge 输出所需的通用设置、规则、脚本和 MITM 选项。",
-  pageClashTitle: "Clash",
-  pageClashDescription: "管理 Clash 输出所需的端口、TUN、DNS 和规则配置。",
-  pageStashTitle: "Stash",
-  pageStashDescription: "管理 Stash 输出所需的端口、TUN、DNS、Host、URL Rewrite、脚本、MITM 和规则配置。",
-  pageTokensTitle: "配置链接",
-  pageTokensDescription: "复制自动识别订阅链接，并生成 Surge、Clash 或 Stash 配置预览。",
-  idle: "保存并应用",
-  saving: "保存中",
-  saved: "已保存",
-  saveFailed: "保存失败：",
-  saveApply: "保存并应用",
-  loginTitle: "管理员登录",
-  adminToken: "管理令牌",
-  secretTokenPlaceholder: "输入管理令牌",
-  adminTokenHelp: "请输入管理员令牌以进入控制台。",
-  login: "登录",
-  configurationTitle: "SubPilot 配置",
-  managedBaseUrl: "托管基础地址",
-  managedBaseUrlHelp: "用于生成订阅链接的基础地址，通常保持当前域名即可。",
-  surgeUserAgent: "Surge User-Agent",
-  surgeUserAgentHelp: "拉取上游订阅并生成 Surge 输出时发送。",
-  clashUserAgent: "Clash User-Agent",
-  clashUserAgentHelp: "拉取上游订阅并生成 Clash 输出时发送。",
-  excludeKeywords: "排除关键词",
-  excludeKeywordsHelp: "逗号分隔，节点名称包含这些关键词时会在策略组生成前移除。",
-  featureTagRules: "能力标签规则",
-  featureTagRulesHelp: "每行一个规则，格式为 标签=关键词1,关键词2。命中原始节点名后会追加标签。",
-  displayTimeZone: "显示时区",
-  displayTimeZoneHelp: "仅影响后台和通知中的时间显示；系统内部仍按 UTC 保存时间。",
-  geoIpMmdb: "GeoIP MMDB",
-  chooseGeoIpMmdb: "选择 .mmdb",
-  uploadGeoIpMmdb: "上传",
-  uploadGeoIpMmdbUploading: "上传中",
-  geoIpMmdbStatusEmpty: "尚未上传 MMDB。",
-  geoIpMmdbStatusReady: "当前文件：{fileName}，{size}，上传时间 {time}。",
-  geoIpMmdbSelectFile: "请先选择 .mmdb 文件。",
-  geoIpMmdbUploadFailed: "上传 MMDB 失败：",
-  geoIpMmdbMissingNotice: "未上传 MMDB 时，服务只能使用已有的单 IP 记录识别地区；没有记录的 IP 节点无法自动判断国家/地区，会影响 IP 节点重命名、按地区筛选和链式节点地区匹配的完整性。",
-  geoIpMmdbHelp: "上传 MaxMind DB Country 格式 .mmdb 后，IP 节点地区识别会优先使用该库。",
-  geoIpMmdbPathHelp: "可从本机客户端选择现有文件：",
-  telegramNotification: "Telegram 配置",
-  telegramBotTokenPlaceholder: "Bot Token",
-  telegramBindCode: "生成绑定命令",
-  telegramBindCodeLoading: "生成中",
-  telegramBindMissingToken: "请先填写 Bot Token。",
-  telegramBindFailed: "生成绑定命令失败：",
-  telegramUnbind: "解除绑定",
-  telegramUnbindConfirm: "确定解除当前 Telegram 通知绑定吗？",
-  telegramUnbindFailed: "解除绑定失败：",
-  telegramBindCommandHelp: "10 分钟内发送给 Telegram bot：",
-  telegramBindStatusBound: "已绑定 Telegram 会话。需要更换接收会话时，请先解除绑定。",
-  telegramBindStatusUnbound: "尚未绑定 Telegram 会话。填写 Bot Token 后生成绑定命令，并发送给你的 bot。",
-  telegramBindCommandSteps: "下一步：打开 Telegram，把下面这条命令发送给 bot。绑定成功后 bot 会回复确认消息。",
-  telegramBindCommandExpires: "过期时间：{time}",
-  telegramNotificationHelp: "填写 Bot Token 即启用 Telegram 通知；清空 Bot Token 即关闭通知。生成一次性绑定命令后，把命令发送给 bot，系统会通过 webhook 自动记录 Chat ID。",
-  sourceCacheRefreshFailed: "强制获取完成，但有 {count} 个订阅源失败：\n{warnings}",
-  sourceCacheNotificationWarnings: "\n\n通知状态：\n{warnings}",
-  sourceCacheStatus: "上游缓存",
-  proxyNodesTitle: "代理节点",
-  addProxyNode: "添加代理节点",
-  newProxyNode: "新代理节点",
-  proxyNodeConfigText: "配置文本",
-  proxyNodeFlags: "用途",
-  proxyNodeEnabled: "启用此节点",
-  proxyNodeChainExit: "作为链式出口",
-  proxyNodeIncludeInGroups: "出口节点加入策略组",
-  proxyNodeChainFilter: "链式过滤器",
-  proxyNodeNoRows: "暂无代理节点。添加后可作为普通节点输出，也可标记为链式代理出口。",
-  proxyNodeConfigHelp: "填写完整单个节点配置。支持 Surge [Proxy] 行，也支持 Clash proxy YAML；启用状态和链式出口由右上方选框控制。",
-  proxyNodeConfigPlaceholder: "Surge: Chain Exit = socks5, example.com, 443, username=u, password=p\n\nClash:\nname: Chain Exit\ntype: snell\nserver: example.com\nport: 44046\npsk: secret\nversion: 4",
-  proxyNodeChainFilterHelp: "仅作为链式出口时生效。逗号分隔，按最终节点名、地区或能力标签筛选；为空则不生成链式节点。",
-  proxyNodeChainFilterPlaceholder: "JP, KR, AI",
-  proxyNodeIncludeInGroupsHelp: "仅作为链式出口时生效。开启后，这个出口节点本身也会进入 {all} 策略组；关闭时只输出用于链式代理。",
-  proxyNodeFlagsHelp: "启用后参与配置生成；标记为链式出口后，会按本节点过滤器生成对应链式代理。",
-  proxyNodeValidationError: "存在无效代理节点，已阻止保存。",
-  proxyNodeGroupNameConflict: "代理节点名称 {name} 不能和策略组名称相同。",
-  groupsTitle: "策略组",
-  addGroup: "添加策略组",
-  newGroup: "新策略组",
-  groupValidationError: "存在无效策略组，已阻止保存。",
-  groupProxyNodeNameConflict: "策略组名称 {name} 不能和代理节点名称相同。",
-  policyGroups: "策略组",
-  tableDefinition: "生成规则",
-  groupType: "类型",
-  groupTypeHelpSelect: "手动选择一个策略组或节点，适合作为主入口组。",
-  groupTypeHelpUrlTest: "自动测速并选择延迟最低的可用项；Surge 输出会使用 smart，Clash 输出会使用 url-test。",
-  groupTypeHelpFallback: "按固定策略组顺序备用，前面的不可用才切到后面的。",
-  groupTypeHelpLoadBalance: "在多个固定策略组之间分摊连接，适合同地区、质量接近的线路。",
-  groupTypeHelpSubnet: "根据当前网络环境选择策略。此类型仅输出到 Surge；Clash 会跳过此组，并把规则中引用它的目标回退到 Proxy。",
-  groupTypeLabelSelect: "手动选择",
-  groupTypeLabelAuto: "自动选择",
-  groupTypeLabelFallback: "故障转移",
-  groupTypeLabelLoadBalance: "负载均衡",
-  groupTypeLabelSubnet: "按网络环境",
-  groupFixedChoices: "纳入其它策略组",
-  groupFixedChoicesHelp: "选择已添加的其它策略组；Proxy 是保底组。节点请通过“自动加入订阅源节点”加入。",
-  noGroupChoices: "暂无可选策略组",
-  groupIncludeAll: "自动加入订阅源节点",
-  groupFilterKeywords: "纳入包含以下关键字的节点",
-  groupExcludeKeywords: "排除以下关键字的节点",
-  groupNodeRuleHelp: "留空时向该策略组添加所有可用节点；包含与排除条件会同时生效。",
-  groupSubnetDefault: "默认策略",
-  groupSubnetDefaultHelp: "必填。没有命中任何网络条件时使用；可选 Proxy、其它策略组或 Surge 内置策略，不能选择当前组本身。",
-  groupSubnetRules: "网络条件映射",
-  groupSubnetRulesHelp: "可选参数，可按顺序重复添加；每条条件都需要选择参数、查询值和使用策略。SSID/BSSID 支持通配符。",
-  groupSubnetAddRule: "添加条件",
-  groupSubnetNoRules: "暂无网络条件；未命中任何条件时会使用默认策略。",
-  groupSubnetParameter: "参数",
-  groupSubnetQuery: "查询值",
-  groupSubnetPolicy: "使用策略",
-  groupSubnetParamSsid: "Wi-Fi 名称",
-  groupSubnetParamBssid: "BSSID",
-  groupSubnetParamRouter: "路由器 IP",
-  groupSubnetParamType: "网络类型",
-  groupSubnetTypeWifi: "Wi-Fi",
-  groupSubnetTypeWired: "有线",
-  groupSubnetTypeCellular: "蜂窝",
-  groupUrl: "测试 URL",
-  groupInterval: "间隔秒数",
-  groupAdvancedOptions: "其它参数",
-  groupAdvancedOptionsHelp: "逗号分隔的原始 key=value 参数，仅在需要高级选项时填写。",
-  groupGeneratedDefinition: "生成定义",
-  groupEnabled: "启用此组",
-  builtInGroup: "不可删除",
-  builtInGroupHelp: "Proxy 名称固定且不可删除。",
-  sourcesTitle: "订阅源",
-  addSource: "添加订阅源",
-  tableName: "名称",
-  tableFetchUserAgent: "拉取 User-Agent",
-  tableEnabled: "启用",
-  tableUrl: "订阅 URL",
-  tableAction: "操作",
-  sourceFetchUserAgentHelp: "选择请求该订阅地址时使用的客户端标识。",
-  sourceNameHelp: "用于标识节点来源，生成时会作为节点名前缀。",
-  sourceUrlHelp: "上游订阅地址。启用后会参与 Surge、Clash 和 Stash 配置生成。",
-  fetchUserAgentSurge: "Surge User-Agent",
-  fetchUserAgentClash: "Clash User-Agent",
-  remove: "移除",
-  newSource: "新订阅源",
-  textEditMode: "文本编辑模式",
-  structuredEditMode: "结构化编辑模式",
-  generatedOutput: "生成结果",
-  textConfigContent: "文本配置",
-  surgeConfigTitle: "Surge 功能配置",
-  surgeTabGeneral: "General",
-  surgeTabHost: "Host",
-  surgeTabUrlRewrite: "URL Rewrite",
-  surgeTabScript: "Script",
-  surgeTabMitm: "MITM",
-  surgeTabPonte: "Ponte",
-  surgeTabRule: "Rule",
-  surgeHosts: "Surge Host",
-  surgeHostAdvancedMode: "文本编辑模式",
-  addSurgeHost: "添加 Host 规则",
-  surgeHostName: "主机名",
-  surgeHostValue: "解析值",
-  surgeHostOutput: "生成结果",
-  surgeHostPonteNotice: "Ponte 外部访问局域网示例：在 Host 添加 lan-device.home -> 192.168.1.10，在 Ponte 页填写承载该局域网的设备名 Home-Mac，再在 Rule 中添加 DOMAIN,lan-device.home,DEVICE:Home-Mac。外部设备访问 http://lan-device.home:5000 时，会经 Ponte 设备访问 192.168.1.10:5000。",
-  surgeHostEditorHelp: "Host 用于 Surge 本地 DNS 映射；可把域名映射到 IP、别名域名，或为某个域名指定 DNS 服务器。",
-  surgeHostNoRows: "暂无 Host 规则。添加后会在下方生成 Surge [Host] 内容。",
-  surgeHostValidationError: "存在无效 Surge Host 配置，已阻止保存。请修正后再保存。",
-  surgeHostHelpName: "例如 example.com、*.dev、Macbook。",
-  surgeHostHelpValue: "例如 1.2.3.4、1.1.1.1, 1.0.0.1、alias.example.com、server:8.8.8.8、server:system、server:https://cloudflare-dns.com/dns-query。",
-  surgeUrlRewrite: "URL Rewrite",
-  surgeUrlRewriteAdvancedMode: "文本编辑模式",
-  addSurgeUrlRewrite: "添加 URL Rewrite",
-  surgeUrlRewritePattern: "匹配正则",
-  surgeUrlRewriteReplacement: "替换值",
-  surgeUrlRewriteType: "动作",
-  surgeUrlRewriteOutput: "生成结果",
-  surgeUrlRewriteHttpsMitmNotice: "如果 URL Rewrite 匹配 https:// 请求，必须在 MITM 页启用对应主机名，否则该规则不会生效。",
-  surgeUrlRewriteEditorHelp: "URL Rewrite 用于按 URL 正则执行 header 重写、302 跳转或 reject 拒绝。",
-  surgeUrlRewriteNoRows: "暂无 URL Rewrite。添加后会在下方生成 Surge [URL Rewrite] 内容。",
-  surgeUrlRewriteValidationError: "存在无效 Surge URL Rewrite 配置，已阻止保存。请修正后再保存。",
-  surgeUrlRewriteReplacementHelp: "reject 动作可使用 -；header 和 302 需要填写 http 或 https URL。",
-  surgeScripts: "Surge 脚本",
-  surgeScriptsHelp: "填写脚本定义，每行一条，例如：名称 = type=...,pattern=...,script-path=...。",
-  surgeScriptValidationError: "存在无效 Surge 脚本配置，已阻止保存。请修正后再保存。",
-  surgeMitmOptions: "MITM 选项",
-  surgeMitmCertificateNotice: "MITM 解密 HTTPS 前，需要生成或导入 CA 证书，并在使用该配置的设备上安装且信任该证书。",
-  surgeMitmSkipServerCertVerify: "跳过服务器证书验证",
-  surgeMitmH2: "启用 HTTP/2 解密",
-  surgeMitmOptionsHelp: "启用证书校验跳过可以绕过上游证书异常，但也会降低连接校验强度。",
-  surgeMitmHostname: "MITM 主机名",
-  surgeMitmHostnameHelp: "Surge 只会对这里列出的域名执行 HTTPS 解密。每行一个主机名，支持通配符。",
-  surgeMitmCa: "MITM CA",
-  generateSurgeMitmCa: "生成 CA 证书",
-  generateSurgeMitmCaPassphrase: "生成 CA 密码",
-  importSurgeMitmCaP12: "导入 .p12",
-  surgeMitmCaGenerating: "正在生成 CA 证书...",
-  surgeMitmCaGenerated: "CA 证书已生成，证书包已填入，并已开始下载 .p12 文件。",
-  surgeMitmCaFailed: "CA 证书生成失败：",
-  surgeMitmCaHelp: "可在当前浏览器生成 CA 证书，或选择 .p12/.pfx 文件导入。CA 私钥会进入配置文件，请保护管理令牌和读取链接。",
-  addSurgeRule: "添加单条规则",
-  addSurgeRuleSet: "添加规则集",
-  surgeRuleKind: "类型",
-  surgeRuleKindSingle: "单条规则",
-  surgeRuleKindRuleSet: "规则集",
-  surgeRuleSetType: "集合类型",
-  surgeRuleType: "规则类型",
-  surgeRuleValue: "匹配值",
-  surgeRuleSetName: "规则集地址",
-  surgeRulePolicy: "策略出口",
-  surgeRuleOptions: "附加参数",
-  surgeRuleOptionNone: "无",
-  surgeRuleOptionInvalid: "附加参数不适用于当前规则类型。",
-  surgeRuleOutput: "生成结果",
-  surgeRuleAdvancedMode: "文本编辑模式",
-  surgeRuleEditorHelp: "规则集和单条规则使用不同语法；策略出口只能选择已配置策略组或 Surge 内置策略。",
-  surgeRuleNoRows: "暂无规则。添加规则后会在下方生成 Surge [Rule] 内容。",
-  surgeRuleUnknownPolicy: "策略出口必须是已配置策略组或 Surge 内置策略。",
-  surgeRuleFinalLocked: "FINAL 是兜底规则，固定在最后，不能删除或移动。",
-  surgeRuleFinalMissing: "必须保留一个 FINAL 兜底规则。",
-  surgeRuleFinalDuplicate: "只能保留一个 FINAL 兜底规则。",
-  surgeRuleFinalNotLast: "FINAL 兜底规则必须位于最后。",
-  surgeRuleValidationError: "存在无效 Surge 规则，已阻止保存。请修正后再保存。",
-  moveUp: "上移",
-  moveDown: "下移",
-  clashConfigTitle: "Clash 功能配置",
-  clashTabGeneral: "General",
-  clashTabDns: "DNS",
-  clashTabProviders: "规则集",
-  clashTabRules: "Rule",
-  skipProxy: "跳过代理",
-  skipProxyHelp: "这些主机、域名或网段不进入代理处理，通常用于本机、局域网、运营商保留地址和系统探测域名。",
-  dnsServer: "DNS 服务器",
-  dnsServerHelp: "Surge 普通 DNS 解析使用的服务器列表，按顺序尝试。使用逗号分隔。",
-  alwaysRealIp: "始终真实 IP",
-  alwaysRealIpHelp: "匹配这些域名时始终返回真实 IP，适合游戏、STUN、语音视频等不适合 fake-ip 的服务。使用逗号分隔。",
-  internetTestUrl: "联网测试地址",
-  internetTestUrlHelp: "Surge 用这个地址判断当前网络是否可直连互联网，通常使用返回 204 的探测 URL。",
-  proxyTestUrl: "代理测试地址",
-  proxyTestUrlHelp: "Surge 用这个地址测试代理连通性，通常使用稳定返回 204 的探测 URL。",
-  managedConfigInterval: "主配置更新间隔",
-  managedConfigIntervalHelp: "写入 #!MANAGED-CONFIG 的 interval，单位秒；默认 43200（12 小时）。",
-  showErrorPageForReject: "Reject 错误页",
-  showErrorPageForRejectHelp: "启用后，HTTP 请求命中 REJECT 规则时显示 Surge 错误页，便于识别拦截原因。",
-  ipv6Help: "控制 Surge 输出中是否启用 IPv6。",
-  ipv6Vif: "IPv6 虚拟接口",
-  ipv6VifHelp: "控制 Surge 虚拟接口的 IPv6 行为。off 不启用 IPv6 VIF，auto 在本地网络支持 IPv6 时自动启用，always 始终启用。",
-  allowWifiAccess: "允许 Wi-Fi 访问",
-  allowWifiAccessHelp: "启用后，同一 Wi-Fi 网络中的其它设备可以访问本机 Surge 代理端口。",
-  tunExcludedRoutes: "TUN 排除路由",
-  tunExcludedRoutesHelp: "这些网段不会被 Surge TUN 接管，通常用于保留局域网、私有地址和组播发现地址的直连访问。使用逗号分隔。",
-  encryptedDnsServer: "加密 DNS 服务器",
-  encryptedDnsServerHelp: "Surge 使用的 DoH/DoQ 等加密 DNS 服务器列表。使用逗号分隔。",
-  wifiAssist: "Wi-Fi Assist",
-  wifiAssistHelp: "控制 Surge 是否启用 Wi-Fi Assist 网络辅助能力。",
-  excludeSimpleHostnames: "排除简单主机名",
-  excludeSimpleHostnamesHelp: "启用后，不带点号的简单主机名不会交给远端 DNS，适合保留局域网主机名解析。",
-  encryptedDnsFollowOutboundMode: "加密 DNS 跟随出站模式",
-  encryptedDnsFollowOutboundModeHelp: "启用后，仅 Surge 自己发出的加密 DNS 查询会跟随当前出站模式，避免这部分 DNS 流量绕过当前策略。",
-  surgePonteDeviceNames: "Ponte 设备名",
-  surgePonteDeviceNamesHelp: "填写 Surge Ponte 设备名，逗号分隔；保存后可在 Rule 的策略出口中选择 DEVICE:<设备名>。",
-  surgeRules: "Surge 规则",
-  ports: "端口",
-  clashHttpPort: "HTTP 代理端口",
-  clashHttpPortHelp: "HTTP 代理入口，供浏览器或系统 HTTP 代理使用。",
-  clashSocksPort: "SOCKS5 代理端口",
-  clashSocksPortHelp: "SOCKS5 代理入口，供支持 SOCKS5 的应用使用。",
-  clashMixedPort: "混合代理端口",
-  clashMixedPortHelp: "同时接受 HTTP 和 SOCKS5，通常作为默认代理入口。",
-  clashNetworkOptions: "网络选项",
-  clashAllowLanHelp: "允许局域网其它设备访问 Clash 代理端口。",
-  clashIpv6Help: "控制 Clash 输出中是否启用 IPv6 解析和连接。",
-  modeAndLog: "模式 / 日志级别",
-  clashExternalController: "external-controller",
-  clashExternalControllerHelp: "Clash 外部控制器监听地址；0.0.0.0:9090 表示监听所有 IPv4 网络接口，不按来源地址限制访问。",
-  clashRuntimeOptions: "运行选项",
-  clashUnifiedDelay: "统一延迟",
-  clashUnifiedDelayHelp: "统一节点测速口径，减少握手差异造成的延迟偏差。",
-  clashTcpConcurrent: "TCP 并发",
-  clashTcpConcurrentHelp: "对同一域名解析出的多个 IP 并发连接，使用最先连通的地址。",
-  clashTunMode: "TUN 模式",
-  clashTunEnableHelp: "通过 TUN 接管系统流量；关闭后隐藏相关设置，并从生成结果中移除 tun 配置。",
-  clashTunRouteOptions: "TUN 路由 / 栈",
-  clashTunAutoRoute: "自动路由",
-  clashTunAutoRouteHelp: "自动添加系统路由，把匹配流量导入 TUN。",
-  clashTunAutoDetectInterface: "自动检测接口",
-  clashTunAutoDetectInterfaceHelp: "自动识别当前出口网卡，减少手动指定接口的需要。",
-  clashTunStack: "TUN 栈",
-  clashTunStackHelp: "选择 TUN 网络栈实现；system 使用系统栈，gvisor 使用用户态栈，mixed 由客户端混合处理。",
-  clashTunSkipProxy: "TUN 跳过代理",
-  clashTunSkipProxyHelp: "TUN 开启时每行一个地址或网段；这些目标不进入 TUN 代理处理。",
-  dnsSettings: "DNS 设置",
-  dnsEnabled: "启用 DNS",
-  dnsEnabledHelp: "启用 Clash 内置 DNS 服务，下面的 DNS 解析配置才会生效。",
-  dnsIpv6: "DNS IPv6",
-  dnsIpv6Help: "允许 DNS 返回 IPv6 结果；是否实际连接 IPv6 还受 General 中 IPv6 开关影响。",
-  clashDnsListen: "listen",
-  clashDnsListenHelp: "DNS 服务监听地址，只有启用 DNS 后生效。",
-  clashDnsResolveOptions: "DNS 解析方式",
-  clashDnsResolveMode: "返回模式",
-  clashDnsEnhancedMode: "DNS 处理模式",
-  clashDnsEnhancedModeHelp: "选择 Clash DNS 如何返回解析结果：fake-ip 返回虚拟 IP，适合 TUN 和透明代理；redir-host 返回真实 IP，兼容性较高。",
-  clashDnsFakeIpRange: "fake-ip-range",
-  clashDnsFakeIpRangeHelp: "仅返回模式为 fake-ip 时生效；用于设置 fake-ip 使用的 IPv4 地址段。",
-  clashDefaultNameservers: "默认 DNS",
-  clashDefaultNameserversHelp: "每行一个基础 DNS，通常填写纯 IP；用于解析 DNS 服务器本身的域名。",
-  nameservers: "DNS 服务器",
-  nameserversHelp: "每行一个上游 DNS；Clash DNS 默认优先使用这里的服务器解析域名。",
-  clashFallbackNameservers: "Fallback DNS",
-  clashFallbackNameserversHelp: "每行一个备用 DNS；Fallback 过滤命中时使用这里的解析结果。",
-  clashFallbackFilter: "Fallback 过滤",
-  clashFallbackFilterGeoipHelp: "根据 GeoIP 判断主 DNS 结果是否需要回退；命中时使用 Fallback DNS。",
-  clashFallbackFilterIpcidrHelp: "每行一个 IP 或 CIDR；主 DNS 结果命中这些地址段时使用 Fallback DNS。",
-  clashFakeIpFilter: "Fake-IP 过滤",
-  clashFakeIpFilterHelp: "仅返回模式为 fake-ip 时生效；匹配的域名返回真实解析结果，不分配 fake-ip。",
-  clashRuleProviders: "规则集提供者",
-  clashRuleProviderAdvancedMode: "文本编辑模式",
-  addClashRuleProvider: "添加规则集",
-  clashRuleProviderNoRows: "暂无规则集提供者。",
-  clashRuleProviderName: "名称",
-  clashRuleProviderType: "类型",
-  clashRuleProviderBehavior: "行为",
-  clashRuleProviderUrl: "URL",
-  clashRuleProviderInterval: "更新间隔",
-  clashRuleProvidersYaml: "YAML",
-  clashRuleProvidersStructuredHelp: "结构化模式用于编辑常用字段，保存时会写入标准 Clash rule-providers YAML。",
-  clashRuleProvidersHelp: "YAML 顶层固定为 rule-providers；每个规则集可配置 type、behavior、url、interval，path 由系统按名称生成。",
-  clashRuleProviderValidationError: "规则集配置存在错误，请先修正。",
-  clashRules: "Clash 规则",
-  clashRuleAdvancedMode: "文本编辑模式",
-  addClashRule: "添加单条规则",
-  addClashRuleSet: "添加规则集",
-  clashRuleKind: "类型",
-  clashRuleKindSingle: "单条规则",
-  clashRuleKindRuleSet: "规则集",
-  clashRuleType: "规则类型",
-  clashRuleValue: "匹配值",
-  clashRuleSetName: "规则集名称",
-  clashRulePolicy: "策略出口",
-  clashRuleOptions: "附加参数",
-  clashRulesYaml: "YAML",
-  clashRuleStructuredHelp: "结构化模式按顺序编辑 Clash 规则；规则从上到下匹配，命中后停止。rule-providers 中的规则集会自动补入 rules，并默认使用 Proxy。",
-  clashRulesHelp: "YAML 顶层固定为 rules；每一项使用标准 Clash 规则语法，例如 RULE-SET,Google,Proxy 或 MATCH,Proxy。",
-  clashRuleNoRows: "暂无规则。添加后会在下方生成标准 Clash rules YAML。",
-  clashRuleUnknownPolicy: "策略出口必须是已配置策略组或 Clash 内置策略。",
-  clashRuleUnknownProvider: "规则集名称必须来自 rule-providers。",
-  clashRuleSetDeleteProviderConfirm: "删除规则集规则 {name} 会同时删除 rule-providers 中的同名规则集。是否继续？",
-  clashRuleMatchLocked: "MATCH 是兜底规则，固定在最后，不能删除或移动。",
-  clashRuleMatchMissing: "必须保留一个 MATCH 兜底规则。",
-  clashRuleMatchDuplicate: "只能保留一个 MATCH 或 FINAL 兜底规则。",
-  clashRuleMatchNotLast: "MATCH 或 FINAL 兜底规则必须位于最后。",
-  clashRuleValidationError: "存在无效 Clash 规则，已阻止保存。请修正后再保存。",
-  stashConfigTitle: "Stash 功能配置",
-  stashTabGeneral: "General",
-  stashTabHost: "Host",
-  stashTabUrlRewrite: "URL Rewrite",
-  stashTabScript: "Script",
-  stashTabMitm: "MITM",
-  stashTabRule: "Rule",
-  stashIpv6Help: "控制 Stash 输出中是否启用 IPv6 解析和连接。",
-  stashTunEnableHelp: "通过 TUN 接管系统流量；关闭后隐藏相关设置，并从 Stash 生成结果中移除 tun 配置。",
-  stashDnsEnabledHelp: "启用 Stash 内置 DNS 服务，下面的 DNS 解析配置才会生效。",
-  stashHosts: "Stash Host",
-  stashHostHelp: "每行一个 Host 映射，格式为 example.com = 1.2.3.4。Stash 输出会把这里的 Host 覆盖同名上游 Host。",
-  stashHostValidationError: "存在无效 Stash Host 配置，已阻止保存。请修正后再保存。",
-  stashUrlRewrite: "URL Rewrite",
-  stashUrlRewriteValidationError: "存在无效 Stash URL Rewrite 配置，已阻止保存。请修正后再保存。",
-  stashScripts: "Stash 脚本",
-  stashScriptsHelp: "每行一条脚本定义，例如：名称 = type=http-response,requires-body=1,max-size=0,pattern=...,script-path=https://...。",
-  stashScriptValidationError: "存在无效 Stash 脚本配置，已阻止保存。请修正后再保存。",
-  stashMitmHostname: "MITM 主机名",
-  stashMitmHostnameHelp: "Stash 只会对这里列出的域名执行 HTTPS 解密。每行一个主机名，支持通配符。",
-  stashMitmCertificateNotice: "Stash CA 由客户端本地生成；SubPilot 不保存也不会下发 CA 私钥、ca-p12 或 ca-passphrase。",
-  stashRuleProviders: "rule-providers",
-  stashRuleProvidersValidationError: "规则集配置存在错误，请先修正。",
-  stashRules: "Stash 规则",
-  stashRulesHelp: "YAML 顶层固定为 rules；每一项使用标准 Stash/Clash 规则语法，例如 RULE-SET,Google,Proxy 或 MATCH,Proxy。",
-  stashRuleValidationError: "存在无效 Stash 规则，已阻止保存。请修正后再保存。",
-  linksTitle: "配置链接",
-  automaticLink: "自动识别",
-  rotateReadToken: "刷新订阅令牌",
-  copyLink: "复制",
-  copied: "已复制",
-  copyFailed: "复制失败",
-  previewTitle: "配置预览",
-  previewEmpty: "点击上方按钮生成预览。",
-  previewLoading: "正在生成 {target} 配置预览，请稍候...",
-  previewFailed: "配置预览生成失败：",
-  previewWarnings: "诊断提示：",
-  validateSurgeOnline: "Surge 在线验证",
-  validateSurgeOnlineRisk: "在线验证会将后台生成的脱敏 Surge 配置提交至 services.nssurge.com；真实代理服务器、端口、用户名、密码、token、SNI、WebSocket Host 和外部资源地址不会提交，规则内容仍会用于校验。是否继续？",
-  validateSurgeOnlineRunning: "正在提交 Surge 在线验证...",
-  validateSurgeOnlinePassed: "Surge 在线验证通过。",
-  validateSurgeOnlineFailed: "Surge 在线验证失败：",
-  statusTitle: "SubPilot 状态",
-  sources: "订阅源",
-  fetchRecordsTitle: "配置获取记录",
-  fetchColumnTarget: "配置",
-  fetchColumnTime: "最近获取",
-  fetchColumnUa: "客户端 UA",
-  fetchColumnNetwork: "IP / 位置",
-  fetchRecordsPrev: "上一页",
-  fetchRecordsNext: "下一页",
-  fetchRecordsPageInfo: "{start}-{end} / {total}",
-  fetchTargetSurge: "Surge 配置",
-  fetchTargetClash: "Clash 配置",
-  fetchTargetStash: "Stash 配置",
-  neverFetched: "尚未获取",
-  noRecentUa: "暂无获取记录",
-  unknownIp: "未知 IP",
-  unknownLocation: "未知位置",
-  emptyCell: "-",
-  sourceCacheEmpty: "当前没有上游订阅缓存",
-  sourceCacheUnknown: "等待定时任务或手动强制获取",
-  sourceCacheUpdatedAt: "{count} 项缓存，上次刷新 {time}",
-  sourceCacheCoverage: "订阅源缓存：{cached} / {expected}",
-  sourceCacheCoverageReady: "全部已缓存",
-  sourceCacheCoverageMissing: "缺 {count} 个",
-  sourceCacheEntryCount: "缓存条目：{count}",
-  sourceCacheUpdatedLabel: "更新时间：{time}",
-  sourceCacheProtocols: "协议节点：{value}",
-  sourceCacheNoNodes: "未解析到节点",
-  sourceCacheSourceCached: "{name}：已缓存，{count} 个节点",
-  sourceCacheSourceProtocols: "；协议 {value}",
-  sourceCacheSourceMissing: "{name}：未缓存",
-  systemStatusTitle: "版本状态",
-  currentVersion: "当前版本",
-  latestVersion: "最新版本",
-  checkUpdate: "检查更新",
-  checkingUpdate: "检查中",
-  updateCheck: "版本更新检查",
-  updateCheckHelp: "启用后，定时任务每天最多访问一次 GitHub Releases；如果已绑定 Telegram，有新版本时只提醒一次。也可以在状态页手动检查。",
-  updateCheckNever: "未检查",
-  updateAvailable: "发现新版本 {version}",
-  updateCurrent: "已是最新版本",
-  updateCheckFailed: "检查失败：{error}",
-  updateCheckDisabled: "自动检查未启用",
-  refreshSourceCache: "强制获取",
-  refreshingSourceCache: "获取中",
-  enabled: "已启用",
-  disabled: "已禁用"
-};
 
 const $ = (id) => document.getElementById(id);
 const refs = {
@@ -1443,57 +1004,6 @@ function renderStash() {
 const CLASH_RULE_PROVIDER_TYPES = ["http", "file"];
 const CLASH_RULE_PROVIDER_BEHAVIORS = ["classical", "domain", "ipcidr"];
 
-function yamlIndent(line) {
-  return String(line || "").match(/^\s*/)?.[0].length || 0;
-}
-
-function stripYamlComment(value) {
-  const text = String(value || "");
-  let quote = "";
-  for (let index = 0; index < text.length; index += 1) {
-    const char = text[index];
-    if ((char === "\"" || char === "'") && text[index - 1] !== "\\") {
-      quote = quote === char ? "" : quote || char;
-    }
-    if (char === "#" && !quote && (index === 0 || /\s/.test(text[index - 1]))) {
-      return text.slice(0, index).trim();
-    }
-  }
-  return text.trim();
-}
-
-function unquoteYamlScalar(value) {
-  const text = stripYamlComment(value);
-  if ((text.startsWith("\"") && text.endsWith("\"")) || (text.startsWith("'") && text.endsWith("'"))) {
-    return text.slice(1, -1);
-  }
-  return text;
-}
-
-function quoteYamlScalar(value) {
-  const text = String(value || "").trim();
-  if (!text) return "\"\"";
-  return /^[A-Za-z0-9_./:@%+?=&~-]+$/.test(text)
-    ? text
-    : JSON.stringify(text);
-}
-
-function quoteYamlKey(value) {
-  const text = String(value || "").trim();
-  return /^[A-Za-z0-9_.-]+$/.test(text)
-    ? text
-    : JSON.stringify(text);
-}
-
-function parseYamlPair(line) {
-  const index = String(line || "").indexOf(":");
-  if (index < 0) return null;
-  return {
-    key: unquoteYamlScalar(line.slice(0, index)),
-    value: line.slice(index + 1)
-  };
-}
-
 function defaultClashRuleProvider() {
   return {
     name: "",
@@ -1814,14 +1324,6 @@ const CLASH_VALUELESS_RULE_TYPES = new Set(["MATCH", "FINAL"]);
 const CLASH_RULE_OPTION_ORDER = ["no-resolve"];
 const CLASH_NO_RESOLVE_RULE_TYPES = new Set(["RULE-SET", "GEOIP", "IP-CIDR", "IP-CIDR6", "IP-ASN"]);
 
-function quoteYamlListItem(value) {
-  const text = String(value || "").trim();
-  if (!text) return "\"\"";
-  return /^[A-Za-z0-9_./:@%+?=&~,*()| -]+$/.test(text) && !/^[-?:]/.test(text)
-    ? text
-    : JSON.stringify(text);
-}
-
 function parseClashRulesYaml(value) {
   const text = String(value || "").replace(/\r\n?/g, "\n").trimEnd();
   if (!text.trim()) return { rules: [], errors: [] };
@@ -1925,25 +1427,31 @@ function allowedClashRuleOptions(kind, ruleType) {
   return CLASH_NO_RESOLVE_RULE_TYPES.has(type) ? new Set(["no-resolve"]) : new Set();
 }
 
-function normalizeClashRuleOptions(value, kind, ruleType) {
-  const allowed = allowedClashRuleOptions(kind, ruleType);
+function normalizeRuleOptions(value, allowed, optionOrder) {
   const requested = String(value || "").split(",").map((item) => item.trim().toLowerCase()).filter(Boolean);
   const output = [];
-  for (const option of CLASH_RULE_OPTION_ORDER) {
+  for (const option of optionOrder) {
     if (requested.includes(option) && allowed.has(option)) output.push(option);
   }
   return output.join(",");
 }
 
-function validateClashRuleOptions(options, kind, ruleType) {
+function validateRuleOptions(options, allowed, optionOrder) {
   const values = (options || []).map((option) => option.trim().toLowerCase()).filter(Boolean);
   const uniqueValues = new Set(values);
   if (uniqueValues.size !== values.length) return "附加参数不能重复";
-  const allowed = allowedClashRuleOptions(kind, ruleType);
-  const invalid = values.filter((option) => !allowed.has(option) || !CLASH_RULE_OPTION_ORDER.includes(option));
+  const invalid = values.filter((option) => !allowed.has(option) || !optionOrder.includes(option));
   if (invalid.length === 0) return "";
   const allowedText = [...allowed].join(", ") || t("surgeRuleOptionNone");
   return `${t("surgeRuleOptionInvalid")} 可用参数：${allowedText}。`;
+}
+
+function normalizeClashRuleOptions(value, kind, ruleType) {
+  return normalizeRuleOptions(value, allowedClashRuleOptions(kind, ruleType), CLASH_RULE_OPTION_ORDER);
+}
+
+function validateClashRuleOptions(options, kind, ruleType) {
+  return validateRuleOptions(options, allowedClashRuleOptions(kind, ruleType), CLASH_RULE_OPTION_ORDER);
 }
 
 function renderClashRuleOptionChoices(kind, ruleType, selected) {
@@ -2563,82 +2071,6 @@ function setGroupDisabled(name, disabled) {
   state.disabledGroups = Array.from(disabledGroups).filter((item) => Object.prototype.hasOwnProperty.call(state.groups, item));
 }
 
-function splitSurgeHostLine(line) {
-  const trimmed = String(line || "").trim();
-  const separatorIndex = trimmed.indexOf("=");
-  if (separatorIndex < 0) return { host: trimmed, value: "" };
-  return {
-    host: trimmed.slice(0, separatorIndex).trim(),
-    value: trimmed.slice(separatorIndex + 1).trim()
-  };
-}
-
-function isValidSurgeHostName(value) {
-  return Boolean(value)
-    && !/[\s=,[\]]/.test(value)
-    && !value.includes("://");
-}
-
-function isValidSurgeHostValue(value) {
-  const trimmed = String(value || "").trim();
-  if (!trimmed || /[\s,[\]]/.test(trimmed)) return false;
-  if (!trimmed.startsWith("server:")) return !trimmed.includes("=");
-
-  const server = trimmed.slice("server:".length);
-  if (!server) return false;
-  if (server === "system") return true;
-  if (server.includes("=") || /[\s,[\]]/.test(server)) return false;
-
-  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(server)) {
-    try {
-      return ["https:", "h3:", "quic:", "tls:"].includes(new URL(server).protocol);
-    } catch {
-      return false;
-    }
-  }
-  return true;
-}
-
-function validateSurgeHostLine(line, lineNumber) {
-  const trimmed = String(line || "").trim();
-  const result = { errors: [], warnings: [] };
-  if (!trimmed || trimmed.startsWith("#") || trimmed.startsWith(";")) return result;
-  if (/^\[[^\]]+\]$/.test(trimmed)) {
-    result.errors.push(`第 ${lineNumber} 行不能包含配置段标题`);
-    return result;
-  }
-
-  const separatorIndex = trimmed.indexOf("=");
-  if (separatorIndex <= 0 || !trimmed.slice(separatorIndex + 1).trim()) {
-    result.errors.push(`第 ${lineNumber} 行语法应为 主机名 = 解析值`);
-    return result;
-  }
-
-  const { host, value } = splitSurgeHostLine(trimmed);
-  if (!isValidSurgeHostName(host)) {
-    result.errors.push(`第 ${lineNumber} 行主机名格式无效`);
-  }
-  const values = value.split(",").map((item) => item.trim());
-  if (values.some((item) => !item)) {
-    result.errors.push(`第 ${lineNumber} 行解析值存在空项`);
-  }
-  const invalidValue = values.find((item) => item && !isValidSurgeHostValue(item));
-  if (invalidValue) {
-    result.errors.push(`第 ${lineNumber} 行解析值格式无效：${invalidValue}`);
-  }
-  return result;
-}
-
-function validateSurgeHostLines(lines) {
-  const validation = { errors: [], warnings: [] };
-  (lines || []).forEach((line, index) => {
-    const result = validateSurgeHostLine(line, index + 1);
-    validation.errors.push(...result.errors);
-    validation.warnings.push(...result.warnings);
-  });
-  return validation;
-}
-
 function renderSurgeHostValidation(validation) {
   const messages = [
     ...(validation?.errors || []).map((message) => ({ type: "error", message })),
@@ -2772,62 +2204,6 @@ function handleSurgeHostListClick(event) {
   row.remove();
   ensureSurgeHostEmptyState();
   updateSurgeHostOutput();
-}
-
-function splitSurgeUrlRewriteLine(line) {
-  const parts = String(line || "").trim().split(/\s+/);
-  return {
-    pattern: parts[0] || "",
-    replacement: parts[1] || "",
-    type: (parts[2] || "").toLowerCase()
-  };
-}
-
-function isValidUrlRewriteReplacement(type, replacement) {
-  const trimmed = String(replacement || "").trim();
-  if (!trimmed) return false;
-  if (type === "reject") return true;
-  return /^https?:\/\//i.test(trimmed);
-}
-
-function validateSurgeUrlRewriteLine(line, lineNumber) {
-  const trimmed = String(line || "").trim();
-  const result = { errors: [], warnings: [] };
-  if (!trimmed || trimmed.startsWith("#") || trimmed.startsWith(";")) return result;
-  if (/^\[[^\]]+\]$/.test(trimmed)) {
-    result.errors.push(`第 ${lineNumber} 行不能包含配置段标题`);
-    return result;
-  }
-
-  const parts = trimmed.split(/\s+/);
-  if (parts.length !== 3) {
-    result.errors.push(`第 ${lineNumber} 行语法应为 正则 替换值 类型`);
-    return result;
-  }
-
-  const { pattern, replacement, type } = splitSurgeUrlRewriteLine(trimmed);
-  if (!["header", "302", "reject"].includes(type)) {
-    result.errors.push(`第 ${lineNumber} 行动作类型必须是 header、302 或 reject`);
-  }
-  try {
-    new RegExp(pattern);
-  } catch {
-    result.errors.push(`第 ${lineNumber} 行正则表达式无效`);
-  }
-  if (!isValidUrlRewriteReplacement(type, replacement)) {
-    result.errors.push(`第 ${lineNumber} 行 ${type || "该"} 动作需要有效替换 URL`);
-  }
-  return result;
-}
-
-function validateSurgeUrlRewriteLines(lines) {
-  const validation = { errors: [], warnings: [] };
-  (lines || []).forEach((line, index) => {
-    const result = validateSurgeUrlRewriteLine(line, index + 1);
-    validation.errors.push(...result.errors);
-    validation.warnings.push(...result.warnings);
-  });
-  return validation;
 }
 
 function renderSurgeUrlRewriteValidation(validation) {
@@ -3117,14 +2493,7 @@ function validateSurgeRuleLine(line, lineNumber) {
 }
 
 function validateSurgeRuleOptions(options, kind, setType, ruleType) {
-  const values = (options || []).map((option) => option.trim().toLowerCase()).filter(Boolean);
-  const uniqueValues = new Set(values);
-  if (uniqueValues.size !== values.length) return "附加参数不能重复";
-  const allowed = allowedSurgeRuleOptions(kind, setType, ruleType);
-  const invalid = values.filter((option) => !allowed.has(option) || !SURGE_RULE_OPTION_ORDER.includes(option));
-  if (invalid.length === 0) return "";
-  const allowedText = [...allowed].join(", ") || t("surgeRuleOptionNone");
-  return `${t("surgeRuleOptionInvalid")} 可用参数：${allowedText}。`;
+  return validateRuleOptions(options, allowedSurgeRuleOptions(kind, setType, ruleType), SURGE_RULE_OPTION_ORDER);
 }
 
 function effectiveSurgeRuleEntries(lines) {
@@ -3268,13 +2637,7 @@ function allowedSurgeRuleOptions(kind, setType, ruleType) {
 }
 
 function normalizeSurgeRuleOptions(value, kind, setType, ruleType) {
-  const allowed = allowedSurgeRuleOptions(kind, setType, ruleType);
-  const requested = String(value || "").split(",").map((item) => item.trim().toLowerCase()).filter(Boolean);
-  const output = [];
-  for (const option of SURGE_RULE_OPTION_ORDER) {
-    if (requested.includes(option) && allowed.has(option)) output.push(option);
-  }
-  return output.join(",");
+  return normalizeRuleOptions(value, allowedSurgeRuleOptions(kind, setType, ruleType), SURGE_RULE_OPTION_ORDER);
 }
 
 function renderSurgeRuleOptionChoices(kind, setType, ruleType, selected) {
@@ -3504,33 +2867,6 @@ function handleSurgeRuleListChange(event) {
   updateSurgeRuleOutput();
 }
 
-function splitPolicyGroupSpec(spec) {
-  const parts = [];
-  let current = "";
-  let braceDepth = 0;
-  for (const char of String(spec || "")) {
-    if (char === "{") braceDepth += 1;
-    if (char === "}") braceDepth = Math.max(0, braceDepth - 1);
-    if (char === "," && braceDepth === 0) {
-      if (current.trim()) parts.push(current.trim());
-      current = "";
-      continue;
-    }
-    current += char;
-  }
-  if (current.trim()) parts.push(current.trim());
-  return parts;
-}
-
-function parseAllSelector(item) {
-  const match = String(item).match(/^\{all(?:\s+filter=([^}]*?)(?=\s+exclude=|}))?(?:\s+exclude=([^}]+))?\}$/);
-  if (!match) return null;
-  return {
-    filter: (match[1] || "").trim(),
-    exclude: (match[2] || "").trim()
-  };
-}
-
 function parseGroupSpec(name, spec) {
   const [type = "select", ...items] = splitPolicyGroupSpec(spec);
   const isSubnetSpec = type === "subnet";
@@ -3578,17 +2914,6 @@ function parseGroupSpec(name, spec) {
     editor.choices.push(item);
   }
   return editor;
-}
-
-function parseGroupOption(item) {
-  const match = String(item).match(/^([^=,{}]+)=(.*)$/s);
-  if (!match) return null;
-  const key = match[1].trim();
-  if (!key) return null;
-  return {
-    key,
-    value: match[2].trim()
-  };
 }
 
 function formatGroupOption(key, value) {
@@ -4398,64 +3723,6 @@ function validateGroups() {
   return { errors };
 }
 
-function splitProxyNodeSurgeConfig(value) {
-  const parts = [];
-  for (const rawPart of String(value || "").split(",")) {
-    const part = rawPart.trim();
-    if (!part) continue;
-    if (parts.length >= 3 && !/^[A-Za-z][\w-]*=/.test(part)) {
-      parts[parts.length - 1] = `${parts[parts.length - 1]},${rawPart}`;
-      continue;
-    }
-    parts.push(part);
-  }
-  return parts;
-}
-
-function parseProxyNodeConfigDraft(value) {
-  const surge = parseSurgeProxyNodeDraft(value);
-  if (surge.valid) return surge;
-  return parseClashProxyNodeDraft(value);
-}
-
-function parseSurgeProxyNodeDraft(value) {
-  const line = String(value || "").split(/\r?\n/)
-    .map((item) => item.trim())
-    .find((item) => item && !item.startsWith("#") && !item.startsWith(";") && !/^\[[^\]]+\]$/.test(item));
-  const [rawName, rawDetail] = line?.split(/=(.*)/s) || [];
-  const name = String(rawName || "").trim();
-  const detail = String(rawDetail || "").trim();
-  if (name && PROXY_NODE_URI_PATTERN.test(detail)) {
-    return { valid: true, name };
-  }
-  const parts = splitProxyNodeSurgeConfig(rawDetail || "");
-  const protocol = String(parts[0] || "").trim();
-  const server = String(parts[1] || "").trim();
-  const port = Number(parts[2]);
-  return {
-    valid: Boolean(name && protocol && server && Number.isFinite(port) && port >= 1 && port <= 65535),
-    name
-  };
-}
-
-function readProxyNodeYamlScalar(text, key) {
-  const pattern = new RegExp(`(?:^|[\\n{,])\\s*-?\\s*${key}\\s*:\\s*(?:"([^"]*)"|'([^']*)'|([^"',}\\n#]+))`, "i");
-  const match = String(text || "").match(pattern);
-  return String(match?.[1] || match?.[2] || match?.[3] || "").trim();
-}
-
-function parseClashProxyNodeDraft(value) {
-  const text = String(value || "");
-  const name = readProxyNodeYamlScalar(text, "name");
-  const type = readProxyNodeYamlScalar(text, "type");
-  const server = readProxyNodeYamlScalar(text, "server");
-  const port = Number(readProxyNodeYamlScalar(text, "port"));
-  return {
-    valid: Boolean(name && type && server && Number.isFinite(port) && port >= 1 && port <= 65535),
-    name
-  };
-}
-
 function readSettingsDraft() {
   const notificationTelegramBotToken = refs.notificationTelegramBotToken.value.trim();
   return {
@@ -4932,91 +4199,6 @@ function validateSurgeScriptLines(lines) {
     if (separatorIndex <= 0 || !trimmed.slice(separatorIndex + 1).trim()) {
       validation.errors.push(`第 ${index + 1} 行脚本语法应为 名称 = 参数`);
     }
-  });
-  return validation;
-}
-
-function parseStashScriptParams(value) {
-  const params = {};
-  const parts = [];
-  for (const rawPart of String(value || "").split(",")) {
-    const part = rawPart.trim();
-    if (!part) continue;
-    if (parts.length > 0 && !/^[A-Za-z][\w-]*=/.test(part)) {
-      parts[parts.length - 1] = `${parts[parts.length - 1]},${rawPart}`;
-      continue;
-    }
-    parts.push(part);
-  }
-  for (const part of parts) {
-    const [key, raw] = part.split(/=(.*)/s);
-    const normalizedKey = key?.trim().toLowerCase();
-    const valuePart = raw?.trim();
-    if (normalizedKey && valuePart !== undefined) params[normalizedKey] = valuePart;
-  }
-  return params;
-}
-
-function isHttpScriptUrl(value) {
-  try {
-    const url = new URL(String(value || ""));
-    return url.protocol === "http:" || url.protocol === "https:";
-  } catch {
-    return false;
-  }
-}
-
-function validateStashScriptLine(line, lineNumber, scriptNames) {
-  const trimmed = String(line || "").trim();
-  const result = { errors: [], warnings: [] };
-  if (!trimmed || trimmed.startsWith("#") || trimmed.startsWith(";")) return result;
-  if (/^\[[^\]]+\]$/.test(trimmed)) {
-    result.errors.push(`第 ${lineNumber} 行不能包含配置段标题`);
-    return result;
-  }
-
-  const separatorIndex = trimmed.indexOf("=");
-  if (separatorIndex <= 0 || !trimmed.slice(separatorIndex + 1).trim()) {
-    result.errors.push(`第 ${lineNumber} 行脚本语法应为 名称 = 参数`);
-    return result;
-  }
-
-  const name = trimmed.slice(0, separatorIndex).trim();
-  const params = parseStashScriptParams(trimmed.slice(separatorIndex + 1));
-  if (!name) {
-    result.errors.push(`第 ${lineNumber} 行缺少脚本名称`);
-  } else if (scriptNames.has(name)) {
-    result.errors.push(`第 ${lineNumber} 行脚本名称 ${name} 重复`);
-  } else {
-    scriptNames.add(name);
-  }
-
-  const type = (params.type || "").toLowerCase();
-  if (!["http-request", "http-response"].includes(type)) {
-    result.errors.push(`第 ${lineNumber} 行 type 必须是 http-request 或 http-response`);
-  }
-  if (!params.pattern) {
-    result.errors.push(`第 ${lineNumber} 行缺少 pattern`);
-  }
-  if (!isHttpScriptUrl(params["script-path"])) {
-    result.errors.push(`第 ${lineNumber} 行 script-path 必须是 http 或 https URL`);
-  }
-  if (params["max-size"] !== undefined) {
-    const maxSize = Number(params["max-size"]);
-    if (!Number.isFinite(maxSize) || maxSize < 0) {
-      result.errors.push(`第 ${lineNumber} 行 max-size 必须是非负数字`);
-    }
-  }
-  return result;
-}
-
-function validateStashScriptLines(lines) {
-  const validation = { errors: [], warnings: [] };
-  const scriptNames = new Set();
-  (lines || []).forEach((line, index) => {
-    const result = validateStashScriptLine(line, index + 1, scriptNames);
-    validation.errors.push(...result.errors);
-    validation.warnings.push(...result.warnings);
   });
   return validation;
 }
@@ -5641,87 +4823,6 @@ function renderPreviewWarnings(warnings) {
   ].join("");
 }
 
-function groupPreviewWarnings(warnings) {
-  const groups = [];
-  const groupedCoverage = new Map();
-  for (const message of warnings) {
-    const coverage = parsePreviewCoverageWarning(message);
-    if (!coverage) {
-      groups.push({ summary: message, details: [] });
-      continue;
-    }
-    const key = [coverage.target, coverage.currentSource, coverage.previousSource, coverage.effect].join("\0");
-    let group = groupedCoverage.get(key);
-    if (!group) {
-      group = {
-        target: coverage.target,
-        currentSource: coverage.currentSource,
-        previousSource: coverage.previousSource,
-        effect: coverage.effect,
-        details: []
-      };
-      groupedCoverage.set(key, group);
-      groups.push(group);
-    }
-    group.details.push(message);
-  }
-  const renderedGroups = groups.map((group) => group.effect ? {
-    summary: formatPreviewCoverageSummary(group),
-    details: group.details
-  } : group);
-  return prioritizePreviewWarningGroups(renderedGroups);
-}
-
-function prioritizePreviewWarningGroups(groups) {
-  const normal = [];
-  const redundant = [];
-  const overflow = [];
-  for (const group of groups) {
-    if (isPreviewOverflowWarningGroup(group)) {
-      overflow.push(group);
-    } else if (isPreviewRedundantWarningGroup(group)) {
-      redundant.push(group);
-    } else {
-      normal.push(group);
-    }
-  }
-  return [...normal, ...redundant, ...overflow];
-}
-
-function isPreviewRedundantWarningGroup(group) {
-  return group.summary.includes("当前规则冗余") || group.details.some((message) => message.includes("当前规则冗余"));
-}
-
-function isPreviewOverflowWarningGroup(group) {
-  return group.summary.includes("覆盖诊断还有") && group.summary.includes("条提示未显示");
-}
-
-function parsePreviewCoverageWarning(message) {
-  const match = String(message).match(/^(Surge|Clash|Stash) Rule (.+?) 被前面的 (.+?) 覆盖（(.+)）。$/);
-  if (!match) return null;
-  const detail = match[4] || "";
-  const effectSeparator = detail.lastIndexOf("；");
-  return {
-    target: match[1],
-    currentSource: summarizeCoverageLabel(match[2]),
-    previousSource: summarizeCoverageLabel(match[3]),
-    effect: effectSeparator >= 0 ? detail.slice(effectSeparator + 1) : detail
-  };
-}
-
-function summarizeCoverageLabel(label) {
-  return simplifyPreviewRuleSetNames(String(label).replace(/ 内第 \d+ 行$/, ""));
-}
-
-function formatPreviewCoverageSummary(group) {
-  const sameSource = group.currentSource === group.previousSource;
-  const previousText = sameSource
-    ? (group.currentSource.includes("规则集") ? "同一规则集内前面的规则" : "同一位置前面的规则")
-    : `前面的${group.previousSource}`;
-  const countText = group.details.length > 1 ? `，共 ${group.details.length} 条` : "";
-  return `${group.target} Rule ${group.currentSource} 有部分规则被${previousText}覆盖${countText}（${group.effect}）。`;
-}
-
 function renderPreviewWarningGroup(group) {
   if (!group.details.length) return `<div class="warning">${escapeHtml(simplifyPreviewRuleSetNames(group.summary))}</div>`;
   return [
@@ -5732,22 +4833,6 @@ function renderPreviewWarningGroup(group) {
     `</ul>`,
     `</details>`
   ].join("");
-}
-
-function simplifyPreviewRuleSetNames(message) {
-  return String(message).replace(/规则集 (https?:\/\/.+?)(?=(?: 内第 \d+ 行| 内容| 不是| 未配置| 由|$))/g, (_match, url) => {
-    return `规则集 ${formatRuleSetDisplayName(url)}`;
-  });
-}
-
-function formatRuleSetDisplayName(value) {
-  try {
-    const url = new URL(value);
-    const filename = url.pathname.split("/").filter(Boolean).pop() || url.hostname;
-    return decodeURIComponent(filename);
-  } catch {
-    return value;
-  }
 }
 
 function updatePreviewControls() {

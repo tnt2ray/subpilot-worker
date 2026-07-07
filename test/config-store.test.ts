@@ -409,7 +409,12 @@ describe("KV config storage", () => {
     expect(kv.has(orphanDeletedKey)).toBe(false);
     expect(kv.has(orphanKey)).toBe(false);
     expect(kv.get(enabledKey)).toBe("enabled-content");
-    expect(JSON.parse(kv.get("cache:sourceMeta:index") ?? "[]")).toEqual([cacheEntries[2]]);
+    expect(JSON.parse(kv.get("cache:sourceMeta:index") ?? "[]")).toEqual([{
+      ...cacheEntries[2],
+      contentAvailable: true,
+      nodeCount: 0,
+      protocolCounts: []
+    }]);
   });
 
   it("omits disabled groups while keeping their definitions stored", async () => {
