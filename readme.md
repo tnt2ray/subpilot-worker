@@ -228,7 +228,7 @@ Surge 的 `SUBNET`、`AND`、`OR`、`NOT` 等复合规则类型可以在结构�
 
 Clash / mihomo 和 Stash 的 rule-providers 是规则集来源；rules 中的 `RULE-SET` 行是实际匹配入口。SubPilot 会把 rule-providers 中尚未出现在 rules 里的规则集自动补入 rules，并默认使用 `Proxy` 作为策略出口。删除 rule-providers 中的某个规则集时，对应的 `RULE-SET` 规则会一并移除；如果在 rules 中删除某个规则集规则，系统会提示确认，并同步删除同名 rule-provider。后续再次添加 rule-provider 时，rules 会重新自动补齐。
 
-Shadowrocket 使用 Clash YAML 兼容输出。使用 Shadowrocket 客户端访问通用订阅链接时，SubPilot 会按 Clash 配置下发节点、策略组、规则等内容；Shadowrocket 可先从订阅中读取节点，也可以在配置页中再次导入同一订阅获取其他配置信息。SubPilot 不提供 Shadowrocket 专用配置页或专用文件名路径。
+Shadowrocket 现在可以直接使用通用订阅链接获取 Clash YAML 配置，包含节点、策略组和规则等内容。由于 Shadowrocket 的节点订阅和配置导入是分离入口，如果需要完整配置，请在节点订阅和配置两个入口分别导入同一个订阅链接。SubPilot 不提供 Shadowrocket 专用配置页或专用文件名路径。
 
 ## Telegram 通知配置
 

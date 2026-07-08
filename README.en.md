@@ -228,7 +228,7 @@ Surge composite rule types such as `SUBNET`, `AND`, `OR`, and `NOT` can be selec
 
 Clash / mihomo and Stash `rule-providers` are rule set sources; `RULE-SET` lines in `rules` are the actual match entry points. SubPilot automatically adds rule sets from `rule-providers` that do not yet appear in `rules`, using `Proxy` as the default policy target. Deleting a rule set from `rule-providers` also removes the corresponding `RULE-SET` rule. If you delete a rule-set rule from `rules`, the system asks for confirmation and deletes the same-name rule-provider. Adding the rule-provider again later automatically fills `rules` again.
 
-Shadowrocket uses the Clash YAML compatible output. When a Shadowrocket client accesses the common subscription link, SubPilot serves Clash-style nodes, policy groups, rules, and related configuration. Shadowrocket can read nodes from that subscription and can import the same subscription again in its configuration tab to get the other configuration details. SubPilot does not provide a Shadowrocket-specific configuration page or filename path.
+Shadowrocket can now use the common subscription link to receive Clash YAML configuration, including nodes, policy groups, and rules. Because Shadowrocket uses separate import entries for node subscriptions and configuration, import the same subscription link in both entries if you need the full configuration. SubPilot does not provide a Shadowrocket-specific configuration page or filename path.
 
 ## Telegram Notifications
 
