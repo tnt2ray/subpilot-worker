@@ -307,6 +307,40 @@ describe("asset access control", () => {
     expect(body.error).toContain("script-path");
   });
 
+  it("ignores removed Shadowrocket config patches", async () => {
+    const env = makeEnv();
+    const session = await createSession(env);
+    const headers = {
+      cookie: sessionCookie(session, true),
+      "content-type": "application/json"
+    };
+
+    const response = await worker.fetch(new Request("https://subpilot.example.com/api/config", {
+      method: "PATCH",
+      headers,
+      body: JSON.stringify({
+        shadowrocket: {
+          general: ["bypass-system = true"],
+          hosts: ["example.com = 192.0.2.1"],
+          headerRewrite: ["^https?:\\/\\/example\\.com\\/api request-header-set X-Test test"],
+          scripts: ["Shadowrocket Script = type=http-response,pattern=^https://example.com,script-path=https://example.com/script.js"],
+          mitm: { hostname: ["example.com"] },
+          rules: ["DOMAIN-SUFFIX,example.com,DIRECT", "FINAL,Proxy"]
+        }
+      })
+    }), env, ctx);
+    const body = await response.json<Record<string, unknown>>();
+
+    expect(response.status).toBe(200);
+    expect(body).not.toHaveProperty("shadowrocket");
+
+    const persistedResponse = await worker.fetch(new Request("https://subpilot.example.com/api/config", {
+      headers: { cookie: sessionCookie(session, true) }
+    }), env, ctx);
+    const persisted = await persistedResponse.json<Record<string, unknown>>();
+    expect(persisted).not.toHaveProperty("shadowrocket");
+  });
+
   it("rejects proxy node and policy group name conflicts while saving config", async () => {
     const env = makeEnv();
     const session = await createSession(env);
@@ -368,7 +402,7 @@ describe("asset access control", () => {
     kv.set("auth:read_token_hash", await sha256Hex("read-token"));
     kv.set("geoip:ip:198.51.100.7", JSON.stringify({ city: { names: { en: "Singapore" } }, country: { iso_code: "SG" } }));
     const env = makeEnv(kv);
-    const userAgents = ["Surge TestClient/0", "Mihomo TestClient/1", "Stash TestClient/2", "Surge TestClient/3", "Mihomo TestClient/4", "Surge TestClient/5", "Mihomo TestClient/6"];
+    const userAgents = ["Surge TestClient/0", "Mihomo TestClient/1", "Stash TestClient/2", "Surge TestClient/3", "Mihomo TestClient/4", "Surge TestClient/5", "Mihomo TestClient/6", "Shadowrocket TestClient/7"];
     for (const [index, userAgent] of userAgents.entries()) {
       const exec = makeExecutionContext();
       const response = await worker.fetch(new Request("https://subpilot.example.com/sync/read-token/", {
@@ -400,8 +434,9 @@ describe("asset access control", () => {
     expect(body.lastFetched.surge).toMatch(/^\d{4}-\d{2}-\d{2}T/);
     expect(body.lastFetched.clash).toMatch(/^\d{4}-\d{2}-\d{2}T/);
     expect(body.lastFetched.stash).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(body.lastFetched.shadowrocket).toMatch(/^\d{4}-\d{2}-\d{2}T/);
     expect("surgeResource" in body.lastFetched).toBe(false);
-    expect(body.recentUserAgents).toHaveLength(7);
+    expect(body.recentUserAgents).toHaveLength(8);
     expect(body.recentUserAgents).toEqual(expect.arrayContaining([
       expect.objectContaining({
         target: "surge",
@@ -420,12 +455,16 @@ describe("asset access control", () => {
       expect.objectContaining({
         target: "stash",
         userAgent: "Stash TestClient/2"
+      }),
+      expect.objectContaining({
+        target: "shadowrocket",
+        userAgent: "Shadowrocket TestClient/7"
       })
     ]));
-    expect(body.recentUserAgents.every((record) => record.target === "surge" || record.target === "clash" || record.target === "stash")).toBe(true);
+    expect(body.recentUserAgents.every((record) => record.target === "surge" || record.target === "clash" || record.target === "stash" || record.target === "shadowrocket")).toBe(true);
     expect(body.recentUserAgents.some((record) => "count" in record)).toBe(false);
     const recentRecordKeys = [...kv.keys()].filter((key) => key.startsWith("stats:config:recentFetch:"));
-    expect(recentRecordKeys).toHaveLength(7);
+    expect(recentRecordKeys).toHaveLength(8);
     expect(kv.has("stats:config:recentFetches")).toBe(false);
   });
 
@@ -547,6 +586,11 @@ describe("asset access control", () => {
         error: "Invalid subscription path"
       },
       {
+        url: "https://subpilot.example.com/sync/read-token?target=shadowrocket",
+        status: 403,
+        error: "Invalid subscription path"
+      },
+      {
         url: "https://subpilot.example.com/sync/wrong-token/",
         status: 400,
         error: "Invalid subscription token"
@@ -592,7 +636,7 @@ describe("asset access control", () => {
         error: "Invalid subscription path"
       },
       {
-        url: "https://subpilot.example.com/sync/read-token/SubPilot.conf",
+        url: "https://subpilot.example.com/sync/read-token/Unknown.conf",
         status: 403,
         error: "Invalid subscription path"
       },
@@ -656,17 +700,60 @@ describe("asset access control", () => {
     const env = makeEnv(kv);
     for (const { userAgent, fileName } of [
       { userAgent: "Mihomo/1", fileName: "SubPilot.yaml" },
-      { userAgent: "Stash/2.0 Clash.Meta", fileName: "subpilot-stash.yaml" }
+      { userAgent: "Stash/2.0 Clash.Meta", fileName: "subpilot-stash.yaml" },
+      { userAgent: "Shadowrocket/2.2.68", fileName: "SubPilot.yaml" }
     ]) {
       const exec = makeExecutionContext();
       const response = await worker.fetch(new Request("https://subpilot.example.com/sync/read-token/", {
         headers: { "user-agent": userAgent }
       }), env, exec.ctx);
+      const body = await response.text();
       await Promise.all(exec.waitUntil);
 
       expect(response.status).toBe(200);
-      expect(response.headers.get("content-disposition")).toBe(`inline; filename=${fileName}`);
+      expect(response.headers.get("content-disposition")).toBe(`inline; filename="${fileName}"`);
+      if (userAgent.includes("Shadowrocket")) {
+        expect(response.headers.get("content-type")).toBe("text/yaml; charset=utf-8");
+        expect(body).toContain("proxies:");
+        expect(body).toContain("proxy-groups:");
+        expect(body).toContain("rules:");
+      }
     }
+  });
+
+  it("serves subscriptions from compatible config file name paths without using the path as target selection", async () => {
+    const kv = new Map<string, string>();
+    kv.set("auth:read_token_hash", await sha256Hex("read-token"));
+    const env = makeEnv(kv);
+    const shadowrocketExec = makeExecutionContext();
+    const shadowrocketResponse = await worker.fetch(new Request("https://subpilot.example.com/sync/read-token/SubPilot.conf", {
+      headers: { "user-agent": "Shadowrocket/2.2.68" }
+    }), env, shadowrocketExec.ctx);
+    const shadowrocketBody = await shadowrocketResponse.text();
+    await Promise.all(shadowrocketExec.waitUntil);
+
+    expect(shadowrocketResponse.status).toBe(200);
+    expect(shadowrocketResponse.headers.get("content-disposition")).toBe('inline; filename="SubPilot.yaml"');
+    expect(shadowrocketBody).toContain("proxies:");
+    expect(kv.get("stats:config:lastFetched:shadowrocket")).toBeDefined();
+
+    const exec = makeExecutionContext();
+    const clashResponse = await worker.fetch(new Request("https://subpilot.example.com/sync/read-token/SubPilot.conf", {
+      headers: { "user-agent": "Mihomo/1" }
+    }), env, exec.ctx);
+    const clashBody = await clashResponse.text();
+    await Promise.all(exec.waitUntil);
+
+    expect(clashResponse.status).toBe(200);
+    expect(clashResponse.headers.get("content-disposition")).toBe('inline; filename="SubPilot.yaml"');
+    expect(clashBody).toContain("proxies:");
+
+    const invalidNodesResponse = await worker.fetch(new Request("https://subpilot.example.com/sync/read-token/SubPilot.nodes", {
+      headers: { "user-agent": "Shadowrocket/2.2.68" }
+    }), env, exec.ctx);
+    const invalidNodesBody = await invalidNodesResponse.json<{ error: string }>();
+    expect(invalidNodesResponse.status).toBe(403);
+    expect(invalidNodesBody.error).toBe("Invalid subscription path");
   });
 
   it("rejects removed Surge resource endpoints", async () => {
@@ -715,7 +802,7 @@ describe("asset access control", () => {
     await Promise.all(exec.waitUntil);
 
     expect(response.status).toBe(200);
-    expect(response.headers.get("content-disposition")).toBe("inline; filename=SubPilot.yaml");
+    expect(response.headers.get("content-disposition")).toBe('inline; filename="SubPilot.yaml"');
     expect(body).toContain("proxies:");
   });
 
@@ -979,6 +1066,16 @@ describe("asset access control", () => {
     expect(stashPreviewBody.content).not.toContain("/api/preview");
     expect(stashPreviewBody.content).not.toContain("ca-p12");
     expect(stashPreviewBody.content).not.toContain("ca-passphrase");
+
+    const shadowrocketPreviewResponse = await worker.fetch(new Request("https://subpilot.example.com/api/preview?target=shadowrocket", {
+      method: "POST",
+      headers: { cookie: sessionCookie(session, true) },
+      body: "{}"
+    }), env, ctx);
+    const shadowrocketPreviewBody = await shadowrocketPreviewResponse.json<{ error: string }>();
+
+    expect(shadowrocketPreviewResponse.status).toBe(400);
+    expect(shadowrocketPreviewBody.error).toBe("Invalid target");
   });
 
   it("reports and refreshes upstream source cache", async () => {

@@ -4,8 +4,12 @@ const URL_REWRITE_TYPES = new Set(["header", "302", "reject"]);
 
 export function validateSurgeUrlRewrite(config: Partial<Pick<AppConfig, "surge">>): string | null {
   const lines = Array.isArray(config.surge?.urlRewrite) ? config.surge.urlRewrite : [];
+  return validateUrlRewriteLines(lines, "Surge URL Rewrite");
+}
+
+function validateUrlRewriteLines(lines: string[], label: string): string | null {
   for (const [index, line] of lines.entries()) {
-    const error = validateSurgeUrlRewriteLine(line, index + 1);
+    const error = validateSurgeUrlRewriteLine(line, index + 1, label);
     if (error) return error;
   }
   return null;
@@ -22,23 +26,23 @@ export function inferUrlRewriteMitmHostnames(lines: string[]): string[] {
   return [...new Set(output)];
 }
 
-function validateSurgeUrlRewriteLine(line: string, lineNumber: number): string | null {
+function validateSurgeUrlRewriteLine(line: string, lineNumber: number, label: string): string | null {
   const trimmed = String(line || "").trim();
   if (!trimmed || trimmed.startsWith("#") || trimmed.startsWith(";")) return null;
-  if (/^\[[^\]]+\]$/.test(trimmed)) return `Surge URL Rewrite 第 ${lineNumber} 行不能包含配置段标题`;
+  if (/^\[[^\]]+\]$/.test(trimmed)) return `${label} 第 ${lineNumber} 行不能包含配置段标题`;
 
   const parsed = parseSurgeUrlRewriteLine(trimmed);
-  if (!parsed) return `Surge URL Rewrite 第 ${lineNumber} 行语法应为 正则 替换值 类型`;
-  if (!URL_REWRITE_TYPES.has(parsed.type)) return `Surge URL Rewrite 第 ${lineNumber} 行动作类型必须是 header、302 或 reject`;
+  if (!parsed) return `${label} 第 ${lineNumber} 行语法应为 正则 替换值 类型`;
+  if (!URL_REWRITE_TYPES.has(parsed.type)) return `${label} 第 ${lineNumber} 行动作类型必须是 header、302 或 reject`;
 
   try {
     new RegExp(parsed.pattern);
   } catch {
-    return `Surge URL Rewrite 第 ${lineNumber} 行正则表达式无效`;
+    return `${label} 第 ${lineNumber} 行正则表达式无效`;
   }
 
   if (parsed.type !== "reject" && !isValidReplacement(parsed.replacement)) {
-    return `Surge URL Rewrite 第 ${lineNumber} 行 ${parsed.type} 动作需要有效替换 URL`;
+    return `${label} 第 ${lineNumber} 行 ${parsed.type} 动作需要有效替换 URL`;
   }
 
   return null;

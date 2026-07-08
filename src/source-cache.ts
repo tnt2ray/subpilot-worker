@@ -66,9 +66,10 @@ export interface SourceCacheRefreshResult {
 }
 
 export function sourceUserAgent(config: AppConfig, source: SourceConfig): string {
-  return source.fetchUserAgent === "clash"
-    ? config.settings.userAgentClash
-    : config.settings.userAgentSurge;
+  if (source.fetchUserAgent === "clash") return config.settings.userAgentClash;
+  if (source.fetchUserAgent === "stash") return config.settings.userAgentStash;
+  if (source.fetchUserAgent === "shadowrocket") return config.settings.userAgentShadowrocket;
+  return config.settings.userAgentSurge;
 }
 
 export async function fetchCachedSource(env: Env, source: SourceConfig, userAgent: string): Promise<string> {

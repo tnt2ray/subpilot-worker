@@ -212,7 +212,8 @@ function formatTelegramStatusMessage(
     }),
     `最近 Surge 配置获取：${formatTelegramTimestamp(stats.lastFetched.surge, config.settings.displayTimeZone)}`,
     `最近 Clash 配置获取：${formatTelegramTimestamp(stats.lastFetched.clash, config.settings.displayTimeZone)}`,
-    `最近 Stash 配置获取：${formatTelegramTimestamp(stats.lastFetched.stash, config.settings.displayTimeZone)}`
+    `最近 Stash 配置获取：${formatTelegramTimestamp(stats.lastFetched.stash, config.settings.displayTimeZone)}`,
+    `最近 Shadowrocket Clash YAML 获取：${formatTelegramTimestamp(stats.lastFetched.shadowrocket, config.settings.displayTimeZone)}`
   ].join("\n");
 }
 
@@ -243,6 +244,7 @@ function formatTelegramFetchTargetLabel(target: string): string {
   if (target === "surge") return "Surge 配置";
   if (target === "clash") return "Clash 配置";
   if (target === "stash") return "Stash 配置";
+  if (target === "shadowrocket") return "Shadowrocket Clash YAML";
   return target;
 }
 

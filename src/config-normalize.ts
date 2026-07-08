@@ -33,6 +33,8 @@ export function normalizeConfig(input: AppConfig): AppConfig {
       managedBaseUrl: stringValue(input.settings?.managedBaseUrl, DEFAULT_CONFIG.settings.managedBaseUrl),
       userAgentSurge: input.settings?.userAgentSurge || DEFAULT_CONFIG.settings.userAgentSurge,
       userAgentClash: input.settings?.userAgentClash || DEFAULT_CONFIG.settings.userAgentClash,
+      userAgentStash: input.settings?.userAgentStash || DEFAULT_CONFIG.settings.userAgentStash,
+      userAgentShadowrocket: input.settings?.userAgentShadowrocket || DEFAULT_CONFIG.settings.userAgentShadowrocket,
       excludeKeywords: Array.isArray(input.settings?.excludeKeywords) ? input.settings.excludeKeywords : [],
       geoipRenameEnabled: input.settings?.geoipRenameEnabled !== false,
       featureTagRules: stringArray(input.settings?.featureTagRules, DEFAULT_CONFIG.settings.featureTagRules),
@@ -165,7 +167,7 @@ export function normalizeSource(source: SourceConfig): SourceConfig {
 }
 
 function normalizeSourceFetchUserAgent(value: unknown): SourceConfig["fetchUserAgent"] {
-  return value === "clash" ? value : "surge";
+  return value === "clash" || value === "stash" || value === "shadowrocket" ? value : "surge";
 }
 
 function normalizeProxyNodes(nodes: StaticProxyNodeConfig[]): StaticProxyNodeConfig[] {

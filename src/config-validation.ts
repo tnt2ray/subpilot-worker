@@ -1,3 +1,4 @@
+import { normalizeManagedBasePath } from "./managed-url";
 import { parseConfiguredProxyNode } from "./parsers";
 import type { AppConfig } from "./types";
 
@@ -45,9 +46,4 @@ export function validateProxyPolicyNameConflicts(config: Partial<Pick<AppConfig,
     }
   }
   return null;
-}
-
-function normalizeManagedBasePath(pathname: string): string {
-  const trimmed = pathname.replace(/\/+$/, "");
-  return trimmed || "/";
 }

@@ -1,4 +1,7 @@
 import { createContext, Script } from "node:vm";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { extractFunctionSource, readAdminAppBundle, readPublicFile } from "./helpers/public-assets";
 
@@ -12,6 +15,12 @@ describe("admin static assets", () => {
     expect(html).not.toContain("/vendor/codemirror/codemirror.js");
     expect(app).toContain('loadStylesheet("/vendor/codemirror/codemirror.css")');
     expect(app).toContain('loadScript("/vendor/codemirror/codemirror.js")');
+    expect(html).toContain('id="userAgentStash"');
+    expect(html).toContain('id="userAgentShadowrocket"');
+    expect(app).toContain('fetchUserAgentStash: "Stash User-Agent"');
+    expect(app).toContain('fetchUserAgentShadowrocket: "Shadowrocket User-Agent"');
+    expect(app).toContain('<option value="stash">');
+    expect(app).toContain('<option value="shadowrocket">');
 
     const generalStart = html.indexOf('data-surge-panel="general"');
     const hostStart = html.indexOf('data-surge-panel="host"');
@@ -30,14 +39,30 @@ describe("admin static assets", () => {
     expect(html).toContain("配置获取记录");
     expect(app).toContain('fetchTargetSurge: "Surge 配置"');
     expect(app).toContain('fetchTargetStash: "Stash 配置"');
+    expect(app).toContain('fetchTargetShadowrocket: "Shadowrocket Clash YAML"');
     expect(app).toContain("FETCH_RECORDS_PAGE_SIZE = 10");
-    expect(app).toContain('const targets = ["surge", "clash", "stash"]');
+    expect(app).toContain('const targets = ["surge", "clash", "stash", "shadowrocket"]');
     expect(app).toContain("renderFetchRecordRow");
     expect(app).toContain("fetchRecordsTableBody");
 
     expect(html).toContain('data-page="stash"');
     expect(html).toContain('id="previewStashBtn"');
     expect(html).toContain('id="stashMitmHostname"');
+    expect(html).not.toContain('data-page="shadowrocket"');
+    expect(html).not.toContain('id="previewShadowrocketBtn"');
+    expect(html).not.toContain('id="shadowrocketSkipProxy"');
+    expect(html).not.toContain('id="shadowrocketRules"');
+    expect(html).not.toContain('data-shadowrocket-tab');
+    expect(app).not.toContain("./app-shadowrocket-general.js");
+    expect(app).not.toContain("function buildShadowrocketGeneralLines");
+    expect(app).toContain("function isPageAvailable(page)");
+    expect(app).toContain('activePage = isPageAvailable(page) ? page : "status";');
+    expect(app).not.toContain("SubPilot-Shadowrocket");
+    expect(app).not.toContain('shadowrocketNodeSubscriptionLink');
+    expect(app).not.toContain('shadowrocketConfigLink');
+    expect(app).toContain("if (!button) continue;");
+    expect(app).not.toContain('preview("shadowrocket")');
+    expect(app).not.toContain("validateCurrentShadowrocket");
     expect(app).toContain('const PREVIEW_TARGETS = ["surge", "clash", "stash"]');
     expect(app).toContain('previewWarnings: "诊断提示："');
     expect(app).toContain("function renderPreviewWarnings(warnings)");
@@ -89,6 +114,14 @@ describe("admin static assets", () => {
     expect(app).toContain('params["script-path"]');
     expect(app).toContain('type 必须是 http-request 或 http-response');
     expect(app).not.toContain("const validation = validateSurgeScriptLines(textToLines(refs.stashScripts.value));");
+  });
+
+  it("keeps runtime status version aligned with package metadata", () => {
+    const testDir = dirname(fileURLToPath(import.meta.url));
+    const packageJson = JSON.parse(readFileSync(join(testDir, "../package.json"), "utf8")) as { version: string };
+    const versionSource = readFileSync(join(testDir, "../src/version.ts"), "utf8");
+
+    expect(versionSource).toContain(`APP_VERSION = "${packageJson.version}"`);
   });
 
   it("groups preview coverage warnings into expandable summaries", () => {

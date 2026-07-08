@@ -98,6 +98,8 @@ describe("generation", () => {
         ...DEFAULT_CONFIG.settings,
         userAgentSurge: "Surge/Test",
         userAgentClash: "Clash/Test",
+        userAgentStash: "Stash/Test",
+        userAgentShadowrocket: "Shadowrocket/Test",
         geoipRenameEnabled: false
       },
       sources: [
@@ -114,16 +116,32 @@ describe("generation", () => {
           url: "https://example.com/clash-sub",
           fetchUserAgent: "clash" as const,
           enabled: true
+        },
+        {
+          id: "src3",
+          name: "Stash UA Source",
+          url: "https://example.com/stash-sub",
+          fetchUserAgent: "stash" as const,
+          enabled: true
+        },
+        {
+          id: "src4",
+          name: "Shadowrocket UA Source",
+          url: "https://example.com/shadowrocket-sub",
+          fetchUserAgent: "shadowrocket" as const,
+          enabled: true
         }
       ]
     };
 
     await generateConfig(env, config, "surge", "https://subpilot.example.com/sync/token/");
 
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledTimes(4);
     const headersByUrl = new Map(fetchMock.mock.calls.map(([url, init]) => [url, (init as RequestInit).headers]));
     expect(headersByUrl.get("https://example.com/surge-sub")).toEqual({ "user-agent": "Surge/Test" });
     expect(headersByUrl.get("https://example.com/clash-sub")).toEqual({ "user-agent": "Clash/Test" });
+    expect(headersByUrl.get("https://example.com/stash-sub")).toEqual({ "user-agent": "Stash/Test" });
+    expect(headersByUrl.get("https://example.com/shadowrocket-sub")).toEqual({ "user-agent": "Shadowrocket/Test" });
   });
 
   it("skips source subscriptions that exceed the bounded read limit", async () => {
@@ -1496,6 +1514,58 @@ describe("generation", () => {
 
     expect(changedStash).toEqual(baseStash);
     expect(clashAfterStashChanges).toEqual(baseClash);
+  });
+
+  it("builds Clash YAML for the Shadowrocket subscription target", async () => {
+    mockSubscription([
+      "[Host]",
+      "source.example.test = 1.1.1.1",
+      "",
+      "[Proxy]",
+      "SG 1 = trojan, sg.example.com, 443, password=p",
+      "VL 1 = vless, vl.example.com, 443, username=00000000-0000-0000-0000-000000000002, tls=true"
+    ].join("\n"));
+    const env = makeEnv();
+    const config = normalizeConfig({
+      ...DEFAULT_CONFIG,
+      settings: {
+        ...DEFAULT_CONFIG.settings,
+        geoipRenameEnabled: false
+      },
+      groups: {
+        Proxy: "select, {all exclude=via}",
+        Auto: "url-test, {all exclude=via}, url=https://www.gstatic.com/generate_204, interval=600",
+        Network: "subnet, default=Proxy, TYPE:WIFI=Auto"
+      },
+      sources: [{
+        id: "src1",
+        name: "Primary",
+        url: "https://example.com/sub",
+        fetchUserAgent: "surge" as const,
+        enabled: true
+      }]
+    });
+
+    const result = await generateConfig(env, config, "shadowrocket", "https://subpilot.example.com/sync/token/");
+    const parsed = YAML.parse(result.content);
+
+    expect(result.target).toBe("shadowrocket");
+    expect(result.contentType).toBe("text/yaml; charset=utf-8");
+    expect(result.content).toMatch(/^# Last Updated:/);
+    expect(result.content).not.toContain("[General]");
+    expect(result.content).not.toContain("[Host]");
+    expect(result.content).not.toContain("[Proxy]\n");
+    expect(result.content).not.toContain("[Proxy Group]");
+    expect(result.content).not.toContain("[Rule]");
+    expect(parsed.proxies).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "[Primary] SG 1", type: "trojan", server: "sg.example.com" }),
+      expect.objectContaining({ name: "[Primary] VL 1", type: "vless", server: "vl.example.com" })
+    ]));
+    expect(parsed["proxy-groups"]).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "Proxy" }),
+      expect.objectContaining({ name: "Auto" })
+    ]));
+    expect(parsed.rules).toEqual(expect.arrayContaining(["MATCH,Proxy"]));
   });
 
   it("generates chain proxy nodes whenever the shared exit proxy is configured", async () => {

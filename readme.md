@@ -2,7 +2,7 @@
 
 语言：中文 | [英文版](./README.en.md)
 
-SubPilot Worker 是运行在 Cloudflare Workers 上的订阅配置生成器。它从上游订阅源读取节点，按管理页中的规则生成 Surge、Clash/mihomo 和 Stash 配置，并用 Workers KV 保存运行配置。
+SubPilot Worker 是运行在 Cloudflare Workers 上的订阅配置生成器。它从上游订阅源读取节点，按管理页中的规则生成 Surge、Clash/mihomo、Stash 配置；Shadowrocket 客户端会收到兼容的 Clash YAML，用 Workers KV 保存运行配置。
 
 本仓库可以公开使用：仓库不会保存生产 KV namespace、生产域名、管理员 token、订阅源 URL、链式出口密码、MITM CA 或其他个人运行数据。自己的生产部署信息应保存在本地未跟踪的 `wrangler.jsonc`、Cloudflare Worker Secrets 和 Workers KV 中。
 
@@ -14,8 +14,8 @@ SubPilot Worker 项目代码以 [GNU Affero General Public License v3.0 or later
 
 ## 功能概览
 
-- 管理上游订阅源地址、启用状态、抓取 User-Agent 和节点名前缀。
-- 生成 Surge、Clash/mihomo 和 Stash 目标配置。
+- 管理上游订阅源地址、启用状态、抓取 User-Agent 和节点名前缀；每个源可选择 Surge、Clash、Stash 或 Shadowrocket User-Agent。
+- 生成 Surge、Clash/mihomo、Stash 目标配置；Shadowrocket 通过 User-Agent 识别后下发 Clash YAML。
 - 支持客户端 User-Agent 自动选择输出目标。
 - 用独立字段维护 Surge、Clash 和 Stash 功能配置，不需要编辑整段模板。
 - 管理策略组、策略规则、规则集、DNS、TUN、MITM 和 URL Rewrite。
@@ -35,7 +35,7 @@ SubPilot Worker 项目代码以 [GNU Affero General Public License v3.0 or later
 - 订阅源 URL 保存到 KV 前会加密；读取配置时才在 Worker 内解密。
 - 管理员会话是 HttpOnly 签名 Cookie，不创建 `session:*` KV 键。
 - Stash CA 应在客户端本地生成和保存；SubPilot 不保存也不会下发 Stash CA 私钥、`ca-p12` 或 `ca-passphrase`。
-- Stash 配置输出尚未完成真实 Stash 客户端实机测试，可能存在兼容性问题；发布版中请先按测试功能使用，导入前建议核对规则、MITM、脚本和 rule-providers 是否符合预期。
+- Stash 配置输出尚未完成真实客户端实机测试，可能存在兼容性问题；发布版中请先按测试功能使用，导入前建议核对规则、MITM、脚本和 rule-providers 是否符合预期。
 - `wrangler.jsonc` 被 `.gitignore` 排除，用于保存个人 Worker 名称、KV namespace ID 和自定义域名。
 
 ## 快速部署
@@ -154,9 +154,9 @@ wrangler deploy
 首次配置建议顺序：
 
 1. 在 `Configuration` 中设置 `Managed Base URL`，通常是 `https://<your-domain>/sync`。
-2. 在 `Sources` 中添加上游订阅源；URL 会加密保存到 KV。
+2. 在 `Sources` 中添加上游订阅源；URL 会加密保存到 KV，拉取 User-Agent 可按上游要求选择 Surge、Clash、Stash 或 Shadowrocket。
 3. 在 `Policy Groups` 中调整策略组。
-4. 在 `Surge`、`Clash`、`Stash` 页面中调整各目标的规则、DNS、TUN 等配置。
+4. 在 `Surge`、`Clash`、`Stash` 页面中调整各目标配置。
 5. 如需链式代理，在 `Proxy Nodes` 中添加自维护代理节点，勾选可作为链式出口的节点，并在该节点上配置链式过滤器。
 6. 按需要在 `Configuration` 中调整显示时区；默认是 `Asia/Shanghai`，只影响后台和通知中的时间展示。
 7. 在 `Tokens` 页面轮换订阅读取 token，并复制订阅链接。
@@ -167,7 +167,7 @@ wrangler deploy
 https://<your-domain>/sync/<read_token>/
 ```
 
-`https://<your-domain>/sync/<read_token>/` 会根据客户端 User-Agent 自动选择 Surge、Clash/mihomo 或 Stash。订阅接口不接受额外查询参数，也不接受 `/surge`、`/clash`、`/stash` 等显式目标路径；如果 User-Agent 无法识别，服务端会返回 401，不下发配置。客户端文件名通过响应头 `Content-Disposition` 提供。
+`https://<your-domain>/sync/<read_token>/` 会根据客户端 User-Agent 自动选择 Surge、Clash/mihomo、Stash 或 Shadowrocket。Shadowrocket 通过这个通用入口接收完整 Clash YAML，不提供专用文件名路径。订阅接口不接受额外查询参数，也不接受 `/surge`、`/clash`、`/stash`、`/shadowrocket` 等显式目标路径；如果 User-Agent 无法识别，服务端会返回 401，不下发配置。客户端文件名通过响应头 `Content-Disposition` 提供。
 
 服务端只接受当前 `Managed Base URL` path 下的订阅入口；如果把 `Managed Base URL` 改成 `https://<your-domain>/sywwqnc`，则 `/sywwqnc/<read_token>/` 生效，默认 `/sync/<read_token>/` 不再作为订阅入口。
 
@@ -228,6 +228,8 @@ Surge 的 `SUBNET`、`AND`、`OR`、`NOT` 等复合规则类型可以在结构�
 
 Clash / mihomo 和 Stash 的 rule-providers 是规则集来源；rules 中的 `RULE-SET` 行是实际匹配入口。SubPilot 会把 rule-providers 中尚未出现在 rules 里的规则集自动补入 rules，并默认使用 `Proxy` 作为策略出口。删除 rule-providers 中的某个规则集时，对应的 `RULE-SET` 规则会一并移除；如果在 rules 中删除某个规则集规则，系统会提示确认，并同步删除同名 rule-provider。后续再次添加 rule-provider 时，rules 会重新自动补齐。
 
+Shadowrocket 使用 Clash YAML 兼容输出。使用 Shadowrocket 客户端访问通用订阅链接时，SubPilot 会按 Clash 配置下发节点、策略组、规则等内容；Shadowrocket 可先从订阅中读取节点，也可以在配置页中再次导入同一订阅获取其他配置信息。SubPilot 不提供 Shadowrocket 专用配置页或专用文件名路径。
+
 ## Telegram 通知配置
 
 SubPilot 只支持两种通知状态：关闭通知，或启用 Telegram 通知。Telegram 通知用于上游订阅刷新失败提醒，也提供一组 bot 命令用于查看状态和手动刷新。
@@ -281,7 +283,7 @@ help - 查看命令列表
 ### 可用 bot 命令
 
 ```text
-/status  查看订阅源数量、缓存数量和最近 Surge/Clash/Stash 拉取时间
+/status  查看订阅源数量、缓存数量和最近 Surge/Clash/Stash/Shadowrocket Clash YAML 拉取时间
 /sources 查看订阅源启用状态
 /recent  查看最近配置拉取记录、目标类型、客户端位置和 User-Agent
 /refresh 强制重新拉取上游订阅源，并在完成后回复刷新结果

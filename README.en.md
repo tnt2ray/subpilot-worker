@@ -2,7 +2,7 @@
 
 Language: [中文](./readme.md) | English
 
-SubPilot Worker is a subscription configuration generator that runs on Cloudflare Workers. It reads nodes from upstream subscription sources, generates Surge, Clash/mihomo, and Stash configuration from the admin settings, and stores runtime configuration in Workers KV.
+SubPilot Worker is a subscription configuration generator that runs on Cloudflare Workers. It reads nodes from upstream subscription sources, generates Surge, Clash/mihomo, and Stash configuration from the admin settings, serves compatible Clash YAML to Shadowrocket clients, and stores runtime configuration in Workers KV.
 
 This repository is safe to use publicly: it does not store production KV namespace IDs, production domains, admin tokens, subscription source URLs, chain exit passwords, MITM CAs, or other personal runtime data. Keep your own production deployment details in the local untracked `wrangler.jsonc`, Cloudflare Worker Secrets, and Workers KV.
 
@@ -14,8 +14,8 @@ Third-party dependencies and bundled code keep their original licenses. Upstream
 
 ## Features
 
-- Manage upstream subscription URLs, enabled state, fetch User-Agent, and node name prefixes.
-- Generate Surge, Clash/mihomo, and Stash target configurations.
+- Manage upstream subscription URLs, enabled state, fetch User-Agent, and node name prefixes; each source can use a Surge, Clash, Stash, or Shadowrocket User-Agent.
+- Generate Surge, Clash/mihomo, and Stash target configurations; Shadowrocket clients receive Clash YAML after User-Agent detection.
 - Select the output target automatically from the client User-Agent.
 - Maintain Surge, Clash, and Stash feature settings through structured fields instead of editing full templates.
 - Manage policy groups, policy rules, rule sets, DNS, TUN, MITM, and URL Rewrite settings.
@@ -35,7 +35,7 @@ Third-party dependencies and bundled code keep their original licenses. Upstream
 - Subscription source URLs are encrypted before they are stored in KV; they are decrypted only inside the Worker when configuration is read.
 - Admin sessions are HttpOnly signed cookies. The app does not create `session:*` KV keys.
 - Stash CAs should be generated and stored locally in the client. SubPilot does not store or serve a Stash CA private key, `ca-p12`, or `ca-passphrase`.
-- Stash output has not yet been fully tested on a real Stash client. Treat it as a test feature in release builds, and review rules, MITM, scripts, and rule-providers before importing.
+- Stash output has not yet been fully tested on real clients. Treat it as a test feature in release builds, and review rules, MITM, scripts, and rule-providers before importing.
 - `wrangler.jsonc` is excluded by `.gitignore` and should hold your personal Worker name, KV namespace ID, and custom domain settings.
 
 ## Quick Deployment
@@ -154,9 +154,9 @@ Open the Workers.dev URL from Wrangler deployment output, or your custom domain,
 Recommended first-time configuration order:
 
 1. Set `Managed Base URL` in `Configuration`, usually `https://<your-domain>/sync`.
-2. Add upstream subscription sources in `Sources`; URLs are encrypted in KV.
+2. Add upstream subscription sources in `Sources`; URLs are encrypted in KV, and the fetch User-Agent can be set to Surge, Clash, Stash, or Shadowrocket according to upstream requirements.
 3. Adjust policy groups in `Policy Groups`.
-4. Configure rules, DNS, TUN, and related settings in `Surge`, `Clash`, and `Stash`.
+4. Configure target-specific settings in `Surge`, `Clash`, and `Stash`.
 5. If you need chain proxies, add manually maintained proxy nodes in `Proxy Nodes`, check the nodes that can be used as chain exits, and configure the chain filter on each exit node.
 6. Adjust the display time zone in `Configuration` if needed. The default is `Asia/Shanghai`, and it only affects admin and notification display.
 7. Rotate the subscription read token in `Tokens` and copy the subscription link.
@@ -167,7 +167,7 @@ Subscription links are based on the `Managed Base URL` configured in the admin U
 https://<your-domain>/sync/<read_token>/
 ```
 
-`https://<your-domain>/sync/<read_token>/` automatically selects Surge, Clash/mihomo, or Stash from the client User-Agent. The subscription endpoint does not accept extra query parameters and does not accept explicit target paths such as `/surge`, `/clash`, or `/stash`. If the User-Agent cannot be recognized, the server returns 401 and does not serve configuration. The client filename is provided through the `Content-Disposition` response header.
+`https://<your-domain>/sync/<read_token>/` automatically selects Surge, Clash/mihomo, Stash, or Shadowrocket from the client User-Agent. Shadowrocket uses this common entry point to receive full Clash YAML; there is no dedicated filename path for Shadowrocket. The subscription endpoint does not accept extra query parameters and does not accept explicit target paths such as `/surge`, `/clash`, `/stash`, or `/shadowrocket`. If the User-Agent cannot be recognized, the server returns 401 and does not serve configuration. The client filename is provided through the `Content-Disposition` response header.
 
 The server only accepts subscription entry points under the current `Managed Base URL` path. If you change `Managed Base URL` to `https://<your-domain>/sywwqnc`, then `/sywwqnc/<read_token>/` works and the default `/sync/<read_token>/` no longer works as a subscription entry point.
 
@@ -228,6 +228,8 @@ Surge composite rule types such as `SUBNET`, `AND`, `OR`, and `NOT` can be selec
 
 Clash / mihomo and Stash `rule-providers` are rule set sources; `RULE-SET` lines in `rules` are the actual match entry points. SubPilot automatically adds rule sets from `rule-providers` that do not yet appear in `rules`, using `Proxy` as the default policy target. Deleting a rule set from `rule-providers` also removes the corresponding `RULE-SET` rule. If you delete a rule-set rule from `rules`, the system asks for confirmation and deletes the same-name rule-provider. Adding the rule-provider again later automatically fills `rules` again.
 
+Shadowrocket uses the Clash YAML compatible output. When a Shadowrocket client accesses the common subscription link, SubPilot serves Clash-style nodes, policy groups, rules, and related configuration. Shadowrocket can read nodes from that subscription and can import the same subscription again in its configuration tab to get the other configuration details. SubPilot does not provide a Shadowrocket-specific configuration page or filename path.
+
 ## Telegram Notifications
 
 SubPilot supports two notification states: notifications off, or Telegram notifications enabled. Telegram notifications are used for upstream refresh failure alerts and provide bot commands for status checks and manual refresh.
@@ -281,7 +283,7 @@ After binding succeeds, only the bound Chat ID can trigger SubPilot bot commands
 ### Available Bot Commands
 
 ```text
-/status  View source count, cache count, and recent Surge/Clash/Stash fetch time
+/status  View source count, cache count, and recent Surge/Clash/Stash/Shadowrocket Clash YAML fetch time
 /sources View subscription source enabled state
 /recent  View recent configuration fetch records, target type, client location, and User-Agent
 /refresh Force refresh upstream subscription sources and reply with the result

@@ -25,6 +25,7 @@ describe("KV schema migrations", () => {
     expect(JSON.parse(String(kv.get("config:settings:displayTimeZone") ?? "null"))).toBe("Asia/Shanghai");
     expect(JSON.parse(String(kv.get("config:stash:port") ?? "null"))).toBe(DEFAULT_CONFIG.stash.port);
     expect(JSON.parse(String(kv.get("config:stash:mitm") ?? "null"))).toEqual(DEFAULT_CONFIG.stash.mitm);
+    expect([...kv.keys()].some((key) => key.startsWith("config:shadowrocket:"))).toBe(false);
 
     const { env: autoEnv, kv: autoKv } = makeTestEnv();
     await loadConfig(autoEnv);
@@ -281,6 +282,16 @@ describe("KV schema migrations", () => {
       migratedCachedSourceEntry,
       migratedMissingSourceEntry
     ]);
+
+    const { env: v10Env, kv: v10Kv } = makeTestEnv(new Map([
+      [CONFIG_SCHEMA_VERSION_KEY, "10"],
+      ["config:settings:userAgentStash", JSON.stringify("Existing Stash")]
+    ]));
+
+    await runKvMigrations(v10Env);
+
+    expect(v10Kv.get(CONFIG_SCHEMA_VERSION_KEY)).toBe("10");
+    expect(JSON.parse(String(v10Kv.get("config:settings:userAgentStash") ?? "null"))).toBe("Existing Stash");
   });
 
   it("rejects KV created by a newer unsupported Worker", async () => {

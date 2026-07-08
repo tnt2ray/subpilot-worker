@@ -32,6 +32,8 @@ const SETTING_KEYS = [
   "managedBaseUrl",
   "userAgentSurge",
   "userAgentClash",
+  "userAgentStash",
+  "userAgentShadowrocket",
   "excludeKeywords",
   "geoipRenameEnabled",
   "featureTagRules",

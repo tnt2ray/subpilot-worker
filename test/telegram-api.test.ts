@@ -353,6 +353,8 @@ describe("telegram api", () => {
     expect(telegramBody.text).toContain("Primary：已缓存，2 个节点；协议 trojan 1，vmess 1；2026-06-20 09:00:00");
     expect(telegramBody.text).toContain("最近 Surge 配置获取：");
     expect(telegramBody.text).toContain("最近 Clash 配置获取：");
+    expect(telegramBody.text).toContain("最近 Stash 配置获取：");
+    expect(telegramBody.text).toContain("最近 Shadowrocket Clash YAML 获取：");
     expect(telegramBody.text).not.toContain("2026-06-20T01:00:00.000Z");
     expect(telegramBody.text).not.toContain("UTC+8");
     expect(telegramBody.text).not.toContain("Chat ID");
@@ -375,9 +377,11 @@ describe("telegram api", () => {
 
     vi.useFakeTimers();
     try {
+      const targets = ["surge", "clash", "stash", "shadowrocket", "surge", "shadowrocket"] as const;
       for (let index = 0; index < 6; index += 1) {
         vi.setSystemTime(new Date(Date.UTC(2026, 5, 20, 0, 0, index)));
-        await recordConfigFetch(env, index % 2 === 0 ? "surge" : "clash", new Request("https://subpilot.example.com/sync/read-token/", {
+        const target = targets[index]!;
+        await recordConfigFetch(env, target, new Request("https://subpilot.example.com/sync/read-token/", {
           headers: {
             "cf-connecting-ip": "198.51.100.7",
             "user-agent": `Recent Client/${index}`
@@ -409,7 +413,7 @@ describe("telegram api", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const telegramBody = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body ?? "{}")) as { text?: string };
     expect(telegramBody.text).toContain("最近配置拉取：");
-    expect(telegramBody.text).toContain("1. Clash 配置，2026-06-20 00:00:05，UA：Recent Client/5");
+    expect(telegramBody.text).toContain("1. Shadowrocket Clash YAML，2026-06-20 00:00:05，UA：Recent Client/5");
     expect(telegramBody.text).toContain("5. Clash 配置，2026-06-20 00:00:01，UA：Recent Client/1");
     expect(telegramBody.text).not.toContain("Recent Client/0");
     expect(telegramBody.text).not.toContain("2026-06-20T00:00:05.000Z");

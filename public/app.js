@@ -76,6 +76,8 @@ const refs = {
   managedBaseUrl: $("managedBaseUrl"),
   userAgentSurge: $("userAgentSurge"),
   userAgentClash: $("userAgentClash"),
+  userAgentStash: $("userAgentStash"),
+  userAgentShadowrocket: $("userAgentShadowrocket"),
   excludeKeywords: $("excludeKeywords"),
   featureTagRules: $("featureTagRules"),
   displayTimeZone: $("displayTimeZone"),
@@ -661,8 +663,12 @@ function pageI18nKey(page) {
     .join("");
 }
 
+function isPageAvailable(page) {
+  return PAGES.includes(page) && Boolean(document.querySelector(`.page-view[data-page="${page}"]`));
+}
+
 function showPage(page, pushHash = false) {
-  activePage = PAGES.includes(page) ? page : "status";
+  activePage = isPageAvailable(page) ? page : "status";
   renderCurrentPage();
   document.querySelectorAll(".page-view").forEach((view) => {
     view.classList.toggle("hidden", view.dataset.page !== activePage);
@@ -853,6 +859,8 @@ function renderSettings() {
   refs.managedBaseUrl.value = state.settings.managedBaseUrl;
   refs.userAgentSurge.value = state.settings.userAgentSurge;
   refs.userAgentClash.value = state.settings.userAgentClash;
+  refs.userAgentStash.value = state.settings.userAgentStash;
+  refs.userAgentShadowrocket.value = state.settings.userAgentShadowrocket;
   refs.excludeKeywords.value = state.settings.excludeKeywords.join(", ");
   refs.featureTagRules.value = linesToText(state.settings.featureTagRules || []);
   setDisplayTimeZoneValue(state.settings.displayTimeZone);
@@ -2042,7 +2050,6 @@ const SURGE_VALUE_RULE_TYPES = new Set([
   "OR",
   "NOT"
 ]);
-
 function isBuiltInGroupName(name) {
   return NAME_LOCKED_GROUP_NAMES.has(String(name || "").trim());
 }
@@ -3495,6 +3502,8 @@ function renderSources() {
         <select data-field="fetchUserAgent">
           <option value="surge">${escapeHtml(t("fetchUserAgentSurge"))}</option>
           <option value="clash">${escapeHtml(t("fetchUserAgentClash"))}</option>
+          <option value="stash">${escapeHtml(t("fetchUserAgentStash"))}</option>
+          <option value="shadowrocket">${escapeHtml(t("fetchUserAgentShadowrocket"))}</option>
         </select>
         <small class="cell-help">${escapeHtml(t("sourceFetchUserAgentHelp"))}</small>
       </td>
@@ -3519,7 +3528,7 @@ function renderSources() {
       }[cell.dataset.label];
       if (labelKey) cell.dataset.label = t(labelKey);
     });
-    row.querySelector('[data-field="fetchUserAgent"]').value = source.fetchUserAgent === "clash" ? "clash" : "surge";
+    row.querySelector('[data-field="fetchUserAgent"]').value = normalizedSourceFetchUserAgent(source.fetchUserAgent);
     row.querySelector('[data-field="enabled"]').checked = source.enabled;
     row.querySelectorAll("[data-field]").forEach((input) => {
       input.addEventListener("input", () => updateSource(source.id, input));
@@ -3532,6 +3541,10 @@ function renderSources() {
     });
     refs.sourcesBody.append(row);
   }
+}
+
+function normalizedSourceFetchUserAgent(value) {
+  return ["surge", "clash", "stash", "shadowrocket"].includes(value) ? value : "surge";
 }
 
 function updateSource(id, input) {
@@ -3731,6 +3744,8 @@ function readSettingsDraft() {
       managedBaseUrl: refs.managedBaseUrl.value.trim(),
       userAgentSurge: refs.userAgentSurge.value.trim(),
       userAgentClash: refs.userAgentClash.value.trim(),
+      userAgentStash: refs.userAgentStash.value.trim(),
+      userAgentShadowrocket: refs.userAgentShadowrocket.value.trim(),
       excludeKeywords: refs.excludeKeywords.value.split(",").map((item) => item.trim()).filter(Boolean),
       featureTagRules: textToLines(refs.featureTagRules.value),
       displayTimeZone: normalizeDisplayTimeZone(refs.displayTimeZone.value),
@@ -4446,7 +4461,9 @@ function renderLinks() {
   const token = currentReadToken || "<rotate-read-token>";
   const base = new URL(state?.settings?.managedBaseUrl || `${location.origin}/sync`, location.origin);
   const url = subscriptionUrl(base, token);
-  refs.links.innerHTML = renderLinkRow(t("automaticLink"), url);
+  refs.links.innerHTML = [
+    renderLinkRow(t("automaticLink"), url)
+  ].join("");
   renderSummary();
 }
 
@@ -4454,13 +4471,14 @@ function renderLinkRow(label, url) {
   return `<div class="link-row"><strong>${escapeHtml(label)}</strong><div class="link-copy-field"><code>${escapeHtml(url)}</code><button class="btn copy-link-btn" type="button" data-copy-link="${escapeHtml(url)}">${t("copyLink")}</button></div></div>`;
 }
 
-function subscriptionUrl(base, token) {
+function subscriptionUrl(base, token, fileName = "") {
   const normalizedBase = new URL(base.toString());
   normalizedBase.search = "";
   normalizedBase.hash = "";
   const baseHref = normalizedBase.toString().replace(/\/+$/, "");
   const encodedToken = encodeURIComponent(token);
-  return `${baseHref}/${encodedToken}/`;
+  const filePath = fileName ? encodeURIComponent(fileName) : "";
+  return filePath ? `${baseHref}/${encodedToken}/${filePath}` : `${baseHref}/${encodedToken}/`;
 }
 
 async function copyLink(event) {
@@ -4646,7 +4664,7 @@ function showSourceRefreshWarnings(result) {
 
 function renderFetchStats() {
   const lastFetched = fetchStats?.lastFetched || {};
-  const targets = ["surge", "clash", "stash"];
+  const targets = ["surge", "clash", "stash", "shadowrocket"];
   const records = Array.isArray(fetchStats?.recentUserAgents) ? fetchStats.recentUserAgents : [];
   const rows = records.map((record) => ({
     ...record,
@@ -4711,7 +4729,8 @@ function formatFetchTargetLabel(target) {
   const key = {
     surge: "fetchTargetSurge",
     clash: "fetchTargetClash",
-    stash: "fetchTargetStash"
+    stash: "fetchTargetStash",
+    shadowrocket: "fetchTargetShadowrocket"
   }[target];
   return key ? t(key) : String(target || "-");
 }
@@ -4843,6 +4862,7 @@ function updatePreviewControls() {
       clash: refs.previewClashBtn,
       stash: refs.previewStashBtn
     }[target];
+    if (!button) continue;
     button.disabled = loading;
     button.textContent = PREVIEW_TARGET_LABELS[target];
   }

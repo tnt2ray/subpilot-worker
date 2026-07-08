@@ -55,7 +55,7 @@ function usesSurgeSubnetRule(rule: string): boolean {
   return /(?:^|[,(])\s*SUBNET(?:\s*[:,)]|,)/i.test(rule);
 }
 
-function ruleTargetIndex(parts: string[]): number | null {
+export function ruleTargetIndex(parts: string[]): number | null {
   const type = parts[0]?.trim().toUpperCase();
   if (!type || type.startsWith("#")) return null;
   if (type === "AND" || type === "OR" || type === "NOT") return null;

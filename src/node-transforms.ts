@@ -237,9 +237,7 @@ export function isIPv6(value: string): boolean {
 }
 
 function filterNodesForTarget(nodes: ProxyNode[], target: Target): ProxyNode[] {
-  const supported = target === "surge"
-    ? SURGE_PROTOCOLS
-    : CLASH_PROTOCOLS;
+  const supported = target === "surge" ? SURGE_PROTOCOLS : CLASH_PROTOCOLS;
   return nodes.filter((node) => supported.has(node.type.toLowerCase()));
 }
 

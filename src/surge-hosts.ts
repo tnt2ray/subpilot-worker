@@ -4,31 +4,35 @@ const ENCRYPTED_DNS_PROTOCOLS = new Set(["https:", "h3:", "quic:", "tls:"]);
 
 export function validateSurgeHosts(config: Partial<Pick<AppConfig, "surge">>): string | null {
   const hosts = Array.isArray(config.surge?.hosts) ? config.surge.hosts : [];
+  return validateHostLines(hosts, "Surge Host");
+}
+
+function validateHostLines(hosts: string[], label: string): string | null {
   for (const [index, line] of hosts.entries()) {
-    const error = validateSurgeHostLine(line, index + 1);
+    const error = validateSurgeHostLine(line, index + 1, label);
     if (error) return error;
   }
   return null;
 }
 
-function validateSurgeHostLine(line: string, lineNumber: number): string | null {
+function validateSurgeHostLine(line: string, lineNumber: number, label: string): string | null {
   const trimmed = String(line || "").trim();
   if (!trimmed || trimmed.startsWith("#") || trimmed.startsWith(";")) return null;
-  if (/^\[[^\]]+\]$/.test(trimmed)) return `Surge Host 第 ${lineNumber} 行不能包含配置段标题`;
+  if (/^\[[^\]]+\]$/.test(trimmed)) return `${label} 第 ${lineNumber} 行不能包含配置段标题`;
 
   const separatorIndex = trimmed.indexOf("=");
   if (separatorIndex <= 0 || !trimmed.slice(separatorIndex + 1).trim()) {
-    return `Surge Host 第 ${lineNumber} 行语法应为 主机名 = 解析值`;
+    return `${label} 第 ${lineNumber} 行语法应为 主机名 = 解析值`;
   }
 
   const host = trimmed.slice(0, separatorIndex).trim();
   const value = trimmed.slice(separatorIndex + 1).trim();
-  if (!isValidHostKey(host)) return `Surge Host 第 ${lineNumber} 行主机名格式无效`;
+  if (!isValidHostKey(host)) return `${label} 第 ${lineNumber} 行主机名格式无效`;
 
   const values = value.split(",").map((item) => item.trim());
-  if (values.length === 0 || values.some((item) => !item)) return `Surge Host 第 ${lineNumber} 行解析值存在空项`;
+  if (values.length === 0 || values.some((item) => !item)) return `${label} 第 ${lineNumber} 行解析值存在空项`;
   const invalidValue = values.find((item) => !isValidHostValue(item));
-  if (invalidValue) return `Surge Host 第 ${lineNumber} 行解析值格式无效：${invalidValue}`;
+  if (invalidValue) return `${label} 第 ${lineNumber} 行解析值格式无效：${invalidValue}`;
 
   return null;
 }

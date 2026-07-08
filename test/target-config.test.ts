@@ -18,6 +18,7 @@ describe("target inference", () => {
 
     expect(inferTarget(new Request("https://example.com/sync/token", { headers: { "user-agent": "Mihomo/1" } }))).toBe("clash");
     expect(inferTarget(new Request("https://example.com/sync/token", { headers: { "user-agent": "Stash/2.0 Clash.Meta" } }))).toBe("stash");
+    expect(inferTarget(new Request("https://example.com/sync/token", { headers: { "user-agent": "Shadowrocket/2.2.68" } }))).toBe("shadowrocket");
     expect(inferTarget(new Request("https://example.com/sync/token", { headers: { "user-agent": "Surge Mac/11390" } }))).toBe("surge");
     expect(inferTarget(new Request("https://example.com/sync/token", { headers: { "user-agent": "Surge iOS/3727" } }))).toBe("surge");
     expect(inferTarget(new Request("https://example.com/sync/token", { headers: { "user-agent": "TestClient/1" } }))).toBeNull();
@@ -25,14 +26,35 @@ describe("target inference", () => {
     expect(normalizeTarget("surge")).toBe("surge");
     expect(normalizeTarget("clash")).toBe("clash");
     expect(normalizeTarget("stash")).toBe("stash");
+    expect(normalizeTarget("shadowrocket")).toBeNull();
     expect(normalizeTarget("unknown")).toBeNull();
     expect(normalizeTarget("surge2")).toBeNull();
     expect(normalizeTarget("mobile")).toBeNull();
 
     expect(DEFAULT_CONFIG.settings.userAgentSurge).toBe("Surge iOS/3727");
     expect(DEFAULT_CONFIG.settings.userAgentClash).toBe("clash-verge/v2.5.1");
+    expect(DEFAULT_CONFIG.settings.userAgentStash).toBe("Stash/2.7.1");
+    expect(DEFAULT_CONFIG.settings.userAgentShadowrocket).toBe("Shadowrocket/2.2.68");
     expect(DEFAULT_CONFIG.settings.excludeKeywords).toEqual(["过期", "剩余", "官网", "直接连接", "购买", "漏洞", "备用", "登陆", "工作室", "客服"]);
     expect(DEFAULT_CONFIG.groups.Auto).toMatch(/^url-test,/);
+
+    const normalized = normalizeConfig({
+      ...DEFAULT_CONFIG,
+      sources: [{
+        id: "stash",
+        name: "Stash",
+        url: "https://example.com/stash",
+        fetchUserAgent: "stash",
+        enabled: true
+      }, {
+        id: "shadowrocket",
+        name: "Shadowrocket",
+        url: "https://example.com/shadowrocket",
+        fetchUserAgent: "shadowrocket",
+        enabled: true
+      }]
+    });
+    expect(normalized.sources.map((source) => source.fetchUserAgent)).toEqual(["stash", "shadowrocket"]);
   });
 
   it("uses the sanitized Gist-derived Clash feature defaults", async () => {

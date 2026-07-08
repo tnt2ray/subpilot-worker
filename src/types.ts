@@ -1,5 +1,5 @@
-export type Target = "surge" | "clash" | "stash";
-export type SourceFetchUserAgent = "surge" | "clash";
+export type Target = "surge" | "clash" | "stash" | "shadowrocket";
+export type SourceFetchUserAgent = "surge" | "clash" | "stash" | "shadowrocket";
 export type NotificationChannel = "off" | "telegram";
 export type SurgeIpv6VifMode = "off" | "auto" | "always";
 export const CHAIN_EXIT_PROXY_NAME = "Chain Exit";
@@ -170,6 +170,8 @@ export interface AppConfig {
     managedBaseUrl: string;
     userAgentSurge: string;
     userAgentClash: string;
+    userAgentStash: string;
+    userAgentShadowrocket: string;
     excludeKeywords: string[];
     geoipRenameEnabled: boolean;
     featureTagRules: string[];

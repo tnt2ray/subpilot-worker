@@ -92,6 +92,7 @@ describe("KV config storage", () => {
     expect(cleared.stash.urlRewrite).toEqual([]);
     expect(cleared.stash.scripts).toEqual([]);
     expect(cleared.stash.rules).toEqual([]);
+    expect("shadowrocket" in cleared).toBe(false);
 
     const noEncryptedDns = normalizeConfig({
       ...DEFAULT_CONFIG,
@@ -136,6 +137,8 @@ describe("KV config storage", () => {
       settings: {
         ...DEFAULT_CONFIG.settings,
         userAgentSurge: "Surge iOS/3727",
+        userAgentStash: "Stash/Test",
+        userAgentShadowrocket: "Shadowrocket/Test",
         displayTimeZone: "UTC",
         notificationChannel: "telegram",
         notificationTelegramChatId: "123456",
@@ -150,7 +153,7 @@ describe("KV config storage", () => {
         id: "src1",
         name: "Primary",
         url: "https://example.com/sub",
-        fetchUserAgent: "surge",
+        fetchUserAgent: "shadowrocket",
         enabled: true
       }],
       proxyNodes: [{
@@ -222,6 +225,8 @@ describe("KV config storage", () => {
     });
 
     expect(JSON.parse(kv.get("config:settings:userAgentSurge") ?? "null")).toBe("Surge iOS/3727");
+    expect(JSON.parse(kv.get("config:settings:userAgentStash") ?? "null")).toBe("Stash/Test");
+    expect(JSON.parse(kv.get("config:settings:userAgentShadowrocket") ?? "null")).toBe("Shadowrocket/Test");
     expect(JSON.parse(kv.get("config:settings:displayTimeZone") ?? "null")).toBe("UTC");
     expect(JSON.parse(kv.get("config:settings:notificationChannel") ?? "null")).toBe("telegram");
     expect(JSON.parse(kv.get("config:settings:notificationTelegramChatId") ?? "null")).toBe("123456");
@@ -349,15 +354,17 @@ describe("KV config storage", () => {
     expect(JSON.parse(kv.get("config:stash:rules") ?? "[]")).toEqual(["MATCH,Proxy"]);
     expect(kv.has("config:stash:caP12")).toBe(false);
     expect(kv.has("config:stash:caPassphrase")).toBe(false);
+    expect([...kv.keys()].some((key) => key.startsWith("config:shadowrocket:"))).toBe(false);
     expect(JSON.parse(kv.get("config:sources:index") ?? "[]")).toEqual(["src1"]);
     const storedSource = JSON.parse(kv.get("config:sources:src1") ?? "{}") as { url?: string; urlEncrypted?: string; fetchUserAgent?: string };
-    expect(storedSource).toMatchObject({ url: "", fetchUserAgent: "surge" });
+    expect(storedSource).toMatchObject({ url: "", fetchUserAgent: "shadowrocket" });
     expect(storedSource.urlEncrypted).toMatch(/^v1\./);
     expect(kv.get("config:sources:src1")).not.toContain("https://example.com/sub");
     const loaded = await loadConfig(env);
-    expect(loaded.sources[0]).toMatchObject({ id: "src1", url: "https://example.com/sub", fetchUserAgent: "surge" });
+    expect(loaded.sources[0]).toMatchObject({ id: "src1", url: "https://example.com/sub", fetchUserAgent: "shadowrocket" });
     expect(loaded.stash.port).toBe(7900);
     expect(loaded.stash.mitm).toEqual({ hostname: ["stash.example.com"] });
+    expect("shadowrocket" in loaded).toBe(false);
   });
 
   it("clears source caches immediately when sources are disabled, deleted, or orphaned", async () => {
