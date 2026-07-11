@@ -10,7 +10,7 @@ import {
 import { CHAIN_EXIT_PROTOCOLS, CHAIN_EXIT_PROXY_NAME, type ChainExitProtocol, type StaticProxyNodeConfig } from "./types";
 import { DEFAULT_DISPLAY_TIME_ZONE } from "./util";
 
-export const CURRENT_KV_SCHEMA_VERSION = 10;
+export const CURRENT_KV_SCHEMA_VERSION = 11;
 export const CONFIG_SCHEMA_VERSION_KEY = "config:schemaVersion";
 const LEGACY_DEFAULT_CHAIN_FILTER = ["JP", "KR", "TW"];
 
@@ -19,8 +19,12 @@ type SourceCacheMigrationEntry = Omit<SourceCacheEntry, "contentAvailable" | "no
 type MigrationStep = {
   from: number;
   to: number;
-  run: (env: Env) => Promise<void>;
+  run: (env: Env, context: MigrationContext) => Promise<void>;
 };
+
+interface MigrationContext {
+  freshInstall: boolean;
+}
 
 const MIGRATIONS: MigrationStep[] = [
   {
@@ -140,6 +144,13 @@ const MIGRATIONS: MigrationStep[] = [
     run: async (env) => {
       await migrateSourceCacheMetadataStats(env);
     }
+  },
+  {
+    from: 10,
+    to: 11,
+    run: async (env, context) => {
+      await initializeRuleSetConfig(env, context.freshInstall ? "compiled" : "manual");
+    }
   }
 ];
 
@@ -166,6 +177,9 @@ export async function ensureKvSchema(env: Env): Promise<KvSchemaStatus> {
 
 export async function runKvMigrations(env: Env): Promise<KvSchemaStatus> {
   let stored = await readStoredSchemaVersion(env);
+  const context: MigrationContext = {
+    freshInstall: stored === 0 && await isFreshKvNamespace(env)
+  };
   if (stored > CURRENT_KV_SCHEMA_VERSION) {
     throw new Error(`KV schema version ${stored} is newer than this Worker supports (${CURRENT_KV_SCHEMA_VERSION})`);
   }
@@ -183,7 +197,7 @@ export async function runKvMigrations(env: Env): Promise<KvSchemaStatus> {
     if (!migration) {
       throw new Error(`Missing KV migration from schema ${stored} to ${next}`);
     }
-    await migration.run(env);
+    await migration.run(env, context);
     stored = next;
     await writeStoredSchemaVersion(env, stored);
     changed = true;
@@ -206,6 +220,26 @@ async function readStoredSchemaVersion(env: Env): Promise<number> {
 
 function writeStoredSchemaVersion(env: Env, version: number): Promise<void> {
   return env.SUBPILOT_CONFIG.put(CONFIG_SCHEMA_VERSION_KEY, String(version));
+}
+
+async function initializeRuleSetConfig(env: Env, mode: "manual" | "compiled"): Promise<void> {
+  await Promise.all([
+    putJsonIfMissing(env, "config:ruleSets:mode", mode),
+    putJsonIfMissing(env, "config:ruleSets:aggregateByPolicy", false),
+    putJsonIfMissing(env, "config:ruleSetSources:index", []),
+    putJsonIfMissing(env, "config:ruleSetOutputs:index", []),
+    putJsonIfMissing(env, "config:ruleSetDirectRules:index", [])
+  ]);
+}
+
+async function isFreshKvNamespace(env: Env): Promise<boolean> {
+  const page = await env.SUBPILOT_CONFIG.list({ limit: 1 });
+  return page.keys.length === 0;
+}
+
+async function putJsonIfMissing(env: Env, key: string, value: unknown): Promise<void> {
+  if (await env.SUBPILOT_CONFIG.get(key) !== null) return;
+  await env.SUBPILOT_CONFIG.put(key, JSON.stringify(value));
 }
 
 async function readLegacyChainFilter(env: Env): Promise<string[]> {

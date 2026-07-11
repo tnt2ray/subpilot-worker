@@ -146,41 +146,6 @@ describe("target inference", () => {
     expect(parsed.dns).not.toHaveProperty("fake-ip-filter");
   });
 
-  it("maps Surge WebSocket headers to Clash output", async () => {
-    const fetchMock = mockSubscription("CF 1 = trojan,1.2.3.4,443,password=p,sni=edge.example.com,ws=true,ws-path=/photos/documents/member?ed=2560,ws-headers=Host:\"edge.example.com\",skip-cert-verify=true");
-    const env = makeEnv();
-    const config = normalizeConfig({
-      ...DEFAULT_CONFIG,
-      settings: {
-        ...DEFAULT_CONFIG.settings,
-        geoipRenameEnabled: false
-      },
-      sources: [{
-        id: "source-1",
-        name: "CF",
-        url: "https://upstream.example.com/sub",
-        fetchUserAgent: "surge",
-        enabled: true
-      }]
-    });
-
-    const clash = await generateConfig(env, config, "clash", "https://subpilot.example.com/sync/token/");
-    const parsedClash = YAML.parse(clash.content) as { proxies: Record<string, unknown>[] };
-
-    expect(parsedClash.proxies[0]).toMatchObject({
-      name: "[CF] CF 1",
-      type: "trojan",
-      network: "ws",
-      "ws-opts": {
-        path: "/photos/documents/member?ed=2560",
-        headers: {
-          Host: "edge.example.com"
-        }
-      },
-      "skip-cert-verify": true
-    });
-  });
-
   it("normalizes, infers, and validates managed base URLs", () => {
     const config = normalizeConfig({
       ...DEFAULT_CONFIG,

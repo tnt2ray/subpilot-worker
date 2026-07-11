@@ -12,12 +12,15 @@ export function buildSurgeGroups(config: AppConfig, nodes: ProxyNode[]): SurgeGr
   return activeGroupEntries(config, "surge").flatMap(([name, spec]) => {
     const [type, ...items] = splitGroupSpec(spec);
     const groupType = type || "select";
+    const surgeHidden = surgeHiddenValue(items);
+    const groupItems = items.filter((item) => !isSurgeHiddenOption(item));
     const resolved = groupType === "subnet"
-      ? resolveSubnetGroupItems(items, name, disabledGroups, nodes)
-      : resolveGroupItems(items, nodes).filter((item) => isAllowedGroupItem(item) && !disabledGroups.has(item));
+      ? resolveSubnetGroupItems(groupItems, name, disabledGroups, nodes)
+      : resolveGroupItems(groupItems, nodes).filter((item) => isAllowedGroupItem(item) && !disabledGroups.has(item));
     const outputItems = groupType === "url-test" ? resolved.filter((item) => !item.includes("=")) : resolved;
     if (!shouldEmitPolicyGroup(name, groupType, outputItems)) return [];
-    return [{ name, line: `${name} = ${[mapSurgeGroupType(groupType), ...outputItems].join(", ")}` }];
+    const surgeOptions = surgeHidden ? ["hidden=true"] : [];
+    return [{ name, line: `${name} = ${[mapSurgeGroupType(groupType), ...outputItems, ...surgeOptions].join(", ")}` }];
   });
 }
 
@@ -28,7 +31,9 @@ export function buildClashGroups(config: AppConfig, nodes: ProxyNode[]): Record<
     const groupType = type || "select";
     const proxies = resolveGroupItems(items, nodes).filter((item) => !item.includes("=") && isAllowedGroupItem(item) && !disabledGroups.has(item));
     if (!shouldEmitPolicyGroup(name, groupType, proxies)) return [];
-    const options = Object.fromEntries(items.filter((item) => item.includes("=")).map((item) => item.split(/=(.*)/s) as [string, string]));
+    const options = Object.fromEntries(items
+      .filter((item) => !parseAllPolicySelector(item) && !isSurgeHiddenOption(item) && item.includes("="))
+      .map((item) => item.split(/=(.*)/s) as [string, string]));
     return [{
       name,
       type: mapClashGroupType(groupType),
@@ -129,6 +134,20 @@ function isAllowedSubnetPolicy(
 
 function isAllowedGroupItem(item: string): boolean {
   return item !== "Proxy";
+}
+
+function surgeHiddenValue(items: string[]): boolean {
+  let hidden = false;
+  for (const item of items) {
+    const option = parseGroupOption(item);
+    if (option?.key.toLowerCase() !== "hidden") continue;
+    hidden = option.value.toLowerCase() === "true" || option.value === "1";
+  }
+  return hidden;
+}
+
+function isSurgeHiddenOption(item: string): boolean {
+  return parseGroupOption(item)?.key.toLowerCase() === "hidden";
 }
 
 function mapSurgeGroupType(type: string): string {

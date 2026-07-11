@@ -2,10 +2,13 @@ import YAML from "yaml";
 import { describe, expect, it } from "vitest";
 import { generateConfig } from "../src/generator";
 import { loadConfig, normalizeConfig, saveConfig } from "../src/config-store";
+import { CONFIG_SCHEMA_VERSION_KEY, CURRENT_KV_SCHEMA_VERSION } from "../src/config-schema";
 import { DEFAULT_CONFIG } from "../src/default-config";
+import { compiledRuleSetContentKey, compiledRuleSetMetaKey } from "../src/rule-set-cache";
 import { validateSurgeHosts } from "../src/surge-hosts";
 import { validateSurgeRules } from "../src/surge-rules";
 import { inferUrlRewriteMitmHostnames, validateSurgeUrlRewrite } from "../src/surge-url-rewrite";
+import type { AppConfig } from "../src/types";
 import { sha256Hex } from "../src/util";
 import { makeEnv } from "./helpers/env";
 import { mockSubscription, restoreMocksAfterEach } from "./helpers/fetch";
@@ -16,7 +19,13 @@ describe("KV config storage", () => {
   it("normalizes default config, notification settings, empty lists, subnet groups, and removed client switches", async () => {
     const env = makeEnv();
     const loaded = await loadConfig(env);
-    expect(loaded).toMatchObject(DEFAULT_CONFIG);
+    expect(loaded).toMatchObject({
+      ...DEFAULT_CONFIG,
+      ruleSets: {
+        ...DEFAULT_CONFIG.ruleSets,
+        mode: "compiled"
+      }
+    });
 
     const config = normalizeConfig({
       ...DEFAULT_CONFIG,
@@ -127,6 +136,32 @@ describe("KV config storage", () => {
       }
     });
     expect(unsupportedDnsMode.clash.dnsEnhancedMode).toBe(DEFAULT_CONFIG.clash.dnsEnhancedMode);
+
+    const legacyTargetOverrides = normalizeConfig({
+      ...DEFAULT_CONFIG,
+      ruleSets: {
+        ...DEFAULT_CONFIG.ruleSets,
+        directRules: [{
+          id: "legacy-targets",
+          name: "Legacy Targets",
+          enabled: true,
+          rule: "DOMAIN-SUFFIX,example.com,Proxy",
+          policy: "Proxy",
+          targetMode: "explicit",
+          targets: ["clash"],
+          rawByTarget: { clash: "DOMAIN-SUFFIX,example.com,DIRECT" },
+          order: 1
+        }] as unknown as AppConfig["ruleSets"]["directRules"]
+      }
+    });
+    expect(legacyTargetOverrides.ruleSets.directRules).toEqual([{
+      id: "legacy-targets",
+      name: "Legacy Targets",
+      enabled: true,
+      rule: "DOMAIN-SUFFIX,example.com,Proxy",
+      policy: "Proxy",
+      order: 1
+    }]);
   });
 
   it("stores settings, groups, sources, and client features as separate KV values", async () => {
@@ -181,6 +216,35 @@ describe("KV config storage", () => {
       }],
       chain: {
         filter: ["JP"]
+      },
+      ruleSets: {
+        mode: "compiled",
+        aggregateByPolicy: false,
+        sources: [{
+          id: "rules",
+          name: "Rules",
+          url: "https://example.com/rules.list",
+          enabled: true,
+          format: "surge-rule-set",
+          order: 1
+        }],
+        outputs: [{
+          name: "AI",
+          enabled: true,
+          policy: "Proxy",
+          sourceIds: ["rules"],
+          inlineRules: ["DOMAIN-SUFFIX,example.com,Proxy"],
+          order: 2,
+          surgeOptions: ["extended-matching"]
+        }],
+        directRules: [{
+          id: "final",
+          name: "Final",
+          enabled: true,
+          rule: "FINAL,Proxy",
+          policy: "Proxy",
+          order: 99
+        }]
       },
       surge: {
         ...DEFAULT_CONFIG.surge,
@@ -268,6 +332,30 @@ describe("KV config storage", () => {
     });
     expect(kv.has("config:chain:exitProxy")).toBe(false);
     expect(kv.has("config:chain:filter")).toBe(false);
+    expect(JSON.parse(kv.get("config:ruleSets:mode") ?? "null")).toBe("compiled");
+    expect(JSON.parse(kv.get("config:ruleSets:aggregateByPolicy") ?? "null")).toBe(false);
+    expect(JSON.parse(kv.get("config:ruleSetSources:index") ?? "[]")).toEqual(["rules"]);
+    expect(JSON.parse(kv.get("config:ruleSetSources:rules") ?? "{}")).toMatchObject({
+      id: "rules",
+      format: "surge-rule-set"
+    });
+    expect(JSON.parse(kv.get("config:ruleSetOutputs:index") ?? "[]")).toEqual(["AI"]);
+    const storedRuleSetOutput = JSON.parse(kv.get("config:ruleSetOutputs:AI") ?? "{}");
+    expect(storedRuleSetOutput).toMatchObject({
+      name: "AI",
+      sourceIds: ["rules"],
+      inlineRules: ["DOMAIN-SUFFIX,example.com,Proxy"]
+    });
+    expect(storedRuleSetOutput).not.toHaveProperty("id");
+    expect(JSON.parse(kv.get("config:ruleSetDirectRules:index") ?? "[]")).toEqual(["final"]);
+    expect(JSON.parse(kv.get("config:ruleSetDirectRules:final") ?? "{}")).toEqual({
+      id: "final",
+      name: "Final",
+      enabled: true,
+      rule: "FINAL,Proxy",
+      policy: "Proxy",
+      order: 99
+    });
     expect(kv.has("config:surge:loglevel")).toBe(false);
     expect(JSON.parse(kv.get("config:surge:skipProxy") ?? "[]")).toEqual([
       "127.0.0.1",
@@ -422,6 +510,90 @@ describe("KV config storage", () => {
       nodeCount: 0,
       protocolCounts: []
     }]);
+  });
+
+  it("clears rule set caches immediately when rule set sources or outputs are disabled, deleted, or orphaned", async () => {
+    const kv = new Map<string, string>([[CONFIG_SCHEMA_VERSION_KEY, String(CURRENT_KV_SCHEMA_VERSION)]]);
+    const env = makeEnv(kv);
+    const fetchedAt = "2026-06-20T01:00:00.000Z";
+    const disabledSourceKey = `cache:ruleSetSource:${await sha256Hex("https://rules.example/disabled")}`;
+    const deletedSourceKey = `cache:ruleSetSource:${await sha256Hex("https://rules.example/deleted")}`;
+    const orphanSourceKey = `cache:ruleSetSource:${await sha256Hex("https://rules.example/orphan")}`;
+    const enabledSourceKey = `cache:ruleSetSource:${await sha256Hex("https://rules.example/enabled")}`;
+    const sourceEntries = [
+      { key: disabledSourceKey, fetchedAt, sourceId: "disabled", sourceName: "Disabled", contentAvailable: true },
+      { key: deletedSourceKey, fetchedAt, sourceId: "deleted", sourceName: "Deleted", contentAvailable: true },
+      { key: enabledSourceKey, fetchedAt, sourceId: "enabled", sourceName: "Enabled", contentAvailable: true }
+    ];
+    for (const entry of sourceEntries) {
+      kv.set(entry.key, `${entry.sourceId}-rules`);
+      kv.set(`cache:ruleSetSourceMeta:${entry.key.slice("cache:ruleSetSource:".length)}`, JSON.stringify(entry));
+    }
+    kv.set(orphanSourceKey, "orphan-rules");
+    kv.set("cache:ruleSetSourceMeta:index", JSON.stringify(sourceEntries));
+    kv.set(compiledRuleSetMetaKey("Disabled"), JSON.stringify({ outputName: "Disabled", updatedAt: fetchedAt }));
+    kv.set(compiledRuleSetContentKey("Disabled", "domain", "surge"), ".disabled.example");
+    kv.set(compiledRuleSetMetaKey("Deleted"), JSON.stringify({ outputName: "Deleted", updatedAt: fetchedAt }));
+    kv.set(compiledRuleSetContentKey("Deleted", "domain", "surge"), ".deleted.example");
+    kv.set(compiledRuleSetContentKey("Orphan", "domain", "surge"), ".orphan.example");
+    kv.set(compiledRuleSetMetaKey("Enabled"), JSON.stringify({ outputName: "Enabled", updatedAt: fetchedAt }));
+    kv.set(compiledRuleSetContentKey("Enabled", "domain", "surge"), ".enabled.example");
+
+    await saveConfig(env, {
+      ...DEFAULT_CONFIG,
+      ruleSets: {
+        mode: "compiled",
+        aggregateByPolicy: false,
+        sources: [{
+          id: "disabled",
+          name: "Disabled",
+          url: "https://rules.example/disabled",
+          enabled: false,
+          format: "surge-rule-set",
+          order: 1
+        }, {
+          id: "enabled",
+          name: "Enabled",
+          url: "https://rules.example/enabled",
+          enabled: true,
+          format: "surge-rule-set",
+          order: 2
+        }],
+        outputs: [{
+          name: "Disabled",
+          enabled: false,
+          policy: "Proxy",
+          sourceIds: ["disabled"],
+          inlineRules: [],
+          order: 1,
+          surgeOptions: []
+        }, {
+          name: "Enabled",
+          enabled: true,
+          policy: "Proxy",
+          sourceIds: ["enabled"],
+          inlineRules: [],
+          order: 2,
+          surgeOptions: []
+        }],
+        directRules: []
+      }
+    });
+
+    expect(kv.has(disabledSourceKey)).toBe(false);
+    expect(kv.has(`cache:ruleSetSourceMeta:${disabledSourceKey.slice("cache:ruleSetSource:".length)}`)).toBe(false);
+    expect(kv.has(deletedSourceKey)).toBe(false);
+    expect(kv.has(`cache:ruleSetSourceMeta:${deletedSourceKey.slice("cache:ruleSetSource:".length)}`)).toBe(false);
+    expect(kv.has(orphanSourceKey)).toBe(false);
+    expect(kv.get(enabledSourceKey)).toBe("enabled-rules");
+    expect(JSON.parse(kv.get("cache:ruleSetSourceMeta:index") ?? "[]")).toEqual([sourceEntries[2]]);
+    expect(kv.has(compiledRuleSetMetaKey("Disabled"))).toBe(false);
+    expect(kv.has(compiledRuleSetContentKey("Disabled", "domain", "surge"))).toBe(false);
+    expect(kv.has(compiledRuleSetMetaKey("Deleted"))).toBe(false);
+    expect(kv.has(compiledRuleSetContentKey("Deleted", "domain", "surge"))).toBe(false);
+    expect(kv.has(compiledRuleSetContentKey("Orphan", "domain", "surge"))).toBe(false);
+    expect(kv.has(compiledRuleSetMetaKey("Enabled"))).toBe(true);
+    expect(kv.get(compiledRuleSetContentKey("Enabled", "domain", "surge"))).toBe(".enabled.example");
   });
 
   it("omits disabled groups while keeping their definitions stored", async () => {
@@ -686,6 +858,43 @@ describe("KV config storage", () => {
     expect(autoGroup?.type).toBe("url-test");
     expect(autoGroup?.url).toBe("https://www.gstatic.com/generate_204");
     expect(String(autoGroup?.interval)).toBe("600");
+  });
+
+  it("outputs hidden policy group options only for Surge", async () => {
+    const fetchMock = mockSubscription("JP 1 = trojan, jp.example.com, 443, password=p");
+    const env = makeEnv();
+    const config = {
+      ...DEFAULT_CONFIG,
+      settings: {
+        ...DEFAULT_CONFIG.settings,
+        geoipRenameEnabled: false
+      },
+      groups: {
+        Proxy: "select, Manual, Auto, {all}",
+        Manual: "select, Auto, hidden=true",
+        Auto: "url-test, {all}, hidden=true, url=https://www.gstatic.com/generate_204, interval=600",
+        Network: "subnet, default=Proxy, TYPE:WIFI=Auto, hidden=1"
+      },
+      sources: [{
+        id: "src1",
+        name: "Primary",
+        url: "https://example.com/sub",
+        fetchUserAgent: "surge" as const,
+        enabled: true
+      }]
+    };
+
+    const surge = await generateConfig(env, config, "surge", "https://subpilot.example.com/sync/token/");
+    const clash = await generateConfig(env, config, "clash", "https://subpilot.example.com/sync/token/");
+
+    expect(surge.content).toContain("Manual = select, Auto, hidden=true");
+    expect(surge.content).toContain("Auto = smart, [Primary] JP 1, hidden=true");
+    expect(surge.content).toContain("Network = subnet, default=Proxy, TYPE:WIFI=Auto, hidden=true");
+
+    const groups = (YAML.parse(clash.content) as { "proxy-groups": Array<Record<string, unknown>> })["proxy-groups"];
+    expect(groups.find((group) => group.name === "Manual")).not.toHaveProperty("hidden");
+    expect(groups.find((group) => group.name === "Auto")).not.toHaveProperty("hidden");
+    expect(groups.some((group) => group.name === "Network")).toBe(false);
   });
 
   it("outputs subnet policy groups only for Surge and rewrites Clash rule targets to Proxy", async () => {

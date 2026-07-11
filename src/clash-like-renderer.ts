@@ -6,6 +6,7 @@ import { beijingTimestamp } from "./output-render";
 import { toClashProxy } from "./parsers";
 import { buildClashGroups } from "./policy-groups";
 import { addMissingClashRuleProviderRules, filterClashRules, rewriteUnavailableGroupRuleTargets } from "./rule-targets";
+import type { CompiledRuleSetReferencePlan } from "./rule-set-compiler";
 import { parseStashScriptLine } from "./stash-scripts";
 import type { AppConfig, HostEntry, HostEntryValue, ProxyNode } from "./types";
 
@@ -52,6 +53,7 @@ interface ClashLikeConfigDataOptions {
   ruleProvidersYaml: string;
   rules: string[];
   extraSections?: Record<string, unknown>;
+  ruleSetPlan?: CompiledRuleSetReferencePlan | undefined;
 }
 
 interface StashHttpOutput {
@@ -59,29 +61,57 @@ interface StashHttpOutput {
   scriptProviders: Record<string, unknown>;
 }
 
-export function buildClash(config: AppConfig, nodes: ProxyNode[], sourceHostEntries: HostEntry[]): string {
+export function buildClash(
+  config: AppConfig,
+  nodes: ProxyNode[],
+  sourceHostEntries: HostEntry[],
+  ruleSetPlan?: CompiledRuleSetReferencePlan
+): string {
   const data = buildClashLikeConfigData(config, nodes, {
     baseConfig: clashBaseConfig(config.clash),
     hosts: hostEntriesToClashHosts(sourceHostEntries),
     ruleProvidersYaml: config.clash.ruleProviders,
-    rules: config.clash.rules
+    rules: config.clash.rules,
+    ruleSetPlan
   });
-  return `# Last Updated: ${beijingTimestamp()} (UTC+8)\n${YAML.stringify(data)}`;
+  return `# Last Updated: ${beijingTimestamp()} (UTC+8)\n${stringifyClashLikeConfig(data, ruleSetPlan?.clashRuleComments)}`;
 }
 
-export function buildStash(config: AppConfig, nodes: ProxyNode[], sourceHostEntries: HostEntry[], requestUrl: string, warnings: string[]): string {
+export function buildStash(
+  config: AppConfig,
+  nodes: ProxyNode[],
+  sourceHostEntries: HostEntry[],
+  requestUrl: string,
+  warnings: string[],
+  ruleSetPlan?: CompiledRuleSetReferencePlan
+): string {
   const http = buildStashHttp(config, warnings);
   const data = buildClashLikeConfigData(config, nodes, {
     baseConfig: stashBaseConfig(config.stash),
     hosts: hostEntriesToStashHosts(config.stash.hosts, sourceHostEntries),
     ruleProvidersYaml: config.stash.ruleProviders,
     rules: config.stash.rules,
+    ruleSetPlan,
     extraSections: {
       ...(Object.keys(http.http).length > 0 ? { http: http.http } : {}),
       ...(Object.keys(http.scriptProviders).length > 0 ? { "script-providers": http.scriptProviders } : {})
     }
   });
-  return `#SUBSCRIBED ${managedSubscriptionUrlForRequest(config, requestUrl)}\n# Last Updated: ${beijingTimestamp()} (UTC+8)\n${YAML.stringify(data)}`;
+  return `#SUBSCRIBED ${managedSubscriptionUrlForRequest(config, requestUrl)}\n# Last Updated: ${beijingTimestamp()} (UTC+8)\n${stringifyClashLikeConfig(data, ruleSetPlan?.clashRuleComments)}`;
+}
+
+function stringifyClashLikeConfig(data: Record<string, unknown>, comments: Record<string, string> = {}): string {
+  const document = new YAML.Document(data);
+  const rules = document.get("rules", true);
+  if (YAML.isSeq(rules)) {
+    for (const item of rules.items) {
+      if (!item || typeof item !== "object") continue;
+      const scalar = item as { value?: unknown; commentBefore?: string };
+      const comment = comments[String(scalar.value ?? "")];
+      if (comment) scalar.commentBefore = ` ${comment}`;
+    }
+  }
+  return String(document);
 }
 
 function buildClashLikeBaseData(config: ClashLikeBaseConfig): Record<string, unknown> {
@@ -201,7 +231,9 @@ function buildClashLikeConfigData(
   const data = buildClashLikeBaseData(options.baseConfig);
   if (Object.keys(options.hosts).length > 0) data.hosts = options.hosts;
   Object.assign(data, options.extraSections ?? {});
-  const ruleProviders = parseClashRuleProvidersYaml(options.ruleProvidersYaml);
+  const ruleProviders = config.ruleSets.mode === "compiled" && options.ruleSetPlan
+    ? options.ruleSetPlan.clashRuleProviders
+    : parseClashRuleProvidersYaml(options.ruleProvidersYaml);
   if (Object.keys(ruleProviders).length > 0) {
     data["rule-providers"] = ruleProviders;
   }
@@ -209,7 +241,12 @@ function buildClashLikeConfigData(
   const proxyGroups = buildClashGroups(config, nodes);
   data["proxy-groups"] = proxyGroups;
   data.rules = addMissingClashRuleProviderRules(
-    rewriteUnavailableGroupRuleTargets(config, filterClashRules(options.rules), nodes, new Set(proxyGroups.map((group) => String(group.name)))),
+    rewriteUnavailableGroupRuleTargets(
+      config,
+      filterClashRules(config.ruleSets.mode === "compiled" && options.ruleSetPlan ? options.ruleSetPlan.clashRules : options.rules),
+      nodes,
+      new Set(proxyGroups.map((group) => String(group.name)))
+    ),
     Object.keys(ruleProviders)
   );
   return data;

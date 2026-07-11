@@ -1,7 +1,9 @@
 import { DEFAULT_CONFIG } from "./default-config";
 import { ensureKvSchema } from "./config-schema";
-import { normalizeChain, normalizeClash, normalizeConfig, normalizeStash, normalizeSurge } from "./config-normalize";
+import { normalizeChain, normalizeClash, normalizeConfig, normalizeRuleSets, normalizeStash, normalizeSurge } from "./config-normalize";
 import { decryptText, encryptText, sealSources, unsealSources } from "./crypto-store";
+import { pruneRuleSetCaches } from "./rule-set-cache";
+import type { RuleSetConfig, RuleSetDirectRule, RuleSetOutput, RuleSetSource } from "./rule-set-types";
 import { getSecret, requireSecret } from "./secrets";
 import { pruneSourceCache } from "./source-cache";
 import type { AppConfig, SourceConfig, StaticProxyNodeConfig } from "./types";
@@ -23,6 +25,14 @@ const SOURCE_PREFIX = "config:sources:";
 const PROXY_NODE_INDEX_KEY = "config:proxyNodes:index";
 const PROXY_NODE_PREFIX = "config:proxyNodes:";
 const CHAIN_PREFIX = "config:chain:";
+const RULE_SET_MODE_KEY = "config:ruleSets:mode";
+const RULE_SET_AGGREGATE_BY_POLICY_KEY = "config:ruleSets:aggregateByPolicy";
+const RULE_SET_SOURCE_INDEX_KEY = "config:ruleSetSources:index";
+const RULE_SET_SOURCE_PREFIX = "config:ruleSetSources:";
+const RULE_SET_OUTPUT_INDEX_KEY = "config:ruleSetOutputs:index";
+const RULE_SET_OUTPUT_PREFIX = "config:ruleSetOutputs:";
+const RULE_SET_DIRECT_RULE_INDEX_KEY = "config:ruleSetDirectRules:index";
+const RULE_SET_DIRECT_RULE_PREFIX = "config:ruleSetDirectRules:";
 const SURGE_PREFIX = "config:surge:";
 const CLASH_PREFIX = "config:clash:";
 const STASH_PREFIX = "config:stash:";
@@ -133,12 +143,16 @@ export async function saveConfig(env: Env, config: AppConfig): Promise<AppConfig
     saveSources(env, sealedSources),
     saveProxyNodes(env, normalized.proxyNodes),
     saveChain(env, normalized.chain),
+    saveRuleSets(env, normalized.ruleSets),
     saveSurge(env, normalized.surge),
     saveClash(env, normalized.clash),
     saveStash(env, normalized.stash)
   ]);
 
-  await pruneSourceCache(env, normalized);
+  await Promise.all([
+    pruneSourceCache(env, normalized),
+    pruneRuleSetCaches(env, normalized)
+  ]);
 
   return normalized;
 }
@@ -174,13 +188,14 @@ export async function storeReadTokenHash(env: Env, hash: string): Promise<void> 
 
 async function loadStoredConfig(env: Env): Promise<AppConfig> {
   await ensureKvSchema(env);
-  const [settings, groups, disabledGroups, sources, proxyNodes, chain, surge, clash, stash, updatedAt] = await Promise.all([
+  const [settings, groups, disabledGroups, sources, proxyNodes, chain, ruleSets, surge, clash, stash, updatedAt] = await Promise.all([
     loadSettings(env),
     loadGroups(env),
     loadDisabledGroups(env),
     loadSources(env),
     loadProxyNodes(env),
     loadChain(env),
+    loadRuleSets(env),
     loadSurge(env),
     loadClash(env),
     loadStash(env),
@@ -195,6 +210,7 @@ async function loadStoredConfig(env: Env): Promise<AppConfig> {
     sources,
     proxyNodes,
     chain,
+    ruleSets,
     surge,
     clash,
     stash,
@@ -322,6 +338,96 @@ async function loadChain(_env: Env): Promise<AppConfig["chain"]> {
 
 async function saveChain(env: Env, _chain: AppConfig["chain"]): Promise<void> {
   await env.SUBPILOT_CONFIG.delete(`${CHAIN_PREFIX}filter`);
+}
+
+async function loadRuleSets(env: Env): Promise<RuleSetConfig> {
+  const [mode, aggregateByPolicy, sources, outputs, directRules] = await Promise.all([
+    getJson<unknown>(env, RULE_SET_MODE_KEY),
+    getJson<unknown>(env, RULE_SET_AGGREGATE_BY_POLICY_KEY),
+    loadRuleSetSources(env),
+    loadRuleSetOutputs(env),
+    loadRuleSetDirectRules(env)
+  ]);
+  return normalizeRuleSets({
+    mode: mode === "compiled" ? "compiled" : "manual",
+    aggregateByPolicy: aggregateByPolicy === true,
+    sources,
+    outputs,
+    directRules
+  });
+}
+
+async function saveRuleSets(env: Env, ruleSets: RuleSetConfig): Promise<void> {
+  await Promise.all([
+    putJson(env, RULE_SET_MODE_KEY, ruleSets.mode),
+    putJson(env, RULE_SET_AGGREGATE_BY_POLICY_KEY, ruleSets.aggregateByPolicy),
+    saveRuleSetSources(env, ruleSets.sources),
+    saveRuleSetOutputs(env, ruleSets.outputs),
+    saveRuleSetDirectRules(env, ruleSets.directRules)
+  ]);
+}
+
+async function loadRuleSetSources(env: Env): Promise<RuleSetSource[]> {
+  const ids = await getJson<string[]>(env, RULE_SET_SOURCE_INDEX_KEY);
+  if (!ids) return DEFAULT_CONFIG.ruleSets.sources;
+
+  const sources = await Promise.all(ids.map((id) => getJson<RuleSetSource>(env, `${RULE_SET_SOURCE_PREFIX}${encodeKey(id)}`)));
+  return sources.filter((source): source is RuleSetSource => Boolean(source));
+}
+
+async function saveRuleSetSources(env: Env, sources: RuleSetSource[]): Promise<void> {
+  const previous = await getJson<string[]>(env, RULE_SET_SOURCE_INDEX_KEY) ?? [];
+  const ids = sources.map((source) => source.id);
+  const nextIds = new Set(ids);
+  await Promise.all([
+    putJson(env, RULE_SET_SOURCE_INDEX_KEY, ids),
+    ...sources.map((source) => putJson(env, `${RULE_SET_SOURCE_PREFIX}${encodeKey(source.id)}`, source)),
+    ...previous
+      .filter((id) => !nextIds.has(id))
+      .map((id) => env.SUBPILOT_CONFIG.delete(`${RULE_SET_SOURCE_PREFIX}${encodeKey(id)}`))
+  ]);
+}
+
+async function loadRuleSetOutputs(env: Env): Promise<RuleSetOutput[]> {
+  const names = await getJson<string[]>(env, RULE_SET_OUTPUT_INDEX_KEY);
+  if (!names) return DEFAULT_CONFIG.ruleSets.outputs;
+
+  const outputs = await Promise.all(names.map((name) => getJson<RuleSetOutput>(env, `${RULE_SET_OUTPUT_PREFIX}${encodeKey(name)}`)));
+  return outputs.filter((output): output is RuleSetOutput => Boolean(output));
+}
+
+async function saveRuleSetOutputs(env: Env, outputs: RuleSetOutput[]): Promise<void> {
+  const previous = await getJson<string[]>(env, RULE_SET_OUTPUT_INDEX_KEY) ?? [];
+  const names = outputs.map((output) => output.name);
+  const nextNames = new Set(names);
+  await Promise.all([
+    putJson(env, RULE_SET_OUTPUT_INDEX_KEY, names),
+    ...outputs.map((output) => putJson(env, `${RULE_SET_OUTPUT_PREFIX}${encodeKey(output.name)}`, output)),
+    ...previous
+      .filter((name) => !nextNames.has(name))
+      .map((name) => env.SUBPILOT_CONFIG.delete(`${RULE_SET_OUTPUT_PREFIX}${encodeKey(name)}`))
+  ]);
+}
+
+async function loadRuleSetDirectRules(env: Env): Promise<RuleSetDirectRule[]> {
+  const ids = await getJson<string[]>(env, RULE_SET_DIRECT_RULE_INDEX_KEY);
+  if (!ids) return DEFAULT_CONFIG.ruleSets.directRules;
+
+  const rules = await Promise.all(ids.map((id) => getJson<RuleSetDirectRule>(env, `${RULE_SET_DIRECT_RULE_PREFIX}${encodeKey(id)}`)));
+  return rules.filter((rule): rule is RuleSetDirectRule => Boolean(rule));
+}
+
+async function saveRuleSetDirectRules(env: Env, rules: RuleSetDirectRule[]): Promise<void> {
+  const previous = await getJson<string[]>(env, RULE_SET_DIRECT_RULE_INDEX_KEY) ?? [];
+  const ids = rules.map((rule) => rule.id);
+  const nextIds = new Set(ids);
+  await Promise.all([
+    putJson(env, RULE_SET_DIRECT_RULE_INDEX_KEY, ids),
+    ...rules.map((rule) => putJson(env, `${RULE_SET_DIRECT_RULE_PREFIX}${encodeKey(rule.id)}`, rule)),
+    ...previous
+      .filter((id) => !nextIds.has(id))
+      .map((id) => env.SUBPILOT_CONFIG.delete(`${RULE_SET_DIRECT_RULE_PREFIX}${encodeKey(id)}`))
+  ]);
 }
 
 async function loadSurge(env: Env): Promise<AppConfig["surge"]> {

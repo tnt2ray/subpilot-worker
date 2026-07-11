@@ -1,6 +1,15 @@
 import { DEFAULT_CONFIG } from "./default-config";
 import { isAllPolicySelector, parseGroupOption, splitGroupSpec } from "./policy-group-spec";
+import {
+  RULE_SET_SOURCE_FORMATS,
+  type RuleSetConfig,
+  type RuleSetDirectRule,
+  type RuleSetOutput,
+  type RuleSetSource,
+  type RuleSetSourceFormat
+} from "./rule-set-types";
 import { inferUrlRewriteMitmHostnames } from "./surge-url-rewrite";
+import { ruleSetPathName } from "./managed-url";
 import { CHAIN_EXIT_PROTOCOLS, type AppConfig, type ChainExitProtocol, type NotificationChannel, type SourceConfig, type StaticProxyNodeConfig, type SurgeIpv6VifMode, type Target } from "./types";
 import { normalizeDisplayTimeZone } from "./util";
 
@@ -50,6 +59,7 @@ export function normalizeConfig(input: AppConfig): AppConfig {
     sources: Array.isArray(input.sources) ? input.sources.map(normalizeSource) : [],
     proxyNodes: Array.isArray(input.proxyNodes) ? normalizeProxyNodes(input.proxyNodes) : DEFAULT_CONFIG.proxyNodes,
     chain,
+    ruleSets: normalizeRuleSets(input.ruleSets),
     surge: normalizeSurge(input.surge),
     clash: normalizeClash(input.clash),
     stash: normalizeStash(input.stash),
@@ -168,6 +178,110 @@ export function normalizeSource(source: SourceConfig): SourceConfig {
 
 function normalizeSourceFetchUserAgent(value: unknown): SourceConfig["fetchUserAgent"] {
   return value === "clash" || value === "stash" || value === "shadowrocket" ? value : "surge";
+}
+
+export function normalizeRuleSets(input: Partial<RuleSetConfig> | undefined): RuleSetConfig {
+  const ruleSets = input ?? {};
+  return {
+    mode: ruleSets.mode === "compiled" ? "compiled" : "manual",
+    aggregateByPolicy: ruleSets.aggregateByPolicy === true,
+    sources: Array.isArray(ruleSets.sources) ? normalizeRuleSetSources(ruleSets.sources) : [],
+    outputs: Array.isArray(ruleSets.outputs) ? normalizeRuleSetOutputs(ruleSets.outputs) : [],
+    directRules: Array.isArray(ruleSets.directRules) ? normalizeRuleSetDirectRules(ruleSets.directRules) : []
+  };
+}
+
+function normalizeRuleSetSources(sources: RuleSetSource[]): RuleSetSource[] {
+  const seenIds = new Set<string>();
+  return sources.flatMap((source, index) => {
+    const normalized = normalizeRuleSetSource(source, index);
+    if (seenIds.has(normalized.id)) return [];
+    seenIds.add(normalized.id);
+    return [normalized];
+  }).sort(compareByOrder);
+}
+
+function normalizeRuleSetSource(source: RuleSetSource, index: number): RuleSetSource {
+  return {
+    id: normalizeStableId(source.id, `rule-set-source-${index + 1}`),
+    name: stringValue(source.name, `规则来源 ${index + 1}`),
+    url: typeof source.url === "string" ? source.url.trim() : "",
+    enabled: source.enabled !== false,
+    format: normalizeRuleSetSourceFormat(source.format),
+    order: finiteOrder(source.order, index)
+  };
+}
+
+function normalizeRuleSetOutputs(outputs: RuleSetOutput[]): RuleSetOutput[] {
+  const seenNames = new Set<string>();
+  return outputs.flatMap((output, index) => {
+    const normalized = normalizeRuleSetOutput(output, index);
+    if (seenNames.has(normalized.name)) return [];
+    seenNames.add(normalized.name);
+    return [normalized];
+  }).sort(compareByOrder);
+}
+
+function normalizeRuleSetOutput(output: RuleSetOutput, index: number): RuleSetOutput {
+  const updatedAt = typeof output.updatedAt === "string" && !Number.isNaN(new Date(output.updatedAt).getTime())
+    ? output.updatedAt
+    : undefined;
+  return {
+    name: ruleSetPathName(output.name) || `规则集 ${index + 1}`,
+    enabled: output.enabled !== false,
+    policy: stringValue(output.policy, "Proxy"),
+    sourceIds: uniqueStringArray(output.sourceIds, []),
+    inlineRules: stringArray(output.inlineRules, []),
+    order: finiteOrder(output.order, index),
+    surgeOptions: uniqueStringArray(output.surgeOptions, []).filter((option) => !option.includes(",")),
+    ...(updatedAt ? { updatedAt } : {})
+  };
+}
+
+function normalizeRuleSetDirectRules(rules: RuleSetDirectRule[]): RuleSetDirectRule[] {
+  const seenIds = new Set<string>();
+  return rules.flatMap((rule, index) => {
+    const normalized = normalizeRuleSetDirectRule(rule, index);
+    if (seenIds.has(normalized.id)) return [];
+    seenIds.add(normalized.id);
+    return [normalized];
+  }).sort(compareByOrder);
+}
+
+function normalizeRuleSetDirectRule(rule: RuleSetDirectRule, index: number): RuleSetDirectRule {
+  return {
+    id: normalizeStableId(rule.id, `rule-set-direct-rule-${index + 1}`),
+    name: stringValue(rule.name, `主配置规则 ${index + 1}`),
+    enabled: rule.enabled !== false,
+    rule: typeof rule.rule === "string" ? rule.rule.trim() : "",
+    policy: stringValue(rule.policy, "Proxy"),
+    order: finiteOrder(rule.order, index)
+  };
+}
+
+function normalizeRuleSetSourceFormat(value: unknown): RuleSetSourceFormat {
+  return typeof value === "string" && RULE_SET_SOURCE_FORMATS.includes(value as RuleSetSourceFormat)
+    ? value as RuleSetSourceFormat
+    : "auto";
+}
+
+function normalizeStableId(value: unknown, fallback: string): string {
+  const raw = typeof value === "string" ? value.trim() : "";
+  const cleaned = raw.replace(/[^A-Za-z0-9_-]/g, "-").replace(/-+/g, "-").replace(/^-+|-+$/g, "");
+  return cleaned || fallback;
+}
+
+function uniqueStringArray(value: unknown, fallback: string[]): string[] {
+  return [...new Set(stringArray(value, fallback))];
+}
+
+function finiteOrder(value: unknown, fallback: number): number {
+  const parsed = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function compareByOrder<T extends { order: number }>(left: T, right: T): number {
+  return left.order - right.order;
 }
 
 function normalizeProxyNodes(nodes: StaticProxyNodeConfig[]): StaticProxyNodeConfig[] {

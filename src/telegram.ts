@@ -1,5 +1,6 @@
 import { loadConfig, saveConfig, withInferredManagedBaseUrl } from "./config-store";
 import { readConfigFetchStats } from "./fetch-stats";
+import { refreshRuleSetCaches, type RuleSetRefreshResult } from "./rule-set-compiler";
 import { refreshSourceCache } from "./source-cache";
 import { formatSourceCacheStatusLines } from "./source-cache-format";
 import { formatTimestampInTimeZone, badRequest, forbidden, jsonResponse, randomToken, sha256Hex, timingSafeEqualString } from "./util";
@@ -97,7 +98,7 @@ export async function handleTelegramWebhook(request: Request, env: Env, ctx: Exe
     if (!boundChatId || !await timingSafeEqualString(chat.id, boundChatId)) {
       return jsonResponse({ ok: true });
     }
-    ctx.waitUntil(handleTelegramCommand(env, config, chat, command).catch(logTelegramCommandFailure));
+    ctx.waitUntil(handleTelegramCommand(env, ctx, config, chat, command).catch(logTelegramCommandFailure));
   }
   return jsonResponse({ ok: true });
 }
@@ -143,6 +144,7 @@ export async function reconcileTelegramWebhook(
 
 async function handleTelegramCommand(
   env: Env,
+  ctx: ExecutionContext,
   config: LoadedConfig,
   chat: TelegramChatOption,
   command: TelegramCommand
@@ -164,13 +166,38 @@ async function handleTelegramCommand(
     case "recent":
       await sendTelegramBotMessage(token, chat.id, formatTelegramRecentFetchesMessage(await readConfigFetchStats(env), config.settings.displayTimeZone));
       return;
-    case "refresh":
-      await sendTelegramBotMessage(token, chat.id, "开始强制重新拉取上游订阅源。完成后会发送结果。").catch(logTelegramCommandFailure);
+    case "refresh": {
+      const startMessage = sendTelegramBotMessage(token, chat.id, config.ruleSets.mode === "compiled"
+        ? "开始强制重新拉取上游订阅源；规则集将在后台异步刷新，完成后分别发送结果。"
+        : "开始强制重新拉取上游订阅源。完成后会发送结果。").catch(logTelegramCommandFailure);
+      scheduleTelegramRuleSetRefresh(env, ctx, config, chat.id);
+      await startMessage;
       await handleTelegramRefreshCommand(env, chat.id);
       return;
+    }
     default:
       await sendTelegramBotMessage(token, chat.id, `未知命令：/${command.name}\n\n${formatTelegramHelpMessage()}`);
   }
+}
+
+function scheduleTelegramRuleSetRefresh(
+  env: Env,
+  ctx: ExecutionContext,
+  config: LoadedConfig,
+  chatId: string
+): void {
+  if (config.ruleSets.mode !== "compiled") return;
+  const token = config.settings.notificationTelegramBotToken.trim();
+  if (!token) return;
+  ctx.waitUntil((async () => {
+    try {
+      const result = await refreshRuleSetCaches(env, config);
+      await sendTelegramBotMessage(token, chatId, formatTelegramRuleSetRefreshResultMessage(result, config.settings.displayTimeZone));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await sendTelegramBotMessage(token, chatId, `规则集异步刷新失败：${message}`).catch(logTelegramCommandFailure);
+    }
+  })());
 }
 
 async function handleTelegramRefreshCommand(env: Env, chatId: string): Promise<void> {
@@ -192,7 +219,7 @@ function formatTelegramHelpMessage(): string {
     "/status - 查看订阅与缓存概览",
     "/sources - 查看订阅源启用状态",
     "/recent - 查看最近配置拉取记录",
-    "/refresh - 强制重新拉取上游订阅源",
+    "/refresh - 强制刷新订阅源，并异步刷新统一规则集",
     "/help - 查看命令列表"
   ].join("\n");
 }
@@ -269,6 +296,26 @@ function formatTelegramRefreshResultMessage(result: Awaited<ReturnType<typeof re
       return `- ${failure.sourceName || failure.sourceId || "(未命名订阅源)"}：${failure.reason}；${cacheStatus}`;
     }));
     if (result.failures.length > 10) lines.push(`... 还有 ${result.failures.length - 10} 个失败项未显示`);
+  }
+  return lines.join("\n").slice(0, 3500);
+}
+
+function formatTelegramRuleSetRefreshResultMessage(result: RuleSetRefreshResult, timeZone: string): string {
+  const cachedOutputs = result.outputs.filter((output) => output.cached).length;
+  const totalRules = result.outputs.reduce((sum, output) => sum + output.ruleCount, 0);
+  const lines = [
+    "规则集异步刷新完成",
+    `刷新成功：${result.refreshed}`,
+    `刷新失败：${result.failed}`,
+    `沿用旧缓存：${result.cached}`,
+    `缓存覆盖：${cachedOutputs} / ${result.outputs.length}`,
+    `规则总数：${totalRules}`,
+    `完成时间：${formatTelegramTimestamp(result.updatedAt, timeZone)}`
+  ];
+  if (result.warnings.length > 0) {
+    lines.push("", `警告：${result.warnings.length} 条`);
+    lines.push(...result.warnings.slice(0, 8).map((warning) => `- ${warning}`));
+    if (result.warnings.length > 8) lines.push(`... 还有 ${result.warnings.length - 8} 条警告未显示`);
   }
   return lines.join("\n").slice(0, 3500);
 }

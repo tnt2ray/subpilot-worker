@@ -9,8 +9,8 @@ describe("release update checks", () => {
   it("fetches releases, caches fresh results, falls back from rate limits, and stores notification state", async () => {
     const { env, calls } = makeTestEnv();
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(new Response(JSON.stringify({
-      tag_name: "v1.2.0",
-      html_url: "https://github.com/tnt2ray/subpilot-worker/releases/tag/v1.2.0"
+      tag_name: "v99.0.0",
+      html_url: "https://github.com/tnt2ray/subpilot-worker/releases/tag/v99.0.0"
     })));
 
     const status = await getUpdateStatus(env, { force: true });
@@ -19,9 +19,9 @@ describe("release update checks", () => {
       headers: expect.objectContaining({ accept: "application/vnd.github+json" })
     }));
     expect(status.updateAvailable).toBe(true);
-    expect(status.latestVersion).toBe("1.2.0");
+    expect(status.latestVersion).toBe("99.0.0");
     await expect(readCachedUpdateStatus(env)).resolves.toMatchObject({
-      latestVersion: "1.2.0",
+      latestVersion: "99.0.0",
       updateAvailable: true
     });
     expect(calls.puts).toBeGreaterThan(0);
@@ -32,7 +32,7 @@ describe("release update checks", () => {
       status: 200,
       headers: { "content-type": "text/html" }
     });
-    Object.defineProperty(redirectResponse, "url", { value: "https://github.com/tnt2ray/subpilot-worker/releases/tag/v1.3.0" });
+    Object.defineProperty(redirectResponse, "url", { value: "https://github.com/tnt2ray/subpilot-worker/releases/tag/v99.1.0" });
     const fallbackFetchMock = vi.spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(new Response("rate limited", { status: 403 }))
       .mockResolvedValueOnce(redirectResponse);
@@ -44,8 +44,8 @@ describe("release update checks", () => {
       redirect: "follow"
     }));
     expect(fallbackStatus.error).toBeNull();
-    expect(fallbackStatus.latestVersion).toBe("1.3.0");
-    expect(fallbackStatus.releaseUrl).toBe("https://github.com/tnt2ray/subpilot-worker/releases/tag/v1.3.0");
+    expect(fallbackStatus.latestVersion).toBe("99.1.0");
+    expect(fallbackStatus.releaseUrl).toBe("https://github.com/tnt2ray/subpilot-worker/releases/tag/v99.1.0");
 
     vi.restoreAllMocks();
     const { env: cachedEnv } = makeTestEnv(new Map([["stats:updateCheck:latest", JSON.stringify({

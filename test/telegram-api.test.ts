@@ -83,6 +83,78 @@ describe("telegram api", () => {
     expect(telegramBody.text).not.toContain("UTC+8");
   });
 
+  it("keeps rule source URLs unchanged and reports HTML fallback through Telegram", async () => {
+    const env = makeEnv();
+    const sourceUrl = "https://github.com/example/rules/blob/main/surge.list";
+    await saveConfig(env, {
+      ...DEFAULT_CONFIG,
+      settings: {
+        ...DEFAULT_CONFIG.settings,
+        notificationChannel: "telegram",
+        notificationTelegramChatId: "123456",
+        notificationTelegramBotToken: "telegram-token"
+      },
+      ruleSets: {
+        mode: "compiled",
+        aggregateByPolicy: false,
+        sources: [{
+          id: "html-source",
+          name: "HTML Source",
+          url: sourceUrl,
+          enabled: true,
+          format: "auto",
+          order: 0
+        }],
+        outputs: [{
+          name: "HTML Output",
+          enabled: true,
+          policy: "Proxy",
+          sourceIds: ["html-source"],
+          inlineRules: [],
+          order: 0,
+          surgeOptions: []
+        }],
+        directRules: []
+      }
+    });
+    const session = await createSession(env);
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response("DOMAIN-SUFFIX,example.com"))
+      .mockResolvedValueOnce(new Response("<!doctype html><html><body>GitHub</body></html>"))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true })));
+
+    const request = new Request("https://subpilot.example.com/api/rule-sets/refresh", {
+      method: "POST",
+      headers: { cookie: sessionCookie(session, true) }
+    });
+    const initialResponse = await worker.fetch(request, env, ctx);
+    expect(initialResponse.status).toBe(200);
+
+    const response = await worker.fetch(new Request("https://subpilot.example.com/api/rule-sets/refresh", {
+      method: "POST",
+      headers: { cookie: sessionCookie(session, true) }
+    }), env, ctx);
+    const result = await response.json<{
+      failed: number;
+      failures: Array<{ reason: string }>;
+      notification: { telegram: string; warnings: string[] };
+    }>();
+
+    expect(response.status).toBe(200);
+    expect(result.failed).toBe(0);
+    expect(result.failures[0]?.reason).toBe("规则来源返回了 HTML 页面，请改用原始规则文件 URL");
+    expect(result.notification).toEqual({ telegram: "sent", warnings: [] });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(sourceUrl);
+    expect(fetchMock.mock.calls[1]?.[0]).toBe(sourceUrl);
+    expect(String(fetchMock.mock.calls[2]?.[0])).toBe("https://api.telegram.org/bottelegram-token/sendMessage");
+    const telegramBody = JSON.parse(String(fetchMock.mock.calls[2]?.[1]?.body ?? "{}")) as { text?: string };
+    expect(telegramBody.text).toContain("SubPilot 上游规则集刷新存在失败");
+    expect(telegramBody.text).toContain("名称：HTML Source");
+    expect(telegramBody.text).toContain("规则来源返回了 HTML 页面，请改用原始规则文件 URL");
+    expect(telegramBody.text).toContain("处理：已沿用旧缓存");
+  });
+
   it("generates a one-time Telegram bind command and registers the webhook", async () => {
     const kv = new Map<string, string>();
     const env = makeEnv(kv);
@@ -591,6 +663,90 @@ describe("telegram api", () => {
     const doneBody = JSON.parse(String(fetchMock.mock.calls[2]?.[1]?.body ?? "{}")) as { text?: string };
     expect(doneBody.text).toContain("上游订阅源强制获取完成");
     expect(doneBody.text).toContain("刷新成功：1");
+  });
+
+  it("refreshes compiled rule sets asynchronously from the Telegram refresh command", async () => {
+    const env = makeEnv();
+    const exec = makeExecutionContext();
+    await saveConfig(env, {
+      ...DEFAULT_CONFIG,
+      settings: {
+        ...DEFAULT_CONFIG.settings,
+        notificationChannel: "telegram",
+        notificationTelegramBotToken: "telegram-token",
+        notificationTelegramChatId: "123456",
+        notificationTelegramWebhookSecret: "webhook-secret"
+      },
+      sources: [{
+        id: "src1",
+        name: "Primary",
+        url: "https://example.com/sub",
+        fetchUserAgent: "surge",
+        enabled: true
+      }],
+      ruleSets: {
+        mode: "compiled",
+        aggregateByPolicy: false,
+        sources: [{
+          id: "rules1",
+          name: "Primary Rules",
+          url: "https://example.com/rules.list",
+          enabled: true,
+          format: "auto",
+          order: 0
+        }],
+        outputs: [{
+          name: "Proxy",
+          enabled: true,
+          policy: "Proxy",
+          sourceIds: ["rules1"],
+          inlineRules: [],
+          order: 0,
+          surgeOptions: []
+        }],
+        directRules: []
+      }
+    });
+    const telegramMessages: string[] = [];
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url === "https://example.com/sub") {
+        return new Response("Proxy = trojan, proxy.example.com, 443, password=p");
+      }
+      if (url === "https://example.com/rules.list") {
+        return new Response("DOMAIN-SUFFIX,example.com");
+      }
+      if (url.includes("api.telegram.org")) {
+        const body = JSON.parse(String(init?.body ?? "{}")) as { text?: string };
+        telegramMessages.push(body.text || "");
+        return new Response(JSON.stringify({ ok: true }));
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+
+    const response = await worker.fetch(new Request("https://subpilot.example.com/api/telegram/webhook", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-telegram-bot-api-secret-token": "webhook-secret"
+      },
+      body: JSON.stringify({
+        update_id: 7,
+        message: {
+          text: "/refresh",
+          chat: { id: 123456, type: "private", first_name: "Sub" }
+        }
+      })
+    }), env, exec.ctx);
+    await Promise.all(exec.waitUntil);
+
+    expect(response.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledWith("https://example.com/rules.list");
+    expect(telegramMessages.some((message) => message.includes("规则集将在后台异步刷新"))).toBe(true);
+    expect(telegramMessages.some((message) => message.includes("上游订阅源强制获取完成"))).toBe(true);
+    expect(telegramMessages.some((message) => message.includes("规则集异步刷新完成"))).toBe(true);
+    expect(telegramMessages.some((message) => message.includes("缓存覆盖：1 / 1"))).toBe(true);
+    expect(telegramMessages.some((message) => message.includes("规则总数：1"))).toBe(true);
   });
 
   it("does not record Telegram chat id from read tokens or invalid bind codes", async () => {

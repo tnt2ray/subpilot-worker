@@ -5,6 +5,7 @@ import { CONFIG_SCHEMA_VERSION_KEY } from "../src/config-schema";
 import { saveConfig } from "../src/config-store";
 import { DEFAULT_CONFIG } from "../src/default-config";
 import { recordConfigFetch } from "../src/fetch-stats";
+import type { AppConfig } from "../src/types";
 import { sha256Hex } from "../src/util";
 import { restoreMocksAfterEach } from "./helpers/fetch";
 import { ctx, makeEnv, makeExecutionContext } from "./helpers/worker";
@@ -395,6 +396,92 @@ describe("asset access control", () => {
 
     expect(groupResponse.status).toBe(400);
     expect(groupBody.error).toBe("代理节点名称 Manual 不能和策略组名称相同");
+  });
+
+  it("rejects invalid or duplicate compiled rule set names while saving config", async () => {
+    const env = makeEnv();
+    const session = await createSession(env);
+    const headers = {
+      cookie: sessionCookie(session, true),
+      "content-type": "application/json"
+    };
+    const output = {
+      name: "AI Rules",
+      enabled: true,
+      policy: "Proxy",
+      sourceIds: [],
+      inlineRules: [],
+      order: 0,
+      surgeOptions: []
+    };
+
+    const duplicateResponse = await worker.fetch(new Request("https://subpilot.example.com/api/config", {
+      method: "PATCH",
+      headers,
+      body: JSON.stringify({
+        ruleSets: {
+          outputs: [output, { ...output, name: " AI   Rules ", order: 1 }]
+        }
+      })
+    }), env, ctx);
+    const duplicateBody = await duplicateResponse.json<{ error: string }>();
+
+    expect(duplicateResponse.status).toBe(400);
+    expect(duplicateBody.error).toBe("规则集名称 AI Rules 不能重复");
+
+    const invalidResponse = await worker.fetch(new Request("https://subpilot.example.com/api/config", {
+      method: "PATCH",
+      headers,
+      body: JSON.stringify({
+        ruleSets: {
+          outputs: [{ ...output, name: ".." }]
+        }
+      })
+    }), env, ctx);
+    const invalidBody = await invalidResponse.json<{ error: string }>();
+
+    expect(invalidResponse.status).toBe(400);
+    expect(invalidBody.error).toBe("规则集名称不能为空，也不能使用 . 或 ..");
+
+    const conflictingResponse = await worker.fetch(new Request("https://subpilot.example.com/api/config", {
+      method: "PATCH",
+      headers,
+      body: JSON.stringify({
+        ruleSets: {
+          outputs: [output, { ...output, name: "AI Rules-domain", order: 1 }]
+        }
+      })
+    }), env, ctx);
+    const conflictingBody = await conflictingResponse.json<{ error: string }>();
+
+    expect(conflictingResponse.status).toBe(400);
+    expect(conflictingBody.error).toBe("规则集名称 AI Rules 与 AI Rules-domain 会生成冲突文件名");
+
+    const aggregateConflictResponse = await worker.fetch(new Request("https://subpilot.example.com/api/config", {
+      method: "PATCH",
+      headers,
+      body: JSON.stringify({
+        ruleSets: {
+          aggregateByPolicy: true,
+          outputs: [
+            { ...output, name: "First", policy: "Shared", order: 0 },
+            { ...output, name: "Second", policy: "Shared-domain", order: 1 }
+          ]
+        }
+      })
+    }), env, ctx);
+    const aggregateConflictBody = await aggregateConflictResponse.json<{ error: string }>();
+    expect(aggregateConflictResponse.status).toBe(400);
+    expect(aggregateConflictBody.error).toBe("规则集名称 Shared 与 Shared-domain 会生成冲突文件名");
+
+    const toggleResponse = await worker.fetch(new Request("https://subpilot.example.com/api/config", {
+      method: "PATCH",
+      headers,
+      body: JSON.stringify({ ruleSets: { aggregateByPolicy: true } })
+    }), env, ctx);
+    const toggled = await toggleResponse.json<AppConfig>();
+    expect(toggleResponse.status).toBe(200);
+    expect(toggled.ruleSets.aggregateByPolicy).toBe(true);
   });
 
   it("records config fetch timestamps and recent user agents", async () => {
@@ -1447,6 +1534,53 @@ describe("asset access control", () => {
 
     const sourceKey = `cache:source:${await sha256Hex("https://example.com/sub|Surge iOS/3727")}`;
     expect(kv.get(sourceKey)).toBe("Proxy = trojan, proxy.example.com, 443, password=p");
+  });
+
+  it("refreshes compiled rule sets only from the daily scheduled handler", async () => {
+    const kv = new Map<string, string>();
+    const env = makeEnv(kv);
+    await saveConfig(env, {
+      ...DEFAULT_CONFIG,
+      ruleSets: {
+        mode: "compiled",
+        aggregateByPolicy: false,
+        sources: [{
+          id: "daily-source",
+          name: "Daily rules",
+          url: "https://rules.example/daily.list",
+          enabled: true,
+          format: "surge-rule-set",
+          order: 0
+        }],
+        outputs: [{
+          name: "Daily",
+          enabled: true,
+          policy: "Proxy",
+          sourceIds: ["daily-source"],
+          inlineRules: [],
+          order: 0,
+          surgeOptions: []
+        }],
+        directRules: []
+      }
+    });
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("DOMAIN-SUFFIX,daily.example"));
+
+    await worker.scheduled?.({
+      cron: "0 */12 * * *",
+      scheduledTime: Date.now()
+    } as ScheduledController, env, ctx);
+
+    expect(fetchMock).not.toHaveBeenCalledWith("https://rules.example/daily.list");
+    expect(kv.has("cache:compiledRuleSetMeta:daily-output")).toBe(false);
+
+    await worker.scheduled?.({
+      cron: "0 16 * * *",
+      scheduledTime: Date.now()
+    } as ScheduledController, env, ctx);
+
+    expect(fetchMock).toHaveBeenCalledWith("https://rules.example/daily.list");
+    expect(kv.has("cache:compiledRuleSetMeta:Daily")).toBe(true);
   });
 
   it("keeps Static-IP out of default groups and rules", async () => {

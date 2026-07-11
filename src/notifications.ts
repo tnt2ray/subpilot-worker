@@ -1,9 +1,10 @@
 import { formatSourceCacheStatusLines } from "./source-cache-format";
+import type { RuleSetRefreshResult } from "./rule-set-compiler";
 import type { SourceCacheRefreshResult } from "./source-cache";
 import type { AppConfig } from "./types";
 import { getUpdateStatus, readNotifiedUpdateVersion, storeNotifiedUpdateVersion } from "./update-check";
 
-type RefreshTrigger = "manual" | "scheduled";
+type RefreshTrigger = "config" | "manual" | "scheduled";
 
 export interface NotificationDeliveryResult {
   telegram: "disabled" | "sent" | "failed";
@@ -27,6 +28,34 @@ export async function notifySourceRefreshFailures(
     refreshed: result.refreshed,
     failed: result.failed,
     cached: result.cached,
+    warnings: result.warnings
+  }));
+
+  if (config.settings.notificationChannel === "telegram") {
+    delivery.telegram = await sendTelegramNotification(env, config, message, delivery.warnings);
+  }
+
+  return delivery;
+}
+
+export async function notifyRuleSetRefreshFailures(
+  env: Env,
+  config: AppConfig,
+  result: RuleSetRefreshResult,
+  trigger: RefreshTrigger
+): Promise<NotificationDeliveryResult> {
+  const delivery: NotificationDeliveryResult = { telegram: "disabled", warnings: [] };
+  if (result.failed <= 0 && result.failures.length === 0) return delivery;
+
+  const message = formatRuleSetRefreshFailureMessage(result, trigger);
+  console.warn(JSON.stringify({
+    level: "warn",
+    message: "Rule set refresh completed with failures",
+    trigger,
+    refreshed: result.refreshed,
+    failed: result.failed,
+    cached: result.cached,
+    failures: result.failures,
     warnings: result.warnings
   }));
 
@@ -75,6 +104,42 @@ function formatSourceRefreshFailureMessage(result: SourceCacheRefreshResult, tri
     ...formatSourceCacheStatusLines(result.sourceCache, timeZone)
   ];
   return lines.join("\n").slice(0, 3500);
+}
+
+function formatRuleSetRefreshFailureMessage(result: RuleSetRefreshResult, trigger: RefreshTrigger): string {
+  const lines = [
+    "SubPilot 上游规则集刷新存在失败",
+    `触发方式：${refreshTriggerLabel(trigger)}`,
+    `输出编译成功：${result.refreshed}`,
+    `输出编译失败：${result.failed}`,
+    `沿用旧编译缓存：${result.cached}`,
+    "失败规则来源：",
+    ...formatRuleSetSourceFailures(result),
+    ...formatRuleSetOtherErrors(result)
+  ];
+  return lines.join("\n").slice(0, 3500);
+}
+
+function formatRuleSetSourceFailures(result: RuleSetRefreshResult): string[] {
+  if (result.failures.length === 0) return ["- 无结构化来源错误"];
+  return result.failures.map((failure) => {
+    const name = failure.sourceName || "(未命名规则来源)";
+    const cacheStatus = failure.usedCachedContent ? "已沿用旧缓存" : "无可用旧缓存";
+    return `- 名称：${name}；ID：${failure.sourceId}；原因：${failure.reason}；处理：${cacheStatus}`;
+  });
+}
+
+function formatRuleSetOtherErrors(result: RuleSetRefreshResult): string[] {
+  if (result.failed <= 0 || result.warnings.length === 0) return [];
+  const sourceWarnings = new Set(result.failures.map((failure) => `${failure.sourceName}: ${failure.reason}`));
+  const otherWarnings = result.warnings.filter((warning) => !sourceWarnings.has(warning));
+  return otherWarnings.length > 0 ? ["", "其他错误：", ...otherWarnings.map((warning) => `- ${warning}`)] : [];
+}
+
+function refreshTriggerLabel(trigger: RefreshTrigger): string {
+  if (trigger === "scheduled") return "定时任务";
+  if (trigger === "config") return "配置变更";
+  return "手动刷新";
 }
 
 function formatSourceFailures(result: SourceCacheRefreshResult): string[] {

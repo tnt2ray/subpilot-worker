@@ -1,9 +1,16 @@
 import { isConfigFileName, syncPathForToken } from "./target-files";
+import type { RuleSetDownloadBucket, RuleSetOutputTarget } from "./rule-set-types";
 import type { AppConfig } from "./types";
 
 export interface SyncPath {
   token: string;
   fileName?: string;
+  ruleSet?: RuleSetSyncPath | undefined;
+}
+
+export interface RuleSetSyncPath {
+  artifactName: string;
+  target: RuleSetOutputTarget;
 }
 
 export function normalizeManagedBasePath(pathname: string): string {
@@ -32,6 +39,18 @@ export function parseSyncPath(pathname: string, managedBasePath: string): SyncPa
   if (mainMatch) return { token: mainMatch[1]! };
   const fileMatch = pathname.match(new RegExp(`^${base}/${tokenPattern}/([^/]+)$`));
   if (fileMatch && isConfigFileName(fileMatch[2]!)) return { token: fileMatch[1]!, fileName: fileMatch[2]! };
+  const namedRuleSetMatch = pathname.match(new RegExp(`^${base}/${tokenPattern}/r/([^/]+)\\.(list|yaml)$`));
+  if (namedRuleSetMatch) {
+    const artifactName = safeDecodePathSegment(namedRuleSetMatch[2]!);
+    if (!artifactName) return null;
+    return {
+      token: namedRuleSetMatch[1]!,
+      ruleSet: {
+        artifactName,
+        target: namedRuleSetMatch[3] === "list" ? "surge" : "clash"
+      }
+    };
+  }
   return null;
 }
 
@@ -41,7 +60,7 @@ export function managedBasePathFromConfig(config: AppConfig, requestUrl: string)
 
 export function managedSubscriptionUrl(config: AppConfig, requestUrl: string, token: string): string {
   const managed = managedBaseUrl(config, requestUrl);
-  managed.pathname = joinManagedBasePath(managed.pathname, token);
+  managed.pathname = joinManagedRelativePath(managed.pathname, syncPathForToken(token));
   managed.search = "";
   managed.hash = "";
   return managed.toString();
@@ -54,18 +73,67 @@ export function managedSubscriptionUrlForRequest(config: AppConfig, requestUrl: 
   return managedSubscriptionUrl(config, requestUrl, token);
 }
 
+export function managedRuleSetUrlForRequest(
+  config: AppConfig,
+  requestUrl: string,
+  outputName: string,
+  bucket: RuleSetDownloadBucket,
+  target: RuleSetOutputTarget
+): string {
+  const request = new URL(requestUrl);
+  const managed = managedBaseUrl(config, requestUrl);
+  const token = extractSubscriptionToken(request.pathname, normalizeManagedBasePath(managed.pathname)) ?? "";
+  return managedRuleSetUrl(config, requestUrl, token, outputName, bucket, target);
+}
+
+export function managedRuleSetUrl(
+  config: AppConfig,
+  requestUrl: string,
+  token: string,
+  outputName: string,
+  bucket: RuleSetDownloadBucket,
+  target: RuleSetOutputTarget
+): string {
+  const managed = managedBaseUrl(config, requestUrl);
+  const artifactName = ruleSetArtifactName(outputName, bucket);
+  managed.pathname = joinManagedRelativePath(
+    managed.pathname,
+    `${token}/r/${encodeURIComponent(artifactName)}.${target === "surge" ? "list" : "yaml"}`
+  );
+  managed.search = "";
+  managed.hash = "";
+  return managed.toString();
+}
+
+export function ruleSetPathName(outputName: unknown): string {
+  return String(outputName || "").normalize("NFC").replace(/[\r\n]+/g, " ").replace(/\s+/g, " ").trim();
+}
+
+export function ruleSetArtifactName(outputName: string, bucket: RuleSetDownloadBucket): string {
+  const suffix = bucket === "domain" ? "-domain" : bucket === "ipcidr" ? "-ipcidr" : "";
+  return `${ruleSetPathName(outputName)}${suffix}`;
+}
+
 function managedBaseUrl(config: AppConfig, requestUrl: string): URL {
   const request = new URL(requestUrl);
   const base = config.settings.managedBaseUrl || `${request.origin}/sync`;
   return new URL(base, request.origin);
 }
 
-function joinManagedBasePath(pathname: string, token: string): string {
+function joinManagedRelativePath(pathname: string, relativePath: string): string {
   const basePath = normalizeManagedBasePath(pathname);
-  const tokenPath = syncPathForToken(token);
+  const tokenPath = relativePath.startsWith("/") ? relativePath : `/${relativePath}`;
   return basePath === "/" ? tokenPath : `${basePath}${tokenPath}`;
 }
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function safeDecodePathSegment(value: string): string | null {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return null;
+  }
 }

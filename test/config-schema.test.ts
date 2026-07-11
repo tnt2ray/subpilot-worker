@@ -25,11 +25,19 @@ describe("KV schema migrations", () => {
     expect(JSON.parse(String(kv.get("config:settings:displayTimeZone") ?? "null"))).toBe("Asia/Shanghai");
     expect(JSON.parse(String(kv.get("config:stash:port") ?? "null"))).toBe(DEFAULT_CONFIG.stash.port);
     expect(JSON.parse(String(kv.get("config:stash:mitm") ?? "null"))).toEqual(DEFAULT_CONFIG.stash.mitm);
+    expect(JSON.parse(String(kv.get("config:ruleSets:mode") ?? "null"))).toBe("compiled");
+    expect(JSON.parse(String(kv.get("config:ruleSets:aggregateByPolicy") ?? "null"))).toBe(false);
     expect([...kv.keys()].some((key) => key.startsWith("config:shadowrocket:"))).toBe(false);
 
     const { env: autoEnv, kv: autoKv } = makeTestEnv();
-    await loadConfig(autoEnv);
+    await expect(loadConfig(autoEnv).then((config) => config.ruleSets.mode)).resolves.toBe("compiled");
     expect(autoKv.get(CONFIG_SCHEMA_VERSION_KEY)).toBe(String(CURRENT_KV_SCHEMA_VERSION));
+
+    const { env: legacyNoSchemaEnv, kv: legacyNoSchemaKv } = makeTestEnv(new Map([
+      ["config:settings:userAgentSurge", JSON.stringify("Existing Surge")]
+    ]));
+    await runKvMigrations(legacyNoSchemaEnv);
+    expect(JSON.parse(String(legacyNoSchemaKv.get("config:ruleSets:mode") ?? "null"))).toBe("manual");
 
     const { env: v1Env, kv: v1Kv } = makeTestEnv(new Map([[CONFIG_SCHEMA_VERSION_KEY, "1"]]));
 
@@ -290,8 +298,13 @@ describe("KV schema migrations", () => {
 
     await runKvMigrations(v10Env);
 
-    expect(v10Kv.get(CONFIG_SCHEMA_VERSION_KEY)).toBe("10");
+    expect(v10Kv.get(CONFIG_SCHEMA_VERSION_KEY)).toBe(String(CURRENT_KV_SCHEMA_VERSION));
     expect(JSON.parse(String(v10Kv.get("config:settings:userAgentStash") ?? "null"))).toBe("Existing Stash");
+    expect(JSON.parse(String(v10Kv.get("config:ruleSets:mode") ?? "null"))).toBe("manual");
+    expect(JSON.parse(String(v10Kv.get("config:ruleSets:aggregateByPolicy") ?? "null"))).toBe(false);
+    expect(JSON.parse(String(v10Kv.get("config:ruleSetSources:index") ?? "null"))).toEqual([]);
+    expect(JSON.parse(String(v10Kv.get("config:ruleSetOutputs:index") ?? "null"))).toEqual([]);
+    expect(JSON.parse(String(v10Kv.get("config:ruleSetDirectRules:index") ?? "null"))).toEqual([]);
   });
 
   it("rejects KV created by a newer unsupported Worker", async () => {

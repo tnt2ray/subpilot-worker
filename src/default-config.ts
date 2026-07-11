@@ -38,6 +38,13 @@ export const DEFAULT_CONFIG: AppConfig = {
   chain: {
     filter: []
   },
+  ruleSets: {
+    mode: "manual",
+    aggregateByPolicy: false,
+    sources: [],
+    outputs: [],
+    directRules: []
+  },
   surge: {
     skipProxy: [
       "127.0.0.1",

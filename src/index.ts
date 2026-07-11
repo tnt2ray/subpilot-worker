@@ -1,13 +1,16 @@
 import { clearSessionCookie, createSession, getOrCreateReadToken, isAdminRequest, rotateReadToken, sessionCookie, validateAdminToken, validateReadToken } from "./auth";
 import { mergeConfigPatch, sanitizeConfigAfterPatch, validateConfigForSave } from "./config-api";
 import { runKvMigrations } from "./config-schema";
-import { loadConfig, normalizeTarget, saveConfig, withInferredManagedBaseUrl } from "./config-store";
+import { loadConfig, normalizeTarget, readStoredReadToken, saveConfig, withInferredManagedBaseUrl } from "./config-store";
 import { readConfigFetchStats, recordConfigFetch } from "./fetch-stats";
 import { generateConfig, generateForRequest, generateSurgeValidationConfig, inferTarget } from "./generator";
 import { handleGeoIpMmdbUpload, readGeoIpMmdbStatus } from "./geoip-admin";
 import { LOGIN_PAGE_HTML } from "./login-page";
 import { extractSubscriptionToken, isUnderManagedBasePath, managedBasePathFromConfig, managedSubscriptionUrl, parseSyncPath } from "./managed-url";
-import { notifySourceRefreshFailures, notifyVersionUpdateAvailable } from "./notifications";
+import { notifyRuleSetRefreshFailures, notifySourceRefreshFailures, notifyVersionUpdateAvailable } from "./notifications";
+import { refreshChangedRuleSetCaches, refreshRuleSetCaches } from "./rule-set-compiler";
+import { handleRuleSetApi, handleRuleSetDownload } from "./rule-set-endpoints";
+import { warmCompiledRuleSetWorkerCache } from "./rule-set-worker-cache";
 import { refreshChangedSourceCache, refreshSourceCache } from "./source-cache";
 import { sanitizeSurgeValidationContent } from "./surge-validation-sanitize";
 import { configFileNameForTarget } from "./target-files";
@@ -15,6 +18,9 @@ import { handleTelegramBindCode, handleTelegramUnbind, handleTelegramWebhook, re
 import { readCachedUpdateStatus, getUpdateStatus } from "./update-check";
 import { APP_VERSION, RELEASE_REPOSITORY } from "./version";
 import { badRequest, forbidden, jsonResponse, notFound, sha256Hex, textResponse, unauthorized } from "./util";
+
+const SOURCE_REFRESH_CRON = "0 */12 * * *";
+const RULE_SET_REFRESH_CRON = "0 16 * * *";
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -25,8 +31,16 @@ export default {
       return jsonResponse({ error: "Internal server error" }, { status: 500 });
     }
   },
-  async scheduled(_controller: ScheduledController, env: Env, _ctx: ExecutionContext): Promise<void> {
+  async scheduled(controller: ScheduledController, env: Env, _ctx: ExecutionContext): Promise<void> {
     const config = await loadConfig(env);
+    if (controller.cron === RULE_SET_REFRESH_CRON) {
+      if (config.ruleSets.mode !== "compiled") return;
+      const ruleSetResult = await refreshRuleSetCaches(env, config);
+      await notifyRuleSetRefreshFailures(env, config, ruleSetResult, "scheduled");
+      await warmScheduledRuleSetWorkerCache(env, config);
+      return;
+    }
+    if (controller.cron !== SOURCE_REFRESH_CRON) return;
     const result = await refreshSourceCache(env, config);
     await notifySourceRefreshFailures(env, config, result, "scheduled");
     await notifyVersionUpdateAvailable(env, config);
@@ -101,6 +115,11 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
   if (url.pathname === "/api/update-check" && request.method === "POST") {
     return jsonResponse({ update: await getUpdateStatus(env, { force: true }) });
   }
+  {
+    const config = await loadConfig(env);
+    const response = await handleRuleSetApi(request, env, ctx, config);
+    if (response) return response;
+  }
   if (url.pathname === "/api/cache/source/refresh" && request.method === "POST") {
     const config = await loadConfig(env);
     const result = await refreshSourceCache(env, config);
@@ -130,6 +149,7 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
     if (validationError) return badRequest(validationError);
     const saved = await saveConfig(env, await reconcileTelegramWebhook(current, next, request.url));
     await refreshChangedSourceCache(env, current, saved);
+    scheduleRuleSetRefresh(env, ctx, current, saved, request.url);
     return jsonResponse(saved);
   }
   if (url.pathname === "/api/config" && request.method === "PATCH") {
@@ -143,6 +163,7 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
     if (validationError) return badRequest(validationError);
     const saved = await saveConfig(env, await reconcileTelegramWebhook(current, next, request.url));
     await refreshChangedSourceCache(env, current, saved);
+    scheduleRuleSetRefresh(env, ctx, current, saved, request.url);
     return jsonResponse(saved);
   }
   if (url.pathname === "/api/preview" && request.method === "POST") {
@@ -206,6 +227,9 @@ async function handleSync(request: Request, env: Env, ctx: ExecutionContext, man
   const syncPath = parseSyncPath(url.pathname, managedBasePath);
   if (!syncPath) return forbidden("Invalid subscription path");
   if (url.search) return forbidden("Invalid subscription path");
+  if (syncPath.ruleSet) {
+    return handleRuleSetDownload(request, env, ctx, await loadConfig(env), syncPath.ruleSet);
+  }
   const target = inferTarget(request);
   if (!target) return unauthorized();
   const result = await generateForRequest(env, request, target);
@@ -227,6 +251,31 @@ async function currentManagedBasePath(env: Env, requestUrl: string): Promise<str
 
 function buildManagedRequestUrl(config: Awaited<ReturnType<typeof loadConfig>>, requestUrl: string, token: string): string {
   return managedSubscriptionUrl(config, requestUrl, token);
+}
+
+function scheduleRuleSetRefresh(
+  env: Env,
+  ctx: ExecutionContext,
+  previousConfig: Awaited<ReturnType<typeof loadConfig>>,
+  config: Awaited<ReturnType<typeof loadConfig>>,
+  requestUrl: string
+): void {
+  if (config.ruleSets.mode !== "compiled") return;
+  ctx.waitUntil((async () => {
+    const result = await refreshChangedRuleSetCaches(env, previousConfig, config);
+    if (result) {
+      await notifyRuleSetRefreshFailures(env, config, result, "config");
+      await warmCompiledRuleSetWorkerCache(env, config, requestUrl, await getOrCreateReadToken(env));
+    }
+  })().catch((error) => {
+    console.error(JSON.stringify({ level: "error", message: error instanceof Error ? error.message : String(error) }));
+  }));
+}
+
+async function warmScheduledRuleSetWorkerCache(env: Env, config: Awaited<ReturnType<typeof loadConfig>>): Promise<void> {
+  const token = await readStoredReadToken(env);
+  if (!token || !config.settings.managedBaseUrl) return;
+  await warmCompiledRuleSetWorkerCache(env, config, config.settings.managedBaseUrl, token);
 }
 
 function corsHeaders(): HeadersInit {

@@ -19,6 +19,7 @@ SubPilot Worker 项目代码以 [GNU Affero General Public License v3.0 or later
 - 支持客户端 User-Agent 自动选择输出目标。
 - 用独立字段维护 Surge、Clash 和 Stash 功能配置，不需要编辑整段模板。
 - 管理策略组、策略规则、规则集、DNS、TUN、MITM 和 URL Rewrite。
+- 可切换到统一规则模式，集中编译、去重和缓存 Surge、Clash 与 Stash 共用的分流规则集。
 - 提供 Surge / Clash / Stash 规则结构化编辑器，同时保留文本模式用于直接编辑生成内容。
 - 管理端预览可提示被前面规则覆盖、实际不会生效的规则，支持检查 Surge 规则集和 Clash / Stash rule-providers 内容。
 - Clash rule-providers 与 rules 联动：未引用的规则集会自动补入 rules，删除规则集时会同步移除对应规则。
@@ -143,7 +144,7 @@ wrangler secret put CONFIG_ENCRYPTION_KEY
 wrangler deploy
 ```
 
-默认 `wrangler.example.jsonc` 会配置每 12 小时执行一次定时任务，用于自动获取上游订阅。需要调整间隔时，可以修改 `wrangler.jsonc` 中的 `triggers.crons` 后重新部署。
+默认 `wrangler.example.jsonc` 会配置每 12 小时获取上游订阅，并每天刷新一次统一规则集。需要调整间隔时，可以修改 `wrangler.jsonc` 中的 `triggers.crons` 后重新部署。
 
 如需自定义域名，在 Cloudflare 中把域名接到 Worker，或在本地 `wrangler.jsonc` 中添加自己的 `routes` 配置。不要把包含真实域名和 namespace ID 的 `wrangler.jsonc` 提交到公开仓库。
 
@@ -156,10 +157,11 @@ wrangler deploy
 1. 在 `Configuration` 中设置 `Managed Base URL`，通常是 `https://<your-domain>/sync`。
 2. 在 `Sources` 中添加上游订阅源；URL 会加密保存到 KV，拉取 User-Agent 可按上游要求选择 Surge、Clash、Stash 或 Shadowrocket。
 3. 在 `Policy Groups` 中调整策略组。
-4. 在 `Surge`、`Clash`、`Stash` 页面中调整各目标配置。
-5. 如需链式代理，在 `Proxy Nodes` 中添加自维护代理节点，勾选可作为链式出口的节点，并在该节点上配置链式过滤器。
-6. 按需要在 `Configuration` 中调整显示时区；默认是 `Asia/Shanghai`，只影响后台和通知中的时间展示。
-7. 在 `Tokens` 页面轮换订阅读取 token，并复制订阅链接。
+4. 在 `Configuration` 中选择客户端独立规则或统一规则模式；使用统一规则时，在 `Unified Configuration` 中维护规则来源和分流规则。
+5. 在 `Surge`、`Clash`、`Stash` 页面中调整各目标的专属配置。
+6. 如需链式代理，在 `Proxy Nodes` 中添加自维护代理节点，勾选可作为链式出口的节点，并在该节点上配置链式过滤器。
+7. 按需要在 `Configuration` 中调整显示时区；默认是 `Asia/Shanghai`，只影响后台和通知中的时间展示。
+8. 在 `Tokens` 页面轮换订阅读取 token，并复制订阅链接。
 
 订阅链接基于管理页配置的 `Managed Base URL` 生成，通常是 `https://<your-domain>/sync`。`Managed Base URL` 必须包含非根路径，不能使用 `/api`、`/app.js`、`/styles.css`、`/mitm-ca.js`、`/login.html` 或 `/index.html` 等系统已占用路径。拼接链接时会去掉 `Managed Base URL` 末尾多余的 `/`。
 
@@ -183,7 +185,7 @@ SUBPILOT_SOURCE_REFRESH_HOURS=6 npm run setup
 
 取值范围是 1 到 24 小时。已经部署后如需修改间隔，编辑 `wrangler.jsonc` 中的 `triggers.crons` 并重新运行 `wrangler deploy`。
 
-后台状态页会显示上游缓存数量、缓存覆盖情况、最近更新时间和各订阅源缓存状态。后台和 Telegram 通知中的时间会按 `Configuration` 中的显示时区转换，格式为 `yyyy-mm-dd hh:mm:ss`；KV 中保存的系统时间仍是 UTC。点击“强制获取”可以立即重新拉取上游订阅源。Telegram bot 的 `/status` 会显示缓存概览，`/recent` 会显示最近 5 条配置拉取记录，`/refresh` 可以远程触发强制获取。启用 Telegram 通知后，定时获取出现失败时会发送提醒。
+后台状态页会显示上游缓存与统一规则集缓存的覆盖情况、最近更新时间和各缓存项状态，并可分别强制刷新。后台和 Telegram 通知中的时间会按 `Configuration` 中的显示时区转换，格式为 `yyyy-mm-dd hh:mm:ss`；KV 中保存的系统时间仍是 UTC。Telegram bot 的 `/status` 会显示缓存概览，`/recent` 会显示最近 5 条配置拉取记录，`/refresh` 会强制获取上游订阅源，并在后台异步刷新统一规则集，完成后分别发送结果。启用 Telegram 通知后，定时获取出现失败时会发送提醒。
 
 ## 更新
 
@@ -195,6 +197,16 @@ npm run update
 
 如果当前目录是 Git 克隆，命令会拉取当前分支最新代码；如果当前目录来自 GitHub Releases 的 `subpilot-worker-vX.Y.Z.tar.gz` 发布包，命令会优先下载最新 Release 中同名发布包并覆盖程序文件。两种方式都会保留本地 `wrangler.jsonc`，只安装运行部署所需依赖，然后部署到对应 Worker。
 
+从旧版本升级到 1.2.0 时，本地 `wrangler.jsonc` 会被保留，因此需要确认 `triggers.crons` 同时包含上游订阅和统一规则集两个任务：
+
+```json
+"triggers": {
+  "crons": ["0 */12 * * *", "0 16 * * *"]
+}
+```
+
+第一项可以继续使用你原有的上游订阅刷新周期；第二项固定用于每天刷新统一规则集。缺少第二项时，统一规则集仍可在状态页手动刷新或在使用时生成，但不会执行每日后台刷新。修改后运行 `wrangler deploy` 使计划任务生效。全新安装会由 `npm run setup` 自动写入这两个任务。
+
 部署后首次打开后台、拉取订阅或执行定时任务时，SubPilot 会自动补齐 KV 数据结构，不需要单独执行迁移命令。即使跳过多个版本后再更新，也会按顺序处理缺失的迁移。
 
 更新时不要删除本地 `wrangler.jsonc`，也不要重新运行会轮换 Secrets 的命令。尤其不要无意替换 `CONFIG_ENCRYPTION_KEY`，否则旧 KV 中已加密的订阅源 URL、Telegram Bot Token 和订阅读取 token 将无法解密。只有在你明确要重置整个部署或轮换密钥时，才使用 `npm run setup -- --force-secrets`。
@@ -204,6 +216,10 @@ npm run update
 ## 规则与策略组
 
 策略组是 Surge、Clash 和 Stash 输出共同使用的出口选择基础。内置 `Proxy` 策略组名称固定，不可删除；其他策略组可在 `Policy Groups` 页面新增、改名、禁用或调整顺序。规则中的策略出口必须引用已配置的策略组，或引用目标客户端支持的内置策略，例如 `DIRECT`、`REJECT`、`REJECT-DROP`。
+
+基础系统配置可以在客户端独立规则和统一规则模式之间切换。统一规则模式集中维护规则来源、规则集输出与单条分流规则，SubPilot 会拉取并编译规则来源，去重后按规则类型生成 Surge、Clash 和 Stash 所需的远程规则文件。规则集缓存每天自动刷新，也可以从状态页立即刷新。
+
+统一配置的分流规则可以启用“按策略组合并”。启用后，命中同一策略组的规则集会合并为一个输出，输出名称使用策略组名称，生成配置中的注释会列出包含的原规则集。合并组按该策略组首次出现的位置排序，组内保持原规则集顺序并去重。
 
 Surge、Clash 和 Stash 的规则页默认使用结构化编辑器。结构化模式会按页面中的行顺序生成配置文本，并在下方显示生成结果；切换到文本模式后，可以直接编辑对应配置内容。保存前系统会校验规则类型、规则集引用、策略出口和兜底规则位置，避免写入明显无效的规则配置。
 
@@ -232,7 +248,7 @@ Shadowrocket 现在可以直接使用通用订阅链接获取 Clash YAML 配置�
 
 ## Telegram 通知配置
 
-SubPilot 只支持两种通知状态：关闭通知，或启用 Telegram 通知。Telegram 通知用于上游订阅刷新失败提醒，也提供一组 bot 命令用于查看状态和手动刷新。
+SubPilot 只支持两种通知状态：关闭通知，或启用 Telegram 通知。Telegram 通知用于上游订阅与统一规则集刷新失败提醒，也提供一组 bot 命令用于查看状态和手动刷新。
 
 ### 申请 Telegram Bot
 
@@ -263,7 +279,7 @@ BotFather 的 `/setprivacy` 建议保持默认启用。SubPilot 只需要接收 
 status - 查看订阅与缓存概览
 sources - 查看订阅源启用状态
 recent - 查看最近配置拉取记录
-refresh - 强制重新拉取上游订阅源
+refresh - 强制刷新订阅源并异步刷新统一规则集
 help - 查看命令列表
 ```
 
@@ -286,7 +302,7 @@ help - 查看命令列表
 /status  查看订阅源数量、缓存数量和最近 Surge/Clash/Stash/Shadowrocket Clash YAML 拉取时间
 /sources 查看订阅源启用状态
 /recent  查看最近配置拉取记录、目标类型、客户端位置和 User-Agent
-/refresh 强制重新拉取上游订阅源，并在完成后回复刷新结果
+/refresh 强制重新拉取上游订阅源，并异步刷新统一规则集；两项任务完成后分别回复结果
 /help    查看命令列表
 ```
 
@@ -325,33 +341,3 @@ help - 查看命令列表
 - 最近获取记录中的客户端 IP 位置可能显示为未知。
 
 上传或重新上传 MMDB 后，系统会清理旧的地区识别缓存，使新的地区识别结果尽快生效。
-
-## KV 存储结构
-
-SubPilot 使用拆分 KV 键保存配置和运行数据：
-
-```text
-config:settings:<field>              通用设置
-config:groups:index                  策略组名称顺序
-config:groups:disabled               禁用的策略组
-config:groups:<name>                 单个策略组定义
-config:sources:index                 订阅源 ID 顺序
-config:sources:<id>                  单个订阅源，加密保存 URL
-config:proxyNodes:index              自维护代理节点 ID 顺序
-config:proxyNodes:<id>               单个自维护代理节点
-config:surge:<field>                 Surge 功能配置
-config:clash:<field>                 Clash 功能配置
-config:stash:<field>                 Stash 功能配置
-config:updatedAt                     配置更新时间
-config:schemaVersion                 KV schema 版本，迁移器按它判断待执行步骤
-auth:read_token                      可恢复订阅读取 token，加密保存
-auth:read_token_hash                 订阅读取 token 的 SHA-256 hash
-cache:source:<hash>                  上游订阅缓存
-cache:sourceMeta:<hash>              上游缓存倒计时元数据
-cache:sourceMeta:index               上游缓存元数据索引
-cache:geoip:location:<ip>            客户端 IP 位置缓存
-stats:config:lastFetched:<target>    每个目标最近拉取时间
-stats:config:recentFetches           最近订阅拉取 UA 记录
-stats:updateCheck:latest             最近一次 GitHub Releases 更新检查缓存
-stats:updateCheck:notifiedVersion    已通过 Telegram 提醒过的最新版本
-```

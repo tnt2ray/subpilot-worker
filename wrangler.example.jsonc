@@ -2,8 +2,14 @@
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "subpilot-worker",
   "main": "src/index.ts",
-  "compatibility_date": "2026-06-17",
+  "compatibility_date": "2026-07-09",
   "compatibility_flags": ["nodejs_compat"],
+  "secrets": {
+    "required": [
+      "ADMIN_TOKEN_HASH",
+      "CONFIG_ENCRYPTION_KEY"
+    ]
+  },
   "assets": {
     "directory": "./public",
     "binding": "ASSETS",
@@ -17,10 +23,14 @@
     }
   ],
   "triggers": {
-    "crons": ["0 */12 * * *"]
+    "crons": ["0 */12 * * *", "0 16 * * *"]
   },
   "observability": {
     "enabled": true,
-    "head_sampling_rate": 0.05
+    "head_sampling_rate": 0.05,
+    "traces": {
+      "enabled": true,
+      "head_sampling_rate": 0.05
+    }
   }
 }

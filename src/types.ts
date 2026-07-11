@@ -1,3 +1,5 @@
+import type { RuleSetConfig } from "./rule-set-types";
+
 export type Target = "surge" | "clash" | "stash" | "shadowrocket";
 export type SourceFetchUserAgent = "surge" | "clash" | "stash" | "shadowrocket";
 export type NotificationChannel = "off" | "telegram";
@@ -187,6 +189,7 @@ export interface AppConfig {
   sources: SourceConfig[];
   proxyNodes: StaticProxyNodeConfig[];
   chain: ChainConfig;
+  ruleSets: RuleSetConfig;
   surge: SurgeConfig;
   clash: ClashConfig;
   stash: StashConfig;

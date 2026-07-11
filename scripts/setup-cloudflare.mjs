@@ -12,6 +12,7 @@ const CONFIG_PATH = "wrangler.jsonc";
 const TEMPLATE_PATH = "wrangler.example.jsonc";
 const PLACEHOLDER_KV_ID = "00000000000000000000000000000000";
 const DEFAULT_SOURCE_REFRESH_HOURS = 12;
+const RULE_SET_REFRESH_CRON = "0 16 * * *";
 const args = new Set(process.argv.slice(2));
 
 function stripAnsi(value) {
@@ -101,7 +102,7 @@ async function configureSourceRefreshSchedule(createdConfig) {
   }
 
   const config = readJsonConfig();
-  config.triggers = { ...(config.triggers ?? {}), crons: [refreshCronForHours(hours)] };
+  config.triggers = { ...(config.triggers ?? {}), crons: [refreshCronForHours(hours), RULE_SET_REFRESH_CRON] };
   writeJsonConfig(config);
   process.stdout.write(`Configured upstream auto-refresh: every ${hours} hour${hours === 1 ? "" : "s"}.\n`);
 }

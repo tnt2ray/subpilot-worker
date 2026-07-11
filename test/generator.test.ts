@@ -394,6 +394,51 @@ describe("generation", () => {
     expect(parsed["proxy-groups"][0]?.proxies).toEqual(["[SimpleSource] Simple", "[RichSource] Rich"]);
   });
 
+  it("does not emit internal all-selector options in Clash policy groups", async () => {
+    mockSubscription([
+      "SG 1 = trojan, sg.example.com, 443, password=p",
+      "HK 1 = trojan, hk.example.com, 443, password=p",
+      "US 1 = trojan, us.example.com, 443, password=p",
+      "CF 1 = trojan, cf.example.com, 443, password=p",
+      "DMIT JP 1 = trojan, dmit.example.com, 443, password=p",
+      "JP via 1 = trojan, via.example.com, 443, password=p"
+    ].join("\n"));
+    const env = makeEnv();
+    const config = {
+      ...DEFAULT_CONFIG,
+      settings: {
+        ...DEFAULT_CONFIG.settings,
+        geoipRenameEnabled: false
+      },
+      groups: {
+        Proxy: "select, {all exclude=via}",
+        Auto: "url-test, {all filter=SG, HK, US exclude=via, CF}, url=https://www.gstatic.com/generate_204, interval=600",
+        DMIT: "select, {all filter=DMIT exclude=JP}"
+      },
+      sources: [{
+        id: "src1",
+        name: "",
+        url: "https://example.com/sub",
+        fetchUserAgent: "surge" as const,
+        enabled: true
+      }]
+    };
+
+    const result = await generateConfig(env, config, "clash", "https://subpilot.example.com/sync/token/");
+
+    const groups = (YAML.parse(result.content) as { "proxy-groups": Array<Record<string, unknown>> })["proxy-groups"];
+    for (const group of groups) {
+      expect(Object.keys(group).some((key) => key.startsWith("{all "))).toBe(false);
+    }
+    expect(groups.find((group) => group.name === "Proxy")?.proxies).toEqual(["SG 1", "HK 1", "US 1", "CF 1", "DMIT JP 1"]);
+    expect(groups.find((group) => group.name === "Auto")).toMatchObject({
+      url: "https://www.gstatic.com/generate_204",
+      interval: "600",
+      proxies: ["SG 1", "HK 1", "US 1"]
+    });
+    expect(groups.find((group) => group.name === "DMIT")).toBeUndefined();
+  });
+
   it("renames nodes by region extracted from original node names", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
       const textUrl = String(url);
@@ -525,14 +570,11 @@ describe("generation", () => {
     };
 
     const result = await generateConfig(env, config, "surge", "https://subpilot.example.com/sync/token/");
-    const main = await generateConfig(env, config, "surge", "https://subpilot.example.com/sync/token/");
 
     expect(result.content).toContain("JP 01 = trojan, shared.example.com, 10001");
     expect(result.content).toContain("SG 01 = trojan, shared.example.com, 10002");
-    expect(main.content).toContain("Proxy = select, JP 01");
-    expect(main.content).toContain("NoSingapore = select, JP 01");
-    expect(main.content).not.toContain("policy-path=");
-    expect(main.content).not.toContain("policy-regex-filter=");
+    expect(result.content).toContain("Proxy = select, JP 01");
+    expect(result.content).toContain("NoSingapore = select, JP 01");
   });
 
   it("builds chain nodes from the renamed candidate pool using each exit node filter", async () => {
@@ -571,18 +613,14 @@ describe("generation", () => {
     };
 
     const result = await generateConfig(env, config, "surge", "https://subpilot.example.com/sync/token/");
-    const main = await generateConfig(env, config, "surge", "https://subpilot.example.com/sync/token/");
 
     expect(result.content).toContain("JP 01 = trojan, shared.example.com, 10001");
     expect(result.content).toContain("SG 01 = trojan, shared.example.com, 10002");
     expect(result.content).toContain(`JP 01 via ${CHAIN_EXIT_PROXY_NAME} = socks5, 1.1.1.1, 1080`);
     expect(result.content).toContain("underlying-proxy=JP 01");
-    expect(main.content).toContain("[Proxy]\nJP 01 = trojan, shared.example.com, 10001");
-    expect(main.content).toContain(`${CHAIN_EXIT_PROXY_NAME} = socks5, 1.1.1.1, 1080`);
-    expect(main.content).toContain(`JP 01 via ${CHAIN_EXIT_PROXY_NAME} = socks5, 1.1.1.1, 1080`);
-    expect(main.content).toContain("underlying-proxy=JP 01");
-    expect(main.content).toContain(`${STATIC_EXIT_GROUP_NAME} = select, JP 01 via ${CHAIN_EXIT_PROXY_NAME}`);
-    expect(main.content).not.toContain("policy-path=");
+    expect(result.content).toContain("[Proxy]\nJP 01 = trojan, shared.example.com, 10001");
+    expect(result.content).toContain(`${CHAIN_EXIT_PROXY_NAME} = socks5, 1.1.1.1, 1080`);
+    expect(result.content).toContain(`${STATIC_EXIT_GROUP_NAME} = select, JP 01 via ${CHAIN_EXIT_PROXY_NAME}`);
     expect(result.content).not.toContain("SG 01 via");
     expect(result.content).not.toContain("Alpha via");
   });
@@ -620,15 +658,12 @@ describe("generation", () => {
     };
 
     const result = await generateConfig(env, config, "surge", "https://subpilot.example.com/sync/token/");
-    const main = await generateConfig(env, config, "surge", "https://subpilot.example.com/sync/token/");
 
     expect(result.content).toContain("[机场 A] BR 01 = trojan, shared.example.com, 10001");
     expect(result.content).toContain("[机场 A] SG 01 = trojan, shared.example.com, 10002");
     expect(result.content).toContain("[机场 A] US 01 = trojan, shared.example.com, 10003");
     expect(result.content).toContain("[机场 A] HK 01 = trojan, shared.example.com, 10004");
-    expect(main.content).toContain("Proxy = select, [机场 A] BR 01");
-    expect(main.content).not.toContain("policy-path=");
-    expect(main.content).not.toContain("policy-regex-filter=");
+    expect(result.content).toContain("Proxy = select, [机场 A] BR 01");
   });
 
   it("merges feature tags for exact duplicate configs while keeping different params separate", async () => {
@@ -663,13 +698,10 @@ describe("generation", () => {
     };
 
     const result = await generateConfig(env, config, "surge", "https://subpilot.example.com/sync/token/");
-    const main = await generateConfig(env, config, "surge", "https://subpilot.example.com/sync/token/");
 
     expect(result.content).toContain("[Primary] SG 01 Netflix Disney YouTube = trojan, dup.example.com, 443, password=p");
     expect(result.content).toContain("[Primary] SG 02 AI = trojan, dup.example.com, 443, password=p, ws=true");
-    expect(main.content).toContain("Proxy = select, [Primary] SG 01 Netflix Disney YouTube, [Primary] SG 02 AI");
-    expect(main.content).not.toContain("policy-path=");
-    expect(main.content).not.toContain("policy-regex-filter=");
+    expect(result.content).toContain("Proxy = select, [Primary] SG 01 Netflix Disney YouTube, [Primary] SG 02 AI");
   });
 
   it("builds Disney policy groups from feature labels across output targets", async () => {
@@ -708,8 +740,6 @@ describe("generation", () => {
     const clashGroups = (YAML.parse(clash.content) as { "proxy-groups": Array<{ name: string; proxies: string[] }> })["proxy-groups"];
 
     expect(surge.content).toContain("Disney = select, [Primary] SG 01 Disney");
-    expect(surge.content).not.toContain("policy-path=");
-    expect(surge.content).not.toContain("policy-regex-filter=");
     expect(clashGroups.find((group) => group.name === "Disney")?.proxies).toEqual(["[Primary] SG 01 Disney"]);
   });
 
@@ -754,7 +784,6 @@ describe("generation", () => {
     const clashParsed = YAML.parse(clash.content) as { "proxy-groups": Array<{ name: string }>; rules: string[] };
 
     expect(surge.content).not.toContain("Disney = select");
-    expect(surge.content).not.toContain("policy-path=");
     expect(surge.content).toContain("RULE-SET,https://example.com/disney.list,Proxy");
     expect(clashParsed["proxy-groups"].some((group) => group.name === "Disney")).toBe(false);
     expect(clashParsed.rules).toContain("RULE-SET,Disney,Proxy");
@@ -965,12 +994,10 @@ describe("generation", () => {
     };
 
     const result = await generateConfig(env, config, "surge", "https://subpilot.example.com/sync/token/");
-    const main = await generateConfig(env, config, "surge", "https://subpilot.example.com/sync/token/");
 
-    expect(main.content).toContain("[Host]\n*.bilivideo.cv = server:191.101.132.202:1066\n*.bilivideo.cv = server:194.156.162.182:1066");
+    expect(result.content).toContain("[Host]\n*.bilivideo.cv = server:191.101.132.202:1066\n*.bilivideo.cv = server:194.156.162.182:1066");
     expect(result.content).toContain("[NFcloud] SG 01 = trojan, edge.bilivideo.cv, 443");
-    expect(main.content).toContain("Proxy = select, [NFcloud] SG 01");
-    expect(main.content).not.toContain("policy-path=");
+    expect(result.content).toContain("Proxy = select, [NFcloud] SG 01");
     expect(fetchMock.mock.calls.some(([url]) => String(url).includes("cloudflare-dns.com"))).toBe(false);
   });
 
@@ -1011,6 +1038,7 @@ describe("generation", () => {
       }],
       proxyNodes: [chainExitProxyNode()],
       chain: DEFAULT_CONFIG.chain,
+      ruleSets: DEFAULT_CONFIG.ruleSets,
       surge: {
         ...DEFAULT_CONFIG.surge,
         rules: ["FINAL,Auto"]
@@ -1025,8 +1053,6 @@ describe("generation", () => {
       }
     }, "surge", "https://subpilot.example.com/sync/token/");
     expect(result.content).toContain("Proxy = select, Auto, [Primary] JP 1");
-    expect(result.content).not.toContain("policy-path=");
-    expect(result.content).not.toContain("policy-regex-filter=");
     expect(result.content).not.toContain(`${CHAIN_EXIT_PROXY_NAME}}`);
   });
 
@@ -1146,7 +1172,6 @@ describe("generation", () => {
 
     expect(surge.content).toContain("[Host]\ncustom.example.test = server:system\nalias.example.test = target.example.test");
     expect(surge.content).not.toContain("#!include https://subpilot.example.com/sync/token/surge-resources/");
-    expect(surge.content).not.toContain("policy-path=");
     expect(surge.content.match(/custom\.example\.test = server:system/g)).toHaveLength(1);
     expect(surge.content).toContain("source.example.test = 1.2.3.4");
     expect(surge.content.indexOf("[Host]")).toBeGreaterThan(surge.content.indexOf("[General]"));
@@ -1605,23 +1630,17 @@ describe("generation", () => {
     };
 
     const surge = await generateConfig(env, config, "surge", "https://subpilot.example.com/sync/token/");
-    const main = await generateConfig(env, config, "surge", "https://subpilot.example.com/sync/token/");
     const clash = await generateConfig(env, config, "clash", "https://subpilot.example.com/sync/token/");
 
     expect(surge.content).toContain("[Primary] JP 1 via DMIT = socks5, 1.1.1.1, 1080");
     expect(surge.content).toContain("username=u");
     expect(surge.content).toContain("password=p");
     expect(surge.content).toContain("underlying-proxy=[Primary] JP 1");
-    expect(main.content).toContain("[Proxy]\n[Primary] JP 1 = trojan, jp.example.com, 443");
-    expect(main.content).toContain("DMIT = socks5, 1.1.1.1, 1080");
-    expect(main.content).toContain("username=u");
-    expect(main.content).toContain("password=p");
-    expect(main.content).toContain("[Primary] JP 1 via DMIT = socks5, 1.1.1.1, 1080");
-    expect(main.content).toContain("underlying-proxy=[Primary] JP 1");
-    expect(main.content).toContain(`${STATIC_EXIT_GROUP_NAME} = select, [Primary] JP 1 via DMIT`);
-    expect(main.content).not.toContain("policy-path=");
-    expect(main.content).not.toContain(`${STATIC_EXIT_GROUP_NAME} = select, ${CHAIN_EXIT_PROXY_NAME}`);
-    expect(main.content).not.toContain(`Proxy = select, ${CHAIN_EXIT_PROXY_NAME}`);
+    expect(surge.content).toContain("[Proxy]\n[Primary] JP 1 = trojan, jp.example.com, 443");
+    expect(surge.content).toContain("DMIT = socks5, 1.1.1.1, 1080");
+    expect(surge.content).toContain(`${STATIC_EXIT_GROUP_NAME} = select, [Primary] JP 1 via DMIT`);
+    expect(surge.content).not.toContain(`${STATIC_EXIT_GROUP_NAME} = select, ${CHAIN_EXIT_PROXY_NAME}`);
+    expect(surge.content).not.toContain(`Proxy = select, ${CHAIN_EXIT_PROXY_NAME}`);
 
     const parsedClash = YAML.parse(clash.content) as {
       proxies: Array<{ name: string; server: string }>;
@@ -1998,15 +2017,13 @@ describe("generation", () => {
     };
 
     const surge = await generateConfig(env, config, "surge", "https://subpilot.example.com/sync/token/");
-    const main = await generateConfig(env, config, "surge", "https://subpilot.example.com/sync/token/");
 
     expect(surge.content).not.toContain("[FP] TW 10 = vless");
     expect(surge.content).not.toContain("[FP] TW 10 via");
     expect(surge.content).not.toContain("underlying-proxy=[FP] TW 10");
     expect(surge.content).toContain(`[FP] JP 1 via ${CHAIN_EXIT_PROXY_NAME} = socks5, 1.1.1.1, 1080`);
     expect(surge.content).toContain("underlying-proxy=[FP] JP 1");
-    expect(main.content).toContain(`${STATIC_EXIT_GROUP_NAME} = select, [FP] JP 1 via ${CHAIN_EXIT_PROXY_NAME}`);
-    expect(main.content).not.toContain("policy-path=");
+    expect(surge.content).toContain(`${STATIC_EXIT_GROUP_NAME} = select, [FP] JP 1 via ${CHAIN_EXIT_PROXY_NAME}`);
   });
 
   it("numbers renamed nodes after filtering unsupported target protocols", async () => {

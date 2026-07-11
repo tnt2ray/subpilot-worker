@@ -5,6 +5,7 @@ import {
   sourceCacheContentStats,
   type SourceCacheProtocolCount
 } from "./source-cache-stats";
+import { fetchUserAgentValue } from "./source-user-agent";
 import type { AppConfig, SourceConfig } from "./types";
 import { readResponseTextWithLimit, sha256Hex } from "./util";
 
@@ -66,10 +67,7 @@ export interface SourceCacheRefreshResult {
 }
 
 export function sourceUserAgent(config: AppConfig, source: SourceConfig): string {
-  if (source.fetchUserAgent === "clash") return config.settings.userAgentClash;
-  if (source.fetchUserAgent === "stash") return config.settings.userAgentStash;
-  if (source.fetchUserAgent === "shadowrocket") return config.settings.userAgentShadowrocket;
-  return config.settings.userAgentSurge;
+  return fetchUserAgentValue(config, source.fetchUserAgent);
 }
 
 export async function fetchCachedSource(env: Env, source: SourceConfig, userAgent: string): Promise<string> {

@@ -6,6 +6,8 @@ import { parseHostEntries } from "./host-entries";
 import { applyTransforms, buildChainNodes, buildConfiguredProxyNodes, nodeTagsForMatching, parseFeatureTagRules } from "./node-transforms";
 import { dedupeHostEntries } from "./output-render";
 import { parseSubscription } from "./parsers";
+import { buildCompiledRuleSetReferencePlan, type CompiledRuleSetReferencePlan } from "./rule-set-compiler";
+import type { RuleSetOutputTarget } from "./rule-set-types";
 import { fetchCachedSource, sourceUserAgent } from "./source-cache";
 import { buildSurge, buildSurgeValidationProfile } from "./surge-renderer";
 import { collectSurgeRuleCoverageWarnings } from "./surge-rules";
@@ -23,6 +25,7 @@ interface PreparedOutput {
   hostEntries: HostEntry[];
   fetchedSources: number;
   warnings: string[];
+  ruleSetPlan?: CompiledRuleSetReferencePlan | undefined;
 }
 
 interface GenerationOptions {
@@ -52,16 +55,16 @@ export async function generateConfig(
   requestUrl: string,
   options: GenerationOptions = {}
 ): Promise<GenerationResult> {
-  const renderTarget = target === "shadowrocket" ? "clash" : target;
-  const prepared = await prepareOutput(env, config, renderTarget);
-  if (options.includeRuleDiagnostics) {
+  const renderTarget: RuleSetOutputTarget = target === "shadowrocket" ? "clash" : target;
+  const prepared = await prepareOutput(env, config, renderTarget, requestUrl);
+  if (options.includeRuleDiagnostics && config.ruleSets.mode !== "compiled") {
     if (renderTarget === "surge") {
       prepared.warnings.push(...await collectSurgeRuleCoverageWarnings(config));
     } else if (renderTarget === "clash" || renderTarget === "stash") {
       prepared.warnings.push(...await collectClashRuleCoverageWarnings(config, renderTarget));
     }
   }
-  const content = buildTargetContent(config, renderTarget, prepared.nodes, prepared.hostEntries, requestUrl, prepared.warnings, options);
+  const content = buildTargetContent(config, renderTarget, prepared.nodes, prepared.hostEntries, requestUrl, prepared.warnings, options, prepared.ruleSetPlan);
   return {
     target,
     content,
@@ -81,30 +84,36 @@ function buildTargetContent(
   hostEntries: HostEntry[],
   requestUrl: string,
   warnings: string[],
-  options: GenerationOptions
+  options: GenerationOptions,
+  ruleSetPlan?: CompiledRuleSetReferencePlan
 ): string {
-  if (target === "surge") return buildSurge(config, nodes, hostEntries, requestUrl);
-  if (target === "stash") return buildStash(config, nodes, hostEntries, requestUrl, warnings);
-  return buildClash(config, nodes, hostEntries);
+  if (target === "surge") return buildSurge(config, nodes, hostEntries, requestUrl, ruleSetPlan);
+  if (target === "stash") return buildStash(config, nodes, hostEntries, requestUrl, warnings, ruleSetPlan);
+  return buildClash(config, nodes, hostEntries, ruleSetPlan);
 }
 
 export async function generateSurgeValidationConfig(env: Env, config: AppConfig, requestUrl: string): Promise<string> {
-  const prepared = await prepareOutput(env, config, "surge");
+  const prepared = await prepareOutput(env, config, "surge", requestUrl);
   return buildSurgeValidationProfile(config, prepared.nodes, prepared.hostEntries, requestUrl);
 }
 
-async function prepareOutput(env: Env, config: AppConfig, target: Target): Promise<PreparedOutput> {
+async function prepareOutput(env: Env, config: AppConfig, target: RuleSetOutputTarget, requestUrl: string): Promise<PreparedOutput> {
   const warnings: string[] = [];
   const fetched = await fetchAllSources(env, config, target, warnings);
   const configuredNodes = buildConfiguredProxyNodes(config);
   const supported = await applyTransforms(env, [...fetched.nodes, ...configuredNodes], config, target, warnings);
   const chainNodes = buildChainNodes(supported);
   const nodes = chainNodes.length > 0 ? [...supported, ...chainNodes] : supported;
+  const ruleSetPlan = config.ruleSets.mode === "compiled"
+    ? await buildCompiledRuleSetReferencePlan(env, config, target, requestUrl)
+    : undefined;
+  if (ruleSetPlan) warnings.push(...ruleSetPlan.warnings);
   return {
     nodes,
     hostEntries: fetched.hostEntries,
     fetchedSources: config.sources.filter((source) => source.enabled && source.url).length,
-    warnings
+    warnings,
+    ruleSetPlan
   };
 }
 

@@ -1,5 +1,6 @@
-import { normalizeManagedBasePath } from "./managed-url";
+import { normalizeManagedBasePath, ruleSetPathName } from "./managed-url";
 import { parseConfiguredProxyNode } from "./parsers";
+import { effectiveRuleSetOutputs } from "./rule-set-outputs";
 import type { AppConfig } from "./types";
 
 const RESERVED_MANAGED_BASE_PATHS = new Set([
@@ -43,6 +44,36 @@ export function validateProxyPolicyNameConflicts(config: Partial<Pick<AppConfig,
     const name = parseConfiguredProxyNode(proxyNode)?.name.trim();
     if (name && groupNames.has(name)) {
       return `代理节点名称 ${name} 不能和策略组名称相同`;
+    }
+  }
+  return null;
+}
+
+export function validateRuleSetOutputNames(config: Partial<Pick<AppConfig, "ruleSets">>): string | null {
+  if (!Array.isArray(config.ruleSets?.outputs)) return "规则集输出配置格式无效";
+  const configuredError = validateOutputNameList(config.ruleSets.outputs);
+  if (configuredError || config.ruleSets.aggregateByPolicy !== true) return configuredError;
+  const ruleSets = {
+    mode: config.ruleSets.mode === "compiled" ? "compiled" as const : "manual" as const,
+    aggregateByPolicy: config.ruleSets.aggregateByPolicy === true,
+    sources: Array.isArray(config.ruleSets.sources) ? config.ruleSets.sources : [],
+    outputs: config.ruleSets.outputs,
+    directRules: Array.isArray(config.ruleSets.directRules) ? config.ruleSets.directRules : []
+  };
+  return validateOutputNameList(effectiveRuleSetOutputs(ruleSets));
+}
+
+function validateOutputNameList(outputs: AppConfig["ruleSets"]["outputs"]): string | null {
+  const names = new Set<string>();
+  for (const output of outputs) {
+    const name = ruleSetPathName(output?.name);
+    if (!name || name === "." || name === "..") return "规则集名称不能为空，也不能使用 . 或 ..";
+    if (names.has(name)) return `规则集名称 ${name} 不能重复`;
+    names.add(name);
+  }
+  for (const name of names) {
+    for (const suffix of ["-domain", "-ipcidr"]) {
+      if (names.has(`${name}${suffix}`)) return `规则集名称 ${name} 与 ${name}${suffix} 会生成冲突文件名`;
     }
   }
   return null;

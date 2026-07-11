@@ -19,6 +19,7 @@ Third-party dependencies and bundled code keep their original licenses. Upstream
 - Select the output target automatically from the client User-Agent.
 - Maintain Surge, Clash, and Stash feature settings through structured fields instead of editing full templates.
 - Manage policy groups, policy rules, rule sets, DNS, TUN, MITM, and URL Rewrite settings.
+- Switch to unified rule mode to compile, deduplicate, and cache routing rule sets shared by Surge, Clash, and Stash.
 - Provide structured rule editors for Surge, Clash, and Stash, while keeping a text mode for direct edits.
 - Show admin preview warnings for rules shadowed by earlier rules, including Surge rule sets and Clash / Stash rule-provider content.
 - Link Clash rule-providers with rules: unused rule sets are automatically added to rules, and deleting a rule set removes the matching rule.
@@ -143,7 +144,7 @@ Use the SHA-256 hex from step 4 for `ADMIN_TOKEN_HASH`; use a sufficiently long 
 wrangler deploy
 ```
 
-The default `wrangler.example.jsonc` runs a scheduled task every 12 hours to fetch upstream subscriptions automatically. To adjust the interval, edit `triggers.crons` in `wrangler.jsonc` and deploy again.
+The default `wrangler.example.jsonc` fetches upstream subscriptions every 12 hours and refreshes unified rule sets once per day. To adjust either interval, edit `triggers.crons` in `wrangler.jsonc` and deploy again.
 
 For a custom domain, connect the domain to the Worker in Cloudflare or add your own `routes` configuration in local `wrangler.jsonc`. Do not commit a `wrangler.jsonc` that contains real domains or namespace IDs to the public repository.
 
@@ -156,10 +157,11 @@ Recommended first-time configuration order:
 1. Set `Managed Base URL` in `Configuration`, usually `https://<your-domain>/sync`.
 2. Add upstream subscription sources in `Sources`; URLs are encrypted in KV, and the fetch User-Agent can be set to Surge, Clash, Stash, or Shadowrocket according to upstream requirements.
 3. Adjust policy groups in `Policy Groups`.
-4. Configure target-specific settings in `Surge`, `Clash`, and `Stash`.
-5. If you need chain proxies, add manually maintained proxy nodes in `Proxy Nodes`, check the nodes that can be used as chain exits, and configure the chain filter on each exit node.
-6. Adjust the display time zone in `Configuration` if needed. The default is `Asia/Shanghai`, and it only affects admin and notification display.
-7. Rotate the subscription read token in `Tokens` and copy the subscription link.
+4. Choose target-specific rules or unified rule mode in `Configuration`. When using unified rules, manage rule sources and routing rules in `Unified Configuration`.
+5. Configure target-specific settings in `Surge`, `Clash`, and `Stash`.
+6. If you need chain proxies, add manually maintained proxy nodes in `Proxy Nodes`, check the nodes that can be used as chain exits, and configure the chain filter on each exit node.
+7. Adjust the display time zone in `Configuration` if needed. The default is `Asia/Shanghai`, and it only affects admin and notification display.
+8. Rotate the subscription read token in `Tokens` and copy the subscription link.
 
 Subscription links are based on the `Managed Base URL` configured in the admin UI, usually `https://<your-domain>/sync`. `Managed Base URL` must include a non-root path and cannot use system-reserved paths such as `/api`, `/app.js`, `/styles.css`, `/mitm-ca.js`, `/login.html`, or `/index.html`. Trailing `/` characters are removed when links are built.
 
@@ -183,7 +185,7 @@ SUBPILOT_SOURCE_REFRESH_HOURS=6 npm run setup
 
 The value must be between 1 and 24 hours. After deployment, edit `triggers.crons` in `wrangler.jsonc` and run `wrangler deploy` again to change the interval.
 
-The admin status page shows upstream cache count, cache coverage, last update time, and cache state for each source. Admin and Telegram notification times are converted to the display time zone configured in `Configuration`, using the `yyyy-mm-dd hh:mm:ss` format; system timestamps in KV remain UTC. The `Force Fetch` button fetches upstream sources immediately. The Telegram bot command `/status` shows cache overview, `/recent` shows the 5 most recent configuration fetch records, and `/refresh` triggers a remote force fetch. When Telegram notifications are enabled, scheduled fetch failures send alerts.
+The admin status page shows coverage, last update time, and item details for both upstream and unified rule-set caches, with separate force-refresh actions. Admin and Telegram notification times are converted to the display time zone configured in `Configuration`, using the `yyyy-mm-dd hh:mm:ss` format; system timestamps in KV remain UTC. The Telegram bot command `/status` shows cache overview, `/recent` shows the 5 most recent configuration fetch records, and `/refresh` force-fetches upstream subscriptions while refreshing unified rule sets asynchronously in the background; each operation sends its own result. When Telegram notifications are enabled, scheduled fetch failures send alerts.
 
 ## Updates
 
@@ -195,6 +197,16 @@ npm run update
 
 If the current directory is a Git clone, the command pulls the latest code for the current branch. If the current directory came from a GitHub Releases `subpilot-worker-vX.Y.Z.tar.gz` archive, the command downloads the latest release asset with the same archive name and overlays the program files. Both paths preserve local `wrangler.jsonc`, install only dependencies needed for runtime deployment, and deploy to the configured Worker.
 
+When upgrading an existing deployment to 1.2.0, local `wrangler.jsonc` is preserved. Confirm that `triggers.crons` contains both the upstream subscription task and the unified rule-set task:
+
+```json
+"triggers": {
+  "crons": ["0 */12 * * *", "0 16 * * *"]
+}
+```
+
+The first entry may keep your existing upstream refresh interval. The second entry runs the daily unified rule-set refresh. Without it, unified rule sets can still be refreshed manually from the status page or generated on demand, but the daily background refresh does not run. Run `wrangler deploy` after editing the file. New installations write both tasks automatically through `npm run setup`.
+
 After deployment, SubPilot automatically completes KV data structure updates when the admin UI is opened, a subscription is fetched, or a scheduled task runs. No separate migration command is needed. Even if you skip multiple versions, missing migrations are processed in order.
 
 Do not delete local `wrangler.jsonc` during updates, and do not rerun commands that rotate Secrets unless that is intentional. In particular, do not accidentally replace `CONFIG_ENCRYPTION_KEY`, or old encrypted subscription source URLs, Telegram Bot Tokens, and subscription read tokens in KV will no longer decrypt. Use `npm run setup -- --force-secrets` only when you intentionally reset the whole deployment or rotate keys.
@@ -204,6 +216,10 @@ The admin status page shows the current app version and latest-version check res
 ## Rules and Policy Groups
 
 Policy groups are the shared exit selection foundation for Surge, Clash, and Stash output. The built-in `Proxy` policy group name is fixed and cannot be deleted. Other policy groups can be added, renamed, disabled, or reordered in `Policy Groups`. Rule targets must reference configured policy groups or built-in targets supported by the target client, such as `DIRECT`, `REJECT`, and `REJECT-DROP`.
+
+System settings can switch between target-specific rules and unified rule mode. Unified rule mode centrally manages rule sources, rule-set outputs, and individual routing rules. SubPilot fetches and compiles each source, deduplicates its rules, and emits the remote rule files required by Surge, Clash, and Stash according to rule type. Rule-set caches refresh daily and can also be refreshed immediately from the status page.
+
+Unified routing rules can enable `Merge by policy`. When enabled, rule sets targeting the same policy group are merged into one output named after that policy group. Generated configurations include comments listing the original rule sets. Merged groups use the first occurrence of that policy group for ordering, while member rule sets retain their original order and are deduplicated.
 
 The Surge, Clash, and Stash rule pages use the structured editor by default. Structured mode generates configuration text from the row order shown on the page and displays the generated result below. After switching to text mode, you can edit the corresponding configuration content directly. Before saving, the system validates rule type, rule-set reference, policy target, and fallback rule position to avoid writing obviously invalid rule configuration.
 
@@ -232,7 +248,7 @@ Shadowrocket can now use the common subscription link to receive Clash YAML conf
 
 ## Telegram Notifications
 
-SubPilot supports two notification states: notifications off, or Telegram notifications enabled. Telegram notifications are used for upstream refresh failure alerts and provide bot commands for status checks and manual refresh.
+SubPilot supports two notification states: notifications off, or Telegram notifications enabled. Telegram notifications report upstream subscription and unified rule-set refresh failures, and provide bot commands for status checks and manual refresh.
 
 ### Create a Telegram Bot
 
@@ -263,7 +279,7 @@ Send `/setcommands` to `@BotFather`, choose your SubPilot bot, and paste:
 status - View subscription and cache overview
 sources - View subscription source enabled state
 recent - View recent configuration fetch records
-refresh - Force refresh upstream subscription sources
+refresh - Refresh subscription sources and unified rule sets
 help - View command list
 ```
 
@@ -286,7 +302,7 @@ After binding succeeds, only the bound Chat ID can trigger SubPilot bot commands
 /status  View source count, cache count, and recent Surge/Clash/Stash/Shadowrocket Clash YAML fetch time
 /sources View subscription source enabled state
 /recent  View recent configuration fetch records, target type, client location, and User-Agent
-/refresh Force refresh upstream subscription sources and reply with the result
+/refresh Force refresh upstream subscriptions and asynchronously refresh unified rule sets; each task replies with its own result
 /help    View command list
 ```
 
@@ -325,33 +341,3 @@ If no MMDB is uploaded, SubPilot can only identify regions from existing single-
 - Client IP location in recent fetch records may show as unknown.
 
 After uploading or re-uploading an MMDB file, the system clears old region detection cache so new region results take effect as soon as possible.
-
-## KV Storage Shape
-
-SubPilot stores configuration and runtime data in split KV keys:
-
-```text
-config:settings:<field>              General settings
-config:groups:index                  Policy group name order
-config:groups:disabled               Disabled policy groups
-config:groups:<name>                 Single policy group definition
-config:sources:index                 Subscription source ID order
-config:sources:<id>                  Single subscription source, with encrypted URL
-config:proxyNodes:index              Manual proxy node ID order
-config:proxyNodes:<id>               Single manual proxy node
-config:surge:<field>                 Surge feature configuration
-config:clash:<field>                 Clash feature configuration
-config:stash:<field>                 Stash feature configuration
-config:updatedAt                     Configuration update time
-config:schemaVersion                 KV schema version used by the migrator
-auth:read_token                      Recoverable subscription read token, encrypted
-auth:read_token_hash                 SHA-256 hash of the subscription read token
-cache:source:<hash>                  Upstream subscription cache
-cache:sourceMeta:<hash>              Upstream cache countdown metadata
-cache:sourceMeta:index               Upstream cache metadata index
-cache:geoip:location:<ip>            Client IP location cache
-stats:config:lastFetched:<target>    Last fetch time per output target
-stats:config:recentFetches           Recent subscription fetch User-Agent records
-stats:updateCheck:latest             Latest GitHub Releases update-check cache
-stats:updateCheck:notifiedVersion    Latest version already notified through Telegram
-```

@@ -19,9 +19,10 @@
           <a class="active" href="#status" data-page="status"><span data-i18n="navStatus">状态</span></a>
           <div class="menu-heading" data-i18n="navSystem">系统</div>
           <a href="#settings" data-page="settings"><span data-i18n="navConfiguration">基础系统配置</span></a>
-          <a href="#proxy-nodes" data-page="proxy-nodes"><span data-i18n="navProxyNodes">代理节点</span></a>
           <a href="#sources" data-page="sources"><span data-i18n="navSources">订阅源</span></a>
+          <a href="#proxy-nodes" data-page="proxy-nodes"><span data-i18n="navProxyNodes">代理节点</span></a>
           <a href="#groups" data-page="groups"><span data-i18n="navPolicyGroups">策略组</span></a>
+          <a href="#unified-config" data-page="unified-config"><span data-i18n="navUnifiedConfig">统一配置</span></a>
           <a href="#surge" data-page="surge"><span data-i18n="navSurge">Surge</span></a>
           <a href="#clash" data-page="clash"><span data-i18n="navClash">Clash</span></a>
           <a href="#stash" data-page="stash"><span data-i18n="navStash">Stash</span></a>
@@ -69,6 +70,13 @@
                       <dd class="status-cache-row">
                         <div id="summarySourceCache" class="status-cache-detail">-</div>
                         <button id="refreshSourceCacheBtn" class="btn compact-btn" type="button" data-i18n="refreshSourceCache">强制获取</button>
+                      </dd>
+                    </div>
+                    <div>
+                      <dt data-i18n="ruleSetCacheStatus">规则集缓存</dt>
+                      <dd class="status-cache-row">
+                        <div id="summaryRuleSetCache" class="status-cache-detail">-</div>
+                        <button id="refreshRuleSetCacheBtn" class="btn compact-btn" type="button" data-i18n="refreshRuleSetCache">强制刷新</button>
                       </dd>
                     </div>
                   </dl>
@@ -123,6 +131,16 @@
                     <div class="field">
                       <input id="managedBaseUrl" type="url" required>
                       <small data-i18n="managedBaseUrlHelp">用于生成托管配置头部中的必填基础地址。初始空配置会按当前域名推导一次。</small>
+                    </div>
+                  </div>
+                  <div class="cbi-row">
+                    <label data-i18n="ruleSetModeTitle">分流规则模式</label>
+                    <div class="field rule-set-mode-field">
+                      <div class="rule-set-mode-tabs" role="radiogroup" aria-label="分流规则模式">
+                        <label class="tab"><input id="ruleSetModeManual" type="radio" name="ruleSetMode" value="manual"> <span data-i18n="ruleSetModeManual">独立设置分流规则</span></label>
+                        <label class="tab"><input id="ruleSetModeCompiled" type="radio" name="ruleSetMode" value="compiled"> <span data-i18n="ruleSetModeCompiled">统一规则集编译</span></label>
+                      </div>
+                      <small data-i18n="ruleSetModeHelp">切换模式不会删除另一套配置；主订阅仍按客户端 User-Agent 自动判断输出目标。</small>
                     </div>
                   </div>
                   <div class="cbi-row">
@@ -278,26 +296,6 @@
               </section>
             </section>
 
-            <section id="page-groups" class="page-view hidden" data-page="groups">
-              <section class="luci-box">
-                <div class="box-title row-title">
-                  <span data-i18n="groupsTitle">策略组</span>
-                  <button id="addGroupBtn" class="btn" type="button" data-i18n="addGroup">添加策略组</button>
-                </div>
-                <div class="table-wrap">
-                  <table class="luci-table group-table">
-                    <thead>
-                      <tr>
-                        <th data-i18n="tableName">名称</th>
-                        <th data-i18n="tableDefinition">定义</th>
-                      </tr>
-                    </thead>
-                    <tbody id="groupsBody"></tbody>
-                  </table>
-                </div>
-              </section>
-            </section>
-
             <section id="page-sources" class="page-view hidden" data-page="sources">
               <section class="luci-box">
                 <div class="box-title row-title source-title">
@@ -331,6 +329,109 @@
               </section>
             </section>
 
+            <section id="page-groups" class="page-view hidden" data-page="groups">
+              <section class="luci-box">
+                <div class="box-title row-title">
+                  <span data-i18n="groupsTitle">策略组</span>
+                  <button id="addGroupBtn" class="btn" type="button" data-i18n="addGroup">添加策略组</button>
+                </div>
+                <div class="table-wrap">
+                  <table class="luci-table group-table">
+                    <thead>
+                      <tr>
+                        <th data-i18n="tableName">名称</th>
+                        <th data-i18n="tableDefinition">定义</th>
+                      </tr>
+                    </thead>
+                    <tbody id="groupsBody"></tbody>
+                  </table>
+                </div>
+              </section>
+            </section>
+
+            <section id="page-unified-config" class="page-view hidden" data-page="unified-config">
+              <div class="tabs section-tabs unified-config-tabs" role="tablist" aria-label="统一配置">
+                <button id="unified-config-tab-general" class="tab active" type="button" data-unified-config-tab="general" role="tab" aria-selected="true" aria-controls="unified-config-panel-general" tabindex="0" data-i18n="unifiedConfigTabGeneral">General</button>
+                <button id="unified-config-tab-dns" class="tab" type="button" data-unified-config-tab="dns" role="tab" aria-selected="false" aria-controls="unified-config-panel-dns" tabindex="-1" data-i18n="unifiedConfigTabDns">DNS</button>
+                <button id="unified-config-tab-rules" class="tab" type="button" data-unified-config-tab="rules" role="tab" aria-selected="false" aria-controls="unified-config-panel-rules" tabindex="-1" data-i18n="unifiedConfigTabRules">分流规则</button>
+              </div>
+
+              <div id="unified-config-panel-general" class="unified-config-targets" data-unified-config-panel="general" role="tabpanel" aria-labelledby="unified-config-tab-general">
+                <section class="luci-box">
+                  <div class="box-title" data-i18n="unifiedCommonGeneralTitle">三端通用设置</div>
+                  <div class="unified-config-note field-notice" data-i18n="unifiedCommonGeneralHelp">这里的设置会同时应用到 Surge、Clash 和 Stash；目标独有功能请在左侧对应客户端菜单中配置。</div>
+                  <div class="cbi-section">
+                    <div class="cbi-row">
+                      <label for="unifiedIpv6">IPv6</label>
+                      <div class="field checks">
+                        <label class="check"><input id="unifiedIpv6" type="checkbox" aria-describedby="unifiedIpv6Help unifiedIpv6Mixed"> <span id="unifiedIpv6State" data-i18n="enabled">已启用</span></label>
+                        <small id="unifiedIpv6Help" data-i18n="unifiedIpv6Help">同时控制三种输出的 IPv6 开关。</small>
+                        <small id="unifiedIpv6Mixed" class="field-warning hidden" data-i18n="unifiedCommonMixedValue">当前三端保存的值不一致；修改后会统一应用新值。</small>
+                      </div>
+                    </div>
+                    <div class="cbi-row">
+                      <label for="unifiedLanAccess" data-i18n="unifiedLanAccess">局域网访问</label>
+                      <div class="field checks">
+                        <label class="check"><input id="unifiedLanAccess" type="checkbox" aria-describedby="unifiedLanAccessHelp unifiedLanAccessMixed"> <span id="unifiedLanAccessState" data-i18n="enabled">已启用</span></label>
+                        <small id="unifiedLanAccessHelp" data-i18n="unifiedLanAccessHelp">同时控制 Surge 的 Wi-Fi 访问，以及 Clash、Stash 的 allow-lan。</small>
+                        <small id="unifiedLanAccessMixed" class="field-warning hidden" data-i18n="unifiedCommonMixedValue">当前三端保存的值不一致；修改后会统一应用新值。</small>
+                      </div>
+                    </div>
+                  </div>
+                </section>
+              </div>
+
+              <div id="unified-config-panel-dns" class="unified-config-targets hidden" data-unified-config-panel="dns" role="tabpanel" aria-labelledby="unified-config-tab-dns">
+                <section class="luci-box">
+                  <div class="box-title" data-i18n="unifiedDnsTitle">三端通用 DNS</div>
+                  <div class="unified-config-note field-notice" data-i18n="unifiedDnsHelp">基础 DNS 会写入 Surge 的 dns-server 与 Clash、Stash 的 default-nameserver；加密 DNS 会写入 encrypted-dns-server 与 nameserver。加密 DNS 为空时，Clash、Stash 的 nameserver 会回退使用基础 DNS。</div>
+                  <div class="cbi-section">
+                    <div class="cbi-row">
+                      <label for="unifiedBasicDnsServers" data-i18n="unifiedBasicDnsServers">基础上游 DNS</label>
+                      <div class="field">
+                        <textarea id="unifiedBasicDnsServers" class="line-editor compact-editor config-code-textarea" rows="6" data-code-editor-rows="6" spellcheck="false" aria-describedby="unifiedBasicDnsServersHelp unifiedBasicDnsServersMixed" data-i18n-placeholder="unifiedBasicDnsServersMixedPlaceholder"></textarea>
+                        <small id="unifiedBasicDnsServersHelp" data-i18n="unifiedBasicDnsServersHelp">每行一个三端共用的基础或引导 DNS，仅填写 IP 地址。</small>
+                        <small id="unifiedBasicDnsServersMixed" class="field-warning hidden" data-i18n="unifiedCommonListMixedValue">当前三端保存的列表不一致；输入内容后会统一应用新列表。</small>
+                      </div>
+                    </div>
+                    <div class="cbi-row">
+                      <label for="unifiedEncryptedDnsServers" data-i18n="unifiedEncryptedDnsServers">加密上游 DNS</label>
+                      <div class="field">
+                        <textarea id="unifiedEncryptedDnsServers" class="line-editor compact-editor config-code-textarea" rows="8" data-code-editor-rows="8" spellcheck="false" aria-describedby="unifiedEncryptedDnsServersHelp unifiedEncryptedDnsServersMixed" data-i18n-placeholder="unifiedEncryptedDnsServersMixedPlaceholder"></textarea>
+                        <small id="unifiedEncryptedDnsServersHelp" data-i18n="unifiedEncryptedDnsServersHelp">每行一个三端均支持的 DoH 或 DoQ 地址。</small>
+                        <small id="unifiedEncryptedDnsServersMixed" class="field-warning hidden" data-i18n="unifiedCommonListMixedValue">当前三端保存的列表不一致；输入内容后会统一应用新列表。</small>
+                      </div>
+                    </div>
+                    <div class="cbi-row">
+                      <label for="unifiedRealIpDomains" data-i18n="unifiedRealIpDomains">真实 IP 例外域名</label>
+                      <div class="field">
+                        <textarea id="unifiedRealIpDomains" class="line-editor compact-editor config-code-textarea" rows="8" data-code-editor-rows="8" spellcheck="false" aria-describedby="unifiedRealIpDomainsHelp unifiedRealIpDomainsMixed unifiedRealIpDomainsInvalid" data-i18n-placeholder="unifiedRealIpDomainsMixedPlaceholder"></textarea>
+                        <small id="unifiedRealIpDomainsHelp" data-i18n="unifiedRealIpDomainsHelp">每行一个精确域名，或使用 * 代替完整域名标签，例如 *.example.com、xbox.*.microsoft.com、stun.*；分别写入 Surge always-real-ip 与 Clash、Stash dns.fake-ip-filter。</small>
+                        <small id="unifiedRealIpDomainsMixed" class="field-warning hidden" data-i18n="unifiedCommonListMixedValue">当前三端保存的列表不一致；输入内容后会统一应用新列表。</small>
+                        <small id="unifiedRealIpDomainsInvalid" class="field-warning hidden" data-i18n="unifiedRealIpDomainsInvalid">仅支持精确域名和以 * 代替完整标签的简单通配符；GEOSITE、规则集和其它高级语法请在对应客户端菜单中配置。</small>
+                      </div>
+                    </div>
+                  </div>
+                </section>
+              </div>
+
+              <div id="unified-config-panel-rules" class="unified-config-targets hidden" data-unified-config-panel="rules" role="tabpanel" aria-labelledby="unified-config-tab-rules">
+                <section class="luci-box" data-unified-compiled-rules>
+                  <div class="box-title row-title source-title">
+                    <span data-i18n="ruleSetOutputsTitle">统一规则集</span>
+                    <div class="button-row compact">
+                      <label class="check rule-set-aggregate-toggle"><input id="ruleSetAggregateByPolicy" type="checkbox"> <span data-i18n="ruleSetAggregateByPolicy">按策略组合并</span></label>
+                      <button id="refreshRuleSetsBtn" class="btn" type="button" data-i18n="refreshRuleSets">更新规则内容</button>
+                      <button id="addRuleSetDirectRuleBtn" class="btn" type="button" data-i18n="addRuleSetDirectRule">添加单条规则</button>
+                      <button id="addRuleSetOutputBtn" class="btn" type="button" data-i18n="addRuleSetOutput">添加规则集</button>
+                    </div>
+                  </div>
+                  <div id="ruleSetStatusSummary" class="validation-messages"></div>
+                  <div id="ruleSetRulesBody" class="rule-set-rule-list"></div>
+                </section>
+              </div>
+            </section>
+
             <section id="page-surge" class="page-view hidden" data-page="surge">
               <section class="luci-box">
                 <div class="box-title" data-i18n="surgeConfigTitle">Surge 功能配置</div>
@@ -341,7 +442,7 @@
                   <button class="tab" type="button" data-surge-tab="script" role="tab" aria-selected="false" data-i18n="surgeTabScript">Script</button>
                   <button class="tab" type="button" data-surge-tab="mitm" role="tab" aria-selected="false" data-i18n="surgeTabMitm">MITM</button>
                   <button class="tab" type="button" data-surge-tab="ponte" role="tab" aria-selected="false" data-i18n="surgeTabPonte">Ponte</button>
-                  <button class="tab" type="button" data-surge-tab="rule" role="tab" aria-selected="false" data-i18n="surgeTabRule">Rule</button>
+                  <button class="tab" type="button" data-surge-tab="rule" data-manual-rule-tab role="tab" aria-selected="false" data-i18n="surgeTabRule">Rule</button>
                 </div>
                 <div class="cbi-section" data-surge-panel="general">
                   <div class="cbi-row">
@@ -386,7 +487,7 @@
                       <small data-i18n="tunExcludedRoutesHelp">这些网段不会被 Surge TUN 接管，通常用于保留局域网、私有地址和组播发现地址的直连访问。使用逗号分隔。</small>
                     </div>
                   </div>
-                  <div class="cbi-row">
+                  <div class="cbi-row" data-unified-common-target-control>
                     <label for="surgeIpv6">IPv6</label>
                     <div class="field checks">
                       <label class="check"><input id="surgeIpv6" type="checkbox"> <span data-i18n="enabled">已启用</span></label>
@@ -404,7 +505,7 @@
                       <small data-i18n="ipv6VifHelp">控制 Surge 虚拟接口的 IPv6 行为。off 不启用 IPv6 VIF，auto 在本地网络支持 IPv6 时自动启用，always 始终启用。</small>
                     </div>
                   </div>
-                  <div class="cbi-row">
+                  <div class="cbi-row" data-unified-common-target-control>
                     <label for="surgeAllowWifiAccess" data-i18n="allowWifiAccess">允许 Wi-Fi 访问</label>
                     <div class="field checks">
                       <label class="check"><input id="surgeAllowWifiAccess" type="checkbox"> <span data-i18n="enabled">已启用</span></label>
@@ -425,7 +526,7 @@
                       <small data-i18n="dnsServerHelp">Surge 普通 DNS 解析使用的服务器列表，按顺序尝试。使用逗号分隔。</small>
                     </div>
                   </div>
-                  <div class="cbi-row">
+                  <div class="cbi-row" data-unified-common-target-control>
                     <label for="surgeEncryptedDnsServer" data-i18n="encryptedDnsServer">加密 DNS 服务器</label>
                     <div class="field">
                       <input id="surgeEncryptedDnsServer" type="text">
@@ -550,7 +651,7 @@
                     </div>
                   </div>
                 </div>
-                <div class="cbi-section hidden" data-surge-panel="rule">
+                <div class="cbi-section hidden" data-surge-panel="rule" data-manual-rule-panel>
                   <div class="cbi-row surge-rule-cbi-row">
                     <label data-i18n="surgeRules">Surge 规则</label>
                     <div class="field">
@@ -580,8 +681,8 @@
                 <div class="tabs section-tabs" role="tablist" aria-label="Clash sections">
                   <button class="tab active" type="button" data-clash-tab="general" role="tab" aria-selected="true" data-i18n="clashTabGeneral">General</button>
                   <button class="tab" type="button" data-clash-tab="dns" role="tab" aria-selected="false" data-i18n="clashTabDns">DNS</button>
-                  <button class="tab" type="button" data-clash-tab="providers" role="tab" aria-selected="false" data-i18n="clashTabProviders">规则集</button>
-                  <button class="tab" type="button" data-clash-tab="rules" role="tab" aria-selected="false" data-i18n="clashTabRules">Rule</button>
+                  <button class="tab" type="button" data-clash-tab="providers" data-manual-rule-tab role="tab" aria-selected="false" data-i18n="clashTabProviders">规则集</button>
+                  <button class="tab" type="button" data-clash-tab="rules" data-manual-rule-tab role="tab" aria-selected="false" data-i18n="clashTabRules">Rule</button>
                 </div>
                 <div class="cbi-section" data-clash-panel="general">
                   <div class="cbi-row split">
@@ -606,13 +707,13 @@
                   </div>
                   <div class="cbi-row split">
                     <label data-i18n="clashNetworkOptions">网络选项</label>
-                    <div class="field three check-cells">
-                      <label class="check-cell" for="clashAllowLan">
+                    <div class="field three check-cells" data-unified-common-target-group>
+                      <label class="check-cell" for="clashAllowLan" data-unified-common-target-control>
                         <span class="field-label">allow-lan</span>
                         <span class="check"><input id="clashAllowLan" type="checkbox"> <span data-i18n="enabled">已启用</span></span>
                         <small data-i18n="clashAllowLanHelp">允许局域网其它设备访问 Clash 代理端口。</small>
                       </label>
-                      <label class="check-cell" for="clashIpv6">
+                      <label class="check-cell" for="clashIpv6" data-unified-common-target-control>
                         <span class="field-label">IPv6</span>
                         <span class="check"><input id="clashIpv6" type="checkbox"> <span data-i18n="enabled">已启用</span></span>
                         <small data-i18n="clashIpv6Help">控制 Clash 输出中是否启用 IPv6 解析和连接。</small>
@@ -748,7 +849,7 @@
                       <small data-i18n="clashDefaultNameserversHelp">每行一个基础 DNS，通常填写纯 IP；用于解析 DNS 服务器本身的域名。</small>
                     </div>
                   </div>
-                  <div class="cbi-row">
+                  <div class="cbi-row" data-unified-common-target-control>
                     <label for="clashNameservers" data-i18n="nameservers">DNS 服务器</label>
                     <div class="field">
                       <textarea id="clashNameservers" class="line-editor config-code-textarea" rows="30" spellcheck="false" data-code-editor-mode="plain"></textarea>
@@ -775,7 +876,7 @@
                     </div>
                   </div>
                 </div>
-                <div class="cbi-section hidden" data-clash-panel="providers">
+                <div class="cbi-section hidden" data-clash-panel="providers" data-manual-rule-panel>
                   <div class="cbi-row surge-rule-cbi-row">
                     <label data-i18n="clashRuleProviders">rule-providers</label>
                     <div class="field">
@@ -796,7 +897,7 @@
                     </div>
                   </div>
                 </div>
-                <div class="cbi-section hidden" data-clash-panel="rules">
+                <div class="cbi-section hidden" data-clash-panel="rules" data-manual-rule-panel>
                   <div class="cbi-row surge-rule-cbi-row">
                     <label data-i18n="clashRules">Clash 规则</label>
                     <div class="field">
@@ -830,7 +931,7 @@
                   <button class="tab" type="button" data-stash-tab="urlRewrite" role="tab" aria-selected="false" data-i18n="stashTabUrlRewrite">URL Rewrite</button>
                   <button class="tab" type="button" data-stash-tab="script" role="tab" aria-selected="false" data-i18n="stashTabScript">Script</button>
                   <button class="tab" type="button" data-stash-tab="mitm" role="tab" aria-selected="false" data-i18n="stashTabMitm">MITM</button>
-                  <button class="tab" type="button" data-stash-tab="rule" role="tab" aria-selected="false" data-i18n="stashTabRule">Rule</button>
+                  <button class="tab" type="button" data-stash-tab="rule" data-manual-rule-tab role="tab" aria-selected="false" data-i18n="stashTabRule">Rule</button>
                 </div>
                 <div class="cbi-section" data-stash-panel="general">
                   <div class="cbi-row split">
@@ -855,13 +956,13 @@
                   </div>
                   <div class="cbi-row split">
                     <label data-i18n="clashNetworkOptions">网络选项</label>
-                    <div class="field three check-cells">
-                      <label class="check-cell" for="stashAllowLan">
+                    <div class="field three check-cells" data-unified-common-target-group>
+                      <label class="check-cell" for="stashAllowLan" data-unified-common-target-control>
                         <span class="field-label">allow-lan</span>
                         <span class="check"><input id="stashAllowLan" type="checkbox"> <span data-i18n="enabled">已启用</span></span>
                         <small data-i18n="clashAllowLanHelp">允许局域网其它设备访问 Clash 代理端口。</small>
                       </label>
-                      <label class="check-cell" for="stashIpv6">
+                      <label class="check-cell" for="stashIpv6" data-unified-common-target-control>
                         <span class="field-label">IPv6</span>
                         <span class="check"><input id="stashIpv6" type="checkbox"> <span data-i18n="enabled">已启用</span></span>
                         <small data-i18n="stashIpv6Help">控制 Stash 输出中是否启用 IPv6 解析和连接。</small>
@@ -995,7 +1096,7 @@
                       <small data-i18n="clashDefaultNameserversHelp">每行一个基础 DNS，通常填写纯 IP；用于解析 DNS 服务器本身的域名。</small>
                     </div>
                   </div>
-                  <div class="cbi-row">
+                  <div class="cbi-row" data-unified-common-target-control>
                     <label for="stashNameservers" data-i18n="nameservers">DNS 服务器</label>
                     <div class="field">
                       <textarea id="stashNameservers" class="line-editor config-code-textarea" rows="30" spellcheck="false" data-code-editor-mode="plain"></textarea>
@@ -1063,7 +1164,7 @@
                     </div>
                   </div>
                 </div>
-                <div class="cbi-section hidden" data-stash-panel="rule">
+                <div class="cbi-section hidden" data-stash-panel="rule" data-manual-rule-panel>
                   <div class="cbi-row">
                     <label for="stashRuleProviders" data-i18n="stashRuleProviders">rule-providers</label>
                     <div class="field">

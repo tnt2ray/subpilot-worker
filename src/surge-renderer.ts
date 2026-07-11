@@ -5,6 +5,7 @@ import { toSurgeLine } from "./parsers";
 import { buildSurgeGroups, type SurgeGroupOutput } from "./policy-groups";
 import { rewriteUnavailableGroupRuleTargets } from "./rule-targets";
 import { parseHostEntries } from "./host-entries";
+import type { CompiledRuleSetReferencePlan } from "./rule-set-compiler";
 import type { AppConfig, HostEntry, ProxyNode } from "./types";
 
 const DEFAULT_SURGE_LOGLEVEL = "notify";
@@ -13,8 +14,14 @@ interface SurgeRenderOptions {
   includeProxyServerHostEntries?: boolean;
 }
 
-export function buildSurge(config: AppConfig, nodes: ProxyNode[], sourceHostEntries: HostEntry[], requestUrl: string): string {
-  return buildSurgeInline(config, nodes, sourceHostEntries, requestUrl);
+export function buildSurge(
+  config: AppConfig,
+  nodes: ProxyNode[],
+  sourceHostEntries: HostEntry[],
+  requestUrl: string,
+  ruleSetPlan?: CompiledRuleSetReferencePlan
+): string {
+  return buildSurgeInline(config, nodes, sourceHostEntries, requestUrl, {}, ruleSetPlan);
 }
 
 export function buildSurgeValidationProfile(config: AppConfig, nodes: ProxyNode[], sourceHostEntries: HostEntry[], requestUrl: string): string {
@@ -26,11 +33,12 @@ function buildSurgeInline(
   nodes: ProxyNode[],
   sourceHostEntries: HostEntry[],
   requestUrl: string,
-  options: SurgeRenderOptions = {}
+  options: SurgeRenderOptions = {},
+  ruleSetPlan?: CompiledRuleSetReferencePlan
 ): string {
   const proxyLines = nodes.map(toSurgeLine);
   const groupOutputs = buildSurgeGroups(config, nodes);
-  const variant = renderSurgeInlineProfile(config, nodes, sourceHostEntries, proxyLines, groupOutputs, options);
+  const variant = renderSurgeInlineProfile(config, nodes, sourceHostEntries, proxyLines, groupOutputs, options, ruleSetPlan);
   const managedUrl = managedSubscriptionUrlForRequest(config, requestUrl);
   return `#!MANAGED-CONFIG ${managedUrl} interval=${config.surge.managedConfigIntervalSeconds} strict=true\n# Last Updated: ${beijingTimestamp()} (UTC+8)\n${variant}`;
 }
@@ -41,7 +49,8 @@ function renderSurgeInlineProfile(
   sourceHostEntries: HostEntry[],
   proxyLines: string[],
   groupOutputs: SurgeGroupOutput[],
-  options: SurgeRenderOptions = {}
+  options: SurgeRenderOptions = {},
+  ruleSetPlan?: CompiledRuleSetReferencePlan
 ): string {
   const sections = renderSurgeBaseSections(config);
   const configuredHostEntries = parseHostEntries(`[Host]\n${config.surge.hosts.join("\n")}`);
@@ -56,7 +65,7 @@ function renderSurgeInlineProfile(
   sections.push(renderSection("Proxy", proxyLines));
   sections.push(renderSection("Proxy Group", groupOutputs.map((group) => group.line)));
   appendSurgeStableTailSections(sections, config);
-  appendSurgeRuleSection(sections, config, nodes, groupOutputs);
+  appendSurgeRuleSection(sections, config, nodes, groupOutputs, ruleSetPlan);
   return `${sections.join("\n\n")}\n`;
 }
 
@@ -109,8 +118,14 @@ function appendSurgeStableTailSections(sections: string[], config: AppConfig): v
   ]));
 }
 
-function appendSurgeRuleSection(sections: string[], config: AppConfig, nodes: ProxyNode[], groupOutputs: SurgeGroupOutput[]): void {
-  const rules = config.surge.rules;
+function appendSurgeRuleSection(
+  sections: string[],
+  config: AppConfig,
+  nodes: ProxyNode[],
+  groupOutputs: SurgeGroupOutput[],
+  ruleSetPlan?: CompiledRuleSetReferencePlan
+): void {
+  const rules = config.ruleSets.mode === "compiled" && ruleSetPlan ? ruleSetPlan.surgeRules : config.surge.rules;
   sections.push(renderSection("Rule", rewriteUnavailableGroupRuleTargets(config, rules, nodes, new Set(groupOutputs.map((group) => group.name)))));
 }
 

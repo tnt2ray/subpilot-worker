@@ -1,11 +1,5 @@
 import {
   CODE_EDITOR_PAGES,
-  CONFIG_BARE_VALUE_PATTERN,
-  CONFIG_IPV4_CIDR_PATTERN,
-  CONFIG_IPV4_PATTERN,
-  CONFIG_NUMBER_PATTERN,
-  CONFIG_PROXY_PARAM_KEY_PATTERN,
-  CONFIG_PROXY_PROTOCOL_PATTERN,
   DEFAULT_CLASH_LOG_LEVEL,
   DEFAULT_CLASH_MODE,
   DEFAULT_DISPLAY_TIME_ZONE,
@@ -39,6 +33,7 @@ let state = null;
 let lastSavedState = null;
 let fetchStats = null;
 let systemStatus = null;
+let ruleSetStatus = null;
 let statusStatsRefreshPromise = null;
 let statusStatsRefreshVersion = 0;
 let fetchRecordsPage = 1;
@@ -51,6 +46,10 @@ let surgeValidationRunning = false;
 let saveStatusResetTimer = 0;
 let telegramBindPollTimer = 0;
 let codeMirrorLoadPromise = null;
+let activeUnifiedConfigTab = "general";
+let unifiedCommonDraft = null;
+
+const UNIFIED_CONFIG_TABS = ["general", "dns", "rules"];
 
 let activePage = getPageFromHash();
 const renderedPages = new Set();
@@ -70,9 +69,29 @@ const refs = {
   addGroupBtn: $("addGroupBtn"),
   sourcesBody: $("sourcesBody"),
   addSourceBtn: $("addSourceBtn"),
-  saveSourcesBtn: $("saveSourcesBtn"),
   proxyNodesBody: $("proxyNodesBody"),
   addProxyNodeBtn: $("addProxyNodeBtn"),
+  ruleSetModeManual: $("ruleSetModeManual"),
+  ruleSetModeCompiled: $("ruleSetModeCompiled"),
+  ruleSetRulesBody: $("ruleSetRulesBody"),
+  addRuleSetOutputBtn: $("addRuleSetOutputBtn"),
+  refreshRuleSetsBtn: $("refreshRuleSetsBtn"),
+  ruleSetStatusSummary: $("ruleSetStatusSummary"),
+  ruleSetAggregateByPolicy: $("ruleSetAggregateByPolicy"),
+  addRuleSetDirectRuleBtn: $("addRuleSetDirectRuleBtn"),
+  unifiedIpv6: $("unifiedIpv6"),
+  unifiedIpv6State: $("unifiedIpv6State"),
+  unifiedIpv6Mixed: $("unifiedIpv6Mixed"),
+  unifiedLanAccess: $("unifiedLanAccess"),
+  unifiedLanAccessState: $("unifiedLanAccessState"),
+  unifiedLanAccessMixed: $("unifiedLanAccessMixed"),
+  unifiedBasicDnsServers: $("unifiedBasicDnsServers"),
+  unifiedBasicDnsServersMixed: $("unifiedBasicDnsServersMixed"),
+  unifiedEncryptedDnsServers: $("unifiedEncryptedDnsServers"),
+  unifiedEncryptedDnsServersMixed: $("unifiedEncryptedDnsServersMixed"),
+  unifiedRealIpDomains: $("unifiedRealIpDomains"),
+  unifiedRealIpDomainsMixed: $("unifiedRealIpDomainsMixed"),
+  unifiedRealIpDomainsInvalid: $("unifiedRealIpDomainsInvalid"),
   managedBaseUrl: $("managedBaseUrl"),
   userAgentSurge: $("userAgentSurge"),
   userAgentClash: $("userAgentClash"),
@@ -230,6 +249,8 @@ const refs = {
   summaryGroups: $("summaryGroups"),
   summarySourceCache: $("summarySourceCache"),
   refreshSourceCacheBtn: $("refreshSourceCacheBtn"),
+  summaryRuleSetCache: $("summaryRuleSetCache"),
+  refreshRuleSetCacheBtn: $("refreshRuleSetCacheBtn"),
   systemCurrentVersion: $("systemCurrentVersion"),
   systemUpdateStatus: $("systemUpdateStatus"),
   checkUpdateBtn: $("checkUpdateBtn"),
@@ -241,6 +262,9 @@ const refs = {
 };
 
 const configCodeEditorRefs = [
+  "unifiedBasicDnsServers",
+  "unifiedEncryptedDnsServers",
+  "unifiedRealIpDomains",
   "surgeHosts",
   "surgeUrlRewrite",
   "surgeScripts",
@@ -307,8 +331,13 @@ function configCodeEditorMaxRows(textarea) {
   return Number.isFinite(value) && value > 0 ? value : 0;
 }
 
+function configCodeEditorRows(textarea) {
+  const value = Number(textarea?.dataset?.codeEditorRows || 0);
+  return Number.isFinite(value) && value > 0 ? value : 0;
+}
+
 function configCodeEditorLineHeight(editor) {
-  const line = editor.getWrapperElement().querySelector(".CodeMirror-line");
+  const line = editor.getWrapperElement().querySelector(".cm-line");
   const computed = window.getComputedStyle(line || editor.getWrapperElement());
   return Number.parseFloat(computed.lineHeight) || 20;
 }
@@ -330,50 +359,15 @@ function configPolicyHighlightCandidates() {
   return [...candidates].sort((a, b) => b.length - a.length);
 }
 
-function hasConfigPolicyBoundary(stream) {
-  const next = stream.peek();
-  return !next || /[,\s\])]/.test(next);
-}
-
-function hasConfigPolicyStartBoundary(stream) {
-  const previous = stream.pos > 0 ? stream.string.charAt(stream.pos - 1) : "";
-  return !previous || /[,\s([=]/.test(previous);
-}
-
-function hasConfigTokenStartBoundary(stream) {
-  const previous = stream.pos > 0 ? stream.string.charAt(stream.pos - 1) : "";
-  return !previous || /[,\s([{:]/.test(previous);
-}
-
-function matchConfigPolicyToken(stream) {
-  if (!hasConfigPolicyStartBoundary(stream)) return false;
-  for (const policy of configPolicyHighlightCandidates()) {
-    const start = stream.pos;
-    if (stream.match(policy)) {
-      if (hasConfigPolicyBoundary(stream)) return true;
-      stream.pos = start;
-    }
-  }
-  return Boolean(
-    stream.match(/(?:DIRECT|Proxy|REJECT(?:-(?:DROP|NO-DROP|TINYGIF))?|PASS|GLOBAL)(?=\s*,|\s|\]|\)|$)/i)
-    || stream.match(/DEVICE:[^,\s\])]+/i)
-  );
-}
-
-function matchConfigProxyParamKey(stream) {
-  return hasConfigTokenStartBoundary(stream) && Boolean(stream.match(CONFIG_PROXY_PARAM_KEY_PATTERN));
-}
-
-function matchConfigProxyProtocol(stream) {
-  return hasConfigTokenStartBoundary(stream) && Boolean(stream.match(CONFIG_PROXY_PROTOCOL_PATTERN));
-}
-
 function resizeConfigCodeEditor(textarea, editor) {
   const maxRows = configCodeEditorMaxRows(textarea);
-  if (!maxRows) return;
+  const rows = configCodeEditorRows(textarea);
+  if (!maxRows && !rows) return;
   const lineHeight = configCodeEditorLineHeight(editor);
-  const documentHeight = Math.max(lineHeight, editor.heightAtLine(editor.lastLine() + 1, "local", true));
-  const height = Math.ceil(Math.min(documentHeight, maxRows * lineHeight) + 18);
+  const documentHeight = rows
+    ? rows * lineHeight
+    : Math.min(Math.max(lineHeight, editor.heightAtLine(editor.lastLine() + 1, "local", true)), maxRows * lineHeight);
+  const height = Math.ceil(documentHeight + 18);
   editor.setSize(null, height);
 }
 
@@ -402,7 +396,7 @@ function loadScript(src) {
 }
 
 async function ensureConfigCodeEditors() {
-  if (window.CodeMirror) {
+  if (window.SubPilotCodeMirror) {
     initConfigCodeEditors();
     refreshConfigCodeEditors();
     return true;
@@ -429,73 +423,14 @@ function ensureConfigCodeEditorsForPage(page = activePage) {
   void ensureConfigCodeEditors();
 }
 
-function defineConfigCodeMirrorMode(CodeMirror) {
-  if (!CodeMirror || CodeMirror.modes?.["proxy-config"]) return;
-  CodeMirror.defineMode("proxy-config", () => ({
-    startState: () => ({
-      afterProxyParamKey: false,
-      afterProxyParamOperator: false
-    }),
-    token(stream, modeState) {
-      const resetProxyParamState = () => {
-        modeState.afterProxyParamKey = false;
-        modeState.afterProxyParamOperator = false;
-      };
-      if (stream.sol()) resetProxyParamState();
-      if (stream.sol() && stream.match(/\s*[#;]/, false)) {
-        stream.skipToEnd();
-        return "comment";
-      }
-      if (stream.eatSpace()) return null;
-      if (stream.match(/[;#].*/)) {
-        resetProxyParamState();
-        return "comment";
-      }
-      if (modeState.afterProxyParamKey && !/[=:]/.test(stream.peek() || "")) {
-        modeState.afterProxyParamKey = false;
-      }
-      if (modeState.afterProxyParamOperator) {
-        modeState.afterProxyParamOperator = false;
-        if (stream.match(/"(?:[^"\\]|\\.)*"/) || stream.match(/'(?:[^'\\]|\\.)*'/)) return "string";
-        if (stream.match(/[^,\s#;][^,#;]*/)) return "string";
-      }
-      if (stream.match(/\[[^\]]+\]/)) return "header";
-      if (stream.match(/"(?:[^"\\]|\\.)*"/) || stream.match(/'(?:[^'\\]|\\.)*'/)) return "string";
-      if (stream.match(/https?:\/\/[^\s,]+/i)) return "link";
-      if (matchConfigProxyParamKey(stream)) {
-        modeState.afterProxyParamKey = true;
-        return "attribute";
-      }
-      if (stream.match(/[A-Za-z][\w.-]*(?=\s*:)/)) return "attribute";
-      if (matchConfigProxyProtocol(stream)) return "keyword";
-      if (stream.match(/(?:RULE-SET|DOMAIN-SET|DOMAIN-SUFFIX|DOMAIN-KEYWORD|DOMAIN-WILDCARD|DOMAIN|IP-CIDR6?|GEOIP|FINAL|URL-REGEX|PROCESS-NAME|SUBNET|AND|OR|NOT|SSID|BSSID|ROUTER|TYPE|DEVICE-NAME)(?=\s*,|\s|$)/i)) return "keyword";
-      if (matchConfigPolicyToken(stream)) return "variable-2";
-      if (stream.match(/(?:no-resolve|extended-matching|server:[^,\s]+|skip-server-cert-verify|ca-passphrase|ca-p12|hostname|h2)(?=\s*,|\s|=|$)/i)) return "attribute";
-      const operator = stream.peek();
-      if (operator && /[=,:]/.test(operator)) {
-        stream.next();
-        modeState.afterProxyParamOperator = modeState.afterProxyParamKey && /[=:]/.test(operator);
-        modeState.afterProxyParamKey = false;
-        return "operator";
-      }
-      if (stream.match(CONFIG_IPV4_CIDR_PATTERN)) return "number";
-      if (stream.match(CONFIG_IPV4_PATTERN)) return "number";
-      if (stream.match(CONFIG_NUMBER_PATTERN)) return "number";
-      if (stream.match(CONFIG_BARE_VALUE_PATTERN)) return "string";
-      stream.next();
-      return null;
-    }
-  }));
-}
-
 function syncConfigCodeEditor(textarea) {
   const editor = configCodeEditors.get(textarea);
   if (!editor) return;
   const value = textarea.value || "";
   if (editor.getValue() !== value) {
-    editor.state.subpilotSyncing = true;
+    editor.subpilotSyncing = true;
     editor.setValue(value);
-    editor.state.subpilotSyncing = false;
+    editor.subpilotSyncing = false;
   }
   const readOnly = textarea.readOnly;
   if (editor.getOption("readOnly") !== readOnly) {
@@ -504,7 +439,6 @@ function syncConfigCodeEditor(textarea) {
   if (editor.getOption("mode") !== configCodeEditorMode(textarea)) {
     editor.setOption("mode", configCodeEditorMode(textarea));
   }
-  editor.getWrapperElement().classList.toggle("is-readonly", textarea.readOnly);
   resizeConfigCodeEditor(textarea, editor);
   requestAnimationFrame(() => {
     editor.refresh();
@@ -515,6 +449,7 @@ function syncConfigCodeEditor(textarea) {
 function pruneConfigCodeEditors() {
   for (const textarea of configCodeEditors.keys()) {
     if (!textarea.isConnected) {
+      configCodeEditors.get(textarea)?.destroy?.();
       configCodeEditors.delete(textarea);
     }
   }
@@ -547,9 +482,8 @@ function refreshConfigCodeEditors() {
 }
 
 function initConfigCodeEditors() {
-  const CodeMirror = window.CodeMirror;
+  const CodeMirror = window.SubPilotCodeMirror;
   if (!CodeMirror) return;
-  defineConfigCodeMirrorMode(CodeMirror);
   for (const textarea of configCodeTextareas()) {
     if (!textarea || configCodeEditors.has(textarea)) continue;
     const editor = CodeMirror.fromTextArea(textarea, {
@@ -560,20 +494,11 @@ function initConfigCodeEditors() {
       indentUnit: 2,
       viewportMargin: 90,
       readOnly: textarea.readOnly,
-      extraKeys: {
-        Tab(cm) {
-          if (cm.somethingSelected()) {
-            cm.indentSelection("add");
-            return;
-          }
-          cm.replaceSelection("  ", "end");
-        }
-      }
+      autoHeight: Boolean(configCodeEditorMaxRows(textarea) || configCodeEditorRows(textarea)),
+      policyTokens: configPolicyHighlightCandidates
     });
-    editor.getWrapperElement().classList.add("config-code-editor");
-    editor.getWrapperElement().classList.toggle("is-auto-height", Boolean(configCodeEditorMaxRows(textarea)));
     editor.on("change", () => {
-      if (editor.state.subpilotSyncing) return;
+      if (editor.subpilotSyncing) return;
       editor.save();
       resizeConfigCodeEditor(textarea, editor);
       textarea.dispatchEvent(new Event("input", { bubbles: true }));
@@ -626,23 +551,20 @@ function applyLanguage() {
 }
 
 function setSaveStatus(status) {
-  for (const button of [refs.saveBtn, refs.saveSourcesBtn].filter(Boolean)) {
-    button.dataset.state = status;
-    button.textContent = t(status);
-    button.disabled = isSaveButtonDisabled(button, status);
-  }
+  refs.saveBtn.dataset.state = status;
+  refs.saveBtn.textContent = t(status);
+  refs.saveBtn.disabled = isSaveButtonDisabled(refs.saveBtn, status);
 }
 
 function isSaveButtonDisabled(button, status = button?.dataset?.state || "idle") {
   if (!state) return true;
   if (status === "saving" || status === "saved") return true;
-  const page = button === refs.saveSourcesBtn ? "sources" : activePage;
-  return !hasUnsavedChanges(page);
+  return !hasUnsavedChanges(activePage);
 }
 
 function updateSaveAvailability() {
   let status = refs.saveBtn.dataset.state || "idle";
-  if (status === "saved" && (hasUnsavedChanges(activePage) || hasUnsavedChanges("sources"))) {
+  if (status === "saved" && hasUnsavedChanges(activePage)) {
     if (saveStatusResetTimer) window.clearTimeout(saveStatusResetTimer);
     status = "idle";
   }
@@ -667,8 +589,14 @@ function isPageAvailable(page) {
   return PAGES.includes(page) && Boolean(document.querySelector(`.page-view[data-page="${page}"]`));
 }
 
+function normalizedActivePage(page) {
+  return isPageAvailable(page) ? page : "status";
+}
+
 function showPage(page, pushHash = false) {
-  activePage = isPageAvailable(page) ? page : "status";
+  activePage = normalizedActivePage(page);
+  syncConfigModeLayout();
+  syncTargetRuleSectionsVisibility();
   renderCurrentPage();
   document.querySelectorAll(".page-view").forEach((view) => {
     view.classList.toggle("hidden", view.dataset.page !== activePage);
@@ -680,14 +608,65 @@ function showPage(page, pushHash = false) {
   updatePageHeading();
   if (pushHash && location.hash !== `#${activePage}`) {
     history.pushState(null, "", `#${activePage}`);
+  } else if (!pushHash && page !== activePage && location.hash === `#${page}`) {
+    history.replaceState(null, "", `#${activePage}`);
   }
   ensureConfigCodeEditorsForPage(activePage);
   updateSaveAvailability();
   refreshStatusStatsIfVisible();
 }
 
+function normalizedUnifiedConfigTab(tab) {
+  return UNIFIED_CONFIG_TABS.includes(tab) ? tab : "general";
+}
+
+function syncUnifiedConfigTabs() {
+  if (!state) return;
+  activeUnifiedConfigTab = normalizedUnifiedConfigTab(activeUnifiedConfigTab);
+  const compiled = isRuleSetModeEnabled();
+  if (!compiled && activeUnifiedConfigTab === "rules") activeUnifiedConfigTab = "general";
+  document.querySelectorAll("[data-unified-config-tab]").forEach((button) => {
+    const tab = button.dataset.unifiedConfigTab;
+    const available = tab !== "rules" || compiled;
+    const active = available && tab === activeUnifiedConfigTab;
+    button.classList.toggle("hidden", !available);
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-hidden", available ? "false" : "true");
+    button.setAttribute("aria-selected", active ? "true" : "false");
+    button.tabIndex = active ? 0 : -1;
+  });
+  document.querySelectorAll("[data-unified-config-panel]").forEach((panel) => {
+    const available = panel.dataset.unifiedConfigPanel !== "rules" || compiled;
+    panel.classList.toggle("hidden", !available || panel.dataset.unifiedConfigPanel !== activeUnifiedConfigTab);
+  });
+}
+
+function showUnifiedConfigTab(tab) {
+  activeUnifiedConfigTab = normalizedUnifiedConfigTab(tab);
+  syncUnifiedConfigTabs();
+  refreshConfigCodeEditors();
+  updateSaveAvailability();
+}
+
+function handleUnifiedConfigTabKeydown(event) {
+  if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+  const tabs = Array.from(document.querySelectorAll("[data-unified-config-tab]")).filter((button) => !button.classList.contains("hidden"));
+  const currentIndex = tabs.indexOf(event.currentTarget);
+  if (currentIndex < 0 || tabs.length === 0) return;
+  let nextIndex = currentIndex;
+  if (event.key === "ArrowLeft") nextIndex = (currentIndex - 1 + tabs.length) % tabs.length;
+  if (event.key === "ArrowRight") nextIndex = (currentIndex + 1) % tabs.length;
+  if (event.key === "Home") nextIndex = 0;
+  if (event.key === "End") nextIndex = tabs.length - 1;
+  event.preventDefault();
+  const nextTab = tabs[nextIndex];
+  showUnifiedConfigTab(nextTab.dataset.unifiedConfigTab);
+  nextTab.focus();
+}
+
 function showSurgeTab(tab) {
-  const nextTab = ["general", "host", "urlRewrite", "script", "mitm", "ponte", "rule"].includes(tab) ? tab : "general";
+  const requestedTab = ["general", "host", "urlRewrite", "script", "mitm", "ponte", "rule"].includes(tab) ? tab : "general";
+  const nextTab = isRuleSetModeEnabled() && requestedTab === "rule" ? "general" : requestedTab;
   document.querySelectorAll("[data-surge-tab]").forEach((button) => {
     const active = button.dataset.surgeTab === nextTab;
     button.classList.toggle("active", active);
@@ -700,7 +679,8 @@ function showSurgeTab(tab) {
 }
 
 function showClashTab(tab) {
-  const nextTab = ["general", "dns", "providers", "rules"].includes(tab) ? tab : "general";
+  const requestedTab = ["general", "dns", "providers", "rules"].includes(tab) ? tab : "general";
+  const nextTab = isRuleSetModeEnabled() && ["providers", "rules"].includes(requestedTab) ? "general" : requestedTab;
   document.querySelectorAll("[data-clash-tab]").forEach((button) => {
     const active = button.dataset.clashTab === nextTab;
     button.classList.toggle("active", active);
@@ -709,14 +689,13 @@ function showClashTab(tab) {
   document.querySelectorAll("[data-clash-panel]").forEach((panel) => {
     panel.classList.toggle("hidden", panel.dataset.clashPanel !== nextTab);
   });
-  if (state && nextTab === "rules") {
-    reconcileClashRulesWithProviders();
-  }
+  if (state && nextTab === "rules") reconcileClashRulesWithProviders();
   ensureConfigCodeEditorsForPage("clash");
 }
 
 function showStashTab(tab) {
-  const nextTab = ["general", "host", "urlRewrite", "script", "mitm", "rule"].includes(tab) ? tab : "general";
+  const requestedTab = ["general", "host", "urlRewrite", "script", "mitm", "rule"].includes(tab) ? tab : "general";
+  const nextTab = isRuleSetModeEnabled() && requestedTab === "rule" ? "general" : requestedTab;
   document.querySelectorAll("[data-stash-tab]").forEach((button) => {
     const active = button.dataset.stashTab === nextTab;
     button.classList.toggle("active", active);
@@ -786,23 +765,26 @@ async function login() {
 }
 
 async function loadConfig() {
-  const [config, readToken, stats, mmdbStatus, system] = await Promise.all([
+  const [config, readToken, stats, mmdbStatus, system, rules] = await Promise.all([
     request("/api/config"),
     request("/api/read-token"),
     request("/api/stats"),
     request("/api/geoip/mmdb"),
-    request("/api/system/status")
+    request("/api/system/status"),
+    request("/api/rule-sets/status")
   ]);
   state = config;
   lastSavedState = cloneConfig(config);
   fetchStats = stats;
   geoIpMmdbStatus = mmdbStatus;
   systemStatus = system;
+  ruleSetStatus = rules;
   currentReadToken = readToken.token;
   render();
 }
 
-function render() {
+function render(options = {}) {
+  if (!options.preserveUnifiedCommonDraft) unifiedCommonDraft = null;
   renderedPages.clear();
   showPage(activePage);
   updateSaveAvailability();
@@ -822,14 +804,17 @@ function renderPage(page, options = {}) {
     case "settings":
       renderSettings();
       break;
-    case "groups":
-      renderGroups();
-      break;
     case "sources":
       renderSources();
       break;
     case "proxy-nodes":
       renderProxyNodes();
+      break;
+    case "groups":
+      renderGroups();
+      break;
+    case "unified-config":
+      renderUnifiedConfig();
       break;
     case "surge":
       renderSurge();
@@ -855,8 +840,201 @@ function renderStatus() {
   renderFetchStats();
 }
 
+function renderUnifiedConfig() {
+  renderRuleSets();
+  renderUnifiedCommonConfig();
+  syncUnifiedConfigTabs();
+}
+
+function unifiedCommonState(config) {
+  const clashEncryptedDnsServers = splitUnifiedDnsServers(config.clash.nameservers || []).encrypted;
+  const stashEncryptedDnsServers = splitUnifiedDnsServers(config.stash.dns?.nameservers || []).encrypted;
+  return {
+    ipv6: [config.surge.ipv6, config.clash.ipv6, config.stash.ipv6],
+    lanAccess: [config.surge.allowWifiAccess, config.clash.allowLan, config.stash.allowLan],
+    basicDnsServers: [
+      [...(config.surge.dnsServer || [])],
+      [...(config.clash.defaultNameservers || [])],
+      [...(config.stash.dns?.defaultNameservers || [])]
+    ],
+    encryptedDnsServers: [
+      [...(config.surge.encryptedDnsServer || [])],
+      clashEncryptedDnsServers,
+      stashEncryptedDnsServers
+    ],
+    realIpDomains: [
+      [...(config.surge.alwaysRealIp || [])],
+      [...(config.clash.fakeIpFilter || [])],
+      [...(config.stash.dns?.fakeIpFilter || [])]
+    ]
+  };
+}
+
+function splitUnifiedDnsServers(servers) {
+  const basic = [];
+  const encrypted = [];
+  for (const value of servers) {
+    const server = String(value || "").trim();
+    if (!server) continue;
+    if (/^(?:https|tls|dot|quic|doq|h3|http3|doh|doh3):\/\//i.test(server)) encrypted.push(server);
+    else basic.push(server);
+  }
+  return { basic, encrypted };
+}
+
+function effectiveUnifiedNameservers(basic, encrypted) {
+  const servers = encrypted.length > 0 ? encrypted : basic;
+  return [...new Set(servers.map((value) => String(value || "").trim()).filter(Boolean))];
+}
+
+function unifiedBooleanControlState(values) {
+  const mixed = values.some((value) => value !== values[0]);
+  return { checked: mixed ? false : values[0], mixed };
+}
+
+function unifiedListControlState(values) {
+  const serialized = values.map((value) => JSON.stringify(value));
+  const mixed = serialized.some((value) => value !== serialized[0]);
+  return { value: mixed ? "" : (values[0] || []).join("\n"), mixed };
+}
+
+function isUnifiedRealIpDomain(value) {
+  const entry = String(value || "").trim();
+  if (!entry || entry.length > 253) return false;
+  return entry.split(".").every((label) => label === "*" || /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i.test(label));
+}
+
+function invalidUnifiedRealIpDomains(domains) {
+  return [...new Set(domains
+    .map((domain) => String(domain || "").trim())
+    .filter((domain) => domain && !isUnifiedRealIpDomain(domain)))];
+}
+
+function ensureUnifiedCommonDraft() {
+  if (!unifiedCommonDraft) unifiedCommonDraft = cloneConfig(unifiedCommonState(state));
+  return unifiedCommonDraft;
+}
+
+function renderUnifiedBoolean(control, stateLabel, mixedNotice, values) {
+  const { checked, mixed } = unifiedBooleanControlState(values);
+  control.checked = checked;
+  control.indeterminate = mixed;
+  control.setAttribute("aria-checked", mixed ? "mixed" : String(control.checked));
+  stateLabel.textContent = t(mixed ? "unifiedCommonValueMixed" : "enabled");
+  mixedNotice.classList.toggle("hidden", !mixed);
+}
+
+function renderUnifiedCommonConfig() {
+  const common = ensureUnifiedCommonDraft();
+  renderUnifiedBoolean(refs.unifiedIpv6, refs.unifiedIpv6State, refs.unifiedIpv6Mixed, common.ipv6);
+  renderUnifiedBoolean(refs.unifiedLanAccess, refs.unifiedLanAccessState, refs.unifiedLanAccessMixed, common.lanAccess);
+  const basicDnsServers = unifiedListControlState(common.basicDnsServers);
+  refs.unifiedBasicDnsServers.value = basicDnsServers.value;
+  refs.unifiedBasicDnsServers.placeholder = basicDnsServers.mixed ? t("unifiedBasicDnsServersMixedPlaceholder") : "";
+  refs.unifiedBasicDnsServers.dataset.mixed = String(basicDnsServers.mixed);
+  refs.unifiedBasicDnsServersMixed.classList.toggle("hidden", !basicDnsServers.mixed);
+  const dnsServers = unifiedListControlState(common.encryptedDnsServers);
+  refs.unifiedEncryptedDnsServers.value = dnsServers.value;
+  refs.unifiedEncryptedDnsServers.placeholder = dnsServers.mixed ? t("unifiedEncryptedDnsServersMixedPlaceholder") : "";
+  refs.unifiedEncryptedDnsServers.dataset.mixed = String(dnsServers.mixed);
+  refs.unifiedEncryptedDnsServersMixed.classList.toggle("hidden", !dnsServers.mixed);
+  const realIpDomains = unifiedListControlState(common.realIpDomains);
+  refs.unifiedRealIpDomains.value = realIpDomains.value;
+  refs.unifiedRealIpDomains.placeholder = realIpDomains.mixed ? t("unifiedRealIpDomainsMixedPlaceholder") : "";
+  refs.unifiedRealIpDomains.dataset.mixed = String(realIpDomains.mixed);
+  refs.unifiedRealIpDomainsMixed.classList.toggle("hidden", !realIpDomains.mixed);
+  const baselineRealIpDomains = lastSavedState ? unifiedCommonState(lastSavedState).realIpDomains : common.realIpDomains;
+  const realIpDomainsChanged = JSON.stringify(common.realIpDomains) !== JSON.stringify(baselineRealIpDomains);
+  const invalidRealIpDomains = realIpDomainsChanged ? invalidUnifiedRealIpDomains(common.realIpDomains.flat()) : [];
+  refs.unifiedRealIpDomains.setCustomValidity(invalidRealIpDomains.length > 0 ? t("unifiedRealIpDomainsInvalid") : "");
+  refs.unifiedRealIpDomainsInvalid.classList.toggle("hidden", invalidRealIpDomains.length === 0);
+  syncConfigCodeEditors();
+}
+
+function setUnifiedCommonBoolean(field, enabled) {
+  const common = ensureUnifiedCommonDraft();
+  if (field === "ipv6") common.ipv6 = [enabled, enabled, enabled];
+  if (field === "lanAccess") common.lanAccess = [enabled, enabled, enabled];
+  renderUnifiedCommonConfig();
+  updateSaveAvailability();
+}
+
+function setUnifiedDnsServers(field, value) {
+  const common = ensureUnifiedCommonDraft();
+  const servers = textToLines(value);
+  common[field] = [servers.slice(), servers.slice(), servers.slice()];
+  const control = field === "basicDnsServers" ? refs.unifiedBasicDnsServers : refs.unifiedEncryptedDnsServers;
+  const mixedNotice = field === "basicDnsServers" ? refs.unifiedBasicDnsServersMixed : refs.unifiedEncryptedDnsServersMixed;
+  control.dataset.mixed = "false";
+  mixedNotice.classList.add("hidden");
+  updateSaveAvailability();
+}
+
+function setUnifiedRealIpDomains(value) {
+  const common = ensureUnifiedCommonDraft();
+  const domains = textToLines(value);
+  common.realIpDomains = [domains.slice(), domains.slice(), domains.slice()];
+  const invalid = invalidUnifiedRealIpDomains(domains);
+  refs.unifiedRealIpDomains.dataset.mixed = "false";
+  refs.unifiedRealIpDomainsMixed.classList.add("hidden");
+  refs.unifiedRealIpDomains.setCustomValidity(invalid.length > 0 ? t("unifiedRealIpDomainsInvalid") : "");
+  refs.unifiedRealIpDomainsInvalid.classList.toggle("hidden", invalid.length === 0);
+  updateSaveAvailability();
+}
+
+function buildUnifiedCommonPatch(common, ruleSets) {
+  return {
+    ruleSets,
+    surge: {
+      ipv6: common.ipv6[0],
+      allowWifiAccess: common.lanAccess[0],
+      dnsServer: common.basicDnsServers[0].slice(),
+      encryptedDnsServer: common.encryptedDnsServers[0].slice(),
+      alwaysRealIp: common.realIpDomains[0].slice()
+    },
+    clash: {
+      ipv6: common.ipv6[1],
+      allowLan: common.lanAccess[1],
+      defaultNameservers: common.basicDnsServers[1].slice(),
+      nameservers: effectiveUnifiedNameservers(common.basicDnsServers[1], common.encryptedDnsServers[1]),
+      fakeIpFilter: common.realIpDomains[1].slice()
+    },
+    stash: {
+      ipv6: common.ipv6[2],
+      allowLan: common.lanAccess[2],
+      dns: {
+        defaultNameservers: common.basicDnsServers[2].slice(),
+        nameservers: effectiveUnifiedNameservers(common.basicDnsServers[2], common.encryptedDnsServers[2]),
+        fakeIpFilter: common.realIpDomains[2].slice()
+      }
+    }
+  };
+}
+
+function syncConfigModeLayout() {
+  if (!state) return;
+  const unifiedLink = refs.mainMenu.querySelector('a[data-page="unified-config"]');
+  unifiedLink?.classList.remove("hidden");
+  unifiedLink?.setAttribute("aria-hidden", "false");
+  if (unifiedLink) unifiedLink.tabIndex = 0;
+  for (const target of ["surge", "clash", "stash"]) {
+    const link = refs.mainMenu.querySelector(`a[data-page="${target}"]`);
+    link?.classList.remove("hidden");
+    link?.setAttribute("aria-hidden", "false");
+    if (link) link.tabIndex = 0;
+  }
+  document.querySelectorAll("[data-unified-common-target-control]").forEach((control) => {
+    control.classList.add("hidden");
+  });
+  document.querySelectorAll("[data-unified-common-target-group]").forEach((group) => {
+    group.classList.add("unified-common-targets-hidden");
+  });
+  renderUnifiedCommonConfig();
+}
+
 function renderSettings() {
   refs.managedBaseUrl.value = state.settings.managedBaseUrl;
+  renderRuleSetMode();
   refs.userAgentSurge.value = state.settings.userAgentSurge;
   refs.userAgentClash.value = state.settings.userAgentClash;
   refs.userAgentStash.value = state.settings.userAgentStash;
@@ -2881,6 +3059,7 @@ function parseGroupSpec(name, spec) {
     type,
     choices: [],
     includeAll: false,
+    surgeHidden: false,
     filter: "",
     exclude: "",
     subnetDefault: "",
@@ -2908,6 +3087,10 @@ function parseGroupSpec(name, spec) {
         ...parseSubnetConditionKey(option.key),
         policy: option.value
       });
+      continue;
+    }
+    if (option?.key.toLowerCase() === "hidden") {
+      editor.surgeHidden = option.value.toLowerCase() === "true" || option.value === "1";
       continue;
     }
     if (option && GROUP_OPTION_FIELDS.has(option.key)) {
@@ -3014,12 +3197,14 @@ function serializeGroupEditor(editor, groupNames) {
   if (type === "subnet") {
     parts.push(`default=${subnetPolicyValue(editor.subnetDefault, editor.name) || "Proxy"}`);
     parts.push(...subnetRuleList(editor.subnetRules, editor.name));
+    if (editor.surgeHidden) parts.push("hidden=true");
     return parts.join(", ");
   }
   parts.push(...groupList(editor.choices, editor.name, groupNames));
   if (editor.includeAll) {
     parts.push(makeAllSelector(editor.filter, editor.exclude));
   }
+  if (editor.surgeHidden) parts.push("hidden=true");
   if (type !== "select") {
     if (editor.url.trim()) parts.push(`url=${editor.url.trim()}`);
     if (editor.interval.trim()) parts.push(`interval=${editor.interval.trim()}`);
@@ -3072,6 +3257,7 @@ function readGroupEditor(row) {
     name: row.dataset.groupName || "",
     choices: Array.from(row.querySelectorAll('[data-group-part="choices"]:checked')).map((input) => input.value),
     includeAll,
+    surgeHidden: row.querySelector('[data-group-part="surgeHidden"]').checked,
     filter: includeAll ? row.querySelector('[data-group-part="filter"]').value : "",
     exclude: includeAll ? row.querySelector('[data-group-part="exclude"]').value : "",
     subnetDefault: row.querySelector('[data-group-part="subnetDefault"]').value,
@@ -3243,6 +3429,10 @@ function renderGroups() {
             <span>${escapeHtml(t("groupEnabled"))}</span>
           </label>
         ` : ""}
+        <label class="check group-surge-hidden">
+          <input data-group-part="surgeHidden" type="checkbox"${editor.surgeHidden ? " checked" : ""}>
+          <span>${escapeHtml(t("groupSurgeHidden"))}</span>
+        </label>
         <label class="group-check group-subscription-toggle group-node-option${usesNodeOptions ? "" : " hidden"}">
           <input data-group-part="includeAll" type="checkbox"${editor.includeAll ? " checked" : ""}>
           <span>${escapeHtml(t("groupIncludeAll"))}</span>
@@ -3567,6 +3757,495 @@ function addSource() {
   renderSummary();
 }
 
+function renderRuleSets() {
+  const ruleSets = ensureRuleSets();
+  refs.ruleSetAggregateByPolicy.checked = ruleSets.aggregateByPolicy === true;
+  renderRuleSetRuleRows();
+  renderRuleSetStatus();
+}
+
+function normalizeRuleSetMode(mode) {
+  return mode === "compiled" ? "compiled" : "manual";
+}
+
+function ensureRuleSets() {
+  state.ruleSets = state.ruleSets && typeof state.ruleSets === "object" ? state.ruleSets : {};
+  state.ruleSets.mode = normalizeRuleSetMode(state.ruleSets.mode);
+  state.ruleSets.aggregateByPolicy = state.ruleSets.aggregateByPolicy === true;
+  state.ruleSets.sources = Array.isArray(state.ruleSets.sources) ? state.ruleSets.sources : [];
+  state.ruleSets.outputs = Array.isArray(state.ruleSets.outputs) ? state.ruleSets.outputs : [];
+  state.ruleSets.directRules = Array.isArray(state.ruleSets.directRules) ? state.ruleSets.directRules : [];
+  return state.ruleSets;
+}
+
+function isRuleSetModeEnabled() {
+  return ensureRuleSets().mode === "compiled";
+}
+
+function renderRuleSetMode() {
+  const mode = ensureRuleSets().mode;
+  refs.ruleSetModeManual.checked = mode !== "compiled";
+  refs.ruleSetModeCompiled.checked = mode === "compiled";
+  syncRuleSetModeTabs();
+  syncConfigModeLayout();
+  syncUnifiedConfigTabs();
+  syncTargetRuleSectionsVisibility();
+}
+
+function syncRuleSetModeTabs() {
+  refs.ruleSetModeManual.closest(".tab")?.classList.toggle("active", refs.ruleSetModeManual.checked);
+  refs.ruleSetModeCompiled.closest(".tab")?.classList.toggle("active", refs.ruleSetModeCompiled.checked);
+}
+
+function syncTargetRuleSectionsVisibility() {
+  if (!state) return;
+  const compiled = isRuleSetModeEnabled();
+  document.querySelectorAll("[data-manual-rule-tab]").forEach((tab) => {
+    tab.classList.toggle("hidden", compiled);
+    tab.setAttribute("aria-hidden", compiled ? "true" : "false");
+    tab.tabIndex = compiled ? -1 : 0;
+  });
+  if (!compiled) return;
+  document.querySelectorAll("[data-manual-rule-panel]").forEach((panel) => panel.classList.add("hidden"));
+  if (document.querySelector('[data-surge-tab="rule"].active')) showSurgeTab("general");
+  if (document.querySelector('[data-clash-tab="providers"].active, [data-clash-tab="rules"].active')) showClashTab("general");
+  if (document.querySelector('[data-stash-tab="rule"].active')) showStashTab("general");
+}
+
+function updateRuleSetMode(mode) {
+  ensureRuleSets().mode = normalizeRuleSetMode(mode);
+  renderRuleSetMode();
+  updateSaveAvailability();
+}
+
+function orderedRuleSetItems() {
+  const ruleSets = ensureRuleSets();
+  return [
+    ...ruleSets.outputs.map((item, itemIndex) => ({ kind: "output", item, itemIndex, stableOrder: itemIndex })),
+    ...ruleSets.directRules.map((item, itemIndex) => ({ kind: "direct", item, itemIndex, stableOrder: ruleSets.outputs.length + itemIndex }))
+  ].sort((left, right) => {
+    const orderDifference = (Number(left.item.order) || 0) - (Number(right.item.order) || 0);
+    return orderDifference || left.stableOrder - right.stableOrder;
+  });
+}
+
+function renderRuleSetRuleRows() {
+  const items = orderedRuleSetItems();
+  refs.ruleSetRulesBody.innerHTML = items.length
+    ? items.map((entry, index) => renderRuleSetRuleRow(entry, index, items.length)).join("")
+    : `<div class="rule-set-rule-empty">${escapeHtml(t("ruleSetRulesEmpty"))}</div>`;
+}
+
+function renderRuleSetRuleRow(entry, index, total) {
+  return entry.kind === "output"
+    ? renderRuleSetOutputRow(entry.item, entry.itemIndex, index, total)
+    : renderRuleSetDirectRow(entry.item, entry.itemIndex, index, total);
+}
+
+function renderRuleSetKindOptions(kind) {
+  return [
+    ["single", t("ruleSetRuleKindSingle")],
+    ["rule-set", t("ruleSetRuleKindOutput")]
+  ].map(([value, label]) => `<option value="${value}"${value === kind ? " selected" : ""}>${escapeHtml(label)}</option>`).join("");
+}
+
+function renderRuleSetRowActions(index, total) {
+  return `
+    <button class="btn" data-rule-set-move="up" type="button"${index === 0 ? " disabled" : ""}>${escapeHtml(t("moveUp"))}</button>
+    <button class="btn" data-rule-set-move="down" type="button"${index === total - 1 ? " disabled" : ""}>${escapeHtml(t("moveDown"))}</button>
+    <button class="danger" data-rule-set-remove type="button">${escapeHtml(t("remove"))}</button>
+  `;
+}
+
+function renderRuleSetOutputRow(output, itemIndex, index, total) {
+  return `
+    <article class="rule-set-rule-row rule-set" data-rule-set-item data-rule-set-item-kind="output" data-rule-set-item-index="${itemIndex}">
+      <label>
+        <span>${escapeHtml(t("ruleSetRuleKind"))}</span>
+        <select data-rule-set-kind>${renderRuleSetKindOptions("rule-set")}</select>
+      </label>
+      <label>
+        <span>${escapeHtml(t("ruleSetOutputName"))}</span>
+        ${inputWithTitle('data-rule-set-output-field="name"', output.name)}
+      </label>
+      <label>
+        <span>${escapeHtml(t("ruleSetRuleType"))}</span>
+        <input value="${escapeHtml(t("ruleSetAutoType"))}" disabled>
+      </label>
+      <label class="rule-set-source-urls">
+        <span>${escapeHtml(t("ruleSetSourceUrls"))}</span>
+        <textarea class="line-editor compact-editor" rows="3" wrap="off" data-rule-set-output-field="sourceUrls" spellcheck="false">${escapeHtml(ruleSetOutputSourceUrls(output))}</textarea>
+      </label>
+      <label>
+        <span>${escapeHtml(t("ruleSetPolicy"))}</span>
+        <select data-rule-set-output-field="policy">${renderRuleSetPolicyOptions(output.policy)}</select>
+      </label>
+      <label>
+        <span>${escapeHtml(t("ruleSetSurgeOptions"))}</span>
+        <select data-rule-set-output-field="surgeOptions">${renderRuleSetOutputSurgeOptionChoices(output.surgeOptions)}</select>
+      </label>
+      <label class="rule-set-rule-enabled">
+        <span>${escapeHtml(t("ruleSetOutputEnabled"))}</span>
+        <span class="check"><input data-rule-set-output-field="enabled" type="checkbox"${output.enabled !== false ? " checked" : ""}></span>
+      </label>
+      <div class="rule-set-rule-actions">${renderRuleSetRowActions(index, total)}</div>
+    </article>
+  `;
+}
+
+function renderRuleSetOutputSurgeOptionChoices(options) {
+  const requested = normalizeRuleSetOptionList(options);
+  const selected = ["no-resolve", "extended-matching"].filter((option) => requested.includes(option));
+  const selectedValue = selected.join(",");
+  return [
+    ["", t("ruleSetOptionNone")],
+    ["no-resolve", "no-resolve"],
+    ["extended-matching", "extended-matching"],
+    ["no-resolve,extended-matching", "no-resolve + extended-matching"]
+  ].map(([value, label]) => `<option value="${value}"${value === selectedValue ? " selected" : ""}>${escapeHtml(label)}</option>`).join("");
+}
+
+function normalizeRuleSetOptionList(value) {
+  const values = Array.isArray(value) ? value : String(value || "").split(",");
+  return [...new Set(values.map((option) => String(option || "").trim().toLowerCase()).filter(Boolean))];
+}
+
+function parseRuleSetDirectRule(rule) {
+  const parts = splitSurgeRuleLine(String(rule.rule || ""));
+  const parsedType = (parts[0] || "DOMAIN-SUFFIX").trim().toUpperCase();
+  const ruleType = parsedType === "MATCH" ? "FINAL" : parsedType;
+  const valueless = ruleType === "FINAL";
+  const third = (parts[2] || "").trim().toLowerCase();
+  return {
+    ruleType,
+    value: valueless ? "" : parts[1] || "",
+    options: (valueless ? parts.slice(2) : (third === "no-resolve" || third === "src" ? parts.slice(2) : parts.slice(3))).join(", ")
+  };
+}
+
+function renderRuleSetDirectTypeOptions(selected) {
+  const supported = ["DOMAIN", "DOMAIN-SUFFIX", "DOMAIN-KEYWORD", "IP-CIDR", "IP-CIDR6", "IP-ASN", "GEOIP", "PROCESS-NAME", "USER-AGENT", "URL-REGEX", "FINAL"];
+  const types = supported.includes(selected) ? supported : [selected, ...supported].filter(Boolean);
+  return types.map((type) => `<option value="${escapeHtml(type)}"${type === selected ? " selected" : ""}>${escapeHtml(type)}</option>`).join("");
+}
+
+function renderRuleSetDirectOptionChoices(ruleType, selected) {
+  const choices = [["", t("ruleSetOptionNone")]];
+  if (["IP-CIDR", "IP-CIDR6", "GEOIP", "IP-ASN"].includes(ruleType)) {
+    choices.push(
+      ["no-resolve", "no-resolve (Surge / Clash / Stash)"],
+      ["src", "src (Clash)"],
+      ["no-resolve,src", "no-resolve + src (Clash)"]
+    );
+  }
+  if (["DOMAIN", "DOMAIN-SUFFIX", "DOMAIN-KEYWORD", "URL-REGEX"].includes(ruleType)) {
+    choices.push(["extended-matching", "extended-matching (Surge)"]);
+  }
+  if (ruleType === "FINAL") choices.push(["dns-failed", "dns-failed (Surge)"]);
+  if (selected && !choices.some(([value]) => value === selected)) choices.push([selected, selected]);
+  return choices.map(([value, label]) => `<option value="${escapeHtml(value)}"${value === selected ? " selected" : ""}>${escapeHtml(label)}</option>`).join("");
+}
+
+function allowedUnifiedDirectRuleOptions(ruleType) {
+  if (["IP-CIDR", "IP-CIDR6", "GEOIP", "IP-ASN"].includes(ruleType)) return new Set(["no-resolve", "src"]);
+  if (["DOMAIN", "DOMAIN-SUFFIX", "DOMAIN-KEYWORD", "URL-REGEX"].includes(ruleType)) return new Set(["extended-matching"]);
+  if (ruleType === "FINAL") return new Set(["dns-failed"]);
+  return new Set();
+}
+
+function renderRuleSetDirectRow(rule, itemIndex, index, total) {
+  const parsed = parseRuleSetDirectRule(rule);
+  const valueless = parsed.ruleType === "FINAL";
+  return `
+    <article class="rule-set-rule-row single" data-rule-set-item data-rule-set-item-kind="direct" data-rule-set-item-index="${itemIndex}">
+      <label>
+        <span>${escapeHtml(t("ruleSetRuleKind"))}</span>
+        <select data-rule-set-kind>${renderRuleSetKindOptions("single")}</select>
+      </label>
+      <label>
+        <span>${escapeHtml(t("ruleSetRuleType"))}</span>
+        <select data-rule-set-direct-field="ruleType">${renderRuleSetDirectTypeOptions(parsed.ruleType)}</select>
+      </label>
+      <label>
+        <span>${escapeHtml(t("ruleSetRuleValue"))}</span>
+        ${inputWithTitle(`data-rule-set-direct-field="value"${valueless ? " disabled" : ""}`, parsed.value)}
+      </label>
+      <label>
+        <span>${escapeHtml(t("ruleSetPolicy"))}</span>
+        <select data-rule-set-direct-field="policy">${renderRuleSetPolicyOptions(rule.policy)}</select>
+      </label>
+      <label>
+        <span>${escapeHtml(t("ruleSetOptions"))}</span>
+        <select data-rule-set-direct-field="options">${renderRuleSetDirectOptionChoices(parsed.ruleType, parsed.options)}</select>
+      </label>
+      <label class="rule-set-rule-enabled">
+        <span>${escapeHtml(t("ruleSetOutputEnabled"))}</span>
+        <span class="check"><input data-rule-set-direct-field="enabled" type="checkbox"${rule.enabled !== false ? " checked" : ""}></span>
+      </label>
+      <div class="rule-set-rule-actions">${renderRuleSetRowActions(index, total)}</div>
+    </article>
+  `;
+}
+
+function renderRuleSetStatus() {
+  if (!refs.ruleSetStatusSummary) return;
+  const outputs = Array.isArray(ruleSetStatus?.outputs) ? ruleSetStatus.outputs : [];
+  const cached = outputs.filter((output) => output.cached).length;
+  refs.ruleSetStatusSummary.innerHTML = `<div class="${cached > 0 ? "success" : "warning"}">${escapeHtml(cached > 0 ? t("ruleSetStatusReady").replace("{count}", String(cached)) : t("ruleSetStatusEmpty"))}</div>`;
+}
+
+function renderRuleSetPolicyOptions(selected) {
+  const selectedPolicy = String(selected || "Proxy").trim() || "Proxy";
+  const candidates = clashPolicyCandidates();
+  if (!candidates.includes(selectedPolicy)) candidates.push(selectedPolicy);
+  return candidates.map((policy) => `<option value="${escapeHtml(policy)}"${policy === selectedPolicy ? " selected" : ""}>${escapeHtml(renderPolicyLabel(policy))}</option>`).join("");
+}
+
+function updateRuleSetOutput(index, input) {
+  const output = ensureRuleSets().outputs[index];
+  if (!output) return;
+  const field = input.dataset.ruleSetOutputField;
+  if (field === "sourceUrls") {
+    syncRuleSetOutputSourceUrls(ensureRuleSets(), output, input.value);
+  } else if (field === "surgeOptions") {
+    output.surgeOptions = normalizeRuleSetOptionList(input.value);
+  } else {
+    output[field] = input.type === "checkbox" ? input.checked : input.value;
+  }
+}
+
+function ruleSetOutputSourceUrls(output) {
+  const sourcesById = new Map(ensureRuleSets().sources.map((source) => [source.id, source]));
+  return (output.sourceIds || [])
+    .map((id) => sourcesById.get(id)?.url || "")
+    .filter(Boolean)
+    .join("\n");
+}
+
+function syncRuleSetOutputSourceUrls(ruleSets, output, value) {
+  const urls = [...new Set(textToLines(value))];
+  output.sourceIds = urls.map((url) => {
+    const existing = ruleSets.sources.find((source) => source.url === url);
+    if (existing) {
+      existing.enabled = true;
+      return existing.id;
+    }
+    const source = {
+      id: crypto.randomUUID(),
+      name: ruleSetSourceName(url),
+      url,
+      enabled: true,
+      format: "auto",
+      order: nextRuleSetOrder(ruleSets.sources)
+    };
+    ruleSets.sources.push(source);
+    return source.id;
+  });
+  pruneUnusedRuleSetSources(ruleSets);
+}
+
+function ruleSetSourceName(url) {
+  try {
+    const parsed = new URL(url);
+    const filename = decodeURIComponent(parsed.pathname.split("/").filter(Boolean).at(-1) || "");
+    return filename || parsed.hostname || "规则来源";
+  } catch {
+    return "规则来源";
+  }
+}
+
+function pruneUnusedRuleSetSources(ruleSets) {
+  const usedIds = new Set(ruleSets.outputs.flatMap((output) => output.sourceIds || []));
+  ruleSets.sources = ruleSets.sources.filter((source) => usedIds.has(source.id));
+}
+
+function buildRuleSetDirectRuleLine(ruleType, value, policy, options) {
+  const normalizedType = String(ruleType || "DOMAIN-SUFFIX").trim().toUpperCase();
+  const normalizedPolicy = String(policy || "Proxy").trim() || "Proxy";
+  if (normalizedType === "FINAL" || normalizedType === "MATCH") {
+    return ["FINAL", normalizedPolicy, ...normalizeRuleSetOptionList(options)].join(",");
+  }
+  const parts = [normalizedType, String(value || "").trim(), normalizedPolicy];
+  parts.push(...normalizeRuleSetOptionList(options));
+  return parts.join(",");
+}
+
+function updateRuleSetDirectRuleFromRow(index, row, filterOptionsForType = false) {
+  const rule = ensureRuleSets().directRules[index];
+  if (!rule) return;
+  const ruleType = row.querySelector('[data-rule-set-direct-field="ruleType"]')?.value || "DOMAIN-SUFFIX";
+  const value = row.querySelector('[data-rule-set-direct-field="value"]')?.value || "";
+  const policy = row.querySelector('[data-rule-set-direct-field="policy"]')?.value || "Proxy";
+  const selectedOptions = row.querySelector('[data-rule-set-direct-field="options"]')?.value || "";
+  const options = filterOptionsForType
+    ? normalizeRuleSetOptionList(selectedOptions).filter((option) => allowedUnifiedDirectRuleOptions(ruleType).has(option)).join(",")
+    : selectedOptions;
+  rule.policy = policy;
+  rule.rule = buildRuleSetDirectRuleLine(ruleType, value, policy, options);
+  rule.enabled = row.querySelector('[data-rule-set-direct-field="enabled"]')?.checked !== false;
+}
+
+function convertRuleSetItem(index, currentKind, nextKind) {
+  const ruleSets = ensureRuleSets();
+  if ((currentKind === "output" && nextKind === "single") || (currentKind === "direct" && nextKind === "rule-set")) {
+    if (!window.confirm(t("ruleSetKindChangeConfirm"))) {
+      renderRuleSetRuleRows();
+      return;
+    }
+  }
+  if (currentKind === "output" && nextKind === "single") {
+    const output = ruleSets.outputs[index];
+    if (!output) return;
+    ruleSets.outputs.splice(index, 1);
+    ruleSets.directRules.push({
+      id: crypto.randomUUID(),
+      name: output.name || t("newRuleSetDirectRule"),
+      enabled: output.enabled !== false,
+      rule: buildRuleSetDirectRuleLine("DOMAIN-SUFFIX", "", output.policy, ""),
+      policy: output.policy || "Proxy",
+      order: output.order
+    });
+    pruneUnusedRuleSetSources(ruleSets);
+    renderRuleSetRuleRows();
+    return;
+  }
+  if (currentKind === "direct" && nextKind === "rule-set") {
+    const rule = ruleSets.directRules[index];
+    if (!rule) return;
+    ruleSets.directRules.splice(index, 1);
+    ruleSets.outputs.push({
+      name: uniqueRuleSetOutputName(rule.name && rule.name !== t("newRuleSetDirectRule") ? rule.name : t("newRuleSetOutput")),
+      enabled: rule.enabled !== false,
+      policy: rule.policy || "Proxy",
+      sourceIds: [],
+      inlineRules: [],
+      order: rule.order,
+      surgeOptions: []
+    });
+    renderRuleSetRuleRows();
+  }
+}
+
+function moveRuleSetItem(itemIndex, kind, direction) {
+  const items = orderedRuleSetItems();
+  const index = items.findIndex((entry) => entry.kind === kind && entry.itemIndex === itemIndex);
+  const nextIndex = index + direction;
+  if (index < 0 || nextIndex < 0 || nextIndex >= items.length) return;
+  [items[index], items[nextIndex]] = [items[nextIndex], items[index]];
+  items.forEach((entry, order) => {
+    entry.item.order = order;
+  });
+  renderRuleSetRuleRows();
+}
+
+function removeRuleSetItem(index, kind) {
+  const ruleSets = ensureRuleSets();
+  if (kind === "output") {
+    ruleSets.outputs.splice(index, 1);
+    pruneUnusedRuleSetSources(ruleSets);
+  } else {
+    ruleSets.directRules.splice(index, 1);
+  }
+  orderedRuleSetItems().forEach((entry, order) => {
+    entry.item.order = order;
+  });
+  renderRuleSetRuleRows();
+  renderRuleSetStatus();
+}
+
+function handleRuleSetRuleEdit(event) {
+  const target = event.target instanceof Element ? event.target : null;
+  const row = target?.closest("[data-rule-set-item]");
+  if (!row) return;
+  const index = Number(row.dataset.ruleSetItemIndex);
+  const kind = row.dataset.ruleSetItemKind || "";
+  if (!Number.isInteger(index) || index < 0) return;
+  if (target.matches("[data-rule-set-kind]")) {
+    if (event.type === "change") convertRuleSetItem(index, kind, target.value);
+    return;
+  }
+  if (kind === "output" && target.matches("[data-rule-set-output-field]")) {
+    updateRuleSetOutput(index, target);
+    return;
+  }
+  if (kind !== "direct") return;
+  if (target.matches("[data-rule-set-direct-field]")) {
+    const ruleTypeChanged = event.type === "change" && target.dataset.ruleSetDirectField === "ruleType";
+    updateRuleSetDirectRuleFromRow(index, row, ruleTypeChanged);
+    if (ruleTypeChanged) {
+      renderRuleSetRuleRows();
+    }
+    return;
+  }
+}
+
+function handleRuleSetRuleClick(event) {
+  const target = event.target instanceof Element ? event.target : null;
+  const row = target?.closest("[data-rule-set-item]");
+  if (!row) return;
+  const index = Number(row.dataset.ruleSetItemIndex);
+  const kind = row.dataset.ruleSetItemKind || "";
+  if (!Number.isInteger(index) || index < 0) return;
+  if (target.closest("[data-rule-set-remove]")) {
+    removeRuleSetItem(index, kind);
+    return;
+  }
+  const move = target.closest("[data-rule-set-move]")?.dataset.ruleSetMove;
+  if (move === "up") moveRuleSetItem(index, kind, -1);
+  if (move === "down") moveRuleSetItem(index, kind, 1);
+}
+
+function addRuleSetOutput() {
+  ensureRuleSets().outputs.push({
+    name: uniqueRuleSetOutputName(t("newRuleSetOutput")),
+    enabled: true,
+    policy: "Proxy",
+    sourceIds: [],
+    inlineRules: [],
+    order: nextRuleSetOrder([...ensureRuleSets().outputs, ...ensureRuleSets().directRules]),
+    surgeOptions: []
+  });
+  renderRuleSetRuleRows();
+}
+
+function uniqueRuleSetOutputName(preferredName) {
+  const normalizeName = (value) => String(value || "").normalize("NFC").replace(/[\r\n]+/g, " ").replace(/\s+/g, " ").trim();
+  const base = normalizeName(preferredName) || t("newRuleSetOutput");
+  const names = new Set(ensureRuleSets().outputs.map((output) => normalizeName(output.name)));
+  if (!names.has(base)) return base;
+  let suffix = 2;
+  while (names.has(`${base} ${suffix}`)) suffix += 1;
+  return `${base} ${suffix}`;
+}
+
+function addRuleSetDirectRule() {
+  ensureRuleSets().directRules.push({
+    id: crypto.randomUUID(),
+    name: t("newRuleSetDirectRule"),
+    enabled: true,
+    rule: "DOMAIN-SUFFIX,,Proxy",
+    policy: "Proxy",
+    order: nextRuleSetOrder([...ensureRuleSets().outputs, ...ensureRuleSets().directRules])
+  });
+  renderRuleSetRuleRows();
+}
+
+function nextRuleSetOrder(items) {
+  return Math.max(-1, ...items.map((item) => Number(item.order) || 0)) + 1;
+}
+
+async function refreshRuleSets() {
+  refs.refreshRuleSetsBtn.disabled = true;
+  refs.ruleSetStatusSummary.innerHTML = `<div class="warning">${escapeHtml(t("saving"))}</div>`;
+  try {
+    await requestRuleSetRefresh();
+  } catch (error) {
+    refs.ruleSetStatusSummary.innerHTML = `<div class="error">${escapeHtml(t("ruleSetRefreshFailed"))}${escapeHtml(error instanceof Error ? error.message : String(error))}</div>`;
+  } finally {
+    refs.refreshRuleSetsBtn.disabled = false;
+  }
+}
+
 function renderProxyNodeEmptyState() {
   return `<div class="proxy-node-empty">${escapeHtml(t("proxyNodeNoRows"))}</div>`;
 }
@@ -3753,16 +4432,22 @@ function readSettingsDraft() {
       notificationChannel: notificationTelegramBotToken ? "telegram" : "off",
       notificationTelegramChatId: notificationTelegramBotToken ? state.settings.notificationTelegramChatId || "" : "",
       notificationTelegramBotToken
+    },
+    ruleSets: {
+      mode: refs.ruleSetModeCompiled.checked ? "compiled" : "manual"
     }
   };
 }
 
 function collectSettings() {
-  state.settings = readSettingsDraft().settings;
+  const draft = readSettingsDraft();
+  state.settings = draft.settings;
+  ensureRuleSets().mode = draft.ruleSets.mode;
 }
 
 function readSurgeDraft() {
   const encryptedDnsServer = refs.surgeEncryptedDnsServer.value.split(",").map((item) => item.trim()).filter(Boolean);
+  const compiledRules = isRuleSetModeEnabled();
   return {
     ...state.surge,
     skipProxy: refs.surgeSkipProxy.value.split(",").map((item) => item.trim()).filter(Boolean),
@@ -3796,13 +4481,16 @@ function readSurgeDraft() {
       caPassphrase: refs.surgeMitmCaPassphrase.value.trim(),
       caP12: refs.surgeMitmCaP12.value.trim()
     },
-    rules: isModeTogglePressed(refs.surgeRuleAdvancedMode)
-      ? textToLines(refs.surgeRules.value)
-      : buildSurgeRuleLines(readSurgeRuleRows())
+    rules: compiledRules
+      ? state.surge.rules
+      : isModeTogglePressed(refs.surgeRuleAdvancedMode)
+        ? textToLines(refs.surgeRules.value)
+        : buildSurgeRuleLines(readSurgeRuleRows())
   };
 }
 
 function readClashDraft() {
+  const compiledRules = isRuleSetModeEnabled();
   return {
     ...state.clash,
     port: Number(refs.clashPort.value) || 7890,
@@ -3834,12 +4522,13 @@ function readClashDraft() {
     fallbackFilterGeoip: refs.clashFallbackFilterGeoip.checked,
     fallbackFilterIpcidr: textToLines(refs.clashFallbackFilterIpcidr.value),
     fakeIpFilter: textToLines(refs.clashFakeIpFilter.value),
-    ruleProviders: refs.clashRuleProviders.value.trimEnd(),
-    rules: currentClashRuleLines()
+    ruleProviders: compiledRules ? state.clash.ruleProviders : refs.clashRuleProviders.value.trimEnd(),
+    rules: compiledRules ? state.clash.rules : currentClashRuleLines()
   };
 }
 
 function readStashDraft() {
+  const compiledRules = isRuleSetModeEnabled();
   return {
     ...state.stash,
     port: Number(refs.stashPort.value) || 7890,
@@ -3880,8 +4569,8 @@ function readStashDraft() {
     mitm: {
       hostname: textToLines(refs.stashMitmHostname.value)
     },
-    ruleProviders: refs.stashRuleProviders.value.trimEnd(),
-    rules: parseClashRulesYaml(refs.stashRules.value).rules
+    ruleProviders: compiledRules ? state.stash.ruleProviders : refs.stashRuleProviders.value.trimEnd(),
+    rules: compiledRules ? state.stash.rules : parseClashRulesYaml(refs.stashRules.value).rules
   };
 }
 
@@ -3898,9 +4587,15 @@ function readGroupsDraft() {
 function pageDraft(page) {
   if (!state) return null;
   if (page === "settings") return readSettingsDraft();
-  if (page === "groups") return readGroupsDraft();
   if (page === "sources") return { sources: cloneConfig(state.sources || []) };
   if (page === "proxy-nodes") return { proxyNodes: cloneConfig(state.proxyNodes || []) };
+  if (page === "groups") return readGroupsDraft();
+  if (page === "unified-config") {
+    return {
+      ruleSets: cloneConfig(ensureRuleSets()),
+      common: cloneConfig(ensureUnifiedCommonDraft())
+    };
+  }
   if (page === "surge") return { surge: readSurgeDraft() };
   if (page === "clash") return { clash: readClashDraft() };
   if (page === "stash") return { stash: readStashDraft() };
@@ -3909,10 +4604,23 @@ function pageDraft(page) {
 
 function pageBaseline(page) {
   if (!lastSavedState) return null;
-  if (page === "settings") return { settings: lastSavedState.settings };
-  if (page === "groups") return { groups: lastSavedState.groups, disabledGroups: lastSavedState.disabledGroups };
+  if (page === "settings") {
+    return {
+      settings: lastSavedState.settings,
+      ruleSets: {
+        mode: normalizeRuleSetMode(lastSavedState.ruleSets?.mode)
+      }
+    };
+  }
   if (page === "sources") return { sources: lastSavedState.sources || [] };
   if (page === "proxy-nodes") return { proxyNodes: lastSavedState.proxyNodes || [] };
+  if (page === "groups") return { groups: lastSavedState.groups, disabledGroups: lastSavedState.disabledGroups };
+  if (page === "unified-config") {
+    return {
+      ruleSets: lastSavedState.ruleSets || { mode: "manual", sources: [], outputs: [], directRules: [] },
+      common: unifiedCommonState(lastSavedState)
+    };
+  }
   if (page === "surge") return { surge: lastSavedState.surge };
   if (page === "clash") return { clash: lastSavedState.clash };
   if (page === "stash") return { stash: lastSavedState.stash };
@@ -4325,10 +5033,6 @@ async function save() {
   await saveActivePage();
 }
 
-async function saveSources() {
-  await saveActivePage("sources");
-}
-
 async function saveActivePage(page = activePage) {
   if (!hasUnsavedChanges(page)) {
     setSaveStatus("idle");
@@ -4339,18 +5043,9 @@ async function saveActivePage(page = activePage) {
     let patch = null;
     if (page === "settings") {
       collectSettings();
-      patch = { settings: state.settings };
-    } else if (page === "groups") {
-      collectGroups();
-      const validation = validateGroups();
-      if (validation.errors.length > 0) {
-        setSaveStatus("idle");
-        window.alert(`${t("groupValidationError")}\n${validation.errors.join("\n")}`);
-        return;
-      }
-      patch = { groups: state.groups, disabledGroups: state.disabledGroups };
+      patch = { settings: state.settings, ruleSets: { mode: ensureRuleSets().mode } };
     } else if (page === "sources") {
-      patch = { sources: state.sources };
+      patch = { sources: state.sources || [] };
     } else if (page === "proxy-nodes") {
       const validation = validateProxyNodes();
       if (validation.errors.length > 0) {
@@ -4359,6 +5054,27 @@ async function saveActivePage(page = activePage) {
         return;
       }
       patch = { proxyNodes: state.proxyNodes || [] };
+    } else if (page === "groups") {
+      collectGroups();
+      const groupValidation = validateGroups();
+      if (groupValidation.errors.length > 0) {
+        setSaveStatus("idle");
+        window.alert(`${t("groupValidationError")}\n${groupValidation.errors.join("\n")}`);
+        return;
+      }
+      patch = { groups: state.groups, disabledGroups: state.disabledGroups };
+    } else if (page === "unified-config") {
+      const common = ensureUnifiedCommonDraft();
+      const baselineDomains = unifiedCommonState(lastSavedState).realIpDomains;
+      if (JSON.stringify(common.realIpDomains) !== JSON.stringify(baselineDomains)) {
+        const invalid = invalidUnifiedRealIpDomains(common.realIpDomains.flat());
+        if (invalid.length > 0) {
+          setSaveStatus("idle");
+          window.alert(`${t("unifiedRealIpDomainsInvalid")}\n${invalid.join("\n")}`);
+          return;
+        }
+      }
+      patch = buildUnifiedCommonPatch(common, ensureRuleSets());
     } else if (page === "surge") {
       const hostValidation = validateCurrentSurgeHosts();
       if (hostValidation.errors.length > 0) {
@@ -4378,27 +5094,30 @@ async function saveActivePage(page = activePage) {
         window.alert(t("surgeScriptValidationError"));
         return;
       }
-      const validation = validateCurrentSurgeRules();
-      if (validation.errors.length > 0) {
-        setSaveStatus("idle");
-        window.alert(t("surgeRuleValidationError"));
-        return;
+      if (!isRuleSetModeEnabled()) {
+        const ruleValidation = validateCurrentSurgeRules();
+        if (ruleValidation.errors.length > 0) {
+          setSaveStatus("idle");
+          window.alert(t("surgeRuleValidationError"));
+          return;
+        }
       }
-      const surgeDraft = readSurgeDraft();
-      state.surge = surgeDraft;
+      collectSurge();
       patch = { surge: state.surge };
     } else if (page === "clash") {
-      const ruleProviderValidation = validateCurrentClashRuleProviders();
-      if (ruleProviderValidation.errors.length > 0) {
-        setSaveStatus("idle");
-        window.alert(t("clashRuleProviderValidationError"));
-        return;
-      }
-      const ruleValidation = validateCurrentClashRules();
-      if (ruleValidation.errors.length > 0) {
-        setSaveStatus("idle");
-        window.alert(t("clashRuleValidationError"));
-        return;
+      if (!isRuleSetModeEnabled()) {
+        const ruleProviderValidation = validateCurrentClashRuleProviders();
+        if (ruleProviderValidation.errors.length > 0) {
+          setSaveStatus("idle");
+          window.alert(t("clashRuleProviderValidationError"));
+          return;
+        }
+        const ruleValidation = validateCurrentClashRules();
+        if (ruleValidation.errors.length > 0) {
+          setSaveStatus("idle");
+          window.alert(t("clashRuleValidationError"));
+          return;
+        }
       }
       collectClash();
       patch = { clash: state.clash };
@@ -4421,17 +5140,19 @@ async function saveActivePage(page = activePage) {
         window.alert(t("stashScriptValidationError"));
         return;
       }
-      const ruleProviderValidation = validateCurrentStashRuleProviders();
-      if (ruleProviderValidation.errors.length > 0) {
-        setSaveStatus("idle");
-        window.alert(t("stashRuleProvidersValidationError"));
-        return;
-      }
-      const ruleValidation = validateCurrentStashRules();
-      if (ruleValidation.errors.length > 0) {
-        setSaveStatus("idle");
-        window.alert(t("stashRuleValidationError"));
-        return;
+      if (!isRuleSetModeEnabled()) {
+        const ruleProviderValidation = validateCurrentStashRuleProviders();
+        if (ruleProviderValidation.errors.length > 0) {
+          setSaveStatus("idle");
+          window.alert(t("stashRuleProvidersValidationError"));
+          return;
+        }
+        const ruleValidation = validateCurrentStashRules();
+        if (ruleValidation.errors.length > 0) {
+          setSaveStatus("idle");
+          window.alert(t("stashRuleValidationError"));
+          return;
+        }
       }
       collectStash();
       patch = { stash: state.stash };
@@ -4443,7 +5164,7 @@ async function saveActivePage(page = activePage) {
     if (saveStatusResetTimer) window.clearTimeout(saveStatusResetTimer);
     setSaveStatus("saved");
     saveStatusResetTimer = window.setTimeout(() => { setSaveStatus("idle"); }, 1600);
-    render();
+    render({ preserveUnifiedCommonDraft: page !== "unified-config" });
   } catch (error) {
     if (saveStatusResetTimer) window.clearTimeout(saveStatusResetTimer);
     setSaveStatus("idle");
@@ -4506,6 +5227,8 @@ function renderSummary() {
   refs.summaryGroups.textContent = `${Object.keys(state.groups || {}).length - (state.disabledGroups || []).length} / ${Object.keys(state.groups || {}).length}`;
   refs.summarySourceCache.innerHTML = formatSourceCacheStatus(fetchStats?.sourceCache);
   refs.refreshSourceCacheBtn.disabled = false;
+  refs.summaryRuleSetCache.innerHTML = formatRuleSetCacheStatus(ruleSetStatus);
+  refs.refreshRuleSetCacheBtn.disabled = ruleSetStatus?.mode !== "compiled";
 }
 
 function renderSystemStatus() {
@@ -4592,6 +5315,65 @@ function formatSourceCacheSourceRow(source) {
       .replace("{value}", formatSourceCacheProtocolCounts(Number(source.nodeCount) || 0, source.protocolCounts, false));
   }
   return `<div class="status-cache-source ${source?.cached ? "ready" : "warning"}">${escapeHtml(text)}</div>`;
+}
+
+function formatRuleSetCacheStatus(status) {
+  if (status?.mode !== "compiled") return `<div>${escapeHtml(t("ruleSetCacheDisabled"))}</div>`;
+  const outputs = Array.isArray(status.outputs) ? status.outputs : [];
+  if (outputs.length === 0) return `<div>${escapeHtml(t("ruleSetCacheEmpty"))}</div>`;
+  const cached = outputs.filter((output) => output?.cached).length;
+  const missing = outputs.length - cached;
+  const totalRules = outputs.reduce((sum, output) => sum + (Number(output?.ruleCount) || 0), 0);
+  const latestUpdatedAt = outputs
+    .map((output) => output?.updatedAt)
+    .filter(Boolean)
+    .sort()
+    .at(-1);
+  const coverageState = missing > 0
+    ? t("ruleSetCacheCoverageMissing").replace("{count}", String(missing))
+    : t("ruleSetCacheCoverageReady");
+  return [
+    `<div><strong>${escapeHtml(t("ruleSetCacheCoverage").replace("{cached}", String(cached)).replace("{expected}", String(outputs.length)))}</strong><span class="status-cache-pill ${missing > 0 ? "warning" : "ready"}">${escapeHtml(coverageState)}</span></div>`,
+    `<div class="status-cache-muted">${escapeHtml(t("ruleSetCacheRuleCount").replace("{count}", String(totalRules)))}</div>`,
+    `<div class="status-cache-muted">${escapeHtml(t("ruleSetCacheUpdatedLabel").replace("{time}", formatTimestamp(latestUpdatedAt)))}</div>`,
+    `<div class="status-cache-sources">${outputs.map(formatRuleSetCacheOutputRow).join("")}</div>`
+  ].join("");
+}
+
+function formatRuleSetCacheOutputRow(output) {
+  const name = output?.outputName || "-";
+  if (!output?.cached) {
+    return `<div class="status-cache-source warning">${escapeHtml(t("ruleSetCacheOutputMissing").replace("{name}", name))}</div>`;
+  }
+  const buckets = Array.isArray(output.buckets)
+    ? output.buckets.map((bucket) => `${bucket.bucket || "-"} ${Number(bucket.count) || 0}`).join("，")
+    : "";
+  let text = t("ruleSetCacheOutputCached")
+    .replace("{name}", name)
+    .replace("{count}", String(Number(output.ruleCount) || 0));
+  text += t("ruleSetCacheOutputBuckets").replace("{value}", buckets || t("ruleSetCacheNoBuckets"));
+  const warningCount = Array.isArray(output.warnings) ? output.warnings.length : 0;
+  if (warningCount > 0) text += t("ruleSetCacheOutputWarnings").replace("{count}", String(warningCount));
+  return `<div class="status-cache-source ready">${escapeHtml(text)}</div>`;
+}
+
+async function requestRuleSetRefresh() {
+  const result = await request("/api/rule-sets/refresh", { method: "POST", body: "{}" });
+  ruleSetStatus = { mode: ensureRuleSets().mode, outputs: result.outputs || [] };
+  renderRuleSetStatus();
+  renderSummary();
+  return result;
+}
+
+async function refreshRuleSetCache() {
+  refs.refreshRuleSetCacheBtn.disabled = true;
+  refs.refreshRuleSetCacheBtn.textContent = t("refreshingRuleSetCache");
+  try {
+    await requestRuleSetRefresh();
+  } finally {
+    refs.refreshRuleSetCacheBtn.textContent = t("refreshRuleSetCache");
+    refs.refreshRuleSetCacheBtn.disabled = ruleSetStatus?.mode !== "compiled";
+  }
 }
 
 async function refreshSourceCache() {
@@ -4933,12 +5715,33 @@ function syncInputTitle(event) {
 
 refs.loginBtn.addEventListener("click", login);
 refs.saveBtn.addEventListener("click", save);
-refs.saveSourcesBtn?.addEventListener("click", saveSources);
 refs.addGroupBtn.addEventListener("click", addGroup);
 refs.addSourceBtn.addEventListener("click", addSource);
 refs.addProxyNodeBtn.addEventListener("click", addProxyNode);
+refs.ruleSetModeManual.addEventListener("change", () => {
+  if (refs.ruleSetModeManual.checked) updateRuleSetMode("manual");
+});
+refs.ruleSetModeCompiled.addEventListener("change", () => {
+  if (refs.ruleSetModeCompiled.checked) updateRuleSetMode("compiled");
+});
+refs.ruleSetAggregateByPolicy.addEventListener("change", () => {
+  ensureRuleSets().aggregateByPolicy = refs.ruleSetAggregateByPolicy.checked;
+  updateSaveAvailability();
+});
+refs.unifiedIpv6.addEventListener("change", () => setUnifiedCommonBoolean("ipv6", refs.unifiedIpv6.checked));
+refs.unifiedLanAccess.addEventListener("change", () => setUnifiedCommonBoolean("lanAccess", refs.unifiedLanAccess.checked));
+refs.unifiedBasicDnsServers.addEventListener("input", () => setUnifiedDnsServers("basicDnsServers", refs.unifiedBasicDnsServers.value));
+refs.unifiedEncryptedDnsServers.addEventListener("input", () => setUnifiedDnsServers("encryptedDnsServers", refs.unifiedEncryptedDnsServers.value));
+refs.unifiedRealIpDomains.addEventListener("input", () => setUnifiedRealIpDomains(refs.unifiedRealIpDomains.value));
+refs.addRuleSetOutputBtn.addEventListener("click", addRuleSetOutput);
+refs.addRuleSetDirectRuleBtn.addEventListener("click", addRuleSetDirectRule);
+refs.refreshRuleSetsBtn.addEventListener("click", refreshRuleSets);
+refs.ruleSetRulesBody.addEventListener("click", handleRuleSetRuleClick);
+refs.ruleSetRulesBody.addEventListener("input", handleRuleSetRuleEdit);
+refs.ruleSetRulesBody.addEventListener("change", handleRuleSetRuleEdit);
 refs.rotateTokenBtn.addEventListener("click", rotateToken);
 refs.refreshSourceCacheBtn.addEventListener("click", refreshSourceCache);
+refs.refreshRuleSetCacheBtn.addEventListener("click", refreshRuleSetCache);
 refs.checkUpdateBtn.addEventListener("click", checkForUpdates);
 refs.fetchRecordsPrevBtn.addEventListener("click", () => setFetchRecordsPage(fetchRecordsPage - 1));
 refs.fetchRecordsNextBtn.addEventListener("click", () => setFetchRecordsPage(fetchRecordsPage + 1));
@@ -5017,6 +5820,10 @@ document.querySelectorAll("[data-clash-tab]").forEach((button) => {
 });
 document.querySelectorAll("[data-stash-tab]").forEach((button) => {
   button.addEventListener("click", () => showStashTab(button.dataset.stashTab));
+});
+document.querySelectorAll("[data-unified-config-tab]").forEach((button) => {
+  button.addEventListener("click", () => showUnifiedConfigTab(button.dataset.unifiedConfigTab));
+  button.addEventListener("keydown", handleUnifiedConfigTabKeydown);
 });
 document.querySelectorAll(".luci-menu a").forEach((link) => {
   link.addEventListener("click", (event) => {
