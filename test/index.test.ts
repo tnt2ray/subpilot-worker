@@ -13,6 +13,42 @@ import { ctx, makeEnv, makeExecutionContext } from "./helpers/worker";
 restoreMocksAfterEach();
 
 describe("asset access control", () => {
+  it("rejects oversized login bodies from declared length and bounded streaming reads", async () => {
+    const env = makeEnv();
+    const declared = await worker.fetch(new Request("https://subpilot.example.com/api/login", {
+      method: "POST",
+      headers: { "content-length": "5000" },
+      body: "{}"
+    }), env, ctx);
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(JSON.stringify({ token: "x".repeat(5000) })));
+        controller.close();
+      }
+    });
+    const streamedRequest = new Request("https://subpilot.example.com/api/login", {
+      method: "POST",
+      body: stream,
+      duplex: "half"
+    } as RequestInit & { duplex: "half" });
+    const streamed = await worker.fetch(streamedRequest, env, ctx);
+
+    expect(declared.status).toBe(413);
+    expect(streamed.status).toBe(413);
+    await expect(declared.json()).resolves.toEqual({ error: "Login request body is too large" });
+    await expect(streamed.json()).resolves.toEqual({ error: "Login request body is too large" });
+  });
+
+  it("treats non-object login JSON as an invalid token", async () => {
+    const env = makeEnv();
+    const response = await worker.fetch(new Request("https://subpilot.example.com/api/login", {
+      method: "POST",
+      body: "null"
+    }), env, ctx);
+
+    expect(response.status).toBe(401);
+  });
+
   it("serves the login page before a session, blocks assets, and serves the admin app after login", async () => {
     const env = makeEnv();
     const response = await worker.fetch(new Request("https://subpilot.example.com/"), env, ctx);
@@ -1258,7 +1294,8 @@ describe("asset access control", () => {
     });
     expect(refreshed.sourceCache.sources[0]?.fetchedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
     expect(fetchMock).toHaveBeenCalledTimes(4);
-    expect(fetchMock).toHaveBeenCalledWith("https://example.com/sub", { headers: { "user-agent": "Surge iOS/3727" } });
+    expect(fetchMock).toHaveBeenCalledWith("https://example.com/sub", expect.objectContaining({ headers: { "user-agent": "Surge iOS/3727" } }));
+    expect(fetchMock.mock.calls[0]?.[1]?.signal).toBeInstanceOf(AbortSignal);
     expect(kv.get(sourceKey)).toBe("Proxy = trojan, proxy.example.com, 443, password=p");
     expect(kv.has("cache:source:stale")).toBe(false);
     expect(kv.has("cache:sourceMeta:stale")).toBe(false);
@@ -1346,8 +1383,8 @@ describe("asset access control", () => {
 
     expect(response.status).toBe(200);
     expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(fetchMock).toHaveBeenCalledWith("https://example.com/new", { headers: { "user-agent": "Surge iOS/3727" } });
-    expect(fetchMock).toHaveBeenCalledWith("https://example.com/added", { headers: { "user-agent": "Surge iOS/3727" } });
+    expect(fetchMock).toHaveBeenCalledWith("https://example.com/new", expect.objectContaining({ headers: { "user-agent": "Surge iOS/3727" } }));
+    expect(fetchMock).toHaveBeenCalledWith("https://example.com/added", expect.objectContaining({ headers: { "user-agent": "Surge iOS/3727" } }));
     expect(fetchMock.mock.calls.some(([url]) => String(url) === "https://example.com/stable")).toBe(false);
     expect(kv.get(stableKey)).toBe("Stable = trojan, stable.example.com, 443, password=p");
     expect(kv.has(oldChangedKey)).toBe(false);
@@ -1579,7 +1616,7 @@ describe("asset access control", () => {
       scheduledTime: Date.now()
     } as ScheduledController, env, ctx);
 
-    expect(fetchMock).toHaveBeenCalledWith("https://rules.example/daily.list");
+    expect(fetchMock).toHaveBeenCalledWith("https://rules.example/daily.list", expect.objectContaining({ signal: expect.any(AbortSignal) }));
     expect(kv.has("cache:compiledRuleSetMeta:Daily")).toBe(true);
   });
 

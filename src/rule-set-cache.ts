@@ -7,6 +7,7 @@ import { RULE_SET_BUCKETS, RULE_SET_TARGETS } from "./rule-set-types";
 import { planRuleSetArtifacts } from "./rule-set-artifacts";
 import type { AppConfig } from "./types";
 import { readResponseTextWithLimit, sha256Hex } from "./util";
+import { fetchWithTimeout, waitForRetry } from "./upstream-fetch";
 
 export const RULE_SET_SOURCE_CACHE_PREFIX = "cache:ruleSetSource:";
 export const RULE_SET_SOURCE_CACHE_META_PREFIX = "cache:ruleSetSourceMeta:";
@@ -16,6 +17,9 @@ export const COMPILED_RULE_SET_META_PREFIX = "cache:compiledRuleSetMeta:";
 
 const MAX_RULE_SET_SOURCE_BYTES = 2 * 1024 * 1024;
 const MAX_RULE_SET_SOURCE_FETCH_RETRIES = 3;
+const RULE_SET_SOURCE_FETCH_ATTEMPT_TIMEOUT_MS = 8_000;
+const RULE_SET_SOURCE_FETCH_TOTAL_TIMEOUT_MS = 25_000;
+const RULE_SET_SOURCE_FETCH_RETRY_BASE_DELAY_MS = 100;
 const UNKNOWN_RULE_SET_SOURCE_FETCHED_AT = "1970-01-01T00:00:00.000Z";
 
 class InvalidRuleSetSourceResponseError extends Error {}
@@ -325,25 +329,38 @@ async function writeRuleSetSourceCacheEntry(
 
 async function fetchRuleSetSourceContent(url: string): Promise<string> {
   let lastError: unknown;
+  const deadline = Date.now() + RULE_SET_SOURCE_FETCH_TOTAL_TIMEOUT_MS;
   for (let attempt = 0; attempt <= MAX_RULE_SET_SOURCE_FETCH_RETRIES; attempt += 1) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
     try {
-      const response = await fetch(url);
-      if (!response.ok) {
-        await response.body?.cancel().catch(() => undefined);
-        throw new Error(`HTTP ${response.status}`);
-      }
-      if (response.headers.get("content-type")?.toLowerCase().includes("text/html")) {
-        await response.body?.cancel().catch(() => undefined);
-        throw new InvalidRuleSetSourceResponseError("规则来源返回了 HTML 页面，请改用原始规则文件 URL");
-      }
-      const content = await readResponseTextWithLimit(response, MAX_RULE_SET_SOURCE_BYTES, "rule set source");
-      if (looksLikeHtmlDocument(content)) {
-        throw new InvalidRuleSetSourceResponseError("规则来源返回了 HTML 页面，请改用原始规则文件 URL");
-      }
-      return content;
+      return await fetchWithTimeout(
+        globalThis.fetch,
+        url,
+        undefined,
+        Math.min(RULE_SET_SOURCE_FETCH_ATTEMPT_TIMEOUT_MS, remaining),
+        async (response) => {
+          if (!response.ok) {
+            await response.body?.cancel().catch(() => undefined);
+            throw new Error(`HTTP ${response.status}`);
+          }
+          if (response.headers.get("content-type")?.toLowerCase().includes("text/html")) {
+            await response.body?.cancel().catch(() => undefined);
+            throw new InvalidRuleSetSourceResponseError("规则来源返回了 HTML 页面，请改用原始规则文件 URL");
+          }
+          const content = await readResponseTextWithLimit(response, MAX_RULE_SET_SOURCE_BYTES, "rule set source");
+          if (looksLikeHtmlDocument(content)) {
+            throw new InvalidRuleSetSourceResponseError("规则来源返回了 HTML 页面，请改用原始规则文件 URL");
+          }
+          return content;
+        }
+      );
     } catch (error) {
       if (error instanceof InvalidRuleSetSourceResponseError) throw error;
       lastError = error;
+      if (attempt < MAX_RULE_SET_SOURCE_FETCH_RETRIES) {
+        await waitForRetry(attempt, RULE_SET_SOURCE_FETCH_RETRY_BASE_DELAY_MS, deadline);
+      }
     }
   }
   throw lastError instanceof Error ? lastError : new Error(String(lastError));

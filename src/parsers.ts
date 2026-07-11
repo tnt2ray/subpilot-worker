@@ -1,4 +1,5 @@
 import YAML from "yaml";
+import { assertSafeConfigText, isSafeConfigText } from "./config-text-safety";
 import {
   formatSurgeParamValue,
   isBooleanProxyParamKey,
@@ -85,6 +86,7 @@ function readClashProxyRecord(config: string): Record<string, unknown> | null {
 }
 
 export function toSurgeLine(node: ProxyNode): string {
+  assertSafeConfigText(node, "Proxy node");
   if (node.surgeDetail) return `${node.name} = ${node.surgeDetail}`;
   const type = normalizeTypeForSurge(node.type);
   const suffix = buildSurgeParams(node).map(([key, value]) => `${key}=${value}`);
@@ -162,6 +164,7 @@ function parseYamlProxies(content: string, sourceId: string): ProxyNode[] {
     return data.proxies.flatMap((proxy) => {
       if (!proxy || typeof proxy !== "object") return [];
       const record = proxy as Record<string, unknown>;
+      if (!isSafeConfigText(record)) return [];
       const name = asString(record.name);
       const type = asString(record.type);
       const server = asString(record.server);
@@ -205,13 +208,16 @@ function parseTextProxies(content: string, sourceId: string): ProxyNode[] {
 }
 
 export function parseSurgeLine(line: string): ProxyNode | null {
-  if (!line.includes("=")) return null;
+  if (!line.includes("=") || !isSafeConfigText(line)) return null;
   const [namePart, detailPart] = line.split(/=(.*)/s);
   const name = namePart?.trim();
   const detail = detailPart?.trim();
   if (!name || !detail) return null;
   const urlNode = parseProxyUrl(detail);
-  if (urlNode) return { ...urlNode, name, surgeDetail: urlNode.paramsNormalized ? undefined : detail };
+  if (urlNode) {
+    const node = { ...urlNode, name, surgeDetail: urlNode.paramsNormalized ? undefined : detail };
+    return isSafeConfigText(node) ? node : null;
+  }
   const parts = detail.split(",").map((item) => item.trim()).filter(Boolean);
   if (parts.length < 3) return null;
   const type = parts[0]!;
@@ -224,7 +230,7 @@ export function parseSurgeLine(line: string): ProxyNode | null {
     if (key && rest.length > 0) params[key.trim()] = rest.join("=").trim();
   }
   const paramsNormalized = normalizeProxyParams(params);
-  return {
+  const node: ProxyNode = {
     name,
     type,
     server,
@@ -236,6 +242,7 @@ export function parseSurgeLine(line: string): ProxyNode | null {
     surgeDetail: paramsNormalized ? undefined : detail,
     paramsNormalized: paramsNormalized || undefined
   };
+  return isSafeConfigText(node) ? node : null;
 }
 
 function normalizeTypeForSurge(type: string): string {

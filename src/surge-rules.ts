@@ -9,6 +9,7 @@ import {
   type CoverageRule
 } from "./rule-coverage-core";
 import { mapWithConcurrency, readResponseTextWithLimit } from "./util";
+import { fetchWithTimeout } from "./upstream-fetch";
 
 const VALUELESS_RULE_TYPES = new Set(["FINAL", "MATCH"]);
 const RULE_SET_TYPES = new Set(["RULE-SET", "DOMAIN-SET"]);
@@ -22,6 +23,7 @@ const MAX_RULE_SET_CONTENT_BYTES = 2 * 1024 * 1024;
 const DEFAULT_MAX_COVERAGE_WARNINGS = 80;
 const RULE_SET_FETCH_CONCURRENCY = 6;
 const MAX_EXTERNAL_RULE_SET_FETCHES = 80;
+const EXTERNAL_RULE_SET_FETCH_TIMEOUT_MS = 2_500;
 const VALUE_RULE_TYPES = new Set([
   "DOMAIN",
   "DOMAIN-SUFFIX",
@@ -286,12 +288,19 @@ function parseCoverageRuleParts(parts: string[], label: string): CoverageRule | 
 }
 
 async function fetchRuleSetContent(url: string, userAgent: string, fetcher: SurgeRuleFetch): Promise<string> {
-  const response = await fetcher(url, { headers: { "user-agent": userAgent } });
-  if (!response.ok) {
-    await response.body?.cancel().catch(() => undefined);
-    throw new Error(`HTTP ${response.status}`);
-  }
-  return readResponseTextWithLimit(response, MAX_RULE_SET_CONTENT_BYTES, "rule-set");
+  return fetchWithTimeout(
+    fetcher,
+    url,
+    { headers: { "user-agent": userAgent } },
+    EXTERNAL_RULE_SET_FETCH_TIMEOUT_MS,
+    async (response) => {
+      if (!response.ok) {
+        await response.body?.cancel().catch(() => undefined);
+        throw new Error(`HTTP ${response.status}`);
+      }
+      return readResponseTextWithLimit(response, MAX_RULE_SET_CONTENT_BYTES, "rule-set");
+    }
+  );
 }
 
 function normalizeSurgeDomainValue(value: string): string {

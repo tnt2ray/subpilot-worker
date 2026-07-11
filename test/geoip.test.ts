@@ -83,4 +83,34 @@ describe("geoip lookup", () => {
     await expect(lookupIpLocation(staleEnv, "162.159.34.96")).resolves.toMatchObject({ countryCode: "US" });
     expect(mmdb.constructorInputs).toHaveLength(2);
   });
+
+  it("does not share pending KV reads between concurrent requests", async () => {
+    const kv = new Map<string, string | ArrayBuffer>([
+      ["geoip:mmdb:country:meta", JSON.stringify({ updatedAt: "2026-06-21T00:00:00.000Z" })],
+      ["geoip:mmdb:country", new ArrayBuffer(8)]
+    ]);
+    const env = makeEnv(kv);
+    const namespace = env.SUBPILOT_CONFIG as unknown as {
+      get: (key: string, type?: string) => Promise<unknown>;
+    };
+    const originalGet = namespace.get.bind(namespace);
+    let releaseDataReads: (() => void) | undefined;
+    const dataReadGate = new Promise<void>((resolve) => { releaseDataReads = resolve; });
+    let dataReads = 0;
+    vi.spyOn(namespace, "get").mockImplementation(async (key, type) => {
+      if (key === "geoip:mmdb:country") {
+        dataReads += 1;
+        await dataReadGate;
+      }
+      return originalGet(key, type);
+    });
+
+    const first = lookupIpLocation(env, "162.159.34.96");
+    const second = lookupIpLocation(env, "162.159.34.96");
+    await vi.waitFor(() => expect(dataReads).toBe(2));
+    releaseDataReads?.();
+
+    await expect(Promise.all([first, second])).resolves.toHaveLength(2);
+    expect(dataReads).toBe(2);
+  });
 });

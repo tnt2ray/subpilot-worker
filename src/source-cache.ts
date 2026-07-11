@@ -8,12 +8,16 @@ import {
 import { fetchUserAgentValue } from "./source-user-agent";
 import type { AppConfig, SourceConfig } from "./types";
 import { readResponseTextWithLimit, sha256Hex } from "./util";
+import { fetchWithTimeout, waitForRetry } from "./upstream-fetch";
 
 export const SOURCE_CACHE_PREFIX = "cache:source:";
 export const SOURCE_CACHE_META_PREFIX = "cache:sourceMeta:";
 export const SOURCE_CACHE_META_INDEX_KEY = "cache:sourceMeta:index";
 const MAX_SOURCE_CONTENT_BYTES = 10 * 1024 * 1024;
 const MAX_SOURCE_FETCH_RETRIES = 3;
+const SOURCE_FETCH_ATTEMPT_TIMEOUT_MS = 8_000;
+const SOURCE_FETCH_TOTAL_TIMEOUT_MS = 25_000;
+const SOURCE_FETCH_RETRY_BASE_DELAY_MS = 100;
 
 export { sourceCacheContentStats } from "./source-cache-stats";
 export type { SourceCacheProtocolCount } from "./source-cache-stats";
@@ -315,18 +319,31 @@ async function writeSourceCacheEntry(
 
 async function fetchSourceContent(url: string, userAgent: string, sourceId: string): Promise<string> {
   let lastError: unknown;
+  const deadline = Date.now() + SOURCE_FETCH_TOTAL_TIMEOUT_MS;
   for (let attempt = 0; attempt <= MAX_SOURCE_FETCH_RETRIES; attempt += 1) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
     try {
-      const response = await fetch(url, { headers: { "user-agent": userAgent } });
-      if (!response.ok) {
-        await response.body?.cancel().catch(() => undefined);
-        throw new Error(`HTTP ${response.status}`);
-      }
-      const content = await readResponseTextWithLimit(response, MAX_SOURCE_CONTENT_BYTES, "Source subscription");
+      const content = await fetchWithTimeout(
+        globalThis.fetch,
+        url,
+        { headers: { "user-agent": userAgent } },
+        Math.min(SOURCE_FETCH_ATTEMPT_TIMEOUT_MS, remaining),
+        async (response) => {
+          if (!response.ok) {
+            await response.body?.cancel().catch(() => undefined);
+            throw new Error(`HTTP ${response.status}`);
+          }
+          return readResponseTextWithLimit(response, MAX_SOURCE_CONTENT_BYTES, "Source subscription");
+        }
+      );
       assertSourceContentHasNodes(content, sourceId);
       return content;
     } catch (error) {
       lastError = error;
+      if (attempt < MAX_SOURCE_FETCH_RETRIES) {
+        await waitForRetry(attempt, SOURCE_FETCH_RETRY_BASE_DELAY_MS, deadline);
+      }
     }
   }
   throw lastError instanceof Error ? lastError : new Error(String(lastError));

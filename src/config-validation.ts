@@ -1,6 +1,8 @@
 import { normalizeManagedBasePath, ruleSetPathName } from "./managed-url";
 import { parseConfiguredProxyNode } from "./parsers";
 import { effectiveRuleSetOutputs } from "./rule-set-outputs";
+import { compiledRuleProviderName } from "./rule-provider-name";
+import type { RuleSetDownloadBucket } from "./rule-set-types";
 import type { AppConfig } from "./types";
 
 const RESERVED_MANAGED_BASE_PATHS = new Set([
@@ -30,6 +32,7 @@ export function validateManagedBaseUrl(config: { settings?: { managedBaseUrl?: u
     if (url.protocol !== "http:" && url.protocol !== "https:") return "Managed base URL must use http or https";
     const managedPath = normalizeManagedBasePath(url.pathname);
     if (managedPath === "/") return "Managed base URL path must not be root";
+    if (managedPath === "/api" || managedPath.startsWith("/api/")) return `Managed base URL path ${managedPath} is reserved`;
     if (RESERVED_MANAGED_BASE_PATHS.has(managedPath)) return `Managed base URL path ${managedPath} is reserved`;
   } catch {
     return "Managed base URL must be a valid URL";
@@ -52,7 +55,7 @@ export function validateProxyPolicyNameConflicts(config: Partial<Pick<AppConfig,
 export function validateRuleSetOutputNames(config: Partial<Pick<AppConfig, "ruleSets">>): string | null {
   if (!Array.isArray(config.ruleSets?.outputs)) return "规则集输出配置格式无效";
   const configuredError = validateOutputNameList(config.ruleSets.outputs);
-  if (configuredError || config.ruleSets.aggregateByPolicy !== true) return configuredError;
+  if (configuredError) return configuredError;
   const ruleSets = {
     mode: config.ruleSets.mode === "compiled" ? "compiled" as const : "manual" as const,
     aggregateByPolicy: config.ruleSets.aggregateByPolicy === true,
@@ -60,7 +63,11 @@ export function validateRuleSetOutputNames(config: Partial<Pick<AppConfig, "rule
     outputs: config.ruleSets.outputs,
     directRules: Array.isArray(config.ruleSets.directRules) ? config.ruleSets.directRules : []
   };
-  return validateOutputNameList(effectiveRuleSetOutputs(ruleSets));
+  const effectiveOutputs = effectiveRuleSetOutputs(ruleSets);
+  const effectiveError = config.ruleSets.aggregateByPolicy === true
+    ? validateOutputNameList(effectiveOutputs)
+    : null;
+  return effectiveError || validateRuleProviderNameCollisions(effectiveOutputs);
 }
 
 function validateOutputNameList(outputs: AppConfig["ruleSets"]["outputs"]): string | null {
@@ -74,6 +81,22 @@ function validateOutputNameList(outputs: AppConfig["ruleSets"]["outputs"]): stri
   for (const name of names) {
     for (const suffix of ["-domain", "-ipcidr"]) {
       if (names.has(`${name}${suffix}`)) return `规则集名称 ${name} 与 ${name}${suffix} 会生成冲突文件名`;
+    }
+  }
+  return null;
+}
+
+function validateRuleProviderNameCollisions(outputs: AppConfig["ruleSets"]["outputs"]): string | null {
+  const buckets: RuleSetDownloadBucket[] = ["combined", "domain", "ipcidr", "classical"];
+  const owners = new Map<string, string>();
+  for (const output of outputs) {
+    for (const bucket of buckets) {
+      const providerName = compiledRuleProviderName(output.name, bucket);
+      const owner = owners.get(providerName);
+      if (owner && owner !== output.name) {
+        return `规则集名称 ${owner} 与 ${output.name} 会生成冲突的 Clash rule-provider 名称`;
+      }
+      owners.set(providerName, output.name);
     }
   }
   return null;

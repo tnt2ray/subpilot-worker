@@ -1,4 +1,5 @@
 import YAML from "yaml";
+import { isSafeConfigText } from "./config-text-safety";
 import { maybeDecodeBase64 } from "./subscription-text";
 import type { HostEntry, HostEntryValue } from "./types";
 
@@ -29,6 +30,7 @@ function parseSurgeHostEntries(content: string): HostEntry[] {
       continue;
     }
     if (inHost && line && !line.startsWith("#") && !line.startsWith(";")) {
+      if (!isSafeConfigText(line)) continue;
       const entry = parseHostLine(line);
       if (entry) entries.push(entry);
     }
@@ -42,6 +44,7 @@ function parseClashHostEntries(content: string): HostEntry[] {
     const data = YAML.parse(content) as { hosts?: unknown } | null;
     if (!data?.hosts || typeof data.hosts !== "object" || Array.isArray(data.hosts)) return [];
     return Object.entries(data.hosts as Record<string, unknown>).flatMap(([host, value]) => {
+      if (!isSafeConfigText(host) || !isSafeConfigText(value)) return [];
       const normalized = normalizeHostValue(value);
       return host && normalized !== undefined ? [{ host, value: normalized }] : [];
     });

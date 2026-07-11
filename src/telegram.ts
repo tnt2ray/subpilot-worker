@@ -32,7 +32,7 @@ export async function handleTelegramBindCode(request: Request, env: Env): Promis
   const token = (typeof body.token === "string" ? body.token.trim() : "") || config.settings.notificationTelegramBotToken.trim();
   if (!token) return badRequest("Telegram bot token is required");
 
-  const next = await reconcileTelegramWebhook(config, {
+  const saved = await saveConfigWithTelegramWebhook(env, config, {
     ...config,
     settings: {
       ...config.settings,
@@ -40,7 +40,6 @@ export async function handleTelegramBindCode(request: Request, env: Env): Promis
       notificationTelegramBotToken: token
     }
   }, request.url);
-  const saved = await saveConfig(env, next);
   const code = randomTelegramBindCode();
   const expiresAt = new Date(Date.now() + TELEGRAM_BIND_TTL_MS).toISOString();
   await storeTelegramBindCode(env, code, expiresAt);
@@ -103,43 +102,83 @@ export async function handleTelegramWebhook(request: Request, env: Env, ctx: Exe
   return jsonResponse({ ok: true });
 }
 
-export async function reconcileTelegramWebhook(
+export async function saveConfigWithTelegramWebhook(
+  env: Env,
   current: LoadedConfig,
   next: LoadedConfig,
   requestUrl: string
 ): Promise<LoadedConfig> {
   const currentToken = current.settings.notificationTelegramBotToken.trim();
   const nextToken = next.settings.notificationTelegramBotToken.trim();
-  const shouldEnableWebhook = Boolean(nextToken);
-
-  if (!shouldEnableWebhook) {
-    if (currentToken && current.settings.notificationTelegramWebhookSecret.trim()) {
-      await deleteTelegramWebhook(currentToken);
-    }
-    return {
-      ...next,
-      settings: {
-        ...next.settings,
-        notificationTelegramWebhookSecret: ""
-      }
-    };
-  }
-
-  const currentSecret = next.settings.notificationTelegramWebhookSecret.trim();
-  const secret = currentSecret || randomToken(32);
-  await setTelegramWebhook(nextToken, telegramWebhookUrl(requestUrl), secret);
-  if (currentToken && currentToken !== nextToken) {
-    await deleteTelegramWebhook(currentToken).catch((error) => {
-      console.warn(JSON.stringify({ level: "warn", message: `Failed to delete previous Telegram webhook: ${error instanceof Error ? error.message : String(error)}` }));
-    });
-  }
-  return {
+  const previousSecret = current.settings.notificationTelegramWebhookSecret.trim();
+  const nextSecret = nextToken
+    ? next.settings.notificationTelegramWebhookSecret.trim() || randomToken(32)
+    : "";
+  const previousUrl = telegramWebhookUrlForConfig(current, requestUrl);
+  const nextUrl = telegramWebhookUrlForConfig(next, requestUrl);
+  const prepared = {
     ...next,
     settings: {
       ...next.settings,
-      notificationTelegramWebhookSecret: secret
+      notificationTelegramWebhookSecret: nextSecret
     }
   };
+  const needsSet = Boolean(nextToken) && (
+    nextToken !== currentToken
+    || nextSecret !== previousSecret
+    || nextUrl !== previousUrl
+  );
+  const needsDeletePrevious = Boolean(currentToken) && (!nextToken || currentToken !== nextToken);
+
+  const saved = await saveConfig(env, prepared);
+  if (!needsSet && !needsDeletePrevious) return saved;
+
+  let nextWebhookAttempted = false;
+  try {
+    if (needsSet) {
+      nextWebhookAttempted = true;
+      await setTelegramWebhook(nextToken, nextUrl, nextSecret);
+    }
+    if (needsDeletePrevious) await deleteTelegramWebhook(currentToken);
+    return saved;
+  } catch (error) {
+    await compensateTelegramWebhookFailure({
+      currentToken,
+      nextToken,
+      previousSecret,
+      previousUrl,
+      nextWebhookAttempted
+    });
+    await saveConfig(env, current).catch((rollbackError) => {
+      console.error(JSON.stringify({
+        level: "error",
+        message: `Failed to roll back Telegram config after webhook update failure: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`
+      }));
+    });
+    throw error;
+  }
+}
+
+async function compensateTelegramWebhookFailure(options: {
+  currentToken: string;
+  nextToken: string;
+  previousSecret: string;
+  previousUrl: string;
+  nextWebhookAttempted: boolean;
+}): Promise<void> {
+  if (!options.nextWebhookAttempted) return;
+  try {
+    if (options.currentToken && options.currentToken === options.nextToken && options.previousSecret) {
+      await setTelegramWebhook(options.currentToken, options.previousUrl, options.previousSecret);
+    } else if (options.nextToken) {
+      await deleteTelegramWebhook(options.nextToken);
+    }
+  } catch (error) {
+    console.error(JSON.stringify({
+      level: "error",
+      message: `Failed to compensate Telegram webhook update: ${error instanceof Error ? error.message : String(error)}`
+    }));
+  }
 }
 
 async function handleTelegramCommand(
@@ -360,6 +399,16 @@ function telegramWebhookUrl(requestUrl: string): string {
   url.search = "";
   url.hash = "";
   return url.toString();
+}
+
+function telegramWebhookUrlForConfig(config: LoadedConfig, requestUrl: string): string {
+  const configuredBaseUrl = config.settings.managedBaseUrl.trim();
+  if (!configuredBaseUrl) return telegramWebhookUrl(requestUrl);
+  try {
+    return telegramWebhookUrl(new URL(configuredBaseUrl, requestUrl).toString());
+  } catch {
+    return telegramWebhookUrl(requestUrl);
+  }
 }
 
 async function setTelegramWebhook(token: string, url: string, secret: string): Promise<void> {

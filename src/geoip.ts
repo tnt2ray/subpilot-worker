@@ -7,7 +7,7 @@ export const GEOIP_MMDB_META_KV_KEY = "geoip:mmdb:country:meta";
 
 let geoIpCountryReaderCache: {
   version: string;
-  promise: Promise<Reader<CountryResponse> | null>;
+  reader: Reader<CountryResponse>;
 } | null = null;
 
 export interface RegionInfo {
@@ -55,10 +55,12 @@ async function getGeoIpCountryReader(env: Env): Promise<Reader<CountryResponse> 
     geoIpCountryReaderCache = null;
     return null;
   }
-  if (geoIpCountryReaderCache?.version === version) return geoIpCountryReaderCache.promise;
-  const promise = loadGeoIpCountryReader(env);
-  geoIpCountryReaderCache = { version, promise };
-  return promise;
+  if (geoIpCountryReaderCache?.version === version) return geoIpCountryReaderCache.reader;
+  const reader = await loadGeoIpCountryReader(env);
+  if (reader && await readGeoIpMmdbVersion(env) === version) {
+    geoIpCountryReaderCache = { version, reader };
+  }
+  return reader;
 }
 
 async function loadGeoIpCountryReader(env: Env): Promise<Reader<CountryResponse> | null> {

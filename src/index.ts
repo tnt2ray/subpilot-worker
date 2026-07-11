@@ -14,13 +14,14 @@ import { warmCompiledRuleSetWorkerCache } from "./rule-set-worker-cache";
 import { refreshChangedSourceCache, refreshSourceCache } from "./source-cache";
 import { sanitizeSurgeValidationContent } from "./surge-validation-sanitize";
 import { configFileNameForTarget } from "./target-files";
-import { handleTelegramBindCode, handleTelegramUnbind, handleTelegramWebhook, reconcileTelegramWebhook } from "./telegram";
+import { handleTelegramBindCode, handleTelegramUnbind, handleTelegramWebhook, saveConfigWithTelegramWebhook } from "./telegram";
 import { readCachedUpdateStatus, getUpdateStatus } from "./update-check";
 import { APP_VERSION, RELEASE_REPOSITORY } from "./version";
-import { badRequest, forbidden, jsonResponse, notFound, sha256Hex, textResponse, unauthorized } from "./util";
+import { badRequest, forbidden, jsonResponse, notFound, payloadTooLarge, readRequestJsonWithLimit, RequestBodyTooLargeError, sha256Hex, textResponse, unauthorized } from "./util";
 
 const SOURCE_REFRESH_CRON = "0 */12 * * *";
 const RULE_SET_REFRESH_CRON = "0 16 * * *";
+const MAX_LOGIN_REQUEST_BYTES = 4 * 1024;
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -78,8 +79,18 @@ async function route(request: Request, env: Env, ctx: ExecutionContext): Promise
 }
 
 async function handleLogin(request: Request, env: Env): Promise<Response> {
-  const body = await request.json<{ token?: string }>().catch((): { token?: string } => ({}));
-  if (!await validateAdminToken(env, body.token ?? "")) return unauthorized();
+  let body: unknown;
+  try {
+    body = await readRequestJsonWithLimit<unknown>(request, MAX_LOGIN_REQUEST_BYTES);
+  } catch (error) {
+    if (error instanceof RequestBodyTooLargeError) return payloadTooLarge("Login request body is too large");
+    body = {};
+  }
+  const tokenValue = body && typeof body === "object" && !Array.isArray(body)
+    ? (body as Record<string, unknown>).token
+    : undefined;
+  const token = typeof tokenValue === "string" ? tokenValue : "";
+  if (!await validateAdminToken(env, token)) return unauthorized();
   const session = await createSession(env);
   return jsonResponse({ ok: true }, { headers: { "set-cookie": sessionCookie(session, new URL(request.url).protocol === "https:") } });
 }
@@ -147,7 +158,7 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
     const next = config as Awaited<ReturnType<typeof loadConfig>>;
     const validationError = validateConfigForSave(next);
     if (validationError) return badRequest(validationError);
-    const saved = await saveConfig(env, await reconcileTelegramWebhook(current, next, request.url));
+    const saved = await saveConfigWithTelegramWebhook(env, current, next, request.url);
     await refreshChangedSourceCache(env, current, saved);
     scheduleRuleSetRefresh(env, ctx, current, saved, request.url);
     return jsonResponse(saved);
@@ -161,7 +172,7 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
     const next = sanitizeConfigAfterPatch(mergeConfigPatch(config, normalizedPatch), normalizedPatch);
     const validationError = validateConfigForSave(next);
     if (validationError) return badRequest(validationError);
-    const saved = await saveConfig(env, await reconcileTelegramWebhook(current, next, request.url));
+    const saved = await saveConfigWithTelegramWebhook(env, current, next, request.url);
     await refreshChangedSourceCache(env, current, saved);
     scheduleRuleSetRefresh(env, ctx, current, saved, request.url);
     return jsonResponse(saved);

@@ -207,6 +207,13 @@ describe("target inference", () => {
       ...DEFAULT_CONFIG,
       settings: {
         ...DEFAULT_CONFIG.settings,
+        managedBaseUrl: "https://subpilot.example.com/api/subscriptions"
+      }
+    })).toBe("Managed base URL path /api/subscriptions is reserved");
+    expect(validateManagedBaseUrl({
+      ...DEFAULT_CONFIG,
+      settings: {
+        ...DEFAULT_CONFIG.settings,
         managedBaseUrl: "https://subpilot.example.com/app.js/"
       }
     })).toBe("Managed base URL path /app.js is reserved");

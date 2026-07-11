@@ -13,9 +13,47 @@ export function textResponse(content: string, contentType = "text/plain; charset
   });
 }
 
+export class RequestBodyTooLargeError extends Error {}
+
+export async function readRequestJsonWithLimit<T>(request: Request, maxBytes: number): Promise<T> {
+  const contentLength = request.headers.get("content-length");
+  const declaredBytes = contentLength === null ? Number.NaN : Number(contentLength);
+  if (Number.isFinite(declaredBytes) && declaredBytes > maxBytes) {
+    await request.body?.cancel().catch(() => undefined);
+    throw new RequestBodyTooLargeError(`Request body exceeds ${maxBytes} byte limit`);
+  }
+  if (!request.body) return JSON.parse("") as T;
+
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (!value) continue;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel().catch(() => undefined);
+      throw new RequestBodyTooLargeError(`Request body exceeds ${maxBytes} byte limit`);
+    }
+    chunks.push(value);
+  }
+
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return JSON.parse(new TextDecoder().decode(bytes)) as T;
+}
+
 export async function readResponseTextWithLimit(response: Response, maxBytes: number, errorSubject: string): Promise<string> {
   const contentLength = response.headers.get("content-length");
-  if (contentLength && Number(contentLength) > maxBytes) throw new Error(`${errorSubject} exceeds ${formatBytes(maxBytes)} limit`);
+  if (contentLength && Number(contentLength) > maxBytes) {
+    await response.body?.cancel().catch(() => undefined);
+    throw new Error(`${errorSubject} exceeds ${formatBytes(maxBytes)} limit`);
+  }
   if (!response.body) return "";
 
   const reader = response.body.getReader();
@@ -64,6 +102,10 @@ function formatBytes(bytes: number): string {
 
 export function badRequest(message: string): Response {
   return jsonResponse({ error: message }, { status: 400 });
+}
+
+export function payloadTooLarge(message = "Payload Too Large"): Response {
+  return jsonResponse({ error: message }, { status: 413 });
 }
 
 export function unauthorized(): Response {

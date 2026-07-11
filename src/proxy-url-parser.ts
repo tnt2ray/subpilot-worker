@@ -1,4 +1,5 @@
 import { formatSurgeParamValue, isProxyParamRecord, normalizeProxyParams } from "./proxy-params";
+import { isSafeConfigText } from "./config-text-safety";
 import { asString, toPort } from "./proxy-value";
 import type { ProxyNode } from "./types";
 
@@ -51,7 +52,7 @@ export function parseProxyUrl(value: string): ProxyNode | null {
       node.password = auth;
       node.uuid = auth;
     }
-    return node.server ? node : null;
+    return node.server && isSafeConfigText(node) ? node : null;
   } catch {
     return null;
   }
@@ -86,7 +87,7 @@ function parseVmess(value: string): ProxyNode | null {
     const server = asString(data.add);
     const port = toPort(data.port);
     if (!server || port === undefined) return null;
-    return {
+    const node: ProxyNode = {
       name: asString(data.ps) || `vmess-${server}`,
       type: "vmess",
       server,
@@ -100,6 +101,7 @@ function parseVmess(value: string): ProxyNode | null {
         "ws-headers": asString(data.host)
       }
     };
+    return isSafeConfigText(node) ? node : null;
   } catch {
     return null;
   }

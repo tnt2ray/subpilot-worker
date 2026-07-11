@@ -3,6 +3,50 @@ import { maybeDecodeBase64, parseHostEntries, parseManualSurge, parseSubscriptio
 import { CHAIN_EXIT_PROXY_NAME } from "../src/types";
 
 describe("proxy parsing", () => {
+  it("rejects upstream YAML proxy and host fields containing line breaks or control characters", () => {
+    const injectedName = parseSubscription([
+      "proxies:",
+      "  - name: |",
+      "      Safe Node",
+      "      [Rule]",
+      "      FINAL,REJECT",
+      "    type: trojan",
+      "    server: proxy.example.com",
+      "    port: 443",
+      "    password: secret"
+    ].join("\n"), "src");
+    const injectedPassword = parseSubscription([
+      "proxies:",
+      "  - name: Safe Node",
+      "    type: trojan",
+      "    server: proxy.example.com",
+      "    port: 443",
+      "    password: |",
+      "      secret",
+      "      [Rule]"
+    ].join("\n"), "src");
+    const injectedHosts = parseHostEntries([
+      "hosts:",
+      "  safe.example: |",
+      "    192.0.2.1",
+      "    [Rule]",
+      "  control.example: \"192.0.2.2\\u007f\""
+    ].join("\n"));
+    const surgeControlCharacter = parseSubscription(
+      "Unsafe\u0000Node = trojan, proxy.example.com, 443, password=secret",
+      "src"
+    );
+    const surgeHostControlCharacter = parseHostEntries(
+      "[Host]\nunsafe.example = 192.0.2.1\u0000"
+    );
+
+    expect(injectedName).toEqual([]);
+    expect(injectedPassword).toEqual([]);
+    expect(injectedHosts).toEqual([]);
+    expect(surgeControlCharacter).toEqual([]);
+    expect(surgeHostControlCharacter).toEqual([]);
+  });
+
   it("parses encoded, manual, Surge host, Clash host, YAML, and duplicate subscription inputs", () => {
     expect(maybeDecodeBase64(btoa("trojan://password@example.com:443#Japan"))).toContain("trojan://");
 

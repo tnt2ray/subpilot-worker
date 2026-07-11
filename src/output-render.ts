@@ -1,3 +1,4 @@
+import { assertSafeConfigText } from "./config-text-safety";
 import type { HostEntry } from "./types";
 
 export function renderSection(name: string, lines: string[]): string {
@@ -9,6 +10,7 @@ export function beijingTimestamp(): string {
 }
 
 export function renderHostEntryLine(entry: HostEntry): string {
+  assertSafeConfigText(entry, "Host entry");
   return `${entry.host} = ${Array.isArray(entry.value) ? entry.value.join(", ") : entry.value}`;
 }
 

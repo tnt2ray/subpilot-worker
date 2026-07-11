@@ -12,8 +12,9 @@ import {
   type RuleSetSourceCacheFailure,
   type RuleSetSourceFetchResult
 } from "./rule-set-cache";
-import { RULE_SET_BUCKETS, type RuleSetBucket, type RuleSetDownloadBucket, type RuleSetOutput, type RuleSetOutputTarget } from "./rule-set-types";
+import { RULE_SET_BUCKETS, type RuleSetBucket, type RuleSetOutput, type RuleSetOutputTarget } from "./rule-set-types";
 import { planRuleSetArtifacts } from "./rule-set-artifacts";
+import { compiledRuleProviderName } from "./rule-provider-name";
 import { splitRuleLine } from "./rule-line";
 import { renderDirectRuleForTarget } from "./rule-targets";
 import { effectiveRuleSetOutputs, planRuleSetOutputs } from "./rule-set-outputs";
@@ -332,7 +333,7 @@ function appendCompiledOutputReferences(
   }
   for (const artifact of artifacts) {
     const url = managedRuleSetUrlForRequest(config, requestUrl, output.name, artifact.bucket, target);
-    const providerName = compiledProviderName(output, artifact.bucket);
+    const providerName = compiledRuleProviderName(output.name, artifact.bucket);
     plan.clashRuleProviders[providerName] = {
       type: "http",
       behavior: artifact.behavior,
@@ -364,15 +365,6 @@ function surgeRuleSetOptions(output: RuleSetOutput, includesIpCidr: boolean): st
   }
   options.push(`update-interval=${RULE_SET_UPDATE_INTERVAL_SECONDS}`);
   return options;
-}
-
-function compiledProviderName(output: RuleSetOutput, bucket: RuleSetDownloadBucket): string {
-  const base = output.name
-    .trim()
-    .replace(/[^\w]+/g, "_")
-    .replace(/^_+|_+$/g, "") || "RuleSet";
-  const suffix = bucket === "domain" ? "Domain" : bucket === "ipcidr" ? "IPCIDR" : bucket === "combined" ? "Combined" : "Classical";
-  return `${base}_${suffix}`;
 }
 
 function emptyBuckets(): Record<RuleSetBucket, ParsedRuleSetRule[]> {

@@ -45,9 +45,10 @@ describe("Surge rule coverage diagnostics", () => {
       }
     });
 
-    expect(fetchMock).toHaveBeenCalledWith("https://rules.example.com/demo.list", {
-      headers: { "user-agent": DEFAULT_CONFIG.settings.userAgentSurge }
-    });
+    expect(fetchMock).toHaveBeenCalledWith("https://rules.example.com/demo.list", expect.objectContaining({
+      headers: { "user-agent": DEFAULT_CONFIG.settings.userAgentSurge },
+      signal: expect.any(AbortSignal)
+    }));
     expect(warnings).toContain("Surge Rule 第 3 行规则集 https://rules.example.com/demo.list 内第 1 行 被前面的 第 1 行 覆盖（DOMAIN-SUFFIX,example.com 覆盖 DOMAIN,www.example.com；DIRECT 会优先生效，Proxy 不会生效）。");
     expect(warnings).toContain("Surge Rule 第 3 行规则集 https://rules.example.com/demo.list 内第 2 行 被前面的 第 1 行 覆盖（DOMAIN-SUFFIX,example.com 覆盖 DOMAIN-SUFFIX,api.example.com；DIRECT 会优先生效，Proxy 不会生效）。");
     expect(warnings).toContain("Surge Rule 第 3 行规则集 https://rules.example.com/demo.list 内第 3 行 被前面的 第 2 行 覆盖（IP-CIDR,10.0.0.0/8 覆盖 IP-CIDR,10.1.2.0/24；DIRECT 会优先生效，Proxy 不会生效）。");

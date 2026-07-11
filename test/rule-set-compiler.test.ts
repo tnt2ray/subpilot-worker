@@ -1,12 +1,14 @@
 import YAML from "yaml";
 import { describe, expect, it, vi } from "vitest";
 import { createSession, sessionCookie } from "../src/auth";
+import { validateRuleSetOutputNames } from "../src/config-validation";
 import { compileRuleSetOutput, refreshChangedRuleSetCaches, refreshRuleSetCaches } from "../src/rule-set-compiler";
 import { compiledRuleSetContentKey, compiledRuleSetMetaKey, readCompiledRuleSetBucket } from "../src/rule-set-cache";
 import { normalizeConfig, saveConfig } from "../src/config-store";
 import { DEFAULT_CONFIG } from "../src/default-config";
 import { generateConfig } from "../src/generator";
 import { planRuleSetArtifacts } from "../src/rule-set-artifacts";
+import { compiledRuleProviderName } from "../src/rule-provider-name";
 import worker from "../src/index";
 import { sha256Hex } from "../src/util";
 import { makeEnv } from "./helpers/env";
@@ -173,7 +175,7 @@ describe("rule set compiler", () => {
 
     const result = await compileRuleSetOutput(env, config, output);
 
-    expect(fetchMock.mock.calls.every(([, init]) => init === undefined)).toBe(true);
+    expect(fetchMock.mock.calls.every(([, init]) => init?.signal instanceof AbortSignal)).toBe(true);
     expect(result.stale).toBe(false);
     expect(result.manifest.ruleCount).toBe(8);
     expect(result.manifest.duplicateCount).toBe(1);
@@ -240,14 +242,15 @@ describe("rule set compiler", () => {
       "rule-providers": Record<string, Record<string, unknown>>;
       rules: string[];
     };
-    expect(clash["rule-providers"].AI_Rules_Combined).toMatchObject({
+    const providerName = compiledRuleProviderName("AI Rules", "combined");
+    expect(clash["rule-providers"][providerName]).toMatchObject({
       type: "http",
       behavior: "classical",
       url: "https://subpilot.example.com/sync/read-token/r/AI%20Rules.yaml",
       interval: 86400
     });
     expect(clash.rules).toContain("GEOIP,CN,DIRECT");
-    expect(clash.rules).toContain("RULE-SET,AI_Rules_Combined,Proxy");
+    expect(clash.rules).toContain(`RULE-SET,${providerName},Proxy`);
     expect(clash.rules.at(-1)).toBe("MATCH,DIRECT");
     expect(clash.rules).not.toContain("DOMAIN-SUFFIX,manual.example,Proxy");
 
@@ -255,13 +258,13 @@ describe("rule set compiler", () => {
       "rule-providers": Record<string, Record<string, unknown>>;
       rules: string[];
     };
-    expect(stash["rule-providers"].AI_Rules_Combined?.url).toBe("https://subpilot.example.com/sync/read-token/r/AI%20Rules.yaml");
+    expect(stash["rule-providers"][providerName]?.url).toBe("https://subpilot.example.com/sync/read-token/r/AI%20Rules.yaml");
     expect(stash.rules.at(-1)).toBe("MATCH,DIRECT");
 
     const shadowrocket = await generateConfig(env, config, "shadowrocket", "https://subpilot.example.com/sync/read-token/");
     const shadowrocketYaml = YAML.parse(shadowrocket.content) as { "rule-providers": Record<string, Record<string, unknown>> };
     expect(shadowrocket.target).toBe("shadowrocket");
-    expect(shadowrocketYaml["rule-providers"].AI_Rules_Combined?.url).toContain("/AI%20Rules.yaml");
+    expect(shadowrocketYaml["rule-providers"][providerName]?.url).toContain("/AI%20Rules.yaml");
 
     const manual = await generateConfig(env, {
       ...config,
@@ -317,6 +320,43 @@ describe("rule set compiler", () => {
     await expect(worker.fetch(new Request(
       "https://subpilot.example.com/sync/read-token/r/AI.yaml"
     ), env, ctx).then((response) => response.status)).resolves.toBe(404);
+  });
+
+  it("keeps Clash rule-provider names distinct for Unicode and punctuation-colliding output names", async () => {
+    const names = ["广告", "隐私", "Foo-Bar", "Foo Bar"];
+    const config = normalizeConfig({
+      ...DEFAULT_CONFIG,
+      ruleSets: {
+        mode: "compiled",
+        aggregateByPolicy: false,
+        sources: [],
+        outputs: names.map((name, index) => ({
+          name,
+          enabled: true,
+          policy: "Proxy",
+          sourceIds: [],
+          inlineRules: [`DOMAIN-SUFFIX,provider-${index}.example,Proxy`],
+          order: index,
+          surgeOptions: []
+        })),
+        directRules: []
+      }
+    });
+
+    expect(validateRuleSetOutputNames(config)).toBeNull();
+    const clash = YAML.parse((await generateConfig(
+      makeEnv(),
+      config,
+      "clash",
+      "https://subpilot.example.com/sync/read-token/"
+    )).content) as { "rule-providers": Record<string, unknown>; rules: string[] };
+    const providerNames = names.map((name) => compiledRuleProviderName(name, "combined"));
+
+    expect(new Set(providerNames).size).toBe(names.length);
+    expect(Object.keys(clash["rule-providers"]).sort()).toEqual([...providerNames].sort());
+    for (const providerName of providerNames) {
+      expect(clash.rules).toContain(`RULE-SET,${providerName},Proxy`);
+    }
   });
 
   it("does not diagnose legacy target rules that are omitted in compiled mode", async () => {
@@ -396,7 +436,7 @@ describe("rule set compiler", () => {
     const clash = YAML.parse((await generateConfig(env, config, "clash", "https://subpilot.example.com/sync/read-token/")).content) as {
       "rule-providers": Record<string, unknown>;
     };
-    expect(Object.keys(clash["rule-providers"])).toEqual(["DomainOnly_Combined"]);
+    expect(Object.keys(clash["rule-providers"])).toEqual([compiledRuleProviderName("DomainOnly", "combined")]);
   });
 
   it("refetches upstream sources when refreshing compiled caches", async () => {

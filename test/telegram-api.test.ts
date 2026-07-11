@@ -234,6 +234,104 @@ describe("telegram api", () => {
     expect(saved.settings.notificationTelegramWebhookSecret).toBe(body.get("secret_token"));
   });
 
+  it("does not re-register an unchanged Telegram webhook for unrelated config saves", async () => {
+    const env = makeEnv();
+    await saveConfig(env, {
+      ...DEFAULT_CONFIG,
+      settings: {
+        ...DEFAULT_CONFIG.settings,
+        notificationChannel: "telegram",
+        notificationTelegramBotToken: "telegram-token",
+        notificationTelegramWebhookSecret: "webhook-secret"
+      }
+    });
+    const session = await createSession(env);
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ ok: true })));
+
+    const response = await worker.fetch(new Request("https://subpilot.example.com/api/config", {
+      method: "PATCH",
+      headers: { cookie: sessionCookie(session, true) },
+      body: JSON.stringify({ settings: { updateCheckEnabled: true } })
+    }), env, ctx);
+
+    expect(response.status).toBe(200);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("re-registers Telegram when the persisted webhook origin changes", async () => {
+    const env = makeEnv();
+    await saveConfig(env, {
+      ...DEFAULT_CONFIG,
+      settings: {
+        ...DEFAULT_CONFIG.settings,
+        managedBaseUrl: "https://subpilot.example.com/sync",
+        notificationChannel: "telegram",
+        notificationTelegramBotToken: "telegram-token",
+        notificationTelegramWebhookSecret: "webhook-secret"
+      }
+    });
+    const session = await createSession(env);
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ ok: true })));
+
+    const response = await worker.fetch(new Request("https://subpilot.example.com/api/config", {
+      method: "PATCH",
+      headers: { cookie: sessionCookie(session, true) },
+      body: JSON.stringify({ settings: { managedBaseUrl: "https://links.example.com/subscriptions" } })
+    }), env, ctx);
+    const body = fetchMock.mock.calls[0]?.[1]?.body as URLSearchParams;
+
+    expect(response.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(body.get("url")).toBe("https://links.example.com/api/telegram/webhook");
+  });
+
+  it("does not mutate Telegram remotely when KV persistence fails", async () => {
+    const env = makeEnv();
+    const session = await createSession(env);
+    vi.spyOn(env.SUBPILOT_CONFIG, "put").mockRejectedValue(new Error("KV unavailable"));
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ ok: true })));
+
+    const response = await worker.fetch(new Request("https://subpilot.example.com/api/config", {
+      method: "PATCH",
+      headers: { cookie: sessionCookie(session, true) },
+      body: JSON.stringify({ settings: { notificationTelegramBotToken: "telegram-token" } })
+    }), env, ctx);
+
+    expect(response.status).toBe(500);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("rolls back persisted Telegram settings when remote webhook registration fails", async () => {
+    const env = makeEnv();
+    await saveConfig(env, {
+      ...DEFAULT_CONFIG,
+      settings: {
+        ...DEFAULT_CONFIG.settings,
+        notificationChannel: "telegram",
+        notificationTelegramBotToken: "old-token",
+        notificationTelegramWebhookSecret: "old-secret"
+      }
+    });
+    const session = await createSession(env);
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: false, description: "set failed" })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true })));
+
+    const response = await worker.fetch(new Request("https://subpilot.example.com/api/config", {
+      method: "PATCH",
+      headers: { cookie: sessionCookie(session, true) },
+      body: JSON.stringify({ settings: { notificationTelegramBotToken: "new-token" } })
+    }), env, ctx);
+    const rolledBack = await loadConfig(env);
+
+    expect(response.status).toBe(500);
+    expect(rolledBack.settings.notificationTelegramBotToken).toBe("old-token");
+    expect(rolledBack.settings.notificationTelegramWebhookSecret).toBe("old-secret");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(String(fetchMock.mock.calls[0]?.[0])).toBe("https://api.telegram.org/botnew-token/setWebhook");
+    expect(String(fetchMock.mock.calls[1]?.[0])).toBe("https://api.telegram.org/botnew-token/deleteWebhook");
+  });
+
   it("clears Telegram chat binding without removing webhook settings", async () => {
     const env = makeEnv();
     const session = await createSession(env);
@@ -741,7 +839,7 @@ describe("telegram api", () => {
     await Promise.all(exec.waitUntil);
 
     expect(response.status).toBe(200);
-    expect(fetchMock).toHaveBeenCalledWith("https://example.com/rules.list");
+    expect(fetchMock).toHaveBeenCalledWith("https://example.com/rules.list", expect.objectContaining({ signal: expect.any(AbortSignal) }));
     expect(telegramMessages.some((message) => message.includes("规则集将在后台异步刷新"))).toBe(true);
     expect(telegramMessages.some((message) => message.includes("上游订阅源强制获取完成"))).toBe(true);
     expect(telegramMessages.some((message) => message.includes("规则集异步刷新完成"))).toBe(true);
