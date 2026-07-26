@@ -288,8 +288,9 @@ function mapSurgeParamToClash(key: string, type: string): string {
 }
 
 function normalizeClashParamValue(key: string, type: string, value: ProxyParamValue): ProxyParamValue {
-  if (isSnellType(type) && key === "version" && typeof value === "string" && /^\d+$/.test(value)) {
-    return Number(value);
+  if (isSnellType(type) && key === "version") {
+    const version = typeof value === "string" && /^\d+$/.test(value) ? Number(value) : value;
+    return version === 6 ? 5 : version;
   }
   if (isHysteria2Type(type) && key === "ports" && typeof value === "string") {
     return value.split(";").map((item) => item.trim()).filter(Boolean).join(",");

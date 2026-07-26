@@ -281,7 +281,7 @@ describe("generation", () => {
     });
   });
 
-  it("converts reuse to a boolean when rendering manual snell nodes for Clash-like targets", async () => {
+  it("downgrades manual Snell 6 to Snell 5 for Clash-like targets while preserving Surge output", async () => {
     const env = makeEnv();
     const config = {
       ...DEFAULT_CONFIG,
@@ -291,11 +291,14 @@ describe("generation", () => {
       },
       proxyNodes: [chainExitProxyNode({
         id: "snell",
-        config: "DMIT = snell, 191.223.220.184, 42821, psk=secret, version=4, reuse=true, tfo=true",
+        config: "DMIT = snell, 191.223.220.184, 42821, psk=secret, version=6, reuse=true, tfo=true",
         chainFilter: [],
         chainExit: false
       })]
     };
+
+    const surge = await generateConfig(env, config, "surge", "https://subpilot.example.com/sync/token/");
+    expect(surge.content).toContain("version=6");
 
     for (const target of ["clash", "stash"] as const) {
       const result = await generateConfig(env, config, target, "https://subpilot.example.com/sync/token/");
@@ -305,10 +308,12 @@ describe("generation", () => {
         name: "DMIT",
         type: "snell",
         psk: "secret",
-        version: 4,
+        version: 5,
         reuse: true,
         tfo: true
       });
+      expect(result.content).toContain("version: 5");
+      expect(result.content).not.toContain("version: 6");
       expect(result.content).toContain("reuse: true");
       expect(result.content).not.toContain('reuse: "true"');
     }
@@ -1910,7 +1915,7 @@ describe("generation", () => {
           "server: snell.example.com",
           "port: 44046",
           "psk: secret",
-          "version: 4",
+          "version: 6",
           "obfs-opts:",
           "  mode: http",
           "  host: bing.com",
@@ -1942,8 +1947,9 @@ describe("generation", () => {
       server: "snell.example.com",
       port: 44046,
       psk: "secret",
-      version: 4
+      version: 5
     }));
+    expect(surge.content).toContain("version=6");
   });
 
   it("keeps the manually maintained node when it duplicates an upstream node", async () => {

@@ -7,4 +7,5 @@ dist/
 worker-configuration.d.ts
 .dev.vars
 /wrangler.jsonc
+/AGENTS.md
 *.local

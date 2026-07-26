@@ -24,6 +24,7 @@ SubPilot Worker 项目代码以 [GNU Affero General Public License v3.0 or later
 - 管理端预览可提示被前面规则覆盖、实际不会生效的规则，支持检查 Surge 规则集和 Clash / Stash rule-providers 内容。
 - Clash rule-providers 与 rules 联动：未引用的规则集会自动补入 rules，删除规则集时会同步移除对应规则。
 - 管理自维护代理节点，可标记多个链式出口并自动生成对应链式代理节点。
+- 自维护代理节点使用 Snell 6 时，Surge 输出保留 `version=6`，Clash/mihomo 与 Stash YAML 自动降级输出 `version: 5` 以维持客户端兼容性。
 - 轮换订阅读取 token，生成带稳定文件名的订阅链接。
 - 缓存上游订阅，记录最近订阅拉取时间、User-Agent 和 IP 地理位置。
 - 可配置后台和 Telegram 通知的显示时区；系统内部时间仍按 UTC 保存。

@@ -24,6 +24,7 @@ Third-party dependencies and bundled code keep their original licenses. Upstream
 - Show admin preview warnings for rules shadowed by earlier rules, including Surge rule sets and Clash / Stash rule-provider content.
 - Link Clash rule-providers with rules: unused rule sets are automatically added to rules, and deleting a rule set removes the matching rule.
 - Manage manually maintained proxy nodes, mark multiple chain exits, and automatically generate the matching chain proxy nodes.
+- When a manually maintained proxy node uses Snell 6, Surge output keeps `version=6`, while Clash/mihomo and Stash YAML automatically emit `version: 5` for client compatibility.
 - Rotate the subscription read token and generate subscription links with stable filenames.
 - Cache upstream subscriptions and record recent subscription fetch time, User-Agent, and IP location.
 - Configure the display time zone for the admin UI and Telegram notifications while internal system timestamps remain stored as UTC.
