@@ -1,5 +1,6 @@
 const ENCRYPTED_DNS_PROTOCOLS = new Set(["https:", "h3:", "quic:", "tls:"]);
 const URL_REWRITE_TYPES = new Set(["header", "302", "reject"]);
+const MAP_LOCAL_DATA_TYPES = new Set(["file", "text", "tiny-gif", "base64"]);
 const STASH_SCRIPT_TYPES = new Set(["http-request", "http-response"]);
 
 function emptyValidation() {
@@ -134,6 +135,76 @@ function validateSurgeUrlRewriteLine(line, lineNumber) {
 
 export function validateSurgeUrlRewriteLines(lines) {
   return validateLines(lines, validateSurgeUrlRewriteLine);
+}
+
+export function splitSurgeMapLocalLine(line) {
+  const trimmed = String(line || "").trim();
+  const separator = trimmed.search(/\s/);
+  if (separator <= 0) return null;
+  const pattern = trimmed.slice(0, separator);
+  const rest = trimmed.slice(separator).trim();
+  const options = {};
+  const optionPattern = /([A-Za-z][\w-]*)=(?:"((?:\\.|[^"])*)"|(\S+))/gy;
+  let cursor = 0;
+  while (cursor < rest.length) {
+    optionPattern.lastIndex = cursor;
+    const match = optionPattern.exec(rest);
+    if (!match || match.index !== cursor) return null;
+    const key = String(match[1] || "").toLowerCase();
+    if (key in options) return null;
+    const rawValue = match[2] !== undefined ? unescapeMapLocalValue(match[2]) : (match[3] || "");
+    options[key] = rawValue;
+    cursor = optionPattern.lastIndex;
+    while (cursor < rest.length && /\s/.test(rest[cursor] || "")) cursor += 1;
+  }
+  return Object.keys(options).length > 0 ? { pattern, options } : null;
+}
+
+function unescapeMapLocalValue(value) {
+  try {
+    return JSON.parse(`"${value}"`);
+  } catch {
+    return value;
+  }
+}
+
+function validateSurgeMapLocalLine(line, lineNumber) {
+  const trimmed = String(line || "").trim();
+  const result = emptyValidation();
+  if (!trimmed || trimmed.startsWith("#") || trimmed.startsWith(";")) return result;
+  if (/^\[[^\]]+\]$/.test(trimmed)) {
+    result.errors.push(`第 ${lineNumber} 行不能包含配置段标题`);
+    return result;
+  }
+  const parsed = splitSurgeMapLocalLine(trimmed);
+  if (!parsed) {
+    result.errors.push(`第 ${lineNumber} 行语法无效`);
+    return result;
+  }
+  try {
+    new RegExp(parsed.pattern);
+  } catch {
+    result.errors.push(`第 ${lineNumber} 行正则表达式无效`);
+  }
+  const dataType = parsed.options["data-type"] || "";
+  if (!MAP_LOCAL_DATA_TYPES.has(dataType)) {
+    result.errors.push(`第 ${lineNumber} 行 data-type 必须是 file、text、tiny-gif 或 base64`);
+  }
+  if (dataType !== "tiny-gif" && !Object.hasOwn(parsed.options, "data")) {
+    result.errors.push(`第 ${lineNumber} 行缺少 data 参数`);
+  }
+  const statusCode = parsed.options["status-code"];
+  if (statusCode !== undefined && (!/^\d{3}$/.test(statusCode) || Number(statusCode) < 100 || Number(statusCode) > 599)) {
+    result.errors.push(`第 ${lineNumber} 行 status-code 必须是 100 到 599`);
+  }
+  const allowed = new Set(["data-type", "data", "status-code", "header"]);
+  const unknown = Object.keys(parsed.options).find((key) => !allowed.has(key));
+  if (unknown) result.errors.push(`第 ${lineNumber} 行包含未知参数 ${unknown}`);
+  return result;
+}
+
+export function validateSurgeMapLocalLines(lines) {
+  return validateLines(lines, validateSurgeMapLocalLine);
 }
 
 export function parseStashScriptParams(value) {

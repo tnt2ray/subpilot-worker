@@ -350,4 +350,48 @@ describe("target inference", () => {
     expect(stash.content).toContain("#SUBSCRIBED https://subpilot.example.com/stash-sync/read-token/");
     expect(stash.content).not.toContain("/stash-sync//read-token");
   });
+
+  it("renders configured Tailscale policies and keeps them as valid rule targets", async () => {
+    const result = await generateConfig(makeEnv(), {
+      ...DEFAULT_CONFIG,
+      surge: {
+        ...DEFAULT_CONFIG.surge,
+        tailscaleNodes: [{
+          name: "Office Tailnet",
+          sectionName: "office",
+          authKey: "tskey-auth-test",
+          controlUrl: "https://control.example.com",
+          hostname: "surge-office",
+          derpOnly: true,
+          exitNode: "office-exit.example.ts.net",
+          idleKeepalive: 0,
+          preferIpv6: true,
+          dnsServer: ["100.100.100.100"],
+          mtu: 1380,
+          underlyingProxy: "DIRECT",
+          testUrl: "http://health.office.example.ts.net/",
+          testTimeout: 8,
+          enabled: true
+        }],
+        rules: ["DOMAIN-SUFFIX,example.ts.net,Office Tailnet", "FINAL,DIRECT"]
+      }
+    }, "surge", "https://subpilot.example.com/sync/read-token/");
+
+    expect(result.content).toContain(
+      "Office Tailnet = tailscale, section-name=office, underlying-proxy=DIRECT, test-url=http://health.office.example.ts.net/, test-timeout=8"
+    );
+    expect(result.content).toContain([
+      "[Tailscale office]",
+      "auth-key = tskey-auth-test",
+      "control-url = https://control.example.com",
+      "hostname = surge-office",
+      "derp-only = true",
+      "exit-node = office-exit.example.ts.net",
+      "idle-keepalive = 0",
+      "prefer-ipv6 = true",
+      "dns-server = 100.100.100.100",
+      "mtu = 1380"
+    ].join("\n"));
+    expect(result.content).toContain("DOMAIN-SUFFIX,example.ts.net,Office Tailnet");
+  });
 });

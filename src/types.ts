@@ -50,11 +50,31 @@ export interface SurgeConfig {
   excludeSimpleHostnames: boolean;
   encryptedDnsFollowOutboundMode: boolean;
   ponteDeviceNames: string[];
+  tailscaleNodes: SurgeTailscaleNodeConfig[];
   hosts: string[];
   urlRewrite: string[];
+  mapLocal: string[];
   scripts: string[];
   mitm: SurgeMitmConfig;
   rules: string[];
+}
+
+export interface SurgeTailscaleNodeConfig {
+  name: string;
+  sectionName: string;
+  authKey: string;
+  controlUrl: string;
+  hostname: string;
+  derpOnly: boolean;
+  exitNode: string;
+  idleKeepalive: number;
+  preferIpv6: boolean;
+  dnsServer: string[];
+  mtu: number;
+  underlyingProxy: string;
+  testUrl: string;
+  testTimeout: number;
+  enabled: boolean;
 }
 
 export interface SurgeMitmConfig {

@@ -3,7 +3,7 @@ import { mergeConfigPatch, sanitizeConfigAfterPatch, validateConfigForSave } fro
 import { runKvMigrations } from "./config-schema";
 import { loadConfig, normalizeTarget, readStoredReadToken, saveConfig, withInferredManagedBaseUrl } from "./config-store";
 import { readConfigFetchStats, recordConfigFetch } from "./fetch-stats";
-import { generateConfig, generateForRequest, generateSurgeValidationConfig, inferTarget } from "./generator";
+import { generateConfig, generateForRequest, inferTarget } from "./generator";
 import { handleGeoIpMmdbUpload, readGeoIpMmdbStatus } from "./geoip-admin";
 import { LOGIN_PAGE_HTML } from "./login-page";
 import { extractSubscriptionToken, isUnderManagedBasePath, managedBasePathFromConfig, managedSubscriptionUrl, parseSyncPath } from "./managed-url";
@@ -12,7 +12,6 @@ import { refreshChangedRuleSetCaches, refreshRuleSetCaches } from "./rule-set-co
 import { handleRuleSetApi, handleRuleSetDownload } from "./rule-set-endpoints";
 import { warmCompiledRuleSetWorkerCache } from "./rule-set-worker-cache";
 import { refreshChangedSourceCache, refreshSourceCache } from "./source-cache";
-import { sanitizeSurgeValidationContent } from "./surge-validation-sanitize";
 import { configFileNameForTarget } from "./target-files";
 import { handleTelegramBindCode, handleTelegramUnbind, handleTelegramWebhook, saveConfigWithTelegramWebhook } from "./telegram";
 import { readCachedUpdateStatus, getUpdateStatus } from "./update-check";
@@ -188,19 +187,6 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
     const result = await generateConfig(env, config, target, previewRequestUrl, { includeRuleDiagnostics: true });
     return jsonResponse(result);
   }
-  if (url.pathname === "/api/surge/validate-online" && request.method === "POST") {
-    const body = await request.json().catch(() => ({})) as { content?: string; acknowledgeRisk?: boolean };
-    if (body.acknowledgeRisk !== true) return badRequest("Surge online validation risk acknowledgement is required");
-    if (typeof body.content !== "string" || !body.content.trim()) return badRequest("Missing Surge config content");
-    if (body.content.length > 1_000_000) return badRequest("Surge config content is too large");
-    let validationContent = body.content;
-    if (hasDetachedProfileInclude(body.content)) {
-      const config = await loadConfig(env);
-      validationContent = await generateSurgeValidationConfig(env, config, buildManagedRequestUrl(config, request.url, "validation"));
-    }
-    if (validationContent.length > 1_000_000) return badRequest("Surge config content is too large");
-    return jsonResponse(await validateSurgeOnline(sanitizeSurgeValidationContent(validationContent)));
-  }
   if (url.pathname === "/api/read-token" && request.method === "GET") {
     const token = await getOrCreateReadToken(env);
     return jsonResponse({ token, hash: await sha256Hex(token) });
@@ -210,25 +196,6 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
     return jsonResponse({ token, hash: await sha256Hex(token) });
   }
   return notFound();
-}
-
-async function validateSurgeOnline(content: string): Promise<{ valid: boolean; error?: string }> {
-  const response = await globalThis.fetch("https://services.nssurge.com/v1/config/validate", {
-    method: "POST",
-    headers: { "content-type": "text/plain; charset=utf-8" },
-    body: content
-  });
-  if (!response.ok) throw new Error(`Surge online validator returned HTTP ${response.status}`);
-  const result = await response.json<{ valid?: unknown; error?: { message?: unknown } }>().catch(() => null);
-  if (!result || typeof result.valid !== "boolean") throw new Error("Invalid Surge online validator response");
-  return {
-    valid: result.valid,
-    ...(result.valid ? {} : { error: String(result.error?.message || "Unknown validation error") })
-  };
-}
-
-function hasDetachedProfileInclude(content: string): boolean {
-  return content.split(/\r?\n/).some((line) => line.trim().startsWith("#!include"));
 }
 
 async function handleSync(request: Request, env: Env, ctx: ExecutionContext, managedBasePath: string): Promise<Response> {

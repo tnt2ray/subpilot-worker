@@ -4,6 +4,7 @@ import { splitRuleLine } from "./rule-line";
 import { validateSurgeHosts } from "./surge-hosts";
 import { validateStashScripts } from "./stash-scripts";
 import { validateSurgeUrlRewrite } from "./surge-url-rewrite";
+import { validateSurgeMapLocal } from "./surge-map-local";
 import { SURGE_BUILT_IN_POLICIES, validateSurgeRules } from "./surge-rules";
 import type { AppConfig } from "./types";
 
@@ -14,6 +15,7 @@ export function validateConfigForSave(config: AppConfig): string | null {
     || validateSurgeRules(config)
     || validateSurgeHosts(config)
     || validateSurgeUrlRewrite(config)
+    || validateSurgeMapLocal(config)
     || validateStashScripts(config);
 }
 

@@ -42,7 +42,13 @@ const FINAL_RULE_TYPES = new Set(["FINAL", "MATCH"]);
 const TARGET_IP_RULE_TYPES = new Set(["IP-CIDR", "IP-CIDR6", "GEOIP", "IP-ASN"]);
 const SURGE_EXTENDED_MATCHING_RULE_TYPES = new Set(["DOMAIN", "DOMAIN-SUFFIX", "DOMAIN-KEYWORD", "URL-REGEX"]);
 
-export function rewriteUnavailableGroupRuleTargets(config: AppConfig, rules: string[], nodes: ProxyNode[], groupNames: Set<string>): string[] {
+export function rewriteUnavailableGroupRuleTargets(
+  config: AppConfig,
+  rules: string[],
+  nodes: ProxyNode[],
+  groupNames: Set<string>,
+  extraPolicies: Set<string> = new Set()
+): string[] {
   const disabledGroups = new Set(config.disabledGroups);
   const proxyNames = new Set(nodes.map((node) => node.name));
   return rules.map((rule) => {
@@ -50,7 +56,7 @@ export function rewriteUnavailableGroupRuleTargets(config: AppConfig, rules: str
     const targetIndex = ruleTargetIndex(parts);
     if (targetIndex === null) return rule;
     const target = parts[targetIndex]?.trim() ?? "";
-    if (!target || isAvailableRuleTarget(target, groupNames, disabledGroups, proxyNames)) return rule;
+    if (!target || extraPolicies.has(target) || isAvailableRuleTarget(target, groupNames, disabledGroups, proxyNames)) return rule;
     parts[targetIndex] = "Proxy";
     return parts.join(",");
   });

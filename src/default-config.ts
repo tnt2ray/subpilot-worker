@@ -101,6 +101,7 @@ export const DEFAULT_CONFIG: AppConfig = {
     excludeSimpleHostnames: true,
     encryptedDnsFollowOutboundMode: true,
     ponteDeviceNames: [],
+    tailscaleNodes: [],
     hosts: [],
     urlRewrite: [
       "^https?:\\/\\/.+\\.pangolin-sdk-toutiao\\.com\\/api\\/ad\\/union\\/sdk\\/(get_ads|stats|settings)\\/ - reject",
@@ -120,6 +121,7 @@ export const DEFAULT_CONFIG: AppConfig = {
       "^https?:\\/\\/(ditu|maps).google\\.cn https://maps.google.com 302",
       "^https?:\\/\\/(www.)?(g|google)\\.cn https://www.google.com 302"
     ],
+    mapLocal: [],
     scripts: [
       "京东_开屏去广告 = type=http-response,requires-body=1,max-size=0,pattern=^https?:\\/\\/api\\.m\\.jd\\.com\\/client\\.action\\?functionId=start,script-path=https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/script/startup/startup.js",
       "美团外卖_开屏去广告 = type=http-response,requires-body=1,max-size=0,pattern=^https?:\\/\\/wmapi\\.meituan\\.com\\/api\\/v\\d+\\/loadInfo?,script-path=https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/script/startup/startup.js"

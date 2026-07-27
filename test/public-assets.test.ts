@@ -52,6 +52,12 @@ describe("admin static assets", () => {
     expect(html).toContain('data-page="surge"');
     expect(html).toContain('data-page="clash"');
     expect(html).toContain('id="previewStashBtn"');
+    expect(html).not.toContain('id="validateSurgeOnlineBtn"');
+    expect(app).not.toContain("/api/surge/validate-online");
+    expect(html).toContain('data-surge-tab="mapLocal"');
+    expect(html).toContain('id="surgeMapLocalRows"');
+    expect(app).toContain("validateSurgeMapLocalLines");
+    expect(app).toContain('"mapLocal", "script", "mitm", "tailscale"');
     expect(html).toContain('id="stashMitmHostname"');
     const settingsPageStart = html.indexOf('id="page-settings"');
     const unifiedConfigPageStart = html.indexOf('id="page-unified-config"');

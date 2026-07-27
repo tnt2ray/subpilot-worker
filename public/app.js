@@ -14,9 +14,11 @@ import { parseProxyNodeConfigDraft } from "./app-proxy-node-drafts.js";
 import { groupPreviewWarnings, simplifyPreviewRuleSetNames } from "./app-preview-warnings.js";
 import {
   splitSurgeHostLine,
+  splitSurgeMapLocalLine,
   splitSurgeUrlRewriteLine,
   validateStashScriptLines,
   validateSurgeHostLines,
+  validateSurgeMapLocalLines,
   validateSurgeUrlRewriteLines
 } from "./app-validation.js";
 import {
@@ -39,10 +41,8 @@ let statusStatsRefreshVersion = 0;
 let fetchRecordsPage = 1;
 let geoIpMmdbStatus = { uploaded: false };
 let currentReadToken = "";
-let currentPreviewTarget = "";
 let currentPreviewContent = "";
 let previewLoadingTarget = "";
-let surgeValidationRunning = false;
 let saveStatusResetTimer = 0;
 let telegramBindPollTimer = 0;
 let codeMirrorLoadPromise = null;
@@ -126,6 +126,8 @@ const refs = {
   surgeEncryptedDnsFollowOutboundModeRow: $("surgeEncryptedDnsFollowOutboundModeRow"),
   surgeEncryptedDnsFollowOutboundMode: $("surgeEncryptedDnsFollowOutboundMode"),
   surgePonteDeviceNames: $("surgePonteDeviceNames"),
+  addSurgeTailscaleNodeBtn: $("addSurgeTailscaleNodeBtn"),
+  surgeTailscaleNodeRows: $("surgeTailscaleNodeRows"),
   surgeHostAdvancedMode: $("surgeHostAdvancedMode"),
   surgeHostStructuredEditor: $("surgeHostStructuredEditor"),
   addSurgeHostBtn: $("addSurgeHostBtn"),
@@ -140,6 +142,14 @@ const refs = {
   surgeUrlRewriteValidation: $("surgeUrlRewriteValidation"),
   surgeUrlRewrite: $("surgeUrlRewrite"),
   surgeUrlRewriteLabel: document.querySelector('label[for="surgeUrlRewrite"]'),
+  surgeMapLocalAdvancedMode: $("surgeMapLocalAdvancedMode"),
+  surgeMapLocalStructuredEditor: $("surgeMapLocalStructuredEditor"),
+  surgeMapLocalStructuredActions: $("surgeMapLocalStructuredActions"),
+  addSurgeMapLocalBtn: $("addSurgeMapLocalBtn"),
+  surgeMapLocalRows: $("surgeMapLocalRows"),
+  surgeMapLocalValidation: $("surgeMapLocalValidation"),
+  surgeMapLocal: $("surgeMapLocal"),
+  surgeMapLocalLabel: document.querySelector('label[for="surgeMapLocal"]'),
   surgeScripts: $("surgeScripts"),
   surgeScriptValidation: $("surgeScriptValidation"),
   surgeMitmSkipServerCertVerify: $("surgeMitmSkipServerCertVerify"),
@@ -243,8 +253,7 @@ const refs = {
   previewSurgeBtn: $("previewSurgeBtn"),
   previewClashBtn: $("previewClashBtn"),
   previewStashBtn: $("previewStashBtn"),
-  validateSurgeOnlineBtn: $("validateSurgeOnlineBtn"),
-  surgeOnlineValidation: $("surgeOnlineValidation"),
+  previewWarnings: $("previewWarnings"),
   summarySources: $("summarySources"),
   summaryGroups: $("summaryGroups"),
   summarySourceCache: $("summarySourceCache"),
@@ -665,7 +674,7 @@ function handleUnifiedConfigTabKeydown(event) {
 }
 
 function showSurgeTab(tab) {
-  const requestedTab = ["general", "host", "urlRewrite", "script", "mitm", "ponte", "rule"].includes(tab) ? tab : "general";
+  const requestedTab = ["general", "host", "urlRewrite", "mapLocal", "script", "mitm", "tailscale", "ponte", "rule"].includes(tab) ? tab : "general";
   const nextTab = isRuleSetModeEnabled() && requestedTab === "rule" ? "general" : requestedTab;
   document.querySelectorAll("[data-surge-tab]").forEach((button) => {
     const active = button.dataset.surgeTab === nextTab;
@@ -1051,6 +1060,7 @@ function renderSettings() {
 function renderSurge() {
   const advancedHostMode = isModeTogglePressed(refs.surgeHostAdvancedMode);
   const advancedUrlRewriteMode = isModeTogglePressed(refs.surgeUrlRewriteAdvancedMode);
+  const advancedMapLocalMode = isModeTogglePressed(refs.surgeMapLocalAdvancedMode);
   const advancedRuleMode = isModeTogglePressed(refs.surgeRuleAdvancedMode);
   refs.surgeSkipProxy.value = state.surge.skipProxy.join(", ");
   refs.surgeDnsServer.value = state.surge.dnsServer.join(", ");
@@ -1070,6 +1080,7 @@ function renderSurge() {
   refs.surgeEncryptedDnsFollowOutboundMode.checked = state.surge.encryptedDnsFollowOutboundMode;
   syncSurgeEncryptedDnsFollowOutboundModeVisibility();
   refs.surgePonteDeviceNames.value = normalizePonteDeviceNames(state.surge.ponteDeviceNames || []).join(", ");
+  renderSurgeTailscaleNodes(state.surge.tailscaleNodes || []);
   renderSurgeHostRows(state.surge.hosts || []);
   if (advancedHostMode) {
     refs.surgeHosts.value = linesToText(state.surge.hosts || []);
@@ -1082,6 +1093,12 @@ function renderSurge() {
   }
   setModeTogglePressed(refs.surgeUrlRewriteAdvancedMode, advancedUrlRewriteMode);
   syncSurgeUrlRewriteMode();
+  renderSurgeMapLocalRows(state.surge.mapLocal || []);
+  if (advancedMapLocalMode) {
+    refs.surgeMapLocal.value = linesToText(state.surge.mapLocal || []);
+  }
+  setModeTogglePressed(refs.surgeMapLocalAdvancedMode, advancedMapLocalMode);
+  syncSurgeMapLocalMode();
   refs.surgeScripts.value = linesToText(state.surge.scripts || []);
   refs.surgeMitmSkipServerCertVerify.checked = state.surge.mitm?.skipServerCertVerify !== false;
   refs.surgeMitmH2.checked = state.surge.mitm?.h2 !== false;
@@ -2562,6 +2579,202 @@ function handleSurgeUrlRewriteListChange(event) {
   updateSurgeUrlRewriteOutput();
 }
 
+function renderSurgeMapLocalValidation(validation) {
+  const messages = [
+    ...(validation?.errors || []).map((message) => ({ type: "error", message })),
+    ...(validation?.warnings || []).map((message) => ({ type: "warning", message }))
+  ];
+  refs.surgeMapLocalValidation.classList.toggle("hidden", messages.length === 0);
+  refs.surgeMapLocalValidation.innerHTML = messages
+    .map(({ type, message }) => `<div class="${type}">${escapeHtml(message)}</div>`)
+    .join("");
+}
+
+function currentSurgeMapLocalLines() {
+  return isModeTogglePressed(refs.surgeMapLocalAdvancedMode)
+    ? textToLines(refs.surgeMapLocal.value)
+    : buildSurgeMapLocalLines(readSurgeMapLocalRows());
+}
+
+function validateCurrentSurgeMapLocal() {
+  const validation = validateSurgeMapLocalLines(currentSurgeMapLocalLines());
+  renderSurgeMapLocalValidation(validation);
+  return validation;
+}
+
+function parseSurgeMapLocalEditorLine(line) {
+  const parsed = splitSurgeMapLocalLine(line);
+  if (!parsed) return null;
+  return {
+    pattern: parsed.pattern,
+    dataType: parsed.options["data-type"] || "text",
+    data: parsed.options.data || "",
+    statusCode: parsed.options["status-code"] || "",
+    header: parsed.options.header || ""
+  };
+}
+
+function defaultSurgeMapLocal() {
+  return { pattern: "", dataType: "text", data: "", statusCode: "", header: "" };
+}
+
+function renderSurgeMapLocalDataTypeOptions(selected) {
+  return ["file", "text", "tiny-gif", "base64"]
+    .map((type) => `<option value="${type}"${type === selected ? " selected" : ""}>${type}</option>`)
+    .join("");
+}
+
+function renderSurgeMapLocalRow(rule) {
+  const normalized = rule || defaultSurgeMapLocal();
+  const dataType = ["file", "text", "tiny-gif", "base64"].includes(normalized.dataType) ? normalized.dataType : "text";
+  const dataDisabled = dataType === "tiny-gif" ? " disabled" : "";
+  return `
+    <div class="surge-map-local-row" data-surge-map-local>
+      <div class="surge-map-local-grid">
+        <label class="surge-map-local-pattern">
+          <span>${escapeHtml(t("surgeMapLocalPattern"))}</span>
+          ${inputWithTitle(`data-surge-map-local-part="pattern" placeholder="^https?:\\/\\/example\\.com\\/api"`, normalized.pattern || "")}
+        </label>
+        <label>
+          <span>${escapeHtml(t("surgeMapLocalDataType"))}</span>
+          <select data-surge-map-local-part="dataType">${renderSurgeMapLocalDataTypeOptions(dataType)}</select>
+        </label>
+        <label>
+          <span>${escapeHtml(t("surgeMapLocalStatusCode"))}</span>
+          <input data-surge-map-local-part="statusCode" type="number" min="100" max="599" placeholder="200" value="${escapeHtml(normalized.statusCode || "")}">
+        </label>
+        <label class="surge-map-local-wide">
+          <span>${escapeHtml(t("surgeMapLocalData"))}</span>
+          <textarea data-surge-map-local-part="data" rows="3"${dataDisabled}>${escapeHtml(normalized.data || "")}</textarea>
+          <small>${escapeHtml(t("surgeMapLocalDataHelp"))}</small>
+        </label>
+        <label class="surge-map-local-wide">
+          <span>${escapeHtml(t("surgeMapLocalHeader"))}</span>
+          <input data-surge-map-local-part="header" value="${escapeHtml(normalized.header || "")}" placeholder="Content-Type:application/json|X-Mock:true">
+          <small>${escapeHtml(t("surgeMapLocalHeaderHelp"))}</small>
+        </label>
+      </div>
+      <div class="surge-map-local-actions">
+        <button class="btn" data-surge-map-local-move="up" type="button">${escapeHtml(t("moveUp"))}</button>
+        <button class="btn" data-surge-map-local-move="down" type="button">${escapeHtml(t("moveDown"))}</button>
+        <button class="danger" data-surge-map-local-remove type="button">${escapeHtml(t("remove"))}</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderSurgeMapLocalEmpty() {
+  return `<div class="surge-map-local-empty">${escapeHtml(t("surgeMapLocalNoRows"))}</div>`;
+}
+
+function renderSurgeMapLocalRows(lines) {
+  const rules = (lines || []).map(parseSurgeMapLocalEditorLine).filter(Boolean);
+  refs.surgeMapLocalRows.innerHTML = rules.length > 0
+    ? rules.map(renderSurgeMapLocalRow).join("")
+    : renderSurgeMapLocalEmpty();
+  updateSurgeMapLocalOutput();
+}
+
+function readSurgeMapLocalRow(row) {
+  return {
+    pattern: row.querySelector('[data-surge-map-local-part="pattern"]')?.value.trim() || "",
+    dataType: row.querySelector('[data-surge-map-local-part="dataType"]')?.value || "text",
+    data: row.querySelector('[data-surge-map-local-part="data"]')?.value || "",
+    statusCode: row.querySelector('[data-surge-map-local-part="statusCode"]')?.value.trim() || "",
+    header: row.querySelector('[data-surge-map-local-part="header"]')?.value.trim() || ""
+  };
+}
+
+function readSurgeMapLocalRows() {
+  return Array.from(refs.surgeMapLocalRows.querySelectorAll("[data-surge-map-local]")).map(readSurgeMapLocalRow);
+}
+
+function buildSurgeMapLocalLine(rule) {
+  const pattern = String(rule.pattern || "").trim();
+  const dataType = String(rule.dataType || "text").trim().toLowerCase();
+  if (!pattern) return "";
+  const parts = [pattern, `data-type=${dataType}`];
+  if (dataType !== "tiny-gif") parts.push(`data=${JSON.stringify(String(rule.data || ""))}`);
+  const statusCode = String(rule.statusCode || "").trim();
+  if (statusCode) parts.push(`status-code=${statusCode}`);
+  const header = String(rule.header || "").trim();
+  if (header) parts.push(`header=${JSON.stringify(header)}`);
+  return parts.join(" ");
+}
+
+function buildSurgeMapLocalLines(rules) {
+  return (rules || []).map(buildSurgeMapLocalLine).filter(Boolean);
+}
+
+function updateSurgeMapLocalOutput() {
+  if (!isModeTogglePressed(refs.surgeMapLocalAdvancedMode)) {
+    refs.surgeMapLocal.value = buildSurgeMapLocalLines(readSurgeMapLocalRows()).join("\n");
+  }
+  syncConfigCodeEditor(refs.surgeMapLocal);
+  validateCurrentSurgeMapLocal();
+}
+
+function syncSurgeMapLocalMode() {
+  const advanced = isModeTogglePressed(refs.surgeMapLocalAdvancedMode);
+  refs.surgeMapLocalStructuredEditor.classList.toggle("hidden", advanced);
+  refs.surgeMapLocalStructuredActions.classList.toggle("hidden", advanced);
+  refs.surgeMapLocal.readOnly = !advanced;
+  refs.surgeMapLocal.classList.toggle("advanced", advanced);
+  syncTextModeLabels(refs.surgeMapLocalAdvancedMode, refs.surgeMapLocalLabel, advanced);
+  syncConfigCodeEditor(refs.surgeMapLocal);
+  validateCurrentSurgeMapLocal();
+}
+
+function toggleSurgeMapLocalAdvancedMode() {
+  const advanced = !isModeTogglePressed(refs.surgeMapLocalAdvancedMode);
+  setModeTogglePressed(refs.surgeMapLocalAdvancedMode, advanced);
+  if (!advanced) renderSurgeMapLocalRows(textToLines(refs.surgeMapLocal.value));
+  syncSurgeMapLocalMode();
+}
+
+function addSurgeMapLocal() {
+  refs.surgeMapLocalRows.querySelector(".surge-map-local-empty")?.remove();
+  refs.surgeMapLocalRows.insertAdjacentHTML("beforeend", renderSurgeMapLocalRow(defaultSurgeMapLocal()));
+  updateSurgeMapLocalOutput();
+}
+
+function ensureSurgeMapLocalEmptyState() {
+  if (refs.surgeMapLocalRows.querySelector("[data-surge-map-local]")) return;
+  refs.surgeMapLocalRows.innerHTML = renderSurgeMapLocalEmpty();
+}
+
+function handleSurgeMapLocalListClick(event) {
+  const target = event.target instanceof Element ? event.target : null;
+  const row = target?.closest("[data-surge-map-local]");
+  if (!row) return;
+  if (target.closest("[data-surge-map-local-remove]")) {
+    row.remove();
+    ensureSurgeMapLocalEmptyState();
+    updateSurgeMapLocalOutput();
+    return;
+  }
+  const move = target.closest("[data-surge-map-local-move]")?.dataset.surgeMapLocalMove;
+  if (move === "up") {
+    const previous = row.previousElementSibling?.matches("[data-surge-map-local]") ? row.previousElementSibling : null;
+    if (previous) refs.surgeMapLocalRows.insertBefore(row, previous);
+  } else if (move === "down") {
+    const next = row.nextElementSibling?.matches("[data-surge-map-local]") ? row.nextElementSibling : null;
+    if (next) refs.surgeMapLocalRows.insertBefore(next, row);
+  }
+  updateSurgeMapLocalOutput();
+}
+
+function handleSurgeMapLocalListChange(event) {
+  const target = event.target instanceof Element ? event.target : null;
+  const row = target?.closest("[data-surge-map-local]");
+  if (!row) return;
+  if (target.matches('[data-surge-map-local-part="dataType"]')) {
+    const data = row.querySelector('[data-surge-map-local-part="data"]');
+    if (data) data.disabled = target.value === "tiny-gif";
+  }
+  updateSurgeMapLocalOutput();
+}
+
 function splitSurgeRuleLine(line) {
   const parts = [];
   let current = "";
@@ -2582,9 +2795,12 @@ function splitSurgeRuleLine(line) {
 
 function surgePolicyCandidates() {
   const groups = groupEntries().map(([name]) => name);
+  const tailscalePolicies = readSurgeTailscaleNodeRows()
+    .filter((node) => node.enabled && node.name && node.authKey)
+    .map((node) => node.name);
   const ponteDevices = normalizePonteDeviceNames(state?.surge?.ponteDeviceNames || [])
     .map((name) => `DEVICE:${name}`);
-  return [...new Set([...groups, ...SUBNET_BUILT_IN_POLICIES, ...ponteDevices])];
+  return [...new Set([...groups, ...tailscalePolicies, ...SUBNET_BUILT_IN_POLICIES, ...ponteDevices])];
 }
 
 function normalizeSurgeRulePolicy(policy) {
@@ -2616,6 +2832,102 @@ function normalizePonteDeviceNames(value) {
   return [...new Set(items
     .map((item) => String(item).trim().replace(/^DEVICE:/i, "").trim())
     .filter((item) => item && !/[,\r\n[\]]/.test(item)))];
+}
+
+function defaultSurgeTailscaleNode(index = 0) {
+  return {
+    name: `Tailscale ${index + 1}`,
+    sectionName: `tailscale-${index + 1}`,
+    authKey: "",
+    controlUrl: "",
+    hostname: "",
+    derpOnly: false,
+    exitNode: "none",
+    idleKeepalive: 600,
+    preferIpv6: false,
+    dnsServer: [],
+    mtu: 1280,
+    underlyingProxy: "",
+    testUrl: "",
+    testTimeout: 5,
+    enabled: true
+  };
+}
+
+function renderSurgeTailscaleNode(node) {
+  return `<div class="surge-tailscale-card" data-surge-tailscale-node>
+    <div class="surge-tailscale-card-head">
+      <label class="check"><input data-tailscale-field="enabled" type="checkbox"${node.enabled !== false ? " checked" : ""}> <span>${escapeHtml(t("surgeTailscaleEnabled"))}</span></label>
+      <button class="btn danger" type="button" data-tailscale-action="delete">${escapeHtml(t("surgeTailscaleDelete"))}</button>
+    </div>
+    <div class="surge-tailscale-grid">
+      <label><span>${escapeHtml(t("surgeTailscaleName"))}</span><input data-tailscale-field="name" value="${escapeHtml(node.name || "")}" required></label>
+      <label><span>${escapeHtml(t("surgeTailscaleSectionName"))}</span><input data-tailscale-field="sectionName" value="${escapeHtml(node.sectionName || "")}" required></label>
+      <label class="surge-tailscale-wide"><span>${escapeHtml(t("surgeTailscaleAuthKey"))}</span><input data-tailscale-field="authKey" type="password" value="${escapeHtml(node.authKey || "")}" autocomplete="new-password"></label>
+      <label class="surge-tailscale-wide"><span>${escapeHtml(t("surgeTailscaleControlUrl"))}</span><input data-tailscale-field="controlUrl" type="url" value="${escapeHtml(node.controlUrl || "")}" placeholder="https://controlplane.tailscale.com"></label>
+      <label><span>${escapeHtml(t("surgeTailscaleHostname"))}</span><input data-tailscale-field="hostname" value="${escapeHtml(node.hostname || "")}"></label>
+      <label><span>${escapeHtml(t("surgeTailscaleExitNode"))}</span><input data-tailscale-field="exitNode" value="${escapeHtml(node.exitNode || "none")}" placeholder="none / auto / node name"></label>
+      <label><span>${escapeHtml(t("surgeTailscaleUnderlyingProxy"))}</span><input data-tailscale-field="underlyingProxy" value="${escapeHtml(node.underlyingProxy || "")}" placeholder="DIRECT"></label>
+      <label><span>${escapeHtml(t("surgeTailscaleDnsServer"))}</span><input data-tailscale-field="dnsServer" value="${escapeHtml((node.dnsServer || []).join(", "))}"></label>
+      <label><span>${escapeHtml(t("surgeTailscaleIdleKeepalive"))}</span><input data-tailscale-field="idleKeepalive" type="number" min="-1" max="86400" value="${Number(node.idleKeepalive ?? 600)}"></label>
+      <label><span>${escapeHtml(t("surgeTailscaleMtu"))}</span><input data-tailscale-field="mtu" type="number" min="576" max="1420" value="${Number(node.mtu || 1280)}"></label>
+      <label><span>${escapeHtml(t("surgeTailscaleTestUrl"))}</span><input data-tailscale-field="testUrl" type="url" value="${escapeHtml(node.testUrl || "")}"></label>
+      <label><span>${escapeHtml(t("surgeTailscaleTestTimeout"))}</span><input data-tailscale-field="testTimeout" type="number" min="1" max="60" value="${Number(node.testTimeout || 5)}"></label>
+    </div>
+    <div class="surge-tailscale-checks">
+      <label class="check"><input data-tailscale-field="derpOnly" type="checkbox"${node.derpOnly ? " checked" : ""}> <span>${escapeHtml(t("surgeTailscaleDerpOnly"))}</span></label>
+      <label class="check"><input data-tailscale-field="preferIpv6" type="checkbox"${node.preferIpv6 ? " checked" : ""}> <span>${escapeHtml(t("surgeTailscalePreferIpv6"))}</span></label>
+    </div>
+  </div>`;
+}
+
+function renderSurgeTailscaleNodes(nodes) {
+  refs.surgeTailscaleNodeRows.innerHTML = nodes.length
+    ? nodes.map(renderSurgeTailscaleNode).join("")
+    : `<div class="subnet-rule-empty">${escapeHtml(t("surgeTailscaleEmpty"))}</div>`;
+}
+
+function readSurgeTailscaleNodeRows() {
+  if (!refs.surgeTailscaleNodeRows) return [];
+  return [...refs.surgeTailscaleNodeRows.querySelectorAll("[data-surge-tailscale-node]")].map((row) => {
+    const field = (name) => row.querySelector(`[data-tailscale-field="${name}"]`);
+    return {
+      name: field("name").value.trim(),
+      sectionName: field("sectionName").value.trim(),
+      authKey: field("authKey").value.trim(),
+      controlUrl: field("controlUrl").value.trim(),
+      hostname: field("hostname").value.trim(),
+      derpOnly: field("derpOnly").checked,
+      exitNode: field("exitNode").value.trim() || "none",
+      idleKeepalive: Number(field("idleKeepalive").value),
+      preferIpv6: field("preferIpv6").checked,
+      dnsServer: field("dnsServer").value.split(",").map((item) => item.trim()).filter(Boolean),
+      mtu: Number(field("mtu").value),
+      underlyingProxy: field("underlyingProxy").value.trim(),
+      testUrl: field("testUrl").value.trim(),
+      testTimeout: Number(field("testTimeout").value),
+      enabled: field("enabled").checked
+    };
+  });
+}
+
+function validateSurgeTailscaleNodes() {
+  const nodes = readSurgeTailscaleNodeRows();
+  const names = new Set();
+  const sections = new Set();
+  const valid = nodes.every((node) => {
+    const nodeValid = Boolean(node.name && node.sectionName && (!node.enabled || node.authKey))
+      && !/[=,\r\n[\]]/.test(node.name)
+      && !/[\s=,\r\n[\]]/.test(node.sectionName)
+      && !names.has(node.name)
+      && !sections.has(node.sectionName)
+      && node.mtu >= 576 && node.mtu <= 1420
+      && node.testTimeout >= 1 && node.testTimeout <= 60;
+    names.add(node.name);
+    sections.add(node.sectionName);
+    return nodeValid;
+  });
+  return { valid, nodes };
 }
 
 function validateSurgeRuleLine(line, lineNumber) {
@@ -4466,12 +4778,16 @@ function readSurgeDraft() {
     excludeSimpleHostnames: refs.surgeExcludeSimpleHostnames.checked,
     encryptedDnsFollowOutboundMode: encryptedDnsServer.length > 0 && refs.surgeEncryptedDnsFollowOutboundMode.checked,
     ponteDeviceNames: normalizePonteDeviceNames(refs.surgePonteDeviceNames.value),
+    tailscaleNodes: readSurgeTailscaleNodeRows(),
     hosts: isModeTogglePressed(refs.surgeHostAdvancedMode)
       ? textToLines(refs.surgeHosts.value)
       : buildSurgeHostLines(readSurgeHostRows()),
     urlRewrite: isModeTogglePressed(refs.surgeUrlRewriteAdvancedMode)
       ? textToLines(refs.surgeUrlRewrite.value)
       : buildSurgeUrlRewriteLines(readSurgeUrlRewriteRows()),
+    mapLocal: isModeTogglePressed(refs.surgeMapLocalAdvancedMode)
+      ? textToLines(refs.surgeMapLocal.value)
+      : buildSurgeMapLocalLines(readSurgeMapLocalRows()),
     scripts: textToLines(refs.surgeScripts.value),
     mitm: {
       ...state.surge.mitm,
@@ -5076,6 +5392,11 @@ async function saveActivePage(page = activePage) {
       }
       patch = buildUnifiedCommonPatch(common, ensureRuleSets());
     } else if (page === "surge") {
+      const tailscaleValidation = validateSurgeTailscaleNodes();
+      if (!tailscaleValidation.valid) {
+        window.alert(t("surgeTailscaleValidationError"));
+        return;
+      }
       const hostValidation = validateCurrentSurgeHosts();
       if (hostValidation.errors.length > 0) {
         setSaveStatus("idle");
@@ -5086,6 +5407,12 @@ async function saveActivePage(page = activePage) {
       if (urlRewriteValidation.errors.length > 0) {
         setSaveStatus("idle");
         window.alert(t("surgeUrlRewriteValidationError"));
+        return;
+      }
+      const mapLocalValidation = validateCurrentSurgeMapLocal();
+      if (mapLocalValidation.errors.length > 0) {
+        setSaveStatus("idle");
+        window.alert(t("surgeMapLocalValidationError"));
         return;
       }
       const scriptValidation = validateCurrentSurgeScripts();
@@ -5585,24 +5912,21 @@ function formatDateInTimeZone(date, timeZone) {
   return `${values.year}-${values.month}-${values.day} ${values.hour}:${values.minute}:${values.second}`;
 }
 
-async function preview(target, options = {}) {
+async function preview(target) {
   previewLoadingTarget = target;
   updatePreviewControls();
   setPreviewOutput(formatMessage("previewLoading", { target: PREVIEW_TARGET_LABELS[target] || target }), true);
-  refs.surgeOnlineValidation.classList.add("hidden");
-  refs.surgeOnlineValidation.innerHTML = "";
+  refs.previewWarnings.classList.add("hidden");
+  refs.previewWarnings.innerHTML = "";
   try {
     const result = await request(`/api/preview?target=${target}`, { method: "POST", body: "{}" });
-    currentPreviewTarget = target;
     currentPreviewContent = result.content || "";
     setPreviewOutput(currentPreviewContent, !currentPreviewContent);
     renderPreviewWarnings(Array.isArray(result.warnings) ? result.warnings : []);
     return currentPreviewContent;
   } catch (error) {
-    currentPreviewTarget = "";
     currentPreviewContent = "";
     setPreviewOutput(`${t("previewFailed")}${error instanceof Error ? error.message : String(error)}`, true);
-    if (options.propagateError) throw error;
     return "";
   } finally {
     previewLoadingTarget = "";
@@ -5612,13 +5936,13 @@ async function preview(target, options = {}) {
 
 function renderPreviewWarnings(warnings) {
   if (!warnings.length) {
-    refs.surgeOnlineValidation.classList.add("hidden");
-    refs.surgeOnlineValidation.innerHTML = "";
+    refs.previewWarnings.classList.add("hidden");
+    refs.previewWarnings.innerHTML = "";
     return;
   }
   const groups = groupPreviewWarnings(warnings);
-  refs.surgeOnlineValidation.classList.remove("hidden");
-  refs.surgeOnlineValidation.innerHTML = [
+  refs.previewWarnings.classList.remove("hidden");
+  refs.previewWarnings.innerHTML = [
     `<div class="warning">${escapeHtml(t("previewWarnings"))}</div>`,
     ...groups.map((group) => renderPreviewWarningGroup(group))
   ].join("");
@@ -5647,39 +5971,6 @@ function updatePreviewControls() {
     if (!button) continue;
     button.disabled = loading;
     button.textContent = PREVIEW_TARGET_LABELS[target];
-  }
-  refs.validateSurgeOnlineBtn.disabled = loading || surgeValidationRunning;
-}
-
-function renderSurgeOnlineValidation(type, message) {
-  refs.surgeOnlineValidation.classList.remove("hidden");
-  refs.surgeOnlineValidation.innerHTML = `<div class="${type}">${escapeHtml(message)}</div>`;
-}
-
-async function validateSurgeOnline() {
-  if (!window.confirm(t("validateSurgeOnlineRisk"))) return;
-  surgeValidationRunning = true;
-  updatePreviewControls();
-  renderSurgeOnlineValidation("warning", t("validateSurgeOnlineRunning"));
-  try {
-    if (currentPreviewTarget !== "surge" || !currentPreviewContent) {
-      await preview("surge", { propagateError: true });
-      renderSurgeOnlineValidation("warning", t("validateSurgeOnlineRunning"));
-    }
-    const result = await request("/api/surge/validate-online", {
-      method: "POST",
-      body: JSON.stringify({ content: currentPreviewContent, acknowledgeRisk: true })
-    });
-    if (result.valid) {
-      renderSurgeOnlineValidation("success", t("validateSurgeOnlinePassed"));
-    } else {
-      renderSurgeOnlineValidation("error", `${t("validateSurgeOnlineFailed")}${result.error || "Unknown error"}`);
-    }
-  } catch (error) {
-    renderSurgeOnlineValidation("error", `${t("validateSurgeOnlineFailed")}${error instanceof Error ? error.message : String(error)}`);
-  } finally {
-    surgeValidationRunning = false;
-    updatePreviewControls();
   }
 }
 
@@ -5749,7 +6040,6 @@ refs.links.addEventListener("click", copyLink);
 refs.previewSurgeBtn.addEventListener("click", () => preview("surge"));
 refs.previewClashBtn.addEventListener("click", () => preview("clash"));
 refs.previewStashBtn.addEventListener("click", () => preview("stash"));
-refs.validateSurgeOnlineBtn.addEventListener("click", validateSurgeOnline);
 refs.uploadGeoIpMmdbBtn.addEventListener("click", uploadGeoIpMmdb);
 refs.notificationTelegramBotToken.addEventListener("input", () => {
   stopTelegramBindPolling();
@@ -5775,6 +6065,12 @@ refs.surgeUrlRewriteRows.addEventListener("click", handleSurgeUrlRewriteListClic
 refs.surgeUrlRewriteRows.addEventListener("input", updateSurgeUrlRewriteOutput);
 refs.surgeUrlRewriteRows.addEventListener("change", handleSurgeUrlRewriteListChange);
 refs.surgeUrlRewrite.addEventListener("input", validateCurrentSurgeUrlRewrite);
+refs.surgeMapLocalAdvancedMode.addEventListener("click", toggleSurgeMapLocalAdvancedMode);
+refs.addSurgeMapLocalBtn.addEventListener("click", addSurgeMapLocal);
+refs.surgeMapLocalRows.addEventListener("click", handleSurgeMapLocalListClick);
+refs.surgeMapLocalRows.addEventListener("input", updateSurgeMapLocalOutput);
+refs.surgeMapLocalRows.addEventListener("change", handleSurgeMapLocalListChange);
+refs.surgeMapLocal.addEventListener("input", validateCurrentSurgeMapLocal);
 refs.surgeRuleAdvancedMode.addEventListener("click", toggleSurgeRuleAdvancedMode);
 refs.addSurgeRuleBtn.addEventListener("click", () => addSurgeRule("single"));
 refs.addSurgeRuleSetBtn.addEventListener("click", () => addSurgeRule("rule-set"));
@@ -5800,6 +6096,21 @@ refs.generateSurgeMitmCaPassphraseBtn.addEventListener("click", generateSurgeMit
 refs.surgeMitmCaP12File.addEventListener("change", importSurgeMitmCaP12);
 refs.surgeRules.addEventListener("input", validateCurrentSurgeRules);
 refs.surgePonteDeviceNames.addEventListener("input", syncSurgePonteDeviceNames);
+refs.addSurgeTailscaleNodeBtn.addEventListener("click", () => {
+  const nodes = readSurgeTailscaleNodeRows();
+  nodes.push(defaultSurgeTailscaleNode(nodes.length));
+  renderSurgeTailscaleNodes(nodes);
+  updateSaveAvailability();
+});
+refs.surgeTailscaleNodeRows.addEventListener("click", (event) => {
+  const button = event.target instanceof Element ? event.target.closest('[data-tailscale-action="delete"]') : null;
+  if (!button) return;
+  button.closest("[data-surge-tailscale-node]")?.remove();
+  if (readSurgeTailscaleNodeRows().length === 0) renderSurgeTailscaleNodes([]);
+  updateSaveAvailability();
+});
+refs.surgeTailscaleNodeRows.addEventListener("input", updateSaveAvailability);
+refs.surgeTailscaleNodeRows.addEventListener("change", updateSaveAvailability);
 refs.stashHosts.addEventListener("input", validateCurrentStashHosts);
 refs.stashUrlRewrite.addEventListener("input", validateCurrentStashUrlRewrite);
 refs.stashScripts.addEventListener("input", validateCurrentStashScripts);

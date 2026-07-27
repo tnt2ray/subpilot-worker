@@ -9,7 +9,7 @@ import { parseSubscription } from "./parsers";
 import { buildCompiledRuleSetReferencePlan, type CompiledRuleSetReferencePlan } from "./rule-set-compiler";
 import type { RuleSetOutputTarget } from "./rule-set-types";
 import { fetchCachedSource, sourceUserAgent } from "./source-cache";
-import { buildSurge, buildSurgeValidationProfile } from "./surge-renderer";
+import { buildSurge } from "./surge-renderer";
 import { collectSurgeRuleCoverageWarnings } from "./surge-rules";
 import type { AppConfig, GenerationResult, HostEntry, ProxyNode, Target } from "./types";
 
@@ -90,11 +90,6 @@ function buildTargetContent(
   if (target === "surge") return buildSurge(config, nodes, hostEntries, requestUrl, ruleSetPlan);
   if (target === "stash") return buildStash(config, nodes, hostEntries, requestUrl, warnings, ruleSetPlan);
   return buildClash(config, nodes, hostEntries, ruleSetPlan);
-}
-
-export async function generateSurgeValidationConfig(env: Env, config: AppConfig, requestUrl: string): Promise<string> {
-  const prepared = await prepareOutput(env, config, "surge", requestUrl);
-  return buildSurgeValidationProfile(config, prepared.nodes, prepared.hostEntries, requestUrl);
 }
 
 async function prepareOutput(env: Env, config: AppConfig, target: RuleSetOutputTarget, requestUrl: string): Promise<PreparedOutput> {

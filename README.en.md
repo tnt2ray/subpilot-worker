@@ -18,7 +18,7 @@ Third-party dependencies and bundled code keep their original licenses. Upstream
 - Generate Surge, Clash/mihomo, and Stash target configurations; Shadowrocket clients receive Clash YAML after User-Agent detection.
 - Select the output target automatically from the client User-Agent.
 - Maintain Surge, Clash, and Stash feature settings through structured fields instead of editing full templates.
-- Manage policy groups, policy rules, rule sets, DNS, TUN, MITM, and URL Rewrite settings.
+- Manage policy groups, policy rules, rule sets, DNS, TUN, MITM, URL Rewrite, and Surge Map Local settings.
 - Switch to unified rule mode to compile, deduplicate, and cache routing rule sets shared by Surge, Clash, and Stash.
 - Provide structured rule editors for Surge, Clash, and Stash, while keeping a text mode for direct edits.
 - Show admin preview warnings for rules shadowed by earlier rules, including Surge rule sets and Clash / Stash rule-provider content.
@@ -242,6 +242,10 @@ FINAL,Proxy
 ```
 
 Surge composite rule types such as `SUBNET`, `AND`, `OR`, and `NOT` can be selected in the structured editor or edited directly in text mode. Ponte device names generate `DEVICE:<name>` policy targets, which can be selected in rules after saving.
+
+The `Tailscale` tab on the Surge page manages multiple Tailscale outbound nodes. Each enabled node generates a `tailscale` policy in `[Proxy]` and a matching `[Tailscale <section-name>]` section; its policy name can then be selected directly in Surge rules. This requires Surge iOS 5.20.0+ or Surge Mac 6.7.0+. The auth key is stored in Worker KV and included in the generated Surge profile, so prefer a short-lived, preauthorized, least-privilege key and protect both the admin token and subscription URL.
+
+The `Map Local` tab on the Surge page provides a structured API Mock editor and a text mode for direct `[Map Local]` editing. It supports `file`, `text`, `tiny-gif`, and `base64` response types, plus optional HTTP status codes and response headers. HTTPS matches also require the corresponding hostname to be enabled on the MITM tab.
 
 Clash / mihomo and Stash `rule-providers` are rule set sources; `RULE-SET` lines in `rules` are the actual match entry points. SubPilot automatically adds rule sets from `rule-providers` that do not yet appear in `rules`, using `Proxy` as the default policy target. Deleting a rule set from `rule-providers` also removes the corresponding `RULE-SET` rule. If you delete a rule-set rule from `rules`, the system asks for confirmation and deletes the same-name rule-provider. Adding the rule-provider again later automatically fills `rules` again.
 

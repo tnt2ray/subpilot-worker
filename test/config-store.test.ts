@@ -6,6 +6,7 @@ import { CONFIG_SCHEMA_VERSION_KEY, CURRENT_KV_SCHEMA_VERSION } from "../src/con
 import { DEFAULT_CONFIG } from "../src/default-config";
 import { compiledRuleSetContentKey, compiledRuleSetMetaKey } from "../src/rule-set-cache";
 import { validateSurgeHosts } from "../src/surge-hosts";
+import { validateSurgeMapLocal } from "../src/surge-map-local";
 import { validateSurgeRules } from "../src/surge-rules";
 import { inferUrlRewriteMitmHostnames, validateSurgeUrlRewrite } from "../src/surge-url-rewrite";
 import type { AppConfig } from "../src/types";
@@ -257,6 +258,7 @@ describe("KV config storage", () => {
           "^https?:\\/\\/example\\.com\\/ad - reject",
           "^https?:\\/\\/old\\.example\\.com https://new.example.com 302"
         ],
+        mapLocal: ['^https?:\\/\\/example\\.com\\/api data-type=text data="{\\"ok\\":true}" status-code=200 header="Content-Type:application/json"'],
         scripts: ["Test Script = type=http-response,pattern=^https://example.com,script-path=https://example.com/script.js"],
         mitm: {
           ...DEFAULT_CONFIG.surge.mitm,
@@ -402,6 +404,9 @@ describe("KV config storage", () => {
     expect(JSON.parse(kv.get("config:surge:urlRewrite") ?? "[]")).toEqual([
       "^https?:\\/\\/example\\.com\\/ad - reject",
       "^https?:\\/\\/old\\.example\\.com https://new.example.com 302"
+    ]);
+    expect(JSON.parse(kv.get("config:surge:mapLocal") ?? "[]")).toEqual([
+      '^https?:\\/\\/example\\.com\\/api data-type=text data="{\\"ok\\":true}" status-code=200 header="Content-Type:application/json"'
     ]);
     expect(JSON.parse(kv.get("config:surge:scripts") ?? "[]")).toEqual(["Test Script = type=http-response,pattern=^https://example.com,script-path=https://example.com/script.js"]);
     expect(JSON.parse(kv.get("config:surge:mitm") ?? "{}")).toEqual({
@@ -770,6 +775,37 @@ describe("KV config storage", () => {
         surge: {
           ...DEFAULT_CONFIG.surge,
           urlRewrite
+        }
+      })).toContain(message);
+    }
+
+    expect(validateSurgeMapLocal({
+      surge: {
+        ...DEFAULT_CONFIG.surge,
+        mapLocal: [
+          '^http://surgetest\\.com/json data-type=text data="{}" status-code=500',
+          '^http://surgetest\\.com/gif data-type=tiny-gif status-code=200',
+          '^http://surgetest\\.com/file data-type=file data="data/map-local.json" header="a:b|foo:bar"',
+          '^http://surgetest\\.com/base64 data-type=base64 data="dGVzdA=="'
+        ]
+      }
+    })).toBeNull();
+
+    const invalidMapLocalCases: Array<[string[], string]> = [
+      [["[Map Local]"], "不能包含配置段标题"],
+      [["^http://example\\.com data=\"{}\""], "data-type"],
+      [["^http://example\\.com data-type=json data=\"{}\""], "data-type 必须是"],
+      [["^http://example\\.com data-type=file"], "缺少 data"],
+      [["^http://example\\.com data-type=text data=\"{}\" status-code=999"], "status-code"],
+      [["^http://( data-type=text data=\"{}\""], "正则表达式无效"],
+      [["^http://example\\.com data-type=text data=\"{}\" unknown=true"], "未知参数"]
+    ];
+
+    for (const [mapLocal, message] of invalidMapLocalCases) {
+      expect(validateSurgeMapLocal({
+        surge: {
+          ...DEFAULT_CONFIG.surge,
+          mapLocal
         }
       })).toContain(message);
     }

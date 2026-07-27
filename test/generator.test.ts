@@ -1077,7 +1077,7 @@ describe("generation", () => {
     expect(result.content).not.toContain("ipv6-vif =");
   });
 
-  it("outputs configured Surge script, MITM, and URL Rewrite sections in the expected order", async () => {
+  it("outputs configured Surge script, MITM, URL Rewrite, and Map Local sections in the expected order", async () => {
     const env = makeEnv();
     const scriptResult = await generateConfig(env, {
       ...DEFAULT_CONFIG,
@@ -1134,6 +1134,29 @@ describe("generation", () => {
     expect(urlRewriteResult.content.indexOf("[URL Rewrite]")).toBeGreaterThan(urlRewriteResult.content.indexOf("[Proxy Group]"));
     expect(urlRewriteResult.content.indexOf("[URL Rewrite]")).toBeLessThan(urlRewriteResult.content.indexOf("[Script]"));
     expect(urlRewriteResult.content.indexOf("[URL Rewrite]")).toBeLessThan(urlRewriteResult.content.indexOf("[Rule]"));
+
+    const mapLocalResult = await generateConfig(env, {
+      ...DEFAULT_CONFIG,
+      sources: [],
+      surge: {
+        ...DEFAULT_CONFIG.surge,
+        mapLocal: [
+          '^https?:\\/\\/example\\.com\\/api data-type=text data="{\\"ok\\":true}" status-code=200 header="Content-Type:application/json"',
+          "^https?:\\/\\/example\\.com\\/pixel data-type=tiny-gif"
+        ],
+        scripts: ["Test Script = type=http-response,pattern=^https://example.com,script-path=https://example.com/script.js"],
+        rules: ["FINAL,Proxy"]
+      }
+    }, "surge", "https://subpilot.example.com/sync/token");
+
+    expect(mapLocalResult.content).toContain([
+      "[Map Local]",
+      '^https?:\\/\\/example\\.com\\/api data-type=text data="{\\"ok\\":true}" status-code=200 header="Content-Type:application/json"',
+      "^https?:\\/\\/example\\.com\\/pixel data-type=tiny-gif"
+    ].join("\n"));
+    expect(mapLocalResult.content.indexOf("[Map Local]")).toBeGreaterThan(mapLocalResult.content.indexOf("[URL Rewrite]"));
+    expect(mapLocalResult.content.indexOf("[Map Local]")).toBeLessThan(mapLocalResult.content.indexOf("[Script]"));
+    expect(mapLocalResult.content.indexOf("[Map Local]")).toBeLessThan(mapLocalResult.content.indexOf("[Rule]"));
   });
 
   it("outputs configured Surge hosts and source subscription hosts for Surge and Clash", async () => {

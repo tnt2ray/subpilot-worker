@@ -387,8 +387,10 @@ export function normalizeSurge(input: Partial<AppConfig["surge"]> | undefined): 
     excludeSimpleHostnames: surge.excludeSimpleHostnames !== false,
     encryptedDnsFollowOutboundMode: encryptedDnsServer.length > 0 && surge.encryptedDnsFollowOutboundMode !== false,
     ponteDeviceNames: normalizePonteDeviceNames(surge.ponteDeviceNames),
+    tailscaleNodes: normalizeSurgeTailscaleNodes(surge.tailscaleNodes),
     hosts: stringArray(surge.hosts, DEFAULT_CONFIG.surge.hosts),
     urlRewrite,
+    mapLocal: stringArray(surge.mapLocal, DEFAULT_CONFIG.surge.mapLocal),
     scripts: stringArray(surge.scripts, DEFAULT_CONFIG.surge.scripts),
     mitm: {
       ...mitm,
@@ -396,6 +398,54 @@ export function normalizeSurge(input: Partial<AppConfig["surge"]> | undefined): 
     },
     rules: stringArray(surge.rules, DEFAULT_CONFIG.surge.rules)
   };
+}
+
+function normalizeSurgeTailscaleNodes(value: unknown): AppConfig["surge"]["tailscaleNodes"] {
+  if (!Array.isArray(value)) return DEFAULT_CONFIG.surge.tailscaleNodes;
+  const seenNames = new Set<string>();
+  const seenSections = new Set<string>();
+  return value.flatMap((item, index) => {
+    if (!item || typeof item !== "object") return [];
+    const record = item as Record<string, unknown>;
+    const name = stringValue(record.name, `Tailscale ${index + 1}`);
+    const sectionName = stringValue(record.sectionName, `tailscale-${index + 1}`);
+    if (
+      !name || !sectionName
+      || /[=,\r\n[\]]/.test(name)
+      || /[\s=,\r\n[\]]/.test(sectionName)
+      || seenNames.has(name)
+      || seenSections.has(sectionName)
+    ) return [];
+    seenNames.add(name);
+    seenSections.add(sectionName);
+    return [{
+      name,
+      sectionName,
+      authKey: surgeTailscaleValue(record.authKey),
+      controlUrl: surgeTailscaleValue(record.controlUrl),
+      hostname: surgeTailscaleValue(record.hostname),
+      derpOnly: record.derpOnly === true,
+      exitNode: surgeTailscaleValue(record.exitNode) || "none",
+      idleKeepalive: clampNumber(record.idleKeepalive, -1, 86400, 600),
+      preferIpv6: record.preferIpv6 === true,
+      dnsServer: stringArray(record.dnsServer, []).filter((item) => !/[\r\n]/.test(item)),
+      mtu: clampNumber(record.mtu, 576, 1420, 1280),
+      underlyingProxy: surgeTailscalePolicyValue(record.underlyingProxy),
+      testUrl: surgeTailscalePolicyValue(record.testUrl),
+      testTimeout: clampNumber(record.testTimeout, 1, 60, 5),
+      enabled: record.enabled !== false
+    }];
+  });
+}
+
+function surgeTailscaleValue(value: unknown): string {
+  const normalized = typeof value === "string" ? value.trim() : "";
+  return /[\r\n]/.test(normalized) ? "" : normalized;
+}
+
+function surgeTailscalePolicyValue(value: unknown): string {
+  const normalized = surgeTailscaleValue(value);
+  return normalized.includes(",") ? "" : normalized;
 }
 
 function normalizeSurgeMitm(input: Partial<AppConfig["surge"]["mitm"]> | undefined): AppConfig["surge"]["mitm"] {

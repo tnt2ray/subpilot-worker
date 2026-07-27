@@ -439,8 +439,10 @@
                   <button class="tab active" type="button" data-surge-tab="general" role="tab" aria-selected="true" data-i18n="surgeTabGeneral">General</button>
                   <button class="tab" type="button" data-surge-tab="host" role="tab" aria-selected="false" data-i18n="surgeTabHost">Host</button>
                   <button class="tab" type="button" data-surge-tab="urlRewrite" role="tab" aria-selected="false" data-i18n="surgeTabUrlRewrite">URL Rewrite</button>
+                  <button class="tab" type="button" data-surge-tab="mapLocal" role="tab" aria-selected="false" data-i18n="surgeTabMapLocal">Map Local</button>
                   <button class="tab" type="button" data-surge-tab="script" role="tab" aria-selected="false" data-i18n="surgeTabScript">Script</button>
                   <button class="tab" type="button" data-surge-tab="mitm" role="tab" aria-selected="false" data-i18n="surgeTabMitm">MITM</button>
+                  <button class="tab" type="button" data-surge-tab="tailscale" role="tab" aria-selected="false" data-i18n="surgeTabTailscale">Tailscale</button>
                   <button class="tab" type="button" data-surge-tab="ponte" role="tab" aria-selected="false" data-i18n="surgeTabPonte">Ponte</button>
                   <button class="tab" type="button" data-surge-tab="rule" data-manual-rule-tab role="tab" aria-selected="false" data-i18n="surgeTabRule">Rule</button>
                 </div>
@@ -597,6 +599,27 @@
                     </div>
                   </div>
                 </div>
+                <div class="cbi-section hidden" data-surge-panel="mapLocal">
+                  <div class="cbi-row surge-map-local-cbi-row">
+                    <label data-i18n="surgeMapLocal">Map Local</label>
+                    <div class="field">
+                      <div class="field-notice warning" data-i18n="surgeMapLocalHttpsMitmNotice">Map Local 匹配 HTTPS 请求时，必须在 MITM 页启用对应主机名。</div>
+                      <div class="button-row compact structured-editor-actions">
+                        <button id="surgeMapLocalAdvancedMode" class="btn mode-toggle" type="button" aria-pressed="false" data-i18n="surgeMapLocalAdvancedMode">文本编辑模式</button>
+                        <span id="surgeMapLocalStructuredActions" class="button-row compact structured-editor-secondary-actions">
+                          <button id="addSurgeMapLocalBtn" class="btn" type="button" data-i18n="addSurgeMapLocal">添加 Map Local</button>
+                        </span>
+                      </div>
+                      <div id="surgeMapLocalStructuredEditor" class="surge-map-local-structured">
+                        <div id="surgeMapLocalRows" class="surge-map-local-list"></div>
+                        <small data-i18n="surgeMapLocalEditorHelp">按 URL 正则返回本地文件、文本、1px GIF 或 Base64 内容，可选状态码和响应头。</small>
+                      </div>
+                      <div id="surgeMapLocalValidation" class="validation-messages hidden"></div>
+                      <label class="field-label" for="surgeMapLocal" data-i18n="surgeMapLocalOutput">生成结果</label>
+                      <textarea id="surgeMapLocal" class="line-editor generated-code config-code-textarea" rows="24" spellcheck="false" readonly></textarea>
+                    </div>
+                  </div>
+                </div>
                 <div class="cbi-section hidden" data-surge-panel="script">
                   <div class="cbi-row">
                     <label for="surgeScripts" data-i18n="surgeScripts">Surge 脚本</label>
@@ -639,6 +662,19 @@
                       <label class="field-label" for="surgeMitmCaP12">CA 证书包</label>
                       <textarea id="surgeMitmCaP12" class="line-editor generated-code config-code-textarea" rows="30" spellcheck="false"></textarea>
                       <small data-i18n="surgeMitmCaHelp">可在当前浏览器生成 CA 证书，或选择 .p12/.pfx 文件导入。CA 私钥会进入配置文件，请保护管理令牌和读取链接。</small>
+                    </div>
+                  </div>
+                </div>
+                <div class="cbi-section hidden" data-surge-panel="tailscale">
+                  <div class="cbi-row surge-tailscale-cbi-row">
+                    <label data-i18n="surgeTailscaleNodes">Tailscale 节点</label>
+                    <div class="field">
+                      <div class="field-notice warning" data-i18n="surgeTailscaleSecretNotice">Auth Key 会写入生成的 Surge 配置。请使用短期、预授权且权限受限的密钥，并保护管理令牌和订阅链接。</div>
+                      <div class="button-row compact">
+                        <button id="addSurgeTailscaleNodeBtn" class="btn" type="button" data-i18n="addSurgeTailscaleNode">添加 Tailscale 节点</button>
+                      </div>
+                      <div id="surgeTailscaleNodeRows" class="surge-tailscale-list"></div>
+                      <small data-i18n="surgeTailscaleHelp">每个节点会生成一条 tailscale 策略和对应的 [Tailscale &lt;section-name&gt;] 配置段；需要 Surge iOS 5.20.0+ 或 Surge Mac 6.7.0+。</small>
                     </div>
                   </div>
                 </div>
@@ -1200,10 +1236,9 @@
                     <button id="previewSurgeBtn" class="btn" type="button">Surge</button>
                     <button id="previewClashBtn" class="btn" type="button">Clash</button>
                     <button id="previewStashBtn" class="btn" type="button">Stash</button>
-                    <button id="validateSurgeOnlineBtn" class="btn" type="button" data-i18n="validateSurgeOnline">Surge 在线验证</button>
                   </div>
                 </div>
-                <div id="surgeOnlineValidation" class="validation-messages hidden"></div>
+                <div id="previewWarnings" class="validation-messages hidden"></div>
                 <textarea id="previewOutput" class="line-editor generated-code config-code-textarea" rows="30" spellcheck="false" readonly data-empty="true">点击上方按钮生成预览。</textarea>
               </section>
             </section>

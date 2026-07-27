@@ -128,152 +128,6 @@ describe("asset access control", () => {
     expect(migrateBody.schema.pending).toEqual([]);
   });
 
-  it("proxies explicit Surge online validation for authenticated admins", async () => {
-    const env = makeEnv();
-    const session = await createSession(env);
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(new Response(JSON.stringify({
-      valid: false,
-      error: { message: "Invalid Surge profile" }
-    })));
-    const request = new Request("https://subpilot.example.com/api/surge/validate-online", {
-      method: "POST",
-      headers: {
-        cookie: sessionCookie(session, true),
-        "content-type": "application/json"
-      },
-      body: JSON.stringify({
-        content: "[General]\nloglevel = notify\n\n[Rule]\nFINAL,DIRECT\n",
-        acknowledgeRisk: true
-      })
-    });
-
-    const response = await worker.fetch(request, env, ctx);
-    const body = await response.json<{ valid: boolean; error: string }>();
-
-    expect(response.status).toBe(200);
-    expect(body).toEqual({ valid: false, error: "Invalid Surge profile" });
-    expect(fetchMock).toHaveBeenCalledWith("https://services.nssurge.com/v1/config/validate", expect.objectContaining({
-      method: "POST",
-      body: "[General]\nloglevel = notify\n\n[Rule]\nFINAL,DIRECT\n"
-    }));
-  });
-
-  it("sanitizes proxy credentials before Surge online validation", async () => {
-    const env = makeEnv();
-    const session = await createSession(env);
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(new Response(JSON.stringify({
-      valid: true
-    })));
-    const request = new Request("https://subpilot.example.com/api/surge/validate-online", {
-      method: "POST",
-      headers: {
-        cookie: sessionCookie(session, true),
-        "content-type": "application/json"
-      },
-      body: JSON.stringify({
-        content: [
-          "[Proxy]",
-          "Real HTTPS = https, real.example.com, 8443, username=real-user, password=real-pass, sni=edge.example.com",
-          "Real VLESS = vless, 203.0.113.7, 1443, username=ed221103-1170-4b5e-bb11-2dfe0f9aa001, tls=true, ws-headers=Host:ws.example.com",
-          "Real TUIC = tuic, tuic.example.com, 10443, username=ed221103-1170-4b5e-bb11-2dfe0f9aa002, token=real-token",
-          "Real URL = trojan://url-pass@url.example.com:443?sni=url-sni.example.com#node",
-          "",
-          "[Rule]",
-          "FINAL,DIRECT"
-        ].join("\n"),
-        acknowledgeRisk: true
-      })
-    });
-
-    const response = await worker.fetch(request, env, ctx);
-    const sent = (fetchMock.mock.calls[0]?.[1] as RequestInit | undefined)?.body as string;
-
-    expect(response.status).toBe(200);
-    expect(sent).toContain("Real HTTPS = https, test.local, 443, password=test, username=test, sni=test.local");
-    expect(sent).toContain("Real VLESS = vless, test.local, 443, username=00000000-0000-4000-8000-000000000002, tls=true, ws-headers=Host:test.local");
-    expect(sent).toContain("Real TUIC = tuic, test.local, 443, username=00000000-0000-4000-8000-000000000003, token=test");
-    expect(sent).toContain("Real URL = trojan, test.local, 443, password=test, sni=test.local");
-    expect(sent).toContain("[Rule]\nFINAL,DIRECT");
-    expect(sent).not.toContain("real.example.com");
-    expect(sent).not.toContain("203.0.113.7");
-    expect(sent).not.toContain("real-user");
-    expect(sent).not.toContain("real-pass");
-    expect(sent).not.toContain("real-token");
-    expect(sent).not.toContain("edge.example.com");
-    expect(sent).not.toContain("ws.example.com");
-    expect(sent).not.toContain("trojan://");
-    expect(sent).not.toContain("url-pass");
-    expect(sent).not.toContain("url.example.com");
-    expect(sent).not.toContain("url-sni.example.com");
-  });
-
-  it("validates detached Surge profiles with a sanitized inline profile instead of external resource URLs", async () => {
-    const env = makeEnv(new Map([["auth:read_token_hash", await sha256Hex("read-token")]]));
-    await saveConfig(env, {
-      ...DEFAULT_CONFIG,
-      settings: {
-        ...DEFAULT_CONFIG.settings,
-        geoipRenameEnabled: false
-      },
-      sources: [{
-        id: "src1",
-        name: "Primary",
-        url: "https://example.com/sub",
-        fetchUserAgent: "surge",
-        enabled: true
-      }],
-      groups: {
-        Proxy: "select, {all}"
-      },
-      surge: {
-        ...DEFAULT_CONFIG.surge,
-        rules: ["FINAL,Proxy"]
-      }
-    });
-    const session = await createSession(env);
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
-      if (String(url) === "https://example.com/sub") {
-        return new Response("JP 1 = trojan, real.example.com, 443, password=real-pass, sni=edge.example.com");
-      }
-      if (String(url) === "https://services.nssurge.com/v1/config/validate") {
-        return new Response(JSON.stringify({ valid: true }));
-      }
-      return new Response("not found", { status: 404 });
-    });
-
-    const response = await worker.fetch(new Request("https://subpilot.example.com/api/surge/validate-online", {
-      method: "POST",
-      headers: {
-        cookie: sessionCookie(session, true),
-        "content-type": "application/json"
-      },
-      body: JSON.stringify({
-        content: [
-          "#!MANAGED-CONFIG https://subpilot.example.com/sync/read-token/ interval=604800 strict=true",
-          "[Proxy]",
-          "#!include https://subpilot.example.com/sync/read-token/surge-resources/",
-          "[Proxy Group]",
-          "#!include https://subpilot.example.com/sync/read-token/surge-resources/",
-          "[Rule]",
-          "FINAL,Proxy"
-        ].join("\n"),
-        acknowledgeRisk: true
-      })
-    }), env, ctx);
-    const body = await response.json<{ valid: boolean }>();
-    const submitted = String(fetchMock.mock.calls.find(([url]) => String(url) === "https://services.nssurge.com/v1/config/validate")?.[1]?.body);
-
-    expect(response.status).toBe(200);
-    expect(body.valid).toBe(true);
-    expect(submitted).toContain("#!MANAGED-CONFIG https://subpilot.invalid/sync/validation/ interval=43200 strict=true");
-    expect(submitted).toContain("[Proxy]\n[Primary] JP 1 = trojan, test.local, 443");
-    expect(submitted).toContain("[Proxy Group]\nProxy = select, [Primary] JP 1");
-    expect(submitted).not.toContain("surge-resources");
-    expect(submitted).not.toContain("read-token");
-    expect(submitted).not.toContain("real.example.com");
-    expect(submitted).not.toContain("real-pass");
-  });
-
   it("rejects invalid Surge hosts while saving config", async () => {
     const env = makeEnv();
     const session = await createSession(env);
@@ -318,6 +172,29 @@ describe("asset access control", () => {
 
     expect(response.status).toBe(400);
     expect(body.error).toContain("Surge URL Rewrite");
+  });
+
+  it("rejects invalid Surge Map Local while saving config", async () => {
+    const env = makeEnv();
+    const session = await createSession(env);
+    const request = new Request("https://subpilot.example.com/api/config", {
+      method: "PATCH",
+      headers: {
+        cookie: sessionCookie(session, true),
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({
+        surge: {
+          mapLocal: ["^https://example\\.com data-type=unknown data=\"{}\""]
+        }
+      })
+    });
+
+    const response = await worker.fetch(request, env, ctx);
+    const body = await response.json<{ error: string }>();
+
+    expect(response.status).toBe(400);
+    expect(body.error).toContain("Surge Map Local");
   });
 
   it("rejects invalid Stash scripts while saving config", async () => {

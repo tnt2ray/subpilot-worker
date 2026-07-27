@@ -17,8 +17,8 @@ SubPilot Worker 项目代码以 [GNU Affero General Public License v3.0 or later
 - 管理上游订阅源地址、启用状态、抓取 User-Agent 和节点名前缀；每个源可选择 Surge、Clash、Stash 或 Shadowrocket User-Agent。
 - 生成 Surge、Clash/mihomo、Stash 目标配置；Shadowrocket 通过 User-Agent 识别后下发 Clash YAML。
 - 支持客户端 User-Agent 自动选择输出目标。
-- 用独立字段维护 Surge、Clash 和 Stash 功能配置，不需要编辑整段模板。
-- 管理策略组、策略规则、规则集、DNS、TUN、MITM 和 URL Rewrite。
+- 用独立字段维护 Surge、Clash 和 Stash 功能配置，不需要编辑整段模板；Surge 页面可直接配置 Tailscale 出站节点。
+- 管理策略组、策略规则、规则集、DNS、TUN、MITM、URL Rewrite 和 Surge Map Local。
 - 可切换到统一规则模式，集中编译、去重和缓存 Surge、Clash 与 Stash 共用的分流规则集。
 - 提供 Surge / Clash / Stash 规则结构化编辑器，同时保留文本模式用于直接编辑生成内容。
 - 管理端预览可提示被前面规则覆盖、实际不会生效的规则，支持检查 Surge 规则集和 Clash / Stash rule-providers 内容。
@@ -242,6 +242,10 @@ FINAL,Proxy
 ```
 
 Surge 的 `SUBNET`、`AND`、`OR`、`NOT` 等复合规则类型可以在结构化编辑器中选择，也可以在文本模式中直接编辑。Ponte 设备名会生成 `DEVICE:<name>` 策略出口，保存后可在规则中选择。
+
+Surge 页面中的 `Tailscale` 标签可维护多个 Tailscale 出站节点。每个已启用节点会在 `[Proxy]` 中生成 `tailscale` 策略，并生成对应的 `[Tailscale <section-name>]` 配置段；保存后可在 Surge 规则中直接选择该策略名称。该功能要求 Surge iOS 5.20.0+ 或 Surge Mac 6.7.0+。`Auth Key` 会进入 Worker KV 和生成的 Surge 配置，请优先使用短期、预授权、权限受限的密钥，并保护管理令牌与订阅链接。
+
+Surge 页面中的 `Map Local` 标签可用结构化编辑器配置 API Mock，也可切换到文本模式直接编辑 `[Map Local]` 内容。支持 `file`、`text`、`tiny-gif` 和 `base64` 四种响应类型，以及可选的 HTTP 状态码和响应头。匹配 HTTPS 请求时，需要同时在 MITM 页启用对应主机名。
 
 Clash / mihomo 和 Stash 的 rule-providers 是规则集来源；rules 中的 `RULE-SET` 行是实际匹配入口。SubPilot 会把 rule-providers 中尚未出现在 rules 里的规则集自动补入 rules，并默认使用 `Proxy` 作为策略出口。删除 rule-providers 中的某个规则集时，对应的 `RULE-SET` 规则会一并移除；如果在 rules 中删除某个规则集规则，系统会提示确认，并同步删除同名 rule-provider。后续再次添加 rule-provider 时，rules 会重新自动补齐。
 
