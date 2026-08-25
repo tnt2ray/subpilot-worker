@@ -1,6 +1,7 @@
 export function jsonResponse(data: unknown, init: ResponseInit = {}): Response {
   const headers = new Headers(init.headers);
   headers.set("content-type", "application/json; charset=utf-8");
+  if (!headers.has("cache-control")) headers.set("cache-control", "no-store, private");
   return new Response(JSON.stringify(data), { ...init, headers });
 }
 
@@ -15,14 +16,14 @@ export function textResponse(content: string, contentType = "text/plain; charset
 
 export class RequestBodyTooLargeError extends Error {}
 
-export async function readRequestJsonWithLimit<T>(request: Request, maxBytes: number): Promise<T> {
+export async function readRequestBytesWithLimit(request: Request, maxBytes: number): Promise<Uint8Array> {
   const contentLength = request.headers.get("content-length");
   const declaredBytes = contentLength === null ? Number.NaN : Number(contentLength);
   if (Number.isFinite(declaredBytes) && declaredBytes > maxBytes) {
     await request.body?.cancel().catch(() => undefined);
     throw new RequestBodyTooLargeError(`Request body exceeds ${maxBytes} byte limit`);
   }
-  if (!request.body) return JSON.parse("") as T;
+  if (!request.body) return new Uint8Array();
 
   const reader = request.body.getReader();
   const chunks: Uint8Array[] = [];
@@ -45,6 +46,11 @@ export async function readRequestJsonWithLimit<T>(request: Request, maxBytes: nu
     bytes.set(chunk, offset);
     offset += chunk.byteLength;
   }
+  return bytes;
+}
+
+export async function readRequestJsonWithLimit<T>(request: Request, maxBytes: number): Promise<T> {
+  const bytes = await readRequestBytesWithLimit(request, maxBytes);
   return JSON.parse(new TextDecoder().decode(bytes)) as T;
 }
 
@@ -114,6 +120,13 @@ export function unauthorized(): Response {
 
 export function forbidden(message = "Forbidden"): Response {
   return jsonResponse({ error: message }, { status: 403 });
+}
+
+export function tooManyRequests(message = "Too Many Requests", retryAfterSeconds = 60): Response {
+  return jsonResponse({ error: message }, {
+    status: 429,
+    headers: { "retry-after": String(retryAfterSeconds) }
+  });
 }
 
 export function notFound(): Response {
@@ -197,7 +210,11 @@ export function parseCookie(request: Request): Map<string, string> {
   for (const part of header.split(";")) {
     const [name, ...rest] = part.trim().split("=");
     if (!name) continue;
-    output.set(name, decodeURIComponent(rest.join("=")));
+    try {
+      output.set(name, decodeURIComponent(rest.join("=")));
+    } catch {
+      // Ignore malformed cookie values instead of failing the whole request.
+    }
   }
   return output;
 }

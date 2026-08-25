@@ -16,13 +16,18 @@ export interface RuleSetArtifact {
 interface RuleSetBucketCount {
   bucket: RuleSetBucket;
   count: number;
+  targets?: RuleSetOutputTarget[];
+  targetCounts?: Partial<Record<RuleSetOutputTarget, number>>;
 }
 
 export function planRuleSetArtifacts(
   buckets: readonly RuleSetBucketCount[],
   target: RuleSetOutputTarget
 ): RuleSetArtifact[] {
-  const countByBucket = new Map(buckets.map((item) => [item.bucket, item.count]));
+  const countByBucket = new Map(buckets.map((item) => [
+    item.bucket,
+    item.targets && !item.targets.includes(target) ? 0 : item.targetCounts?.[target] ?? item.count
+  ]));
   const domainCount = countByBucket.get("domain") ?? 0;
   const ipCidrCount = countByBucket.get("ipcidr") ?? 0;
   const classicalCount = countByBucket.get("classical") ?? 0;

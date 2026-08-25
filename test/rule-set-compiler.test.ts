@@ -2,8 +2,16 @@ import YAML from "yaml";
 import { describe, expect, it, vi } from "vitest";
 import { createSession, sessionCookie } from "../src/auth";
 import { validateRuleSetOutputNames } from "../src/config-validation";
-import { compileRuleSetOutput, refreshChangedRuleSetCaches, refreshRuleSetCaches } from "../src/rule-set-compiler";
-import { compiledRuleSetContentKey, compiledRuleSetMetaKey, readCompiledRuleSetBucket } from "../src/rule-set-cache";
+import { compileRuleSetOutput, ensureCompiledRuleSet, refreshChangedRuleSetCaches, refreshRuleSetCaches } from "../src/rule-set-compiler";
+import {
+  compiledRuleSetContentKey,
+  compiledRuleSetMetaKey,
+  fetchCachedRuleSetSource,
+  pruneCompiledRuleSetCaches,
+  readCompiledRuleSetBucket,
+  readCompiledRuleSetManifest,
+  ruleSetSourceCacheKey
+} from "../src/rule-set-cache";
 import { normalizeConfig, saveConfig } from "../src/config-store";
 import { DEFAULT_CONFIG } from "../src/default-config";
 import { generateConfig } from "../src/generator";
@@ -11,11 +19,13 @@ import { planRuleSetArtifacts } from "../src/rule-set-artifacts";
 import { compiledRuleProviderName } from "../src/rule-provider-name";
 import worker from "../src/index";
 import { sha256Hex } from "../src/util";
-import { makeEnv } from "./helpers/env";
+import { makeEnv, makeTestEnv } from "./helpers/env";
 import { ctx, makeExecutionContext } from "./helpers/worker";
 import { restoreMocksAfterEach } from "./helpers/fetch";
 
 restoreMocksAfterEach();
+
+const ENCRYPTED_CACHE_STORAGE_PREFIX = "\u001fsubpilot-encrypted-cache:";
 
 function compiledConfig() {
   return normalizeConfig({
@@ -141,7 +151,86 @@ function installFakeWorkerCache() {
   };
 }
 
+function enforceSameKeyMutationInterval(env: Env, now: () => number = Date.now): {
+  mutations: Array<{ key: string; kind: "put" | "delete"; at: number }>;
+} {
+  const originalPut = env.SUBPILOT_CONFIG.put.bind(env.SUBPILOT_CONFIG);
+  const originalDelete = env.SUBPILOT_CONFIG.delete.bind(env.SUBPILOT_CONFIG);
+  const lastMutation = new Map<string, number>();
+  const mutations: Array<{ key: string; kind: "put" | "delete"; at: number }> = [];
+  const record = (key: string, kind: "put" | "delete") => {
+    const at = now();
+    const previous = lastMutation.get(key);
+    if (previous !== undefined && at - previous < 1_000) {
+      throw new Error(`KV same-key mutation limit for ${key}`);
+    }
+    lastMutation.set(key, at);
+    mutations.push({ key, kind, at });
+  };
+  vi.spyOn(env.SUBPILOT_CONFIG, "put").mockImplementation(async (...args) => {
+    record(String(args[0]), "put");
+    return originalPut(...args);
+  });
+  vi.spyOn(env.SUBPILOT_CONFIG, "delete").mockImplementation(async (key) => {
+    record(String(key), "delete");
+    return originalDelete(key);
+  });
+  return { mutations };
+}
+
 describe("rule set compiler", () => {
+  it("self-heals corrupt encrypted rule-source cache content with one same-key write", async () => {
+    const env = makeEnv();
+    const source = {
+      id: "corrupt",
+      name: "Corrupt",
+      url: "https://rules.example/corrupt.list",
+      enabled: true,
+      format: "surge-rule-set" as const,
+      order: 1
+    };
+    const key = await ruleSetSourceCacheKey(source.url);
+    await env.SUBPILOT_CONFIG.put(key, `${ENCRYPTED_CACHE_STORAGE_PREFIX}not-an-envelope`);
+    const content = "DOMAIN-SUFFIX,fresh.example";
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(new Response(content));
+    const deleteSpy = vi.spyOn(env.SUBPILOT_CONFIG, "delete");
+    const putSpy = vi.spyOn(env.SUBPILOT_CONFIG, "put");
+
+    await expect(fetchCachedRuleSetSource(env, source)).resolves.toMatchObject({
+      content,
+      usedCachedContent: false
+    });
+
+    expect(deleteSpy).not.toHaveBeenCalledWith(key);
+    expect(putSpy.mock.calls.filter(([storedKey]) => storedKey === key)).toHaveLength(1);
+  });
+
+  it("force-refreshes legacy plaintext source cache with only one same-key write", async () => {
+    const { env, kv } = makeTestEnv();
+    const source = {
+      id: "legacy-plaintext",
+      name: "Legacy plaintext",
+      url: "https://rules.example/legacy-plaintext.list",
+      enabled: true,
+      format: "surge-rule-set" as const,
+      order: 1
+    };
+    const key = await ruleSetSourceCacheKey(source.url);
+    kv.set(key, "DOMAIN-SUFFIX,stale.example");
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(new Response("DOMAIN-SUFFIX,fresh.example"));
+    const guard = enforceSameKeyMutationInterval(env);
+
+    await expect(fetchCachedRuleSetSource(env, source, { forceRefresh: true })).resolves.toMatchObject({
+      content: "DOMAIN-SUFFIX,fresh.example",
+      usedCachedContent: false
+    });
+
+    expect(guard.mutations.filter((mutation) => mutation.key === key)).toEqual([
+      expect.objectContaining({ key, kind: "put" })
+    ]);
+    expect(String(kv.get(key))).toMatch(new RegExp(`^${ENCRYPTED_CACHE_STORAGE_PREFIX}`));
+  });
+
   it("rejects HTML rule source responses without retrying or parsing page content", async () => {
     const base = compiledConfig();
     const source = base.ruleSets.sources[0]!;
@@ -220,6 +309,303 @@ describe("rule set compiler", () => {
     ]);
   });
 
+  it("preserves Clash domain-provider wildcard semantics and diagnoses Surge filtering", async () => {
+    const base = compiledConfig();
+    const source = {
+      id: "clash-domain-patterns",
+      name: "Clash domain patterns",
+      url: "https://rules.example/clash-domain-patterns.yaml",
+      enabled: true,
+      format: "clash-yaml" as const,
+      order: 1
+    };
+    const config = normalizeConfig({
+      ...base,
+      ruleSets: {
+        ...base.ruleSets,
+        sources: [source],
+        outputs: [{
+          ...base.ruleSets.outputs[0]!,
+          sourceIds: [source.id],
+          inlineRules: []
+        }],
+        directRules: []
+      }
+    });
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(YAML.stringify({
+      behavior: "domain",
+      payload: ["example.com", ".example.com", "+.example.com", "*.example.com"]
+    })));
+    const env = makeEnv();
+
+    const result = await compileRuleSetOutput(env, config, config.ruleSets.outputs[0]!);
+
+    expect(result.manifest.buckets).toEqual([
+      expect.objectContaining({
+        bucket: "domain",
+        count: 4,
+        targetCounts: { surge: 2, clash: 4, stash: 4 }
+      })
+    ]);
+    expect(result.manifest.warnings.join("\n")).toContain(
+      "Clash domain-provider 模式 不受 Surge 支持，已从该目标规则集过滤（共 2 条）"
+    );
+
+    const clashDomain = YAML.parse(String(await readCompiledRuleSetBucket(env, "AI", "domain", "clash"))) as { payload: string[] };
+    expect(clashDomain.payload).toEqual(["example.com", ".example.com", "+.example.com", "*.example.com"]);
+    const stashDomain = YAML.parse(String(await readCompiledRuleSetBucket(env, "AI", "domain", "stash"))) as { payload: string[] };
+    expect(stashDomain.payload).toEqual(clashDomain.payload);
+
+    const surgeCombined = String(await readCompiledRuleSetBucket(env, "AI", "combined", "surge"));
+    expect(surgeCombined).toBe("DOMAIN,example.com\nDOMAIN-SUFFIX,example.com\n");
+    const clashCombined = YAML.parse(String(await readCompiledRuleSetBucket(env, "AI", "combined", "clash"))) as { payload: string[] };
+    expect(clashCombined.payload).toEqual([
+      "DOMAIN,example.com",
+      "DOMAIN-REGEX,^([^.]+\\.)+example\\.com$",
+      "DOMAIN-SUFFIX,example.com",
+      "DOMAIN-REGEX,^[^.]+\\.example\\.com$"
+    ]);
+  });
+
+  it("recompiles legacy manifests when compiler semantics change", async () => {
+    const env = makeEnv();
+    const base = compiledConfig();
+    const output = {
+      ...base.ruleSets.outputs[0]!,
+      sourceIds: [],
+      inlineRules: ["example.com"]
+    };
+    const config = normalizeConfig({
+      ...base,
+      ruleSets: {
+        ...base.ruleSets,
+        sources: [],
+        outputs: [output]
+      }
+    });
+    const normalizedOutput = config.ruleSets.outputs[0]!;
+    const legacyFingerprint = JSON.stringify({
+      policy: normalizedOutput.policy,
+      sourceIds: normalizedOutput.sourceIds,
+      inlineRules: normalizedOutput.inlineRules,
+      surgeOptions: normalizedOutput.surgeOptions
+    });
+    await env.SUBPILOT_CONFIG.put(compiledRuleSetMetaKey("AI"), JSON.stringify({
+      outputName: "AI",
+      outputFingerprint: legacyFingerprint,
+      policy: "Proxy",
+      updatedAt: "2026-07-10T12:00:00.000Z",
+      sourceIds: [],
+      ruleCount: 1,
+      duplicateCount: 0,
+      buckets: [{ bucket: "domain", count: 1, targets: ["surge", "clash", "stash"] }],
+      warnings: []
+    }));
+    await env.SUBPILOT_CONFIG.put(compiledRuleSetContentKey("AI", "domain", "surge"), ".example.com\n");
+
+    const manifest = await ensureCompiledRuleSet(env, config, normalizedOutput);
+
+    expect(manifest.outputFingerprint).not.toBe(legacyFingerprint);
+    await expect(readCompiledRuleSetBucket(env, "AI", "domain", "surge")).resolves.toBe("example.com\n");
+  });
+
+  it("round-trips versioned manifests when reading compiled buckets", async () => {
+    const env = makeEnv();
+    const base = compiledConfig();
+    const config = normalizeConfig({
+      ...base,
+      ruleSets: {
+        ...base.ruleSets,
+        sources: [],
+        outputs: [{
+          ...base.ruleSets.outputs[0]!,
+          sourceIds: [],
+          inlineRules: ["DOMAIN,versioned.example"]
+        }]
+      }
+    });
+
+    const compiled = await compileRuleSetOutput(env, config, config.ruleSets.outputs[0]!);
+    const manifest = await readCompiledRuleSetManifest(env, "AI");
+
+    expect(compiled.manifest.storageId).toMatch(/^[A-Za-z0-9_-]+$/);
+    expect(manifest?.storageId).toBe(compiled.manifest.storageId);
+    await expect(readCompiledRuleSetBucket(env, "AI", "combined", "clash")).resolves.toContain("DOMAIN,versioned.example");
+  });
+
+  it("falls back to the previous complete manifest while a newer version is only partially visible", async () => {
+    const { env, kv } = makeTestEnv();
+    const base = compiledConfig();
+    const firstOutput = {
+      ...base.ruleSets.outputs[0]!,
+      sourceIds: [],
+      inlineRules: ["DOMAIN,first-visible.example"]
+    };
+    const firstConfig = normalizeConfig({
+      ...base,
+      ruleSets: { ...base.ruleSets, sources: [], outputs: [firstOutput] }
+    });
+    let now = 1_800_000_000_000;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    const first = await compileRuleSetOutput(env, firstConfig, firstConfig.ruleSets.outputs[0]!);
+
+    now += 1_000;
+    const secondOutput = {
+      ...firstConfig.ruleSets.outputs[0]!,
+      inlineRules: ["DOMAIN,partially-visible.example"]
+    };
+    const secondConfig = normalizeConfig({
+      ...firstConfig,
+      ruleSets: { ...firstConfig.ruleSets, outputs: [secondOutput] }
+    });
+    const second = await compileRuleSetOutput(env, secondConfig, secondConfig.ruleSets.outputs[0]!);
+    const missingKey = compiledRuleSetContentKey("AI", "combined", "clash", second.manifest.storageId);
+    kv.delete(missingKey);
+
+    const selected = await readCompiledRuleSetManifest(env, "AI");
+
+    expect(selected?.storageId).toBe(first.manifest.storageId);
+    await expect(readCompiledRuleSetBucket(env, "AI", "combined", "clash", selected!))
+      .resolves.toContain("DOMAIN,first-visible.example");
+  });
+
+  it("leaves a failed publish append-only and garbage-collects its orphan after the grace period", async () => {
+    const { env, kv } = makeTestEnv();
+    const base = compiledConfig();
+    const output = {
+      ...base.ruleSets.outputs[0]!,
+      sourceIds: [],
+      inlineRules: ["DOMAIN,orphaned.example"]
+    };
+    const config = normalizeConfig({
+      ...base,
+      ruleSets: { ...base.ruleSets, sources: [], outputs: [output] }
+    });
+    let now = 1_800_000_000_000;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    const originalPut = env.SUBPILOT_CONFIG.put.bind(env.SUBPILOT_CONFIG);
+    const putSpy = vi.spyOn(env.SUBPILOT_CONFIG, "put").mockImplementation(async (...args) => {
+      if (String(args[0]).startsWith(`${compiledRuleSetMetaKey("AI")}:v:`)) {
+        throw new Error("injected manifest publish failure");
+      }
+      return originalPut(...args);
+    });
+    const deleteSpy = vi.spyOn(env.SUBPILOT_CONFIG, "delete");
+
+    await expect(compileRuleSetOutput(env, config, config.ruleSets.outputs[0]!))
+      .rejects.toThrow("injected manifest publish failure");
+    expect(deleteSpy).not.toHaveBeenCalled();
+    const contentPrefix = "cache:compiledRuleSet:AI:";
+    const orphanKeys = [...kv.keys()].filter((key) => key.startsWith(contentPrefix));
+    expect(orphanKeys.length).toBeGreaterThan(0);
+    const orphanStorageId = orphanKeys[0]!.slice(contentPrefix.length).split(":", 1)[0]!;
+
+    putSpy.mockRestore();
+    now += 10 * 60 * 1000;
+    await pruneCompiledRuleSetCaches(env, config);
+
+    expect([...kv.keys()].some((key) => key.startsWith(`${contentPrefix}${orphanStorageId}:`))).toBe(false);
+    expect(deleteSpy).toHaveBeenCalled();
+  });
+
+  it("does not delete recently published versions inside KV's same-key mutation window", async () => {
+    const env = makeEnv();
+    const base = compiledConfig();
+    const output = {
+      ...base.ruleSets.outputs[0]!,
+      sourceIds: [],
+      inlineRules: ["DOMAIN,recent.example"]
+    };
+    const config = normalizeConfig({
+      ...base,
+      ruleSets: { ...base.ruleSets, sources: [], outputs: [output] }
+    });
+    let now = 1_800_000_000_000;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    const guard = enforceSameKeyMutationInterval(env, () => now);
+
+    for (let index = 0; index < 6; index += 1) {
+      await compileRuleSetOutput(env, config, config.ruleSets.outputs[0]!);
+    }
+    await pruneCompiledRuleSetCaches(env, config);
+
+    expect(guard.mutations.filter((mutation) => mutation.kind === "delete")).toEqual([]);
+  });
+
+  it("bounds old compiled-version cleanup work per publish", async () => {
+    const { env, kv } = makeTestEnv();
+    const oldMetaKeys: string[] = [];
+    for (let index = 0; index < 100; index += 1) {
+      const timestamp = Date.now() - 24 * 60 * 60 * 1000 - index;
+      const storageId = `${String(timestamp).padStart(16, "0")}-old${String(index).padStart(3, "0")}`;
+      const metaKey = `${compiledRuleSetMetaKey("AI")}:v:${storageId}`;
+      oldMetaKeys.push(metaKey);
+      kv.set(metaKey, "{}");
+      kv.set(compiledRuleSetContentKey("AI", "domain", "surge", storageId), "old");
+    }
+    const base = compiledConfig();
+    const output = {
+      ...base.ruleSets.outputs[0]!,
+      sourceIds: [],
+      inlineRules: ["DOMAIN,bounded-gc.example"]
+    };
+    const config = normalizeConfig({
+      ...base,
+      ruleSets: { ...base.ruleSets, sources: [], outputs: [output] }
+    });
+    const deleteSpy = vi.spyOn(env.SUBPILOT_CONFIG, "delete");
+
+    await pruneCompiledRuleSetCaches(env, config);
+
+    expect(deleteSpy.mock.calls.length).toBeLessThanOrEqual(4);
+    expect(oldMetaKeys.filter((key) => kv.has(key))).toHaveLength(98);
+  });
+
+  it("garbage-collects repeated output-specific refreshes and bounds manifest listing", async () => {
+    const { env, kv } = makeTestEnv();
+    const base = compiledConfig();
+    const config = normalizeConfig({
+      ...base,
+      ruleSets: {
+        ...base.ruleSets,
+        sources: [],
+        outputs: [{
+          ...base.ruleSets.outputs[0]!,
+          sourceIds: [],
+          inlineRules: ["DOMAIN,manual-refresh-0.example"]
+        }]
+      }
+    });
+    let now = 1_800_000_000_000;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    const listSpy = vi.spyOn(env.SUBPILOT_CONFIG, "list");
+
+    for (let index = 0; index < 8; index += 1) {
+      now += 10 * 60 * 1000;
+      config.ruleSets.outputs[0]!.inlineRules = [`DOMAIN,manual-refresh-${index}.example`];
+      const result = await refreshRuleSetCaches(env, config, "AI");
+      expect(result).toMatchObject({ refreshed: 1, failed: 0 });
+    }
+
+    const metaPrefix = `${compiledRuleSetMetaKey("AI")}:v:`;
+    const headPrefix = `${compiledRuleSetMetaKey("AI")}:h:`;
+    expect([...kv.keys()].filter((key) => key.startsWith(metaPrefix))).toHaveLength(3);
+    expect([...kv.keys()].filter((key) => key.startsWith(headPrefix))).toHaveLength(3);
+
+    const selected = await readCompiledRuleSetManifest(env, "AI");
+    expect(selected).not.toBeNull();
+    await expect(readCompiledRuleSetBucket(env, "AI", "combined", "clash", selected!))
+      .resolves.toContain("DOMAIN,manual-refresh-7.example");
+
+    const headListCalls = listSpy.mock.calls.filter(([options]) => (
+      (options as { prefix?: string } | undefined)?.prefix === headPrefix
+    ));
+    expect(headListCalls.length).toBeGreaterThan(0);
+    expect(headListCalls.every(([options]) => (
+      (options as { limit?: number } | undefined)?.limit === 8
+    ))).toBe(true);
+  });
+
   it("uses compiled references for Surge, Clash, Stash, and Shadowrocket while leaving manual mode unchanged", async () => {
     mockRuleSetFetches();
     const env = makeEnv();
@@ -258,7 +644,7 @@ describe("rule set compiler", () => {
       "rule-providers": Record<string, Record<string, unknown>>;
       rules: string[];
     };
-    expect(stash["rule-providers"][providerName]?.url).toBe("https://subpilot.example.com/sync/read-token/r/AI%20Rules.yaml");
+    expect(stash["rule-providers"][providerName]?.url).toBe("https://subpilot.example.com/sync/read-token/r/AI%20Rules.stash.yaml");
     expect(stash.rules.at(-1)).toBe("MATCH,DIRECT");
 
     const shadowrocket = await generateConfig(env, config, "shadowrocket", "https://subpilot.example.com/sync/read-token/");
@@ -275,6 +661,80 @@ describe("rule set compiler", () => {
     }, "surge", "https://subpilot.example.com/sync/read-token/");
     expect(manual.content).toContain("DOMAIN-SUFFIX,manual.example,Proxy");
     expect(manual.content).not.toContain("/r/AI/");
+  });
+
+  it("emits unified Tailscale rules only for Surge", async () => {
+    const base = compiledConfig();
+    const config = normalizeConfig({
+      ...base,
+      surge: {
+        ...base.surge,
+        tailscaleNodes: [{
+          name: "Tailnet Exit",
+          sectionName: "tailnet-exit",
+          authKey: "tskey-auth-test",
+          controlUrl: "",
+          hostname: "",
+          derpOnly: false,
+          exitNode: "none",
+          idleKeepalive: 600,
+          preferIpv6: false,
+          dnsServer: [],
+          mtu: 1280,
+          underlyingProxy: "",
+          testUrl: "",
+          testTimeout: 5,
+          enabled: true
+        }]
+      },
+      ruleSets: {
+        mode: "compiled",
+        aggregateByPolicy: false,
+        sources: [],
+        outputs: [{
+          name: "Tailnet Rules",
+          enabled: true,
+          policy: "Tailnet Exit",
+          sourceIds: [],
+          inlineRules: ["DOMAIN-SUFFIX,tailnet.example"],
+          order: 1,
+          surgeOptions: []
+        }],
+        directRules: [{
+          id: "tailnet-direct",
+          name: "Tailnet direct",
+          enabled: true,
+          rule: "DOMAIN-SUFFIX,direct.tailnet.example,Tailnet Exit",
+          policy: "Tailnet Exit",
+          order: 2
+        }, {
+          id: "final",
+          name: "Final",
+          enabled: true,
+          rule: "FINAL,Proxy",
+          policy: "Proxy",
+          order: 3
+        }]
+      }
+    });
+    const env = makeEnv();
+
+    const surge = (await generateConfig(env, config, "surge", "https://subpilot.example.com/sync/read-token/")).content;
+    expect(surge).toContain("/r/Tailnet%20Rules.list,Tailnet Exit");
+    expect(surge).toContain("DOMAIN-SUFFIX,direct.tailnet.example,Tailnet Exit");
+
+    for (const target of ["clash", "stash", "shadowrocket"] as const) {
+      const yaml = YAML.parse((await generateConfig(
+        env,
+        config,
+        target,
+        "https://subpilot.example.com/sync/read-token/"
+      )).content) as { "rule-providers"?: Record<string, unknown>; rules: string[] };
+      expect(Object.keys(yaml["rule-providers"] || {})).not.toContain(compiledRuleProviderName("Tailnet Rules", "combined"));
+      expect(yaml.rules.join("\n")).not.toContain("Tailnet Exit");
+      expect(yaml.rules).not.toContain("DOMAIN-SUFFIX,direct.tailnet.example,Proxy");
+      expect(yaml.rules).toContain("MATCH,Proxy");
+    }
   });
 
   it("groups compiled outputs by policy and annotates their original rule set names", async () => {
@@ -309,7 +769,7 @@ describe("rule set compiler", () => {
 
     const stash = (await generateConfig(env, config, "stash", "https://subpilot.example.com/sync/read-token/")).content;
     expect(stash).toContain("# 策略组 Proxy 包含规则集：AI、Media");
-    expect(stash).toContain("/r/Proxy.yaml");
+    expect(stash).toContain("/r/Proxy.stash.yaml");
 
     await env.SUBPILOT_CONFIG.put("auth:read_token_hash", await sha256Hex("read-token"));
     await saveConfig(env, config);
@@ -339,7 +799,14 @@ describe("rule set compiler", () => {
           order: index,
           surgeOptions: []
         })),
-        directRules: []
+        directRules: [{
+          id: "final",
+          name: "Final",
+          enabled: true,
+          rule: "FINAL,Proxy",
+          policy: "Proxy",
+          order: 999
+        }]
       }
     });
 
@@ -482,7 +949,7 @@ describe("rule set compiler", () => {
 
     const result = await refreshRuleSetCaches(env, config);
 
-    expect(fetchMock.mock.calls.length).toBe(initialFetches + 8);
+    expect(fetchMock.mock.calls.length).toBe(initialFetches + 4);
     expect(result.cached).toBe(1);
     expect(result.failed).toBe(0);
     expect(result.warnings.join("\n")).toContain("继续使用旧规则集源缓存");
@@ -584,7 +1051,14 @@ describe("rule set compiler", () => {
     ), env, ctx);
     expect(surgeCombinedResponse.status).toBe(200);
     await expect(surgeCombinedResponse.text()).resolves.toContain("DOMAIN-SUFFIX,example.com");
-    await env.SUBPILOT_CONFIG.delete(compiledRuleSetContentKey("AI", "combined", "clash"));
+    const compiledManifest = await readCompiledRuleSetManifest(env, "AI");
+    expect(compiledManifest?.storageId).toBeTruthy();
+    await env.SUBPILOT_CONFIG.delete(compiledRuleSetContentKey(
+      "AI",
+      "combined",
+      "clash",
+      compiledManifest!.storageId
+    ));
     const restoredResponse = await worker.fetch(new Request(ruleSetUrl), env, ctx);
     expect(restoredResponse.status).toBe(200);
     expect(fetchMock).toHaveBeenCalledTimes(fetchCount);
@@ -610,6 +1084,39 @@ describe("rule set compiler", () => {
       .then((item) => item.status)).resolves.toBe(403);
   });
 
+  it("serves distinct Clash and Stash rule-set artifacts", async () => {
+    const kv = new Map<string, string>([["auth:read_token_hash", await sha256Hex("read-token")]]);
+    const env = makeEnv(kv);
+    const base = compiledConfig();
+    const config = normalizeConfig({
+      ...base,
+      ruleSets: {
+        ...base.ruleSets,
+        sources: [],
+        outputs: [{
+          ...base.ruleSets.outputs[0]!,
+          sourceIds: [],
+          inlineRules: ["IP-CIDR,192.0.2.0/24,src,no-resolve"]
+        }]
+      }
+    });
+    await saveConfig(env, config);
+
+    const clashResponse = await worker.fetch(new Request(
+      "https://subpilot.example.com/sync/read-token/r/AI.yaml"
+    ), env, ctx);
+    const stashResponse = await worker.fetch(new Request(
+      "https://subpilot.example.com/sync/read-token/r/AI.stash.yaml"
+    ), env, ctx);
+    const clash = YAML.parse(await clashResponse.text()) as { payload: string[] };
+    const stash = YAML.parse(await stashResponse.text()) as { payload: string[] };
+
+    expect(clashResponse.status).toBe(200);
+    expect(stashResponse.status).toBe(200);
+    expect(clash.payload).toEqual(["IP-CIDR,192.0.2.0/24,src,no-resolve"]);
+    expect(stash.payload).toEqual(["IP-CIDR,192.0.2.0/24,no-resolve"]);
+  });
+
   it("serves specialized artifacts with readable filename suffixes", async () => {
     const kv = new Map<string, string>([["auth:read_token_hash", await sha256Hex("read-token")]]);
     const env = makeEnv(kv);
@@ -619,6 +1126,7 @@ describe("rule set compiler", () => {
     const manifest = {
       outputName: "AI",
       outputFingerprint: JSON.stringify({
+        compilerRevision: 4,
         policy: output.policy,
         sourceIds: output.sourceIds,
         inlineRules: output.inlineRules,
@@ -679,8 +1187,10 @@ describe("rule set compiler", () => {
       }), env, makeExecutionContext().ctx);
       expect(notModified.status).toBe(304);
 
-      const manifest = JSON.parse(String(kv.get(compiledRuleSetMetaKey("AI")))) as { updatedAt: string };
-      kv.set(compiledRuleSetMetaKey("AI"), JSON.stringify({ ...manifest, updatedAt: "2026-07-10T12:00:00.000Z" }));
+      const manifestEntry = [...kv.entries()].find(([key]) => key.startsWith(`${compiledRuleSetMetaKey("AI")}:v:`));
+      expect(manifestEntry).toBeDefined();
+      const manifest = JSON.parse(String(manifestEntry![1])) as { storageId: string; updatedAt: string };
+      kv.set(manifestEntry![0], JSON.stringify({ ...manifest, updatedAt: "2026-07-10T12:00:00.000Z" }));
       const versionedContext = makeExecutionContext();
       const versionedResponse = await worker.fetch(new Request(request.url, {
         headers: { "if-none-match": String(response.headers.get("etag")) }
@@ -690,7 +1200,7 @@ describe("rule set compiler", () => {
       expect(workerCache.put).toHaveBeenCalledTimes(2);
       expect(workerCache.store.size).toBe(2);
 
-      await env.SUBPILOT_CONFIG.delete(compiledRuleSetContentKey("AI", "combined", "clash"));
+      await env.SUBPILOT_CONFIG.delete(compiledRuleSetContentKey("AI", "combined", "clash", manifest.storageId));
       const cachedResponse = await worker.fetch(request, env, makeExecutionContext().ctx);
 
       expect(cachedResponse.status).toBe(200);
@@ -718,10 +1228,11 @@ describe("rule set compiler", () => {
       await Promise.all(execution.waitUntil);
 
       expect(response.status).toBe(200);
-      expect(workerCache.put).toHaveBeenCalledTimes(2);
+      expect(workerCache.put).toHaveBeenCalledTimes(3);
       const cacheKeys = [...workerCache.store.keys()];
       expect(cacheKeys.some((key) => key.includes("/r/AI.list"))).toBe(true);
       expect(cacheKeys.some((key) => key.includes("/r/AI.yaml"))).toBe(true);
+      expect(cacheKeys.some((key) => key.includes("/r/AI.stash.yaml"))).toBe(true);
       const cachedClashCombined = [...workerCache.store.entries()]
         .find(([key]) => key.includes("/r/AI.yaml"))?.[1];
       expect(cachedClashCombined?.headers.get("cache-control")).toBe("public, max-age=43200");
@@ -786,5 +1297,88 @@ describe("rule set compiler", () => {
     expect(compiledResponse.status).toBe(200);
     expect(compiled.manifest.outputName).toBe("AI");
     expect(compiled.manifest).not.toHaveProperty("outputId");
+  });
+
+  it("maps or filters classical rules per target and records compatibility warnings", async () => {
+    const env = makeEnv();
+    const base = compiledConfig();
+    const config = normalizeConfig({
+      ...base,
+      ruleSets: {
+        ...base.ruleSets,
+        sources: [],
+        outputs: [{
+          ...base.ruleSets.outputs[0]!,
+          sourceIds: [],
+          inlineRules: [
+            'USER-AGENT,"Example, App"',
+            'URL-REGEX,"^https://example\\.com/(foo,bar)$"',
+            "DEST-PORT,443",
+            "DOMAIN-REGEX,^api[0-9]+\\.example\\.com$",
+            "PROCESS-PATH,/Applications/Example.app"
+          ]
+        }]
+      }
+    });
+
+    const result = await compileRuleSetOutput(env, config, config.ruleSets.outputs[0]!);
+    const meta = result.manifest.buckets.find((bucket) => bucket.bucket === "classical");
+    expect(meta?.targetCounts).toEqual({ surge: 3, clash: 3, stash: 5 });
+    expect(result.manifest.warnings.join("\n")).toContain("不受 Clash 支持");
+    expect(result.manifest.warnings.join("\n")).toContain("映射为 DST-PORT");
+
+    const surge = String(await readCompiledRuleSetBucket(env, "AI", "combined", "surge"));
+    expect(surge).toContain('USER-AGENT,"Example, App"');
+    expect(surge).toContain('URL-REGEX,"^https://example\\.com/(foo,bar)$"');
+    expect(surge).toContain("DEST-PORT,443");
+    expect(surge).not.toContain("DOMAIN-REGEX");
+    expect(surge).not.toContain("PROCESS-PATH");
+
+    const clash = YAML.parse(String(await readCompiledRuleSetBucket(env, "AI", "combined", "clash"))) as { payload: string[] };
+    expect(clash.payload).toContain("DST-PORT,443");
+    expect(clash.payload).toContain("DOMAIN-REGEX,^api[0-9]+\\.example\\.com$");
+    expect(clash.payload).toContain("PROCESS-PATH,/Applications/Example.app");
+    expect(clash.payload.some((rule) => rule.startsWith("USER-AGENT,"))).toBe(false);
+    expect(clash.payload.some((rule) => rule.startsWith("URL-REGEX,"))).toBe(false);
+  });
+
+  it("stops starting refresh work after an absolute deadline and keeps usable caches", async () => {
+    const fetchMock = mockRuleSetFetches();
+    const env = makeEnv();
+    const config = compiledConfig();
+    await compileRuleSetOutput(env, config, config.ruleSets.outputs[0]!);
+    fetchMock.mockClear();
+
+    const result = await refreshRuleSetCaches(env, config, undefined, { deadline: Date.now() - 1 });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(result.failures).toHaveLength(2);
+    expect(result.failures.every((failure) => !failure.usedCachedContent)).toBe(true);
+    expect(result.failures.every((failure) => failure.reason.includes("截止时间"))).toBe(true);
+    expect(result.outputFailures).toEqual([{
+      outputName: "AI",
+      reason: "规则集刷新已超过截止时间",
+      usedCachedManifest: false
+    }]);
+    expect(result.warnings.join("\n")).toContain("跳过过期编译缓存清理");
+    await expect(readCompiledRuleSetBucket(env, "AI", "combined", "surge")).resolves.toContain("example.com");
+  });
+
+  it("rejects inline rule counts above the per-output compilation limit", async () => {
+    const env = makeEnv();
+    const config = compiledConfig();
+    const output = {
+      ...config.ruleSets.outputs[0]!,
+      sourceIds: [],
+      inlineRules: Array.from({ length: 50_001 }, (_, index) => `DOMAIN,rule-${index}.example`)
+    };
+    config.ruleSets = {
+      ...config.ruleSets,
+      sources: [],
+      outputs: [output]
+    };
+
+    await expect(compileRuleSetOutput(env, config, output)).rejects.toThrow("编译规则数量超过 50000 条限制");
+    await expect(readCompiledRuleSetManifest(env, output.name)).resolves.toBeNull();
   });
 });

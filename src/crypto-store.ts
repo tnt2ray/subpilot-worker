@@ -38,6 +38,14 @@ export async function decryptText(secret: string, value: string): Promise<string
   return new TextDecoder().decode(plain);
 }
 
+export async function encryptJson(secret: string, value: unknown): Promise<string> {
+  return encryptText(secret, JSON.stringify(value));
+}
+
+export async function decryptJson<T>(secret: string, value: string): Promise<T> {
+  return JSON.parse(await decryptText(secret, value)) as T;
+}
+
 export async function sealSources(sources: SourceConfig[], secret?: string): Promise<SourceConfig[]> {
   if (!secret) throw new Error("CONFIG_ENCRYPTION_KEY secret is required");
   return Promise.all(
@@ -54,7 +62,7 @@ export async function unsealSources(sources: SourceConfig[], secret?: string): P
   }
   return Promise.all(
     sources.map(async (source) => {
-      if (!source.urlEncrypted || !secret) return { ...source };
+      if (source.url || !source.urlEncrypted || !secret) return { ...source };
       return { ...source, url: await decryptText(secret, source.urlEncrypted) };
     })
   );

@@ -79,6 +79,7 @@ const MIGRATIONS: MigrationStep[] = [
     from: 4,
     to: 5,
     run: async (env) => {
+      const legacyChainFilter = await readLegacyChainFilter(env);
       const indexKey = "config:proxyNodes:index";
       const indexValue = await readKvJson<unknown>(env, indexKey);
       const ids = Array.isArray(indexValue)
@@ -87,8 +88,11 @@ const MIGRATIONS: MigrationStep[] = [
       await Promise.all(ids.map(async (id, index) => {
         const nodeKey = `config:proxyNodes:${encodeURIComponent(id)}`;
         const node = await readKvJson<Record<string, unknown>>(env, nodeKey);
-        const migrated = migrateProxyNodeConfig(node, index);
-        if (migrated) {
+        // Compose the later chain-filter and group-inclusion migrations here so
+        // a schema-4 namespace never writes the same KV key again in 5 -> 6 or
+        // 8 -> 9. Workers KV permits only one write per second to a given key.
+        const migrated = migrateProxyNodeConfig(node, index, legacyChainFilter);
+        if (migrated && !sameJsonValue(node, migrated)) {
           await env.SUBPILOT_CONFIG.put(nodeKey, JSON.stringify(migrated));
         }
       }));
@@ -108,7 +112,7 @@ const MIGRATIONS: MigrationStep[] = [
         const nodeKey = `config:proxyNodes:${encodeURIComponent(id)}`;
         const node = await readKvJson<Record<string, unknown>>(env, nodeKey);
         const migrated = migrateProxyNodeChainFilter(node, legacyChainFilter);
-        if (migrated) {
+        if (migrated && !sameJsonValue(node, migrated)) {
           await env.SUBPILOT_CONFIG.put(nodeKey, JSON.stringify(migrated));
         }
       }));
@@ -133,8 +137,7 @@ const MIGRATIONS: MigrationStep[] = [
     from: 8,
     to: 9,
     run: async (env) => {
-      await migrateGroupSpecs(env, migrateChainSelectorSpec);
-      await migrateLegacyChainExitExcludes(env);
+      await migrateGroupSpecs(env, migrateCurrentGroupSelectorSpec);
       await migrateProxyNodeGroupInclusion(env);
     }
   },
@@ -187,7 +190,6 @@ export async function runKvMigrations(env: Env): Promise<KvSchemaStatus> {
   let changed = false;
   if (stored === 0) {
     stored = 1;
-    await writeStoredSchemaVersion(env, stored);
     changed = true;
   }
 
@@ -199,9 +201,10 @@ export async function runKvMigrations(env: Env): Promise<KvSchemaStatus> {
     }
     await migration.run(env, context);
     stored = next;
-    await writeStoredSchemaVersion(env, stored);
     changed = true;
   }
+
+  if (changed) await writeStoredSchemaVersion(env, stored);
 
   return {
     current: CURRENT_KV_SCHEMA_VERSION,
@@ -263,7 +266,11 @@ function normalizeLegacyExitProxy(value: Record<string, unknown> | null, chainFi
   };
 }
 
-function migrateProxyNodeConfig(value: Record<string, unknown> | null, index: number): StaticProxyNodeConfig | null {
+function migrateProxyNodeConfig(
+  value: Record<string, unknown> | null,
+  index: number,
+  legacyChainFilter: string[] = []
+): StaticProxyNodeConfig | null {
   if (!value || typeof value !== "object") return null;
   const protocol = legacyProtocol(value.protocol);
   const config = typeof value.config === "string" && value.config.trim()
@@ -271,13 +278,17 @@ function migrateProxyNodeConfig(value: Record<string, unknown> | null, index: nu
     : legacyProxyNodeConfig(value, protocol, index);
   if (!config) return null;
   const id = typeof value.id === "string" && value.id.trim() ? value.id.trim() : `proxy-node-${index + 1}`;
+  const chainExit = value.chainExit === true;
+  const existingChainFilter = legacyFilterArray(value.chainFilter, []);
   return {
     id,
     config,
-    chainFilter: legacyFilterArray(value.chainFilter, []),
+    chainFilter: existingChainFilter.length > 0
+      ? existingChainFilter
+      : chainExit ? legacyChainFilter : [],
     enabled: value.enabled !== false,
-    chainExit: value.chainExit === true,
-    includeInGroups: value.chainExit === true ? value.includeInGroups === true : true
+    chainExit,
+    includeInGroups: chainExit ? value.includeInGroups === true : true
   };
 }
 
@@ -347,12 +358,16 @@ function legacyFilterArray(value: unknown, fallback: string[]): string[] {
   return [...new Set(value.map((item) => typeof item === "string" ? item.trim() : "").filter(Boolean))];
 }
 
+function sameJsonValue(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
 async function migrateChainPolicyGroupSelectors(env: Env): Promise<void> {
-  await migrateGroupSpecs(env, migrateChainSelectorSpec);
+  await migrateGroupSpecs(env, migrateCurrentGroupSelectorSpec);
 }
 
 async function migrateLegacyChainExitExcludes(env: Env): Promise<void> {
-  await migrateGroupSpecs(env, removeLegacyChainExitExclude);
+  await migrateGroupSpecs(env, migrateCurrentGroupSelectorSpec);
 }
 
 async function migrateProxyNodeGroupInclusion(env: Env): Promise<void> {
@@ -365,7 +380,7 @@ async function migrateProxyNodeGroupInclusion(env: Env): Promise<void> {
     const nodeKey = `config:proxyNodes:${encodeURIComponent(id)}`;
     const node = await readKvJson<Record<string, unknown>>(env, nodeKey);
     const migrated = migrateProxyNodeGroupInclusionRecord(node);
-    if (migrated) {
+    if (migrated && !sameJsonValue(node, migrated)) {
       await env.SUBPILOT_CONFIG.put(nodeKey, JSON.stringify(migrated));
     }
   }));
@@ -391,6 +406,10 @@ function migrateChainSelectorSpec(spec: string): string {
   return spec.replace(/\{all[^}]*\}/g, (selector) => selector
     .replace(/filter=([^}]*?)(?=\s+exclude=|})/g, (_match, value: string) => `filter=${migrateChainSelectorTerms(value)}`)
     .replace(/exclude=([^}]+)(?=})/g, (_match, value: string) => `exclude=${migrateChainSelectorTerms(value)}`));
+}
+
+function migrateCurrentGroupSelectorSpec(spec: string): string {
+  return removeLegacyChainExitExclude(migrateChainSelectorSpec(spec));
 }
 
 function migrateChainSelectorTerms(value: string): string {

@@ -1,10 +1,12 @@
 import YAML from "yaml";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { generateConfig } from "../src/generator";
-import { loadConfig, normalizeConfig, saveConfig } from "../src/config-store";
+import { CONFIG_MIGRATED_SNAPSHOT_PREFIX, CONFIG_SNAPSHOT_KEY, CONFIG_SNAPSHOT_VERSION_PREFIX, loadConfig, normalizeConfig, saveConfig } from "../src/config-store";
 import { CONFIG_SCHEMA_VERSION_KEY, CURRENT_KV_SCHEMA_VERSION } from "../src/config-schema";
+import { decryptText, encryptText } from "../src/crypto-store";
 import { DEFAULT_CONFIG } from "../src/default-config";
 import { compiledRuleSetContentKey, compiledRuleSetMetaKey } from "../src/rule-set-cache";
+import { fetchCachedSource, refreshSourceCache } from "../src/source-cache";
 import { validateSurgeHosts } from "../src/surge-hosts";
 import { validateSurgeMapLocal } from "../src/surge-map-local";
 import { validateSurgeRules } from "../src/surge-rules";
@@ -16,6 +18,23 @@ import { mockSubscription, restoreMocksAfterEach } from "./helpers/fetch";
 
 restoreMocksAfterEach();
 
+const ENCRYPTED_CACHE_STORAGE_PREFIX = "\u001fsubpilot-encrypted-cache:";
+const CONFIG_CLEANUP_PENDING_PREFIX = "config:snapshot:legacyCleanupPending:";
+const CONFIG_CLEANUP_COMPLETE_PREFIX = `config:snapshot:legacyCleanupComplete:${CURRENT_KV_SCHEMA_VERSION}:`;
+
+function rejectRapidDuplicateWrites(env: Env) {
+  const originalPut = env.SUBPILOT_CONFIG.put.bind(env.SUBPILOT_CONFIG);
+  const lastWrites = new Map<string, number>();
+  return vi.spyOn(env.SUBPILOT_CONFIG, "put").mockImplementation(async (...args) => {
+    const key = String(args[0]);
+    const now = Date.now();
+    const previous = lastWrites.get(key);
+    if (previous !== undefined && now - previous < 1_000) throw new Error(`KV PUT rate limit for ${key}`);
+    lastWrites.set(key, now);
+    return originalPut(...args);
+  });
+}
+
 describe("KV config storage", () => {
   it("normalizes default config, notification settings, empty lists, subnet groups, and removed client switches", async () => {
     const env = makeEnv();
@@ -24,7 +43,15 @@ describe("KV config storage", () => {
       ...DEFAULT_CONFIG,
       ruleSets: {
         ...DEFAULT_CONFIG.ruleSets,
-        mode: "compiled"
+        mode: "compiled",
+        directRules: [{
+          id: "subpilot-default-final",
+          name: "Final",
+          enabled: true,
+          rule: "FINAL,Proxy",
+          policy: "Proxy",
+          order: 0
+        }]
       }
     });
 
@@ -129,6 +156,31 @@ describe("KV config storage", () => {
     expect("chainEnabled" in chainSwitches.surge).toBe(false);
     expect("chainEnabled" in chainSwitches.clash).toBe(false);
 
+    const directTailscaleUnderlyingProxy = normalizeConfig({
+      ...DEFAULT_CONFIG,
+      surge: {
+        ...DEFAULT_CONFIG.surge,
+        tailscaleNodes: [{
+          name: "Home Tailnet",
+          sectionName: "home-tailnet",
+          authKey: "tskey-auth-test",
+          controlUrl: "",
+          hostname: "",
+          derpOnly: false,
+          exitNode: "none",
+          idleKeepalive: 600,
+          preferIpv6: false,
+          dnsServer: [],
+          mtu: 1280,
+          underlyingProxy: "direct",
+          testUrl: "",
+          testTimeout: 5,
+          enabled: true
+        }]
+      }
+    });
+    expect(directTailscaleUnderlyingProxy.surge.tailscaleNodes[0]?.underlyingProxy).toBe("");
+
     const unsupportedDnsMode = normalizeConfig({
       ...DEFAULT_CONFIG,
       clash: {
@@ -165,10 +217,10 @@ describe("KV config storage", () => {
     }]);
   });
 
-  it("stores settings, groups, sources, and client features as separate KV values", async () => {
-    const kv = new Map<string, string>();
+  it("stores the complete config as one versioned encrypted snapshot", async () => {
+    const kv = new Map<string, string>([[CONFIG_SCHEMA_VERSION_KEY, String(CURRENT_KV_SCHEMA_VERSION)]]);
     const env = makeEnv(kv);
-    await saveConfig(env, {
+    const saved = await saveConfig(env, {
       ...DEFAULT_CONFIG,
       settings: {
         ...DEFAULT_CONFIG.settings,
@@ -290,174 +342,447 @@ describe("KV config storage", () => {
       }
     });
 
-    expect(JSON.parse(kv.get("config:settings:userAgentSurge") ?? "null")).toBe("Surge iOS/3727");
-    expect(JSON.parse(kv.get("config:settings:userAgentStash") ?? "null")).toBe("Stash/Test");
-    expect(JSON.parse(kv.get("config:settings:userAgentShadowrocket") ?? "null")).toBe("Shadowrocket/Test");
-    expect(JSON.parse(kv.get("config:settings:displayTimeZone") ?? "null")).toBe("UTC");
-    expect(JSON.parse(kv.get("config:settings:notificationChannel") ?? "null")).toBe("telegram");
-    expect(JSON.parse(kv.get("config:settings:notificationTelegramChatId") ?? "null")).toBe("123456");
-    expect(kv.get("config:settings:notificationTelegramBotToken")).toMatch(/^v1\./);
-    expect(kv.get("config:settings:notificationTelegramBotToken")).not.toContain("telegram-token");
-    expect(kv.has("config:settings:notificationEmailFrom")).toBe(false);
-    expect(kv.has("config:settings:notificationEmailFromName")).toBe(false);
-    expect(kv.has("config:settings:notificationEmailTo")).toBe(false);
-    await expect(loadConfig(env).then((config) => config.settings.notificationTelegramBotToken)).resolves.toBe("telegram-token");
-    expect(kv.has(`config:settings:${["userAgent", "Sing", "Box"].join("")}`)).toBe(false);
-    expect(kv.has("config:settings:cacheTtlSeconds")).toBe(false);
-    expect(kv.get("config:groups:Proxy")).toBe("select, Auto");
-    expect(kv.get("config:groups:Auto")).toBe("url-test, {all}, url=https://www.gstatic.com/generate_204, interval=600");
-    expect(JSON.parse(kv.get("config:groups:disabled") ?? "[]")).toEqual(["Auto"]);
-    expect(JSON.parse(kv.get("config:proxyNodes:index") ?? "[]")).toEqual(["exit", "snell"]);
-    expect(JSON.parse(kv.get("config:proxyNodes:exit") ?? "{}")).toEqual({
-      id: "exit",
-      config: "Chain Exit = socks5, 1.1.1.1, 1080, username=u, password=p",
-      chainFilter: ["JP"],
-      enabled: true,
-      chainExit: true,
-      includeInGroups: true
+    const snapshotKeys = [...kv.keys()].filter((key) => key.startsWith(CONFIG_SNAPSHOT_VERSION_PREFIX));
+    expect(snapshotKeys).toHaveLength(1);
+    const stored = String(kv.get(snapshotKeys[0]!));
+    expect(stored).toMatch(/^v1\./);
+    const configKeys = [...kv.keys()].filter((key) => key.startsWith("config:"));
+    expect(configKeys).toContain(CONFIG_SCHEMA_VERSION_KEY);
+    expect(configKeys).not.toContain(CONFIG_SNAPSHOT_KEY);
+    expect(configKeys.filter((key) => key !== CONFIG_SCHEMA_VERSION_KEY && !key.startsWith(CONFIG_SNAPSHOT_VERSION_PREFIX))
+      .every((key) => key.startsWith(CONFIG_CLEANUP_COMPLETE_PREFIX))).toBe(true);
+    const allStoredValues = [...kv.values()].map(String).join("\n");
+    for (const sentinel of [
+      "https://example.com/sub",
+      "telegram-token",
+      "password=p",
+      "psk: secret",
+      "test-passphrase",
+      "BASE64P12"
+    ]) {
+      expect(allStoredValues).not.toContain(sentinel);
+    }
+    const snapshot = JSON.parse(await decryptText("config-secret", stored)) as { version: number; config: AppConfig };
+    expect(snapshot.version).toBe(1);
+    expect(snapshot.config).toMatchObject({
+      settings: {
+        userAgentSurge: "Surge iOS/3727",
+        userAgentStash: "Stash/Test",
+        displayTimeZone: "UTC",
+        notificationTelegramBotToken: "telegram-token"
+      },
+      disabledGroups: ["Auto"],
+      proxyNodes: [{ id: "exit" }, { id: "snell" }],
+      ruleSets: { mode: "compiled" },
+      surge: { ponteDeviceNames: ["Air", "iPhone"] },
+      clash: { mixedPort: 7899 },
+      stash: { port: 7900 }
     });
-    expect(JSON.parse(kv.get("config:proxyNodes:snell") ?? "{}")).toEqual({
-      id: "snell",
-      config: [
-        "# user maintained Clash YAML",
-        "name: Snell Exit",
-        "type: snell",
-        "server: snell.example.com",
-        "port: 44046",
-        "psk: secret",
-        "version: 4"
-      ].join("\n"),
-      chainFilter: [],
-      enabled: true,
-      chainExit: false,
-      includeInGroups: true
-    });
-    expect(kv.has("config:chain:exitProxy")).toBe(false);
-    expect(kv.has("config:chain:filter")).toBe(false);
-    expect(JSON.parse(kv.get("config:ruleSets:mode") ?? "null")).toBe("compiled");
-    expect(JSON.parse(kv.get("config:ruleSets:aggregateByPolicy") ?? "null")).toBe(false);
-    expect(JSON.parse(kv.get("config:ruleSetSources:index") ?? "[]")).toEqual(["rules"]);
-    expect(JSON.parse(kv.get("config:ruleSetSources:rules") ?? "{}")).toMatchObject({
-      id: "rules",
-      format: "surge-rule-set"
-    });
-    expect(JSON.parse(kv.get("config:ruleSetOutputs:index") ?? "[]")).toEqual(["AI"]);
-    const storedRuleSetOutput = JSON.parse(kv.get("config:ruleSetOutputs:AI") ?? "{}");
-    expect(storedRuleSetOutput).toMatchObject({
-      name: "AI",
-      sourceIds: ["rules"],
-      inlineRules: ["DOMAIN-SUFFIX,example.com,Proxy"]
-    });
-    expect(storedRuleSetOutput).not.toHaveProperty("id");
-    expect(JSON.parse(kv.get("config:ruleSetDirectRules:index") ?? "[]")).toEqual(["final"]);
-    expect(JSON.parse(kv.get("config:ruleSetDirectRules:final") ?? "{}")).toEqual({
-      id: "final",
-      name: "Final",
-      enabled: true,
-      rule: "FINAL,Proxy",
-      policy: "Proxy",
-      order: 99
-    });
-    expect(kv.has("config:surge:loglevel")).toBe(false);
-    expect(JSON.parse(kv.get("config:surge:skipProxy") ?? "[]")).toEqual([
-      "127.0.0.1",
-      "192.168.0.0/16",
-      "10.0.0.0/8",
-      "172.16.0.0/12",
-      "100.64.0.0/10",
-      "localhost",
-      "*.local",
-      "e.crashlytics.com",
-      "captive.apple.com",
-      "::ffff:0:0:0:0/1",
-      "::ffff:128:0:0:0/1"
-    ]);
-    expect(JSON.parse(kv.get("config:surge:dnsServer") ?? "[]")).toEqual(["223.5.5.5", "223.6.6.6", "1.1.1.1", "8.8.8.8", "1.0.0.1", "8.8.4.4"]);
-    expect(JSON.parse(kv.get("config:surge:alwaysRealIp") ?? "[]")).toContain("%APPEND% dns.msftncsi.com");
-    expect(JSON.parse(kv.get("config:surge:managedConfigIntervalSeconds") ?? "null")).toBe(43200);
-    expect(JSON.parse(kv.get("config:surge:proxyTestUrl") ?? "null")).toBe("http://cp.cloudflare.com/generate_204");
-    expect(JSON.parse(kv.get("config:surge:showErrorPageForReject") ?? "null")).toBe(true);
-    expect(JSON.parse(kv.get("config:surge:ipv6Vif") ?? "null")).toBe("auto");
-    expect(JSON.parse(kv.get("config:surge:allowWifiAccess") ?? "null")).toBe(false);
-    expect(JSON.parse(kv.get("config:surge:tunExcludedRoutes") ?? "[]")).toEqual([
-      "192.168.0.0/16",
-      "10.0.0.0/8",
-      "172.16.0.0/12",
-      "239.255.255.250/32"
-    ]);
-    expect(JSON.parse(kv.get("config:surge:encryptedDnsServer") ?? "[]")).toEqual([
-      "https://1.1.1.1/dns-query",
-      "quic://223.5.5.5",
-      "quic://223.6.6.6",
-      "https://223.5.5.5/dns-query"
-    ]);
-    expect(JSON.parse(kv.get("config:surge:wifiAssist") ?? "null")).toBe(false);
-    expect(JSON.parse(kv.get("config:surge:excludeSimpleHostnames") ?? "null")).toBe(true);
-    expect(JSON.parse(kv.get("config:surge:encryptedDnsFollowOutboundMode") ?? "null")).toBe(true);
-    expect(JSON.parse(kv.get("config:surge:ponteDeviceNames") ?? "[]")).toEqual(["Air", "iPhone"]);
-    expect(kv.has("config:surge:chainEnabled")).toBe(false);
-    await expect(loadConfig(env).then((config) => config.surge.ponteDeviceNames)).resolves.toEqual(["Air", "iPhone"]);
-    expect(JSON.parse(kv.get("config:surge:hosts") ?? "[]")).toEqual([
-      "example.com = 1.2.3.4",
-      "dns.example.com = server:8.8.8.8"
-    ]);
-    expect(JSON.parse(kv.get("config:surge:urlRewrite") ?? "[]")).toEqual([
-      "^https?:\\/\\/example\\.com\\/ad - reject",
-      "^https?:\\/\\/old\\.example\\.com https://new.example.com 302"
-    ]);
-    expect(JSON.parse(kv.get("config:surge:mapLocal") ?? "[]")).toEqual([
-      '^https?:\\/\\/example\\.com\\/api data-type=text data="{\\"ok\\":true}" status-code=200 header="Content-Type:application/json"'
-    ]);
-    expect(JSON.parse(kv.get("config:surge:scripts") ?? "[]")).toEqual(["Test Script = type=http-response,pattern=^https://example.com,script-path=https://example.com/script.js"]);
-    expect(JSON.parse(kv.get("config:surge:mitm") ?? "{}")).toEqual({
-      skipServerCertVerify: true,
-      h2: true,
-      hostname: ["api.m.jd.com", "example.com", "old.example.com"],
-      caPassphrase: "test-passphrase",
-      caP12: "BASE64P12"
-    });
-    expect(JSON.parse(kv.get("config:surge:rules") ?? "[]")).toEqual(["FINAL,Proxy"]);
-    expect(JSON.parse(kv.get("config:clash:mixedPort") ?? "0")).toBe(7899);
-    expect(kv.has("config:clash:chainEnabled")).toBe(false);
-    expect(JSON.parse(kv.get("config:clash:unifiedDelay") ?? "null")).toBe(true);
-    expect(JSON.parse(kv.get("config:clash:tcpConcurrent") ?? "null")).toBe(true);
-    expect(JSON.parse(kv.get("config:clash:externalController") ?? "null")).toBe("0.0.0.0:9090");
-    expect(kv.has("config:clash:profile")).toBe(false);
-    expect(JSON.parse(kv.get("config:clash:tun") ?? "{}")).toEqual({
-      enable: true,
-      stack: "system",
-      autoRoute: true,
-      autoDetectInterface: true,
-      skipProxy: ["127.0.0.1/8", "192.168.0.0/16", "100.64.0.0/10", "172.16.0.0/12"]
-    });
-    expect(JSON.parse(kv.get("config:clash:defaultNameservers") ?? "[]")).toEqual(["223.5.5.5", "1.1.1.1"]);
-    expect(JSON.parse(kv.get("config:clash:fallbackNameservers") ?? "[]")).toContain("https://1.1.1.1/dns-query");
-    expect(JSON.parse(kv.get("config:clash:fakeIpFilter") ?? "[]")).toContain("dns.msftncsi.com");
-    expect(JSON.parse(kv.get("config:clash:ruleProviders") ?? "\"\"")).toContain("rule-providers:");
-    expect(JSON.parse(kv.get("config:clash:rules") ?? "[]")).toEqual(["MATCH,Proxy"]);
-    expect(JSON.parse(kv.get("config:stash:port") ?? "0")).toBe(7900);
-    expect(JSON.parse(kv.get("config:stash:hosts") ?? "[]")).toEqual(["stash.example.com = 4.4.4.4"]);
-    expect(JSON.parse(kv.get("config:stash:urlRewrite") ?? "[]")).toEqual(["^https?:\\/\\/stash\\.example\\.com\\/ad - reject"]);
-    expect(JSON.parse(kv.get("config:stash:scripts") ?? "[]")).toEqual(["Stash Script = type=http-response,requires-body=1,max-size=0,pattern=^https://stash.example.com,script-path=https://stash.example.com/script.js"]);
-    expect(JSON.parse(kv.get("config:stash:mitm") ?? "{}")).toEqual({ hostname: ["stash.example.com"] });
-    expect(JSON.parse(kv.get("config:stash:dns") ?? "{}")).toMatchObject({
-      enable: true,
-      nameservers: ["9.9.9.9"]
-    });
-    expect(JSON.parse(kv.get("config:stash:rules") ?? "[]")).toEqual(["MATCH,Proxy"]);
-    expect(kv.has("config:stash:caP12")).toBe(false);
-    expect(kv.has("config:stash:caPassphrase")).toBe(false);
-    expect([...kv.keys()].some((key) => key.startsWith("config:shadowrocket:"))).toBe(false);
-    expect(JSON.parse(kv.get("config:sources:index") ?? "[]")).toEqual(["src1"]);
-    const storedSource = JSON.parse(kv.get("config:sources:src1") ?? "{}") as { url?: string; urlEncrypted?: string; fetchUserAgent?: string };
-    expect(storedSource).toMatchObject({ url: "", fetchUserAgent: "shadowrocket" });
-    expect(storedSource.urlEncrypted).toMatch(/^v1\./);
-    expect(kv.get("config:sources:src1")).not.toContain("https://example.com/sub");
+
     const loaded = await loadConfig(env);
+    expect(loaded).toEqual(saved);
     expect(loaded.sources[0]).toMatchObject({ id: "src1", url: "https://example.com/sub", fetchUserAgent: "shadowrocket" });
     expect(loaded.stash.port).toBe(7900);
     expect(loaded.stash.mitm).toEqual({ hostname: ["stash.example.com"] });
     expect("shadowrocket" in loaded).toBe(false);
+  });
+
+  it("orders concurrent same-millisecond saves by issuance instead of put completion", async () => {
+    const now = Date.now();
+    vi.spyOn(Date, "now").mockReturnValue(now);
+    const kv = new Map<string, string>([[CONFIG_SCHEMA_VERSION_KEY, String(CURRENT_KV_SCHEMA_VERSION)]]);
+    const env = makeEnv(kv);
+    const originalPut = env.SUBPILOT_CONFIG.put.bind(env.SUBPILOT_CONFIG);
+    let releaseFirstPut: (() => void) | undefined;
+    let reportFirstPut: (() => void) | undefined;
+    const firstPutStarted = new Promise<void>((resolve) => {
+      reportFirstPut = resolve;
+    });
+    const firstPutGate = new Promise<void>((resolve) => {
+      releaseFirstPut = resolve;
+    });
+    let blockedFirstSnapshot = false;
+    vi.spyOn(env.SUBPILOT_CONFIG, "put").mockImplementation(async (...args) => {
+      if (String(args[0]).startsWith(CONFIG_SNAPSHOT_VERSION_PREFIX) && !blockedFirstSnapshot) {
+        blockedFirstSnapshot = true;
+        reportFirstPut?.();
+        await firstPutGate;
+      }
+      return originalPut(...args);
+    });
+
+    const firstSave = saveConfig(env, {
+      ...DEFAULT_CONFIG,
+      settings: { ...DEFAULT_CONFIG.settings, userAgentSurge: "First" }
+    });
+    await firstPutStarted;
+    const secondSave = saveConfig(env, {
+      ...DEFAULT_CONFIG,
+      settings: { ...DEFAULT_CONFIG.settings, userAgentSurge: "Second" }
+    });
+    await expect(secondSave).resolves.toMatchObject({ settings: { userAgentSurge: "Second" } });
+    releaseFirstPut?.();
+    await expect(firstSave).resolves.toMatchObject({ settings: { userAgentSurge: "First" } });
+
+    expect([...kv.keys()].filter((key) => key.startsWith(CONFIG_SNAPSHOT_VERSION_PREFIX))).toHaveLength(2);
+    await expect(loadConfig(env)).resolves.toMatchObject({ settings: { userAgentSurge: "Second" } });
+  });
+
+  it("falls back from a corrupt newest snapshot and fails closed when none are valid", async () => {
+    const kv = new Map<string, string>([[CONFIG_SCHEMA_VERSION_KEY, String(CURRENT_KV_SCHEMA_VERSION)]]);
+    const env = makeEnv(kv);
+    await saveConfig(env, {
+      ...DEFAULT_CONFIG,
+      settings: { ...DEFAULT_CONFIG.settings, userAgentSurge: "Older valid" }
+    });
+    await saveConfig(env, {
+      ...DEFAULT_CONFIG,
+      settings: { ...DEFAULT_CONFIG.settings, userAgentSurge: "Newest" }
+    });
+    const keys = [...kv.keys()].filter((key) => key.startsWith(CONFIG_SNAPSHOT_VERSION_PREFIX)).sort();
+    kv.set(keys[0]!, "corrupt-newest-snapshot");
+
+    await expect(loadConfig(env)).resolves.toMatchObject({ settings: { userAgentSurge: "Older valid" } });
+    for (const key of keys) kv.set(key, "corrupt-snapshot");
+    await expect(loadConfig(env)).rejects.toThrow("No valid encrypted config snapshot is available");
+  });
+
+  it("bounds version discovery while reading the newest snapshot", async () => {
+    const env = makeEnv();
+    await saveConfig(env, DEFAULT_CONFIG);
+    const listSpy = vi.spyOn(env.SUBPILOT_CONFIG, "list");
+
+    await expect(loadConfig(env)).resolves.toMatchObject({ version: 1 });
+
+    expect(listSpy).toHaveBeenCalledWith({
+      prefix: CONFIG_SNAPSHOT_VERSION_PREFIX,
+      limit: 64
+    });
+  });
+
+  it("continues to read the legacy fixed encrypted snapshot", async () => {
+    const kv = new Map<string, string>([[CONFIG_SCHEMA_VERSION_KEY, String(CURRENT_KV_SCHEMA_VERSION)]]);
+    const env = makeEnv(kv);
+    await saveConfig(env, {
+      ...DEFAULT_CONFIG,
+      settings: { ...DEFAULT_CONFIG.settings, userAgentSurge: "Legacy fixed" }
+    });
+    const versionKey = [...kv.keys()].find((key) => key.startsWith(CONFIG_SNAPSHOT_VERSION_PREFIX));
+    expect(versionKey).toBeDefined();
+    kv.set(CONFIG_SNAPSHOT_KEY, kv.get(versionKey!)!);
+    kv.delete(versionKey!);
+
+    await expect(loadConfig(env)).resolves.toMatchObject({ settings: { userAgentSurge: "Legacy fixed" } });
+  });
+
+  it("prunes old snapshot versions in bounded batches while retaining a readable head", async () => {
+    let now = Date.now();
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    const kv = new Map<string, string>([[CONFIG_SCHEMA_VERSION_KEY, String(CURRENT_KV_SCHEMA_VERSION)]]);
+    const env = makeEnv(kv);
+    for (let index = 0; index < 25; index += 1) {
+      await saveConfig(env, {
+        ...DEFAULT_CONFIG,
+        clash: { ...DEFAULT_CONFIG.clash, port: 8_000 + index }
+      });
+    }
+    now += 5 * 60 * 1_000 + 1;
+    const deleteSpy = vi.spyOn(env.SUBPILOT_CONFIG, "delete");
+    await saveConfig(env, {
+      ...DEFAULT_CONFIG,
+      clash: { ...DEFAULT_CONFIG.clash, port: 9_999 }
+    });
+
+    const versionDeletes = deleteSpy.mock.calls.filter(([key]) => String(key).startsWith(CONFIG_SNAPSHOT_VERSION_PREFIX));
+    expect(versionDeletes).toHaveLength(20);
+    expect([...kv.keys()].filter((key) => key.startsWith(CONFIG_SNAPSHOT_VERSION_PREFIX)).length).toBeGreaterThanOrEqual(3);
+    await expect(loadConfig(env)).resolves.toMatchObject({ clash: { port: 9_999 } });
+  });
+
+  it("migrates legacy split config into an encrypted append-only snapshot and removes plaintext after the grace period", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-20T00:00:00.000Z"));
+    const sourceUrl = "https://legacy.example/sub?token=source-sentinel";
+    const proxySecret = "proxy-password-sentinel";
+    const tailscaleSecret = "tskey-auth-sentinel";
+    const p12Secret = "P12-SENTINEL";
+    const botSecret = "telegram-bot-sentinel";
+    const kv = new Map<string, string>([
+      [CONFIG_SCHEMA_VERSION_KEY, String(CURRENT_KV_SCHEMA_VERSION)],
+      ["config:settings:managedBaseUrl", JSON.stringify("https://legacy.example/sync")],
+      ["config:settings:notificationTelegramBotToken", await encryptText("config-secret", botSecret)],
+      ["config:sources:index", JSON.stringify(["legacy-source"])],
+      ["config:sources:legacy-source", JSON.stringify({
+        id: "legacy-source",
+        name: "Legacy",
+        url: "",
+        urlEncrypted: await encryptText("config-secret", sourceUrl),
+        fetchUserAgent: "surge",
+        enabled: true
+      })],
+      ["config:proxyNodes:index", JSON.stringify(["legacy-proxy"])],
+      ["config:proxyNodes:legacy-proxy", JSON.stringify({
+        id: "legacy-proxy",
+        config: `Legacy = socks5, proxy.example, 1080, password=${proxySecret}`,
+        chainFilter: [],
+        enabled: true,
+        chainExit: false,
+        includeInGroups: true
+      })],
+      ["config:surge:tailscaleNodes", JSON.stringify([{
+        name: "Legacy Tailnet",
+        sectionName: "legacy-tailnet",
+        authKey: tailscaleSecret,
+        controlUrl: "",
+        hostname: "",
+        derpOnly: false,
+        exitNode: "none",
+        idleKeepalive: 600,
+        preferIpv6: false,
+        dnsServer: [],
+        mtu: 1280,
+        underlyingProxy: "",
+        testUrl: "",
+        testTimeout: 5,
+        enabled: true
+      }])],
+      ["config:surge:mitm", JSON.stringify({
+        ...DEFAULT_CONFIG.surge.mitm,
+        caPassphrase: "p12-passphrase-sentinel",
+        caP12: p12Secret
+      })]
+    ]);
+    const env = makeEnv(kv);
+
+    const loaded = await loadConfig(env);
+
+    expect(loaded.sources[0]?.url).toBe(sourceUrl);
+    expect(loaded.proxyNodes[0]?.config).toContain(proxySecret);
+    expect(loaded.surge.tailscaleNodes[0]?.authKey).toBe(tailscaleSecret);
+    expect(loaded.surge.mitm.caP12).toBe(p12Secret);
+    expect(loaded.settings.notificationTelegramBotToken).toBe(botSecret);
+    expect(kv.has(CONFIG_SNAPSHOT_KEY)).toBe(false);
+    expect([...kv.keys()].filter((key) => key.startsWith(CONFIG_MIGRATED_SNAPSHOT_PREFIX))).toHaveLength(1);
+    expect([...kv.keys()].some((key) => key.startsWith(CONFIG_CLEANUP_PENDING_PREFIX))).toBe(true);
+    expect(kv.has("config:settings:managedBaseUrl")).toBe(true);
+
+    vi.advanceTimersByTime(5 * 60 * 1_000 + 1);
+    await expect(loadConfig(env)).resolves.toEqual(loaded);
+
+    expect(kv.has("config:settings:managedBaseUrl")).toBe(false);
+    expect([...kv.keys()].some((key) => key.startsWith(CONFIG_CLEANUP_COMPLETE_PREFIX))).toBe(true);
+    const storedValues = [...kv.values()].map(String).join("\n");
+    for (const sentinel of [sourceUrl, proxySecret, tailscaleSecret, p12Secret, "p12-passphrase-sentinel", botSecret]) {
+      expect(storedValues).not.toContain(sentinel);
+    }
+    await expect(loadConfig(env)).resolves.toEqual(loaded);
+  });
+
+  it("uses append-only migration records for concurrent first loads without same-key write throttling", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-20T00:00:00.000Z"));
+    const kv = new Map<string, string>([
+      [CONFIG_SCHEMA_VERSION_KEY, String(CURRENT_KV_SCHEMA_VERSION)],
+      ["config:settings:managedBaseUrl", JSON.stringify("https://legacy.example/sync")],
+      ["config:settings:userAgentSurge", JSON.stringify("Legacy Surge")],
+      ["config:clash:port", JSON.stringify(9876)]
+    ]);
+    const env = makeEnv(kv);
+    const putSpy = rejectRapidDuplicateWrites(env);
+
+    const loaded = await Promise.all(Array.from({ length: 8 }, () => loadConfig(env)));
+
+    expect(loaded.map((config) => [config.settings.managedBaseUrl, config.settings.userAgentSurge, config.clash.port]))
+      .toEqual(Array.from({ length: 8 }, () => ["https://legacy.example/sync", "Legacy Surge", 9876]));
+    expect(putSpy.mock.calls.filter(([key]) => key === CONFIG_SNAPSHOT_KEY)).toHaveLength(0);
+    expect([...kv.keys()].filter((key) => key.startsWith(CONFIG_MIGRATED_SNAPSHOT_PREFIX)).length).toBeGreaterThan(0);
+  });
+
+  it("cleans large legacy config layouts in bounded batches before marking completion", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-20T00:00:00.000Z"));
+    const kv = new Map<string, string>([[CONFIG_SCHEMA_VERSION_KEY, String(CURRENT_KV_SCHEMA_VERSION)]]);
+    for (let index = 0; index < 450; index += 1) {
+      kv.set(`config:obsolete:${String(index).padStart(4, "0")}`, JSON.stringify(index));
+    }
+    const env = makeEnv(kv);
+    const obsoleteKeyCount = () => [...kv.keys()].filter((key) => key.startsWith("config:obsolete:")).length;
+    const cleanupCompleteCount = () => [...kv.keys()].filter((key) => key.startsWith(CONFIG_CLEANUP_COMPLETE_PREFIX)).length;
+
+    await loadConfig(env);
+    expect(obsoleteKeyCount()).toBe(450);
+    vi.advanceTimersByTime(5 * 60 * 1_000 + 1);
+
+    await loadConfig(env);
+    expect(obsoleteKeyCount()).toBe(250);
+    expect(cleanupCompleteCount()).toBe(0);
+    await loadConfig(env);
+    expect(obsoleteKeyCount()).toBe(50);
+    expect(cleanupCompleteCount()).toBe(0);
+    await loadConfig(env);
+    expect(obsoleteKeyCount()).toBe(0);
+    expect(cleanupCompleteCount()).toBe(1);
+  });
+
+  it("leaves either the complete old or complete new snapshot when the atomic KV put fails", async () => {
+    for (const commitBeforeFailure of [false, true]) {
+      const env = makeEnv();
+      await saveConfig(env, {
+        ...DEFAULT_CONFIG,
+        settings: { ...DEFAULT_CONFIG.settings, userAgentSurge: "Old Surge" },
+        clash: { ...DEFAULT_CONFIG.clash, port: 7001 }
+      });
+      const originalPut = env.SUBPILOT_CONFIG.put.bind(env.SUBPILOT_CONFIG);
+      const putSpy = vi.spyOn(env.SUBPILOT_CONFIG, "put").mockImplementation(async (...args) => {
+        if (!String(args[0]).startsWith(CONFIG_SNAPSHOT_VERSION_PREFIX)) return originalPut(...args);
+        if (commitBeforeFailure) await originalPut(...args);
+        throw new Error("injected snapshot put failure");
+      });
+
+      await expect(saveConfig(env, {
+        ...DEFAULT_CONFIG,
+        settings: { ...DEFAULT_CONFIG.settings, userAgentSurge: "New Surge" },
+        clash: { ...DEFAULT_CONFIG.clash, port: 7002 }
+      })).rejects.toThrow("injected snapshot put failure");
+      putSpy.mockRestore();
+
+      const loaded = await loadConfig(env);
+      expect([loaded.settings.userAgentSurge, loaded.clash.port]).toEqual(commitBeforeFailure
+        ? ["New Surge", 7002]
+        : ["Old Surge", 7001]);
+    }
+  });
+
+  it("keeps a committed snapshot when post-commit derived cache pruning fails", async () => {
+    const kv = new Map<string, string>();
+    const env = makeEnv(kv);
+    const sourceUrl = "https://example.com/old";
+    await saveConfig(env, {
+      ...DEFAULT_CONFIG,
+      sources: [{ id: "old", name: "Old", url: sourceUrl, fetchUserAgent: "surge", enabled: true }]
+    });
+    const sourceKey = `cache:source:${await sha256Hex(`${sourceUrl}|Surge iOS/3727`)}`;
+    const meta = { key: sourceKey, fetchedAt: "2026-06-20T01:00:00.000Z", sourceId: "old", sourceName: "Old" };
+    kv.set(sourceKey, "legacy cache");
+    kv.set(`cache:sourceMeta:${sourceKey.slice("cache:source:".length)}`, JSON.stringify(meta));
+    kv.set("cache:sourceMeta:index", JSON.stringify([meta]));
+    const originalDelete = env.SUBPILOT_CONFIG.delete.bind(env.SUBPILOT_CONFIG);
+    const deleteSpy = vi.spyOn(env.SUBPILOT_CONFIG, "delete").mockImplementation(async (key) => {
+      if (key === sourceKey) throw new Error("injected cache prune failure");
+      return originalDelete(key);
+    });
+
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    await expect(saveConfig(env, { ...DEFAULT_CONFIG, sources: [] })).resolves.toMatchObject({ sources: [] });
+    deleteSpy.mockRestore();
+
+    expect((await loadConfig(env)).sources).toEqual([]);
+    expect(kv.has(sourceKey)).toBe(true);
+  });
+
+  it("encrypts new source cache content and lazily migrates legacy plaintext", async () => {
+    const kv = new Map<string, string>();
+    const env = makeEnv(kv);
+    const source = {
+      id: "secure-source",
+      name: "Secure",
+      url: "https://example.com/secure",
+      fetchUserAgent: "surge" as const,
+      enabled: true
+    };
+    const userAgent = "Surge iOS/3727";
+    const sourceKey = `cache:source:${await sha256Hex(`${source.url}|${userAgent}`)}`;
+    const freshContent = "Fresh = trojan, fresh.example.com, 443, password=fresh-cache-sentinel";
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(new Response(freshContent));
+
+    await expect(fetchCachedSource(env, source, userAgent)).resolves.toBe(freshContent);
+    const encryptedFresh = String(kv.get(sourceKey));
+    expect(encryptedFresh.startsWith(ENCRYPTED_CACHE_STORAGE_PREFIX)).toBe(true);
+    expect(encryptedFresh).not.toContain("fresh-cache-sentinel");
+    expect(await decryptText("config-secret", encryptedFresh.slice(ENCRYPTED_CACHE_STORAGE_PREFIX.length))).toBe(freshContent);
+    await expect(fetchCachedSource(env, source, userAgent)).resolves.toBe(freshContent);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    const legacyContent = "Legacy = trojan, legacy.example.com, 443, password=legacy-cache-sentinel";
+    kv.set(sourceKey, legacyContent);
+    await expect(fetchCachedSource(env, source, userAgent)).resolves.toBe(legacyContent);
+    const migrated = String(kv.get(sourceKey));
+    expect(migrated.startsWith(ENCRYPTED_CACHE_STORAGE_PREFIX)).toBe(true);
+    expect(migrated).not.toContain("legacy-cache-sentinel");
+    expect(await decryptText("config-secret", migrated.slice(ENCRYPTED_CACHE_STORAGE_PREFIX.length))).toBe(legacyContent);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("self-heals corrupt encrypted source cache content with one same-key write", async () => {
+    const kv = new Map<string, string>();
+    const env = makeEnv(kv);
+    const source = {
+      id: "corrupt-source",
+      name: "Corrupt",
+      url: "https://example.com/corrupt",
+      fetchUserAgent: "surge" as const,
+      enabled: true
+    };
+    const userAgent = "Surge iOS/3727";
+    const sourceKey = `cache:source:${await sha256Hex(`${source.url}|${userAgent}`)}`;
+    kv.set(sourceKey, `${ENCRYPTED_CACHE_STORAGE_PREFIX}not-an-envelope`);
+    const freshContent = "Fresh = trojan, fresh.example.com, 443, password=p";
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(new Response(freshContent));
+    const deleteSpy = vi.spyOn(env.SUBPILOT_CONFIG, "delete");
+    const putSpy = vi.spyOn(env.SUBPILOT_CONFIG, "put");
+
+    await expect(fetchCachedSource(env, source, userAgent)).resolves.toBe(freshContent);
+
+    expect(deleteSpy).not.toHaveBeenCalledWith(sourceKey);
+    expect(putSpy.mock.calls.filter(([key]) => key === sourceKey)).toHaveLength(1);
+    const stored = String(kv.get(sourceKey));
+    expect(await decryptText("config-secret", stored.slice(ENCRYPTED_CACHE_STORAGE_PREFIX.length))).toBe(freshContent);
+  });
+
+  it("returns structured failures for sources left after an absolute refresh deadline", async () => {
+    const kv = new Map<string, string>();
+    const env = makeEnv(kv);
+    const cachedUrl = "https://example.com/cached";
+    const cachedKey = `cache:source:${await sha256Hex(`${cachedUrl}|Surge iOS/3727`)}`;
+    const cachedMeta = {
+      key: cachedKey,
+      fetchedAt: "2026-06-20T01:00:00.000Z",
+      sourceId: "cached",
+      sourceName: "Cached",
+      contentAvailable: true,
+      nodeCount: 1,
+      protocolCounts: [{ protocol: "trojan", count: 1 }]
+    };
+    kv.set(cachedKey, "Cached = trojan, cached.example.com, 443, password=p");
+    kv.set(`cache:sourceMeta:${cachedKey.slice("cache:source:".length)}`, JSON.stringify(cachedMeta));
+    kv.set("cache:sourceMeta:index", JSON.stringify([cachedMeta]));
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+    const config = {
+      ...DEFAULT_CONFIG,
+      sources: [
+        { id: "cached", name: "Cached", url: cachedUrl, fetchUserAgent: "surge" as const, enabled: true },
+        { id: "missing", name: "Missing", url: "https://example.com/missing", fetchUserAgent: "surge" as const, enabled: true }
+      ]
+    };
+
+    const result = await refreshSourceCache(env, config, { deadline: Date.now() - 1 });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ refreshed: 0, failed: 2, cached: 1 });
+    expect(result.failures).toEqual([
+      {
+        sourceId: "cached",
+        sourceName: "Cached",
+        reason: "Source cache refresh deadline exceeded",
+        usedCachedContent: true
+      },
+      {
+        sourceId: "missing",
+        sourceName: "Missing",
+        reason: "Source cache refresh deadline exceeded",
+        usedCachedContent: false
+      }
+    ]);
   });
 
   it("clears source caches immediately when sources are disabled, deleted, or orphaned", async () => {
@@ -508,7 +833,10 @@ describe("KV config storage", () => {
     expect(kv.has(`cache:sourceMeta:${deletedKey.slice("cache:source:".length)}`)).toBe(false);
     expect(kv.has(orphanDeletedKey)).toBe(false);
     expect(kv.has(orphanKey)).toBe(false);
-    expect(kv.get(enabledKey)).toBe("enabled-content");
+    const retained = String(kv.get(enabledKey));
+    expect(retained.startsWith(ENCRYPTED_CACHE_STORAGE_PREFIX)).toBe(true);
+    expect(retained).not.toContain("enabled-content");
+    expect(await decryptText("config-secret", retained.slice(ENCRYPTED_CACHE_STORAGE_PREFIX.length))).toBe("enabled-content");
     expect(JSON.parse(kv.get("cache:sourceMeta:index") ?? "[]")).toEqual([{
       ...cacheEntries[2],
       contentAvailable: true,
@@ -517,7 +845,7 @@ describe("KV config storage", () => {
     }]);
   });
 
-  it("clears rule set caches immediately when rule set sources or outputs are disabled, deleted, or orphaned", async () => {
+  it("clears stale rule set caches in bounded batches when sources or outputs are disabled, deleted, or orphaned", async () => {
     const kv = new Map<string, string>([[CONFIG_SCHEMA_VERSION_KEY, String(CURRENT_KV_SCHEMA_VERSION)]]);
     const env = makeEnv(kv);
     const fetchedAt = "2026-06-20T01:00:00.000Z";
@@ -590,15 +918,45 @@ describe("KV config storage", () => {
     expect(kv.has(deletedSourceKey)).toBe(false);
     expect(kv.has(`cache:ruleSetSourceMeta:${deletedSourceKey.slice("cache:ruleSetSource:".length)}`)).toBe(false);
     expect(kv.has(orphanSourceKey)).toBe(false);
-    expect(kv.get(enabledSourceKey)).toBe("enabled-rules");
+    const enabledSourceContent = String(kv.get(enabledSourceKey));
+    expect(enabledSourceContent.startsWith(ENCRYPTED_CACHE_STORAGE_PREFIX)).toBe(true);
+    expect(await decryptText("config-secret", enabledSourceContent.slice(ENCRYPTED_CACHE_STORAGE_PREFIX.length))).toBe("enabled-rules");
     expect(JSON.parse(kv.get("cache:ruleSetSourceMeta:index") ?? "[]")).toEqual([sourceEntries[2]]);
     expect(kv.has(compiledRuleSetMetaKey("Disabled"))).toBe(false);
     expect(kv.has(compiledRuleSetContentKey("Disabled", "domain", "surge"))).toBe(false);
     expect(kv.has(compiledRuleSetMetaKey("Deleted"))).toBe(false);
     expect(kv.has(compiledRuleSetContentKey("Deleted", "domain", "surge"))).toBe(false);
-    expect(kv.has(compiledRuleSetContentKey("Orphan", "domain", "surge"))).toBe(false);
+    expect(kv.has(compiledRuleSetContentKey("Orphan", "domain", "surge"))).toBe(true);
     expect(kv.has(compiledRuleSetMetaKey("Enabled"))).toBe(true);
     expect(kv.get(compiledRuleSetContentKey("Enabled", "domain", "surge"))).toBe(".enabled.example");
+
+    await saveConfig(env, {
+      ...DEFAULT_CONFIG,
+      ruleSets: {
+        mode: "compiled",
+        aggregateByPolicy: false,
+        sources: [{
+          id: "enabled",
+          name: "Enabled",
+          url: "https://rules.example/enabled",
+          enabled: true,
+          format: "surge-rule-set",
+          order: 2
+        }],
+        outputs: [{
+          name: "Enabled",
+          enabled: true,
+          policy: "Proxy",
+          sourceIds: ["enabled"],
+          inlineRules: [],
+          order: 2,
+          surgeOptions: []
+        }],
+        directRules: []
+      }
+    });
+
+    expect(kv.has(compiledRuleSetContentKey("Orphan", "domain", "surge"))).toBe(false);
   });
 
   it("omits disabled groups while keeping their definitions stored", async () => {
@@ -692,11 +1050,38 @@ describe("KV config storage", () => {
     };
 
     expect(validateSurgeRules(baseConfig)).toBeNull();
+    expect(validateSurgeRules({
+      ...baseConfig,
+      surge: {
+        ...baseConfig.surge,
+        tailscaleNodes: [{
+          name: "Tailnet Exit",
+          sectionName: "tailnet-exit",
+          authKey: "tskey-auth-test",
+          controlUrl: "",
+          hostname: "",
+          derpOnly: false,
+          exitNode: "none",
+          idleKeepalive: 600,
+          preferIpv6: false,
+          dnsServer: [],
+          mtu: 1280,
+          underlyingProxy: "",
+          testUrl: "",
+          testTimeout: 5,
+          enabled: true
+        }],
+        rules: [
+          "DOMAIN-SUFFIX,tailnet.example,Tailnet Exit",
+          "FINAL,Proxy"
+        ]
+      }
+    })).toBeNull();
 
     const invalidRuleCases: Array<[string[], string]> = [
-      [["DOMAIN-SUFFIX,example.com,CustomPolicy"], "策略出口必须是已配置策略组或 Surge 内置策略"],
-      [["DOMAIN-SUFFIX,example.com,PASS", "FINAL,Proxy"], "策略出口必须是已配置策略组或 Surge 内置策略"],
-      [["DOMAIN-SUFFIX,example.com,REJECT-200", "FINAL,Proxy"], "策略出口必须是已配置策略组或 Surge 内置策略"],
+      [["DOMAIN-SUFFIX,example.com,CustomPolicy"], "策略出口必须是已配置策略组、Tailscale 节点或 Surge 内置策略"],
+      [["DOMAIN-SUFFIX,example.com,PASS", "FINAL,Proxy"], "策略出口必须是已配置策略组、Tailscale 节点或 Surge 内置策略"],
+      [["DOMAIN-SUFFIX,example.com,REJECT-200", "FINAL,Proxy"], "策略出口必须是已配置策略组、Tailscale 节点或 Surge 内置策略"],
       [["RULE-SET,LAN"], "规则集语法"],
       [["DOMAIN-SUFFIX,example.com,Proxy,no-resolve", "FINAL,Proxy"], "附加参数"],
       [["IP-CIDR,192.0.2.0/24,Proxy,extended-matching", "FINAL,Proxy"], "附加参数"],

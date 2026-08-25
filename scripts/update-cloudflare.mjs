@@ -136,6 +136,7 @@ if (existsSync(".git")) {
 }
 
 if (!args.has("--no-install")) run(npmCommand, ["install", "--omit=dev"]);
+run(npmCommand, ["run", "setup", "--", "--no-deploy", "--no-secrets", "--existing-config-only"]);
 if (!args.has("--no-deploy")) run(wranglerCommand, ["deploy"]);
 
 process.stdout.write("\nSubPilot update complete. KV schema updates run automatically when the Worker handles requests.\n");

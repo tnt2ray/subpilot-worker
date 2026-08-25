@@ -1,5 +1,6 @@
 import YAML from "yaml";
 import type { ParsedRuleSetRule } from "./rule-set-parser";
+import { renderRuleSetRuleForTarget } from "./rule-targets";
 import type { RuleSetBucket, RuleSetOutputTarget } from "./rule-set-types";
 
 export function renderCompiledRuleSetBucket(
@@ -7,8 +8,12 @@ export function renderCompiledRuleSetBucket(
   bucket: RuleSetBucket,
   target: RuleSetOutputTarget
 ): string {
-  if (target === "surge") return renderSurgeRuleSetBucket(rules, bucket);
-  return renderClashLikeRuleSetBucket(rules, bucket);
+  const compatible = rules.flatMap((rule) => {
+    const rendered = renderRuleSetRuleForTarget(rule.raw, target);
+    return rendered ? [{ ...rule, raw: rendered }] : [];
+  });
+  if (target === "surge") return renderSurgeRuleSetBucket(compatible, bucket);
+  return renderClashLikeRuleSetBucket(compatible, bucket);
 }
 
 export function renderCombinedRuleSet(
@@ -20,7 +25,10 @@ export function renderCombinedRuleSet(
     ...(options.includesDomains ? buckets.domain : []),
     ...(options.includesIpCidr ? buckets.ipcidr : []),
     ...buckets.classical
-  ];
+  ].flatMap((rule) => {
+    const rendered = renderRuleSetRuleForTarget(rule.raw, target);
+    return rendered ? [{ ...rule, raw: rendered }] : [];
+  });
   if (target === "surge") return `${rules.map((rule) => rule.raw).join("\n")}\n`;
   return YAML.stringify({ payload: rules.map((rule) => rule.raw) });
 }
@@ -47,6 +55,7 @@ function renderSurgeDomainSetLine(rule: ParsedRuleSetRule): string {
 }
 
 function renderClashDomainPayloadLine(rule: ParsedRuleSetRule): string {
+  if (rule.clashDomainPattern) return rule.clashDomainPattern;
   if (rule.type === "DOMAIN") return normalizeDomain(rule.value);
   return `+.${normalizeDomain(rule.value)}`;
 }

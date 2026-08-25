@@ -10,8 +10,8 @@
   <body>
     <div id="app" class="luci-app">
       <div class="luci-body">
-        <aside id="mainMenu" class="luci-menu hidden" aria-label="主导航">
-          <button class="menu-indicator" type="button" aria-label="展开导航">
+        <nav id="mainMenu" class="luci-menu hidden" aria-label="主导航" data-i18n-aria-label="mainNavigation">
+          <button id="menuIndicator" class="menu-indicator" type="button" aria-controls="mainMenu" aria-expanded="false" aria-label="展开导航" data-i18n-aria-label="expandNavigation">
             <span></span>
             <span></span>
             <span></span>
@@ -28,16 +28,17 @@
           <a href="#stash" data-page="stash"><span data-i18n="navStash">Stash</span></a>
           <div class="menu-heading" data-i18n="navAccess">访问</div>
           <a href="#tokens" data-page="tokens"><span data-i18n="navTokens">配置链接</span></a>
-        </aside>
+          <button id="logoutBtn" class="menu-action" type="button"><span data-i18n="logout">安全退出</span></button>
+        </nav>
 
         <main class="luci-main">
           <section id="pageHead" class="page-head hidden">
             <div>
-              <h1 id="pageTitle">状态</h1>
+              <h1 id="pageTitle" tabindex="-1">状态</h1>
               <p id="pageDescription">查看服务状态、订阅数量和可用输出模式。</p>
             </div>
             <div class="apply-bar">
-              <button id="saveBtn" class="btn primary" type="button" data-state="idle" data-i18n="saveApply">保存并应用</button>
+              <button id="saveBtn" class="btn primary" type="button" data-state="idle" aria-live="polite" aria-atomic="true" aria-busy="false" data-i18n="saveApply">保存并应用</button>
             </div>
           </section>
 
@@ -68,14 +69,14 @@
                     <div>
                       <dt data-i18n="sourceCacheStatus">上游缓存</dt>
                       <dd class="status-cache-row">
-                        <div id="summarySourceCache" class="status-cache-detail">-</div>
+                        <div id="summarySourceCache" class="status-cache-detail" role="status" aria-live="polite" aria-atomic="true">-</div>
                         <button id="refreshSourceCacheBtn" class="btn compact-btn" type="button" data-i18n="refreshSourceCache">强制获取</button>
                       </dd>
                     </div>
                     <div>
                       <dt data-i18n="ruleSetCacheStatus">规则集缓存</dt>
                       <dd class="status-cache-row">
-                        <div id="summaryRuleSetCache" class="status-cache-detail">-</div>
+                        <div id="summaryRuleSetCache" class="status-cache-detail" role="status" aria-live="polite" aria-atomic="true">-</div>
                         <button id="refreshRuleSetCacheBtn" class="btn compact-btn" type="button" data-i18n="refreshRuleSetCache">强制刷新</button>
                       </dd>
                     </div>
@@ -113,7 +114,7 @@
                     <div>
                       <dt data-i18n="latestVersion">最新版本</dt>
                       <dd class="status-cache-row">
-                        <div id="systemUpdateStatus" class="status-cache-detail">-</div>
+                        <div id="systemUpdateStatus" class="status-cache-detail" role="status" aria-live="polite" aria-atomic="true">-</div>
                         <button id="checkUpdateBtn" class="btn compact-btn" type="button" data-i18n="checkUpdate">检查更新</button>
                       </dd>
                     </div>
@@ -129,14 +130,15 @@
                   <div class="cbi-row">
                     <label for="managedBaseUrl" data-i18n="managedBaseUrl">托管基础地址</label>
                     <div class="field">
-                      <input id="managedBaseUrl" type="url" required>
-                      <small data-i18n="managedBaseUrlHelp">用于生成托管配置头部中的必填基础地址。初始空配置会按当前域名推导一次。</small>
+                      <input id="managedBaseUrl" type="url" required aria-describedby="managedBaseUrlHelp managedBaseUrlValidation">
+                      <small id="managedBaseUrlHelp" data-i18n="managedBaseUrlHelp">用于生成托管配置头部中的必填基础地址。初始空配置会按当前域名推导一次。</small>
+                      <div id="managedBaseUrlValidation" class="validation-messages hidden"></div>
                     </div>
                   </div>
                   <div class="cbi-row">
                     <label data-i18n="ruleSetModeTitle">分流规则模式</label>
                     <div class="field rule-set-mode-field">
-                      <div class="rule-set-mode-tabs" role="radiogroup" aria-label="分流规则模式">
+                      <div class="rule-set-mode-tabs" role="radiogroup" aria-label="分流规则模式" data-i18n-aria-label="ruleSetModeTitle">
                         <label class="tab"><input id="ruleSetModeManual" type="radio" name="ruleSetMode" value="manual"> <span data-i18n="ruleSetModeManual">独立设置分流规则</span></label>
                         <label class="tab"><input id="ruleSetModeCompiled" type="radio" name="ruleSetMode" value="compiled"> <span data-i18n="ruleSetModeCompiled">统一规则集编译</span></label>
                       </div>
@@ -262,9 +264,9 @@
                         <input id="geoIpMmdbFile" class="hidden" type="file" accept=".mmdb,application/octet-stream">
                         <button id="uploadGeoIpMmdbBtn" class="btn" type="button" data-i18n="uploadGeoIpMmdb">上传</button>
                       </div>
-                      <div id="geoIpMmdbStatus" class="validation-messages"></div>
+                      <div id="geoIpMmdbStatus" class="validation-messages" role="status" aria-live="polite" aria-atomic="true"></div>
                       <small data-i18n="geoIpMmdbHelp">上传 MaxMind DB Country 格式 .mmdb 后，IP 节点地区识别会优先使用该库。</small>
-                      <div class="path-help" aria-label="MMDB 文件路径参考">
+                      <div class="path-help" aria-label="MMDB 文件路径参考" data-i18n-aria-label="geoIpMmdbPathReference">
                         <div data-i18n="geoIpMmdbPathHelp">可从本机客户端选择现有文件：</div>
                         <ul>
                           <li><span>Surge macOS</span><code>~/Library/Application Support/com.nssurge.surge-mac/GeoLite2-Country.mmdb</code></li>
@@ -280,7 +282,7 @@
                       <input id="notificationTelegramBotToken" type="password" autocomplete="off" data-i18n-placeholder="telegramBotTokenPlaceholder" placeholder="Bot Token">
                       <div class="telegram-bind-tools">
                         <button id="telegramBindCodeBtn" class="btn compact-btn" type="button" data-i18n="telegramBindCode">生成绑定命令</button>
-                        <div id="telegramBindStatus" class="telegram-bind-status"></div>
+                        <div id="telegramBindStatus" class="telegram-bind-status" role="status" aria-live="polite" aria-atomic="true"></div>
                       </div>
                       <small data-i18n="telegramNotificationHelp">填写 Bot Token 即启用 Telegram 通知；清空 Bot Token 即关闭通知。生成一次性绑定命令后，把命令发送给 bot，系统会通过 webhook 自动记录 Chat ID。</small>
                     </div>
@@ -350,7 +352,7 @@
             </section>
 
             <section id="page-unified-config" class="page-view hidden" data-page="unified-config">
-              <div class="tabs section-tabs unified-config-tabs" role="tablist" aria-label="统一配置">
+              <div class="tabs section-tabs unified-config-tabs" role="tablist" aria-label="统一配置" data-i18n-aria-label="unifiedConfigTabsLabel">
                 <button id="unified-config-tab-general" class="tab active" type="button" data-unified-config-tab="general" role="tab" aria-selected="true" aria-controls="unified-config-panel-general" tabindex="0" data-i18n="unifiedConfigTabGeneral">General</button>
                 <button id="unified-config-tab-dns" class="tab" type="button" data-unified-config-tab="dns" role="tab" aria-selected="false" aria-controls="unified-config-panel-dns" tabindex="-1" data-i18n="unifiedConfigTabDns">DNS</button>
                 <button id="unified-config-tab-rules" class="tab" type="button" data-unified-config-tab="rules" role="tab" aria-selected="false" aria-controls="unified-config-panel-rules" tabindex="-1" data-i18n="unifiedConfigTabRules">分流规则</button>
@@ -408,7 +410,7 @@
                         <textarea id="unifiedRealIpDomains" class="line-editor compact-editor config-code-textarea" rows="8" data-code-editor-rows="8" spellcheck="false" aria-describedby="unifiedRealIpDomainsHelp unifiedRealIpDomainsMixed unifiedRealIpDomainsInvalid" data-i18n-placeholder="unifiedRealIpDomainsMixedPlaceholder"></textarea>
                         <small id="unifiedRealIpDomainsHelp" data-i18n="unifiedRealIpDomainsHelp">每行一个精确域名，或使用 * 代替完整域名标签，例如 *.example.com、xbox.*.microsoft.com、stun.*；分别写入 Surge always-real-ip 与 Clash、Stash dns.fake-ip-filter。</small>
                         <small id="unifiedRealIpDomainsMixed" class="field-warning hidden" data-i18n="unifiedCommonListMixedValue">当前三端保存的列表不一致；输入内容后会统一应用新列表。</small>
-                        <small id="unifiedRealIpDomainsInvalid" class="field-warning hidden" data-i18n="unifiedRealIpDomainsInvalid">仅支持精确域名和以 * 代替完整标签的简单通配符；GEOSITE、规则集和其它高级语法请在对应客户端菜单中配置。</small>
+                        <small id="unifiedRealIpDomainsInvalid" class="field-warning hidden" role="alert" aria-live="assertive" data-i18n="unifiedRealIpDomainsInvalid">仅支持精确域名和以 * 代替完整标签的简单通配符；GEOSITE、规则集和其它高级语法请在对应客户端菜单中配置。</small>
                       </div>
                     </div>
                   </div>
@@ -426,7 +428,7 @@
                       <button id="addRuleSetOutputBtn" class="btn" type="button" data-i18n="addRuleSetOutput">添加规则集</button>
                     </div>
                   </div>
-                  <div id="ruleSetStatusSummary" class="validation-messages"></div>
+                  <div id="ruleSetStatusSummary" class="validation-messages" role="status" aria-live="polite" aria-atomic="true"></div>
                   <div id="ruleSetRulesBody" class="rule-set-rule-list"></div>
                 </section>
               </div>
@@ -435,18 +437,18 @@
             <section id="page-surge" class="page-view hidden" data-page="surge">
               <section class="luci-box">
                 <div class="box-title" data-i18n="surgeConfigTitle">Surge 功能配置</div>
-                <div class="tabs section-tabs" role="tablist" aria-label="Surge sections">
-                  <button class="tab active" type="button" data-surge-tab="general" role="tab" aria-selected="true" data-i18n="surgeTabGeneral">General</button>
-                  <button class="tab" type="button" data-surge-tab="host" role="tab" aria-selected="false" data-i18n="surgeTabHost">Host</button>
-                  <button class="tab" type="button" data-surge-tab="urlRewrite" role="tab" aria-selected="false" data-i18n="surgeTabUrlRewrite">URL Rewrite</button>
-                  <button class="tab" type="button" data-surge-tab="mapLocal" role="tab" aria-selected="false" data-i18n="surgeTabMapLocal">Map Local</button>
-                  <button class="tab" type="button" data-surge-tab="script" role="tab" aria-selected="false" data-i18n="surgeTabScript">Script</button>
-                  <button class="tab" type="button" data-surge-tab="mitm" role="tab" aria-selected="false" data-i18n="surgeTabMitm">MITM</button>
-                  <button class="tab" type="button" data-surge-tab="tailscale" role="tab" aria-selected="false" data-i18n="surgeTabTailscale">Tailscale</button>
-                  <button class="tab" type="button" data-surge-tab="ponte" role="tab" aria-selected="false" data-i18n="surgeTabPonte">Ponte</button>
-                  <button class="tab" type="button" data-surge-tab="rule" data-manual-rule-tab role="tab" aria-selected="false" data-i18n="surgeTabRule">Rule</button>
+                <div class="tabs section-tabs" role="tablist" aria-label="Surge 配置区" data-i18n-aria-label="surgeTabsLabel">
+                  <button id="surge-tab-general" class="tab active" type="button" data-surge-tab="general" role="tab" aria-selected="true" aria-controls="surge-panel-general" tabindex="0" data-i18n="surgeTabGeneral">General</button>
+                  <button id="surge-tab-host" class="tab" type="button" data-surge-tab="host" role="tab" aria-selected="false" aria-controls="surge-panel-host" tabindex="-1" data-i18n="surgeTabHost">Host</button>
+                  <button id="surge-tab-url-rewrite" class="tab" type="button" data-surge-tab="urlRewrite" role="tab" aria-selected="false" aria-controls="surge-panel-url-rewrite" tabindex="-1" data-i18n="surgeTabUrlRewrite">URL Rewrite</button>
+                  <button id="surge-tab-map-local" class="tab" type="button" data-surge-tab="mapLocal" role="tab" aria-selected="false" aria-controls="surge-panel-map-local" tabindex="-1" data-i18n="surgeTabMapLocal">Map Local</button>
+                  <button id="surge-tab-script" class="tab" type="button" data-surge-tab="script" role="tab" aria-selected="false" aria-controls="surge-panel-script" tabindex="-1" data-i18n="surgeTabScript">Script</button>
+                  <button id="surge-tab-mitm" class="tab" type="button" data-surge-tab="mitm" role="tab" aria-selected="false" aria-controls="surge-panel-mitm" tabindex="-1" data-i18n="surgeTabMitm">MITM</button>
+                  <button id="surge-tab-tailscale" class="tab" type="button" data-surge-tab="tailscale" role="tab" aria-selected="false" aria-controls="surge-panel-tailscale" tabindex="-1" data-i18n="surgeTabTailscale">Tailscale</button>
+                  <button id="surge-tab-ponte" class="tab" type="button" data-surge-tab="ponte" role="tab" aria-selected="false" aria-controls="surge-panel-ponte" tabindex="-1" data-i18n="surgeTabPonte">Ponte</button>
+                  <button id="surge-tab-rule" class="tab" type="button" data-surge-tab="rule" data-manual-rule-tab role="tab" aria-selected="false" aria-controls="surge-panel-rule" tabindex="-1" data-i18n="surgeTabRule">Rule</button>
                 </div>
-                <div class="cbi-section" data-surge-panel="general">
+                <div id="surge-panel-general" class="cbi-section" data-surge-panel="general" role="tabpanel" aria-labelledby="surge-tab-general">
                   <div class="cbi-row">
                     <label for="surgeInternetTestUrl" data-i18n="internetTestUrl">联网测试地址</label>
                     <div class="field">
@@ -557,7 +559,7 @@
                     </div>
                   </div>
                 </div>
-                <div class="cbi-section hidden" data-surge-panel="host">
+                <div id="surge-panel-host" class="cbi-section hidden" data-surge-panel="host" role="tabpanel" aria-labelledby="surge-tab-host">
                   <div class="cbi-row">
                     <label data-i18n="surgeHosts">Surge Host</label>
                     <div class="field">
@@ -578,7 +580,7 @@
                     </div>
                   </div>
                 </div>
-                <div class="cbi-section hidden" data-surge-panel="urlRewrite">
+                <div id="surge-panel-url-rewrite" class="cbi-section hidden" data-surge-panel="urlRewrite" role="tabpanel" aria-labelledby="surge-tab-url-rewrite">
                   <div class="cbi-row surge-url-rewrite-cbi-row">
                     <label data-i18n="surgeUrlRewrite">URL Rewrite</label>
                     <div class="field">
@@ -599,7 +601,7 @@
                     </div>
                   </div>
                 </div>
-                <div class="cbi-section hidden" data-surge-panel="mapLocal">
+                <div id="surge-panel-map-local" class="cbi-section hidden" data-surge-panel="mapLocal" role="tabpanel" aria-labelledby="surge-tab-map-local">
                   <div class="cbi-row surge-map-local-cbi-row">
                     <label data-i18n="surgeMapLocal">Map Local</label>
                     <div class="field">
@@ -620,7 +622,7 @@
                     </div>
                   </div>
                 </div>
-                <div class="cbi-section hidden" data-surge-panel="script">
+                <div id="surge-panel-script" class="cbi-section hidden" data-surge-panel="script" role="tabpanel" aria-labelledby="surge-tab-script">
                   <div class="cbi-row">
                     <label for="surgeScripts" data-i18n="surgeScripts">Surge 脚本</label>
                     <div class="field">
@@ -630,7 +632,7 @@
                     </div>
                   </div>
                 </div>
-                <div class="cbi-section hidden" data-surge-panel="mitm">
+                <div id="surge-panel-mitm" class="cbi-section hidden" data-surge-panel="mitm" role="tabpanel" aria-labelledby="surge-tab-mitm">
                   <div class="cbi-row">
                     <label data-i18n="surgeMitmOptions">MITM 选项</label>
                     <div class="field checks">
@@ -656,7 +658,7 @@
                         <label class="btn file-button" for="surgeMitmCaP12File" data-i18n="importSurgeMitmCaP12">导入 .p12</label>
                         <input id="surgeMitmCaP12File" class="hidden" type="file" accept=".p12,.pfx,application/x-pkcs12">
                       </div>
-                      <div id="surgeMitmCaGenerationStatus" class="validation-messages hidden"></div>
+                      <div id="surgeMitmCaGenerationStatus" class="validation-messages hidden" role="status" aria-live="polite" aria-atomic="true"></div>
                       <label class="field-label" for="surgeMitmCaPassphrase">CA 密码</label>
                       <input id="surgeMitmCaPassphrase" type="password" autocomplete="new-password">
                       <label class="field-label" for="surgeMitmCaP12">CA 证书包</label>
@@ -665,7 +667,7 @@
                     </div>
                   </div>
                 </div>
-                <div class="cbi-section hidden" data-surge-panel="tailscale">
+                <div id="surge-panel-tailscale" class="cbi-section hidden" data-surge-panel="tailscale" role="tabpanel" aria-labelledby="surge-tab-tailscale">
                   <div class="cbi-row surge-tailscale-cbi-row">
                     <label data-i18n="surgeTailscaleNodes">Tailscale 节点</label>
                     <div class="field">
@@ -674,11 +676,12 @@
                         <button id="addSurgeTailscaleNodeBtn" class="btn" type="button" data-i18n="addSurgeTailscaleNode">添加 Tailscale 节点</button>
                       </div>
                       <div id="surgeTailscaleNodeRows" class="surge-tailscale-list"></div>
+                      <div id="surgeTailscaleValidation" class="validation-messages hidden"></div>
                       <small data-i18n="surgeTailscaleHelp">每个节点会生成一条 tailscale 策略和对应的 [Tailscale &lt;section-name&gt;] 配置段；需要 Surge iOS 5.20.0+ 或 Surge Mac 6.7.0+。</small>
                     </div>
                   </div>
                 </div>
-                <div class="cbi-section hidden" data-surge-panel="ponte">
+                <div id="surge-panel-ponte" class="cbi-section hidden" data-surge-panel="ponte" role="tabpanel" aria-labelledby="surge-tab-ponte">
                   <div class="cbi-row">
                     <label for="surgePonteDeviceNames" data-i18n="surgePonteDeviceNames">Ponte 设备名</label>
                     <div class="field">
@@ -687,7 +690,7 @@
                     </div>
                   </div>
                 </div>
-                <div class="cbi-section hidden" data-surge-panel="rule" data-manual-rule-panel>
+                <div id="surge-panel-rule" class="cbi-section hidden" data-surge-panel="rule" data-manual-rule-panel role="tabpanel" aria-labelledby="surge-tab-rule">
                   <div class="cbi-row surge-rule-cbi-row">
                     <label data-i18n="surgeRules">Surge 规则</label>
                     <div class="field">
@@ -714,29 +717,29 @@
             <section id="page-clash" class="page-view hidden" data-page="clash">
               <section class="luci-box">
                 <div class="box-title" data-i18n="clashConfigTitle">Clash 功能配置</div>
-                <div class="tabs section-tabs" role="tablist" aria-label="Clash sections">
-                  <button class="tab active" type="button" data-clash-tab="general" role="tab" aria-selected="true" data-i18n="clashTabGeneral">General</button>
-                  <button class="tab" type="button" data-clash-tab="dns" role="tab" aria-selected="false" data-i18n="clashTabDns">DNS</button>
-                  <button class="tab" type="button" data-clash-tab="providers" data-manual-rule-tab role="tab" aria-selected="false" data-i18n="clashTabProviders">规则集</button>
-                  <button class="tab" type="button" data-clash-tab="rules" data-manual-rule-tab role="tab" aria-selected="false" data-i18n="clashTabRules">Rule</button>
+                <div class="tabs section-tabs" role="tablist" aria-label="Clash 配置区" data-i18n-aria-label="clashTabsLabel">
+                  <button id="clash-tab-general" class="tab active" type="button" data-clash-tab="general" role="tab" aria-selected="true" aria-controls="clash-panel-general" tabindex="0" data-i18n="clashTabGeneral">General</button>
+                  <button id="clash-tab-dns" class="tab" type="button" data-clash-tab="dns" role="tab" aria-selected="false" aria-controls="clash-panel-dns" tabindex="-1" data-i18n="clashTabDns">DNS</button>
+                  <button id="clash-tab-providers" class="tab" type="button" data-clash-tab="providers" data-manual-rule-tab role="tab" aria-selected="false" aria-controls="clash-panel-providers" tabindex="-1" data-i18n="clashTabProviders">规则集</button>
+                  <button id="clash-tab-rules" class="tab" type="button" data-clash-tab="rules" data-manual-rule-tab role="tab" aria-selected="false" aria-controls="clash-panel-rules" tabindex="-1" data-i18n="clashTabRules">Rule</button>
                 </div>
-                <div class="cbi-section" data-clash-panel="general">
+                <div id="clash-panel-general" class="cbi-section" data-clash-panel="general" role="tabpanel" aria-labelledby="clash-tab-general">
                   <div class="cbi-row split">
                     <label data-i18n="ports">端口</label>
                     <div class="field three port-fields">
                       <label class="port-field" for="clashPort">
                         <span class="field-label" data-i18n="clashHttpPort">HTTP 代理端口</span>
-                        <input id="clashPort" type="number" min="1" max="65535" aria-label="HTTP proxy port">
+                        <input id="clashPort" type="number" min="1" max="65535" aria-label="HTTP 代理端口" data-i18n-aria-label="clashHttpPort">
                         <small data-i18n="clashHttpPortHelp">HTTP 代理入口，供浏览器或系统 HTTP 代理使用。</small>
                       </label>
                       <label class="port-field" for="clashSocksPort">
                         <span class="field-label" data-i18n="clashSocksPort">SOCKS5 代理端口</span>
-                        <input id="clashSocksPort" type="number" min="1" max="65535" aria-label="SOCKS5 proxy port">
+                        <input id="clashSocksPort" type="number" min="1" max="65535" aria-label="SOCKS5 代理端口" data-i18n-aria-label="clashSocksPort">
                         <small data-i18n="clashSocksPortHelp">SOCKS5 代理入口，供支持 SOCKS5 的应用使用。</small>
                       </label>
                       <label class="port-field" for="clashMixedPort">
                         <span class="field-label" data-i18n="clashMixedPort">混合代理端口</span>
-                        <input id="clashMixedPort" type="number" min="1" max="65535" aria-label="Mixed proxy port">
+                        <input id="clashMixedPort" type="number" min="1" max="65535" aria-label="混合代理端口" data-i18n-aria-label="clashMixedPort">
                         <small data-i18n="clashMixedPortHelp">同时接受 HTTP 和 SOCKS5，通常作为默认代理入口。</small>
                       </label>
                     </div>
@@ -832,7 +835,7 @@
                     </div>
                   </div>
                 </div>
-                <div class="cbi-section hidden" data-clash-panel="dns">
+                <div id="clash-panel-dns" class="cbi-section hidden" data-clash-panel="dns" role="tabpanel" aria-labelledby="clash-tab-dns">
                   <div class="cbi-row">
                     <label data-i18n="dnsSettings">DNS 设置</label>
                     <div class="field clash-dns-settings-grid">
@@ -848,7 +851,7 @@
                       </label>
                       <label class="check-cell" for="clashDnsListen">
                         <span class="field-label" data-i18n="clashDnsListen">listen</span>
-                        <input id="clashDnsListen" type="text" aria-label="listen">
+                        <input id="clashDnsListen" type="text" aria-label="Clash DNS 监听地址" data-i18n-aria-label="clashDnsListenAriaLabel">
                         <small data-i18n="clashDnsListenHelp">DNS 服务监听地址，只有启用 DNS 后生效。</small>
                       </label>
                     </div>
@@ -912,7 +915,7 @@
                     </div>
                   </div>
                 </div>
-                <div class="cbi-section hidden" data-clash-panel="providers" data-manual-rule-panel>
+                <div id="clash-panel-providers" class="cbi-section hidden" data-clash-panel="providers" data-manual-rule-panel role="tabpanel" aria-labelledby="clash-tab-providers">
                   <div class="cbi-row surge-rule-cbi-row">
                     <label data-i18n="clashRuleProviders">rule-providers</label>
                     <div class="field">
@@ -933,7 +936,7 @@
                     </div>
                   </div>
                 </div>
-                <div class="cbi-section hidden" data-clash-panel="rules" data-manual-rule-panel>
+                <div id="clash-panel-rules" class="cbi-section hidden" data-clash-panel="rules" data-manual-rule-panel role="tabpanel" aria-labelledby="clash-tab-rules">
                   <div class="cbi-row surge-rule-cbi-row">
                     <label data-i18n="clashRules">Clash 规则</label>
                     <div class="field">
@@ -961,31 +964,31 @@
             <section id="page-stash" class="page-view hidden" data-page="stash">
               <section class="luci-box">
                 <div class="box-title" data-i18n="stashConfigTitle">Stash 功能配置</div>
-                <div class="tabs section-tabs" role="tablist" aria-label="Stash sections">
-                  <button class="tab active" type="button" data-stash-tab="general" role="tab" aria-selected="true" data-i18n="stashTabGeneral">General</button>
-                  <button class="tab" type="button" data-stash-tab="host" role="tab" aria-selected="false" data-i18n="stashTabHost">Host</button>
-                  <button class="tab" type="button" data-stash-tab="urlRewrite" role="tab" aria-selected="false" data-i18n="stashTabUrlRewrite">URL Rewrite</button>
-                  <button class="tab" type="button" data-stash-tab="script" role="tab" aria-selected="false" data-i18n="stashTabScript">Script</button>
-                  <button class="tab" type="button" data-stash-tab="mitm" role="tab" aria-selected="false" data-i18n="stashTabMitm">MITM</button>
-                  <button class="tab" type="button" data-stash-tab="rule" data-manual-rule-tab role="tab" aria-selected="false" data-i18n="stashTabRule">Rule</button>
+                <div class="tabs section-tabs" role="tablist" aria-label="Stash 配置区" data-i18n-aria-label="stashTabsLabel">
+                  <button id="stash-tab-general" class="tab active" type="button" data-stash-tab="general" role="tab" aria-selected="true" aria-controls="stash-panel-general" tabindex="0" data-i18n="stashTabGeneral">General</button>
+                  <button id="stash-tab-host" class="tab" type="button" data-stash-tab="host" role="tab" aria-selected="false" aria-controls="stash-panel-host" tabindex="-1" data-i18n="stashTabHost">Host</button>
+                  <button id="stash-tab-url-rewrite" class="tab" type="button" data-stash-tab="urlRewrite" role="tab" aria-selected="false" aria-controls="stash-panel-url-rewrite" tabindex="-1" data-i18n="stashTabUrlRewrite">URL Rewrite</button>
+                  <button id="stash-tab-script" class="tab" type="button" data-stash-tab="script" role="tab" aria-selected="false" aria-controls="stash-panel-script" tabindex="-1" data-i18n="stashTabScript">Script</button>
+                  <button id="stash-tab-mitm" class="tab" type="button" data-stash-tab="mitm" role="tab" aria-selected="false" aria-controls="stash-panel-mitm" tabindex="-1" data-i18n="stashTabMitm">MITM</button>
+                  <button id="stash-tab-rule" class="tab" type="button" data-stash-tab="rule" data-manual-rule-tab role="tab" aria-selected="false" aria-controls="stash-panel-rule" tabindex="-1" data-i18n="stashTabRule">Rule</button>
                 </div>
-                <div class="cbi-section" data-stash-panel="general">
+                <div id="stash-panel-general" class="cbi-section" data-stash-panel="general" role="tabpanel" aria-labelledby="stash-tab-general">
                   <div class="cbi-row split">
                     <label data-i18n="ports">端口</label>
                     <div class="field three port-fields">
                       <label class="port-field" for="stashPort">
                         <span class="field-label" data-i18n="clashHttpPort">HTTP 代理端口</span>
-                        <input id="stashPort" type="number" min="1" max="65535" aria-label="Stash HTTP proxy port">
+                        <input id="stashPort" type="number" min="1" max="65535" aria-label="Stash HTTP 代理端口" data-i18n-aria-label="stashHttpPortAriaLabel">
                         <small data-i18n="clashHttpPortHelp">HTTP 代理入口，供浏览器或系统 HTTP 代理使用。</small>
                       </label>
                       <label class="port-field" for="stashSocksPort">
                         <span class="field-label" data-i18n="clashSocksPort">SOCKS5 代理端口</span>
-                        <input id="stashSocksPort" type="number" min="1" max="65535" aria-label="Stash SOCKS5 proxy port">
+                        <input id="stashSocksPort" type="number" min="1" max="65535" aria-label="Stash SOCKS5 代理端口" data-i18n-aria-label="stashSocksPortAriaLabel">
                         <small data-i18n="clashSocksPortHelp">SOCKS5 代理入口，供支持 SOCKS5 的应用使用。</small>
                       </label>
                       <label class="port-field" for="stashMixedPort">
                         <span class="field-label" data-i18n="clashMixedPort">混合代理端口</span>
-                        <input id="stashMixedPort" type="number" min="1" max="65535" aria-label="Stash mixed proxy port">
+                        <input id="stashMixedPort" type="number" min="1" max="65535" aria-label="Stash 混合代理端口" data-i18n-aria-label="stashMixedPortAriaLabel">
                         <small data-i18n="clashMixedPortHelp">同时接受 HTTP 和 SOCKS5，通常作为默认代理入口。</small>
                       </label>
                     </div>
@@ -1095,7 +1098,7 @@
                       </label>
                       <label class="check-cell" for="stashDnsListen">
                         <span class="field-label" data-i18n="clashDnsListen">listen</span>
-                        <input id="stashDnsListen" type="text" aria-label="Stash DNS listen">
+                        <input id="stashDnsListen" type="text" aria-label="Stash DNS 监听地址" data-i18n-aria-label="stashDnsListenAriaLabel">
                         <small data-i18n="clashDnsListenHelp">DNS 服务监听地址，只有启用 DNS 后生效。</small>
                       </label>
                     </div>
@@ -1159,7 +1162,7 @@
                     </div>
                   </div>
                 </div>
-                <div class="cbi-section hidden" data-stash-panel="host">
+                <div id="stash-panel-host" class="cbi-section hidden" data-stash-panel="host" role="tabpanel" aria-labelledby="stash-tab-host">
                   <div class="cbi-row">
                     <label for="stashHosts" data-i18n="stashHosts">Stash Host</label>
                     <div class="field">
@@ -1169,7 +1172,7 @@
                     </div>
                   </div>
                 </div>
-                <div class="cbi-section hidden" data-stash-panel="urlRewrite">
+                <div id="stash-panel-url-rewrite" class="cbi-section hidden" data-stash-panel="urlRewrite" role="tabpanel" aria-labelledby="stash-tab-url-rewrite">
                   <div class="cbi-row">
                     <label for="stashUrlRewrite" data-i18n="stashUrlRewrite">URL Rewrite</label>
                     <div class="field">
@@ -1180,7 +1183,7 @@
                     </div>
                   </div>
                 </div>
-                <div class="cbi-section hidden" data-stash-panel="script">
+                <div id="stash-panel-script" class="cbi-section hidden" data-stash-panel="script" role="tabpanel" aria-labelledby="stash-tab-script">
                   <div class="cbi-row">
                     <label for="stashScripts" data-i18n="stashScripts">Stash 脚本</label>
                     <div class="field">
@@ -1190,7 +1193,7 @@
                     </div>
                   </div>
                 </div>
-                <div class="cbi-section hidden" data-stash-panel="mitm">
+                <div id="stash-panel-mitm" class="cbi-section hidden" data-stash-panel="mitm" role="tabpanel" aria-labelledby="stash-tab-mitm">
                   <div class="cbi-row">
                     <label for="stashMitmHostname" data-i18n="stashMitmHostname">MITM 主机名</label>
                     <div class="field">
@@ -1200,7 +1203,7 @@
                     </div>
                   </div>
                 </div>
-                <div class="cbi-section hidden" data-stash-panel="rule" data-manual-rule-panel>
+                <div id="stash-panel-rule" class="cbi-section hidden" data-stash-panel="rule" data-manual-rule-panel role="tabpanel" aria-labelledby="stash-tab-rule">
                   <div class="cbi-row">
                     <label for="stashRuleProviders" data-i18n="stashRuleProviders">rule-providers</label>
                     <div class="field">
@@ -1227,6 +1230,7 @@
                   <span data-i18n="linksTitle">配置链接</span>
                   <button id="rotateTokenBtn" class="btn" type="button" data-i18n="rotateReadToken">轮换访问令牌</button>
                 </div>
+                <div id="tokenRotationStatus" class="validation-messages hidden" role="status" aria-live="polite" aria-atomic="true"></div>
                 <div id="links" class="links"></div>
               </section>
               <section class="luci-box">
@@ -1238,7 +1242,7 @@
                     <button id="previewStashBtn" class="btn" type="button">Stash</button>
                   </div>
                 </div>
-                <div id="previewWarnings" class="validation-messages hidden"></div>
+                <div id="previewWarnings" class="validation-messages hidden" role="status" aria-live="polite" aria-atomic="true"></div>
                 <textarea id="previewOutput" class="line-editor generated-code config-code-textarea" rows="30" spellcheck="false" readonly data-empty="true">点击上方按钮生成预览。</textarea>
               </section>
             </section>

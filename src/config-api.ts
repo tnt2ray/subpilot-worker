@@ -1,22 +1,46 @@
-import { validateManagedBaseUrl, validateProxyPolicyNameConflicts, validateRuleSetOutputNames } from "./config-validation";
-import { ruleTargetIndex } from "./rule-targets";
+import {
+  validateCompiledFallbackTargets,
+  validateCompiledRulePolicies,
+  validateConfigEntityLimits,
+  validateManagedBaseUrl,
+  validateProxyPolicyNameConflicts,
+  validateRuleSetOutputNames,
+  validateTailscalePolicies
+} from "./config-validation";
+import { validateClashLikeRules } from "./clash-rules";
+import {
+  CLASH_BUILT_IN_RULE_POLICIES,
+  ruleTargetIndex,
+  STASH_BUILT_IN_RULE_POLICIES,
+  SURGE_BUILT_IN_RULE_POLICIES
+} from "./rule-targets";
 import { splitRuleLine } from "./rule-line";
 import { validateSurgeHosts } from "./surge-hosts";
 import { validateStashScripts } from "./stash-scripts";
 import { validateSurgeUrlRewrite } from "./surge-url-rewrite";
 import { validateSurgeMapLocal } from "./surge-map-local";
-import { SURGE_BUILT_IN_POLICIES, validateSurgeRules } from "./surge-rules";
+import { validateSurgeRules } from "./surge-rules";
 import type { AppConfig } from "./types";
 
 export function validateConfigForSave(config: AppConfig): string | null {
-  return validateProxyPolicyNameConflicts(config)
-    || validateManagedBaseUrl(config)
-    || validateRuleSetOutputNames(config)
-    || validateSurgeRules(config)
-    || validateSurgeHosts(config)
-    || validateSurgeUrlRewrite(config)
-    || validateSurgeMapLocal(config)
-    || validateStashScripts(config);
+  try {
+    return validateConfigEntityLimits(config)
+      || validateProxyPolicyNameConflicts(config)
+      || validateTailscalePolicies(config)
+      || validateManagedBaseUrl(config)
+      || validateRuleSetOutputNames(config)
+      || validateCompiledRulePolicies(config)
+      || validateCompiledFallbackTargets(config)
+      || validateSurgeRules(config)
+      || validateClashLikeRules(config, "clash")
+      || validateClashLikeRules(config, "stash")
+      || validateSurgeHosts(config)
+      || validateSurgeUrlRewrite(config)
+      || validateSurgeMapLocal(config)
+      || validateStashScripts(config);
+  } catch {
+    return "配置格式无效";
+  }
 }
 
 export function mergeConfigPatch(
@@ -40,13 +64,37 @@ export function mergeConfigPatch(
       ? { ...config.chain, ...patch.chain }
       : config.chain,
     ruleSets: mergeRuleSetsPatch(config.ruleSets, patch.ruleSets),
-    surge: patch.surge && typeof patch.surge === "object"
-      ? { ...config.surge, ...patch.surge }
-      : config.surge,
-    clash: patch.clash && typeof patch.clash === "object"
-      ? { ...config.clash, ...patch.clash }
-      : config.clash,
+    surge: mergeSurgePatch(config.surge, patch.surge),
+    clash: mergeClashPatch(config.clash, patch.clash),
     stash: mergeStashPatch(config.stash, patch.stash)
+  };
+}
+
+function mergeSurgePatch(
+  current: AppConfig["surge"],
+  patch: Partial<AppConfig["surge"]> | undefined
+): AppConfig["surge"] {
+  if (!patch || typeof patch !== "object") return current;
+  return {
+    ...current,
+    ...patch,
+    mitm: patch.mitm && typeof patch.mitm === "object"
+      ? { ...current.mitm, ...patch.mitm }
+      : current.mitm
+  };
+}
+
+function mergeClashPatch(
+  current: AppConfig["clash"],
+  patch: Partial<AppConfig["clash"]> | undefined
+): AppConfig["clash"] {
+  if (!patch || typeof patch !== "object") return current;
+  return {
+    ...current,
+    ...patch,
+    tun: patch.tun && typeof patch.tun === "object"
+      ? { ...current.tun, ...patch.tun }
+      : current.tun
   };
 }
 
@@ -102,14 +150,24 @@ function mergeRuleSetsPatch(
 function sanitizeRuleTargets(config: AppConfig): { surge: string[]; clash: string[]; stash: string[]; availablePolicies: Set<string> } {
   const disabledGroups = new Set(config.disabledGroups);
   const groupNames = Object.keys(config.groups).filter((name) => !disabledGroups.has(name));
-  const availablePolicies = new Set([
+  const surgePolicies = new Set([
     ...groupNames,
-    ...SURGE_BUILT_IN_POLICIES
+    ...SURGE_BUILT_IN_RULE_POLICIES,
+    ...config.surge.tailscaleNodes
+      .filter((node) => node.enabled && typeof node.authKey === "string" && Boolean(node.authKey.trim()))
+      .map((node) => node.name)
+  ]);
+  const clashPolicies = new Set([...groupNames, ...CLASH_BUILT_IN_RULE_POLICIES]);
+  const stashPolicies = new Set([...groupNames, ...STASH_BUILT_IN_RULE_POLICIES]);
+  const availablePolicies = new Set([
+    ...surgePolicies,
+    ...clashPolicies,
+    ...stashPolicies
   ]);
   return {
-    surge: rewriteRulesToAvailablePolicies(config.surge.rules, availablePolicies),
-    clash: rewriteRulesToAvailablePolicies(config.clash.rules, availablePolicies),
-    stash: rewriteRulesToAvailablePolicies(config.stash.rules, availablePolicies),
+    surge: rewriteRulesToAvailablePolicies(config.surge.rules, surgePolicies, { allowDevicePolicy: true }),
+    clash: rewriteRulesToAvailablePolicies(config.clash.rules, clashPolicies, { allowDevicePolicy: false }),
+    stash: rewriteRulesToAvailablePolicies(config.stash.rules, stashPolicies, { allowDevicePolicy: false }),
     availablePolicies
   };
 }

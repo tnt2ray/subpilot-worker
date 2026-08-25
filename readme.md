@@ -33,8 +33,8 @@ SubPilot Worker 项目代码以 [GNU Affero General Public License v3.0 or later
 
 - 管理员登录 token 不写入代码，不以明文保存到 KV。
 - 生产登录校验只读取 Worker Secret `ADMIN_TOKEN_HASH`，值是管理员 token 的 SHA-256 hex。
-- `CONFIG_ENCRYPTION_KEY` 必须作为 Worker Secret 保存，用于加密订阅源 URL 和可恢复订阅读取 token。
-- 订阅源 URL 保存到 KV 前会加密；读取配置时才在 Worker 内解密。
+- `CONFIG_ENCRYPTION_KEY` 必须作为 Worker Secret 保存，用于加密完整配置快照、订阅源与规则源缓存正文、编译规则正文和可恢复订阅读取 token。
+- 旧版 KV 中的明文配置与缓存会在读取或维护时惰性迁移为加密格式；迁移期间不要轮换或删除原有 `CONFIG_ENCRYPTION_KEY`。
 - 管理员会话是 HttpOnly 签名 Cookie，不创建 `session:*` KV 键。
 - Stash CA 应在客户端本地生成和保存；SubPilot 不保存也不会下发 Stash CA 私钥、`ca-p12` 或 `ca-passphrase`。
 - Stash 配置输出尚未完成真实客户端实机测试，可能存在兼容性问题；发布版中请先按测试功能使用，导入前建议核对规则、MITM、脚本和 rule-providers 是否符合预期。
@@ -74,7 +74,7 @@ npm run setup
 1. 从 `wrangler.example.jsonc` 生成本地 `wrangler.jsonc`。
 2. 创建或写入 `SUBPILOT_CONFIG` KV namespace。
 3. 部署 Worker 和静态管理页。
-4. 要求输入管理员 token，并生成配置加密密钥。
+4. 要求输入至少 24 个字符的管理员 token，并生成配置加密密钥。
 5. 询问上游订阅自动获取间隔，默认每 12 小时一次。
 6. 通过 `wrangler secret bulk` 写入 `ADMIN_TOKEN_HASH` 和 `CONFIG_ENCRYPTION_KEY`。
 
@@ -92,11 +92,14 @@ npm run setup -- --force-secrets
 SUBPILOT_WORKER_NAME=my-subpilot \
 SUBPILOT_KV_NAMESPACE_ID=<existing-kv-namespace-id> \
 SUBPILOT_ADMIN_TOKEN=<your-admin-token> \
+SUBPILOT_LOGIN_RATE_LIMIT_NAMESPACE_ID=<positive-integer> \
 SUBPILOT_SOURCE_REFRESH_HOURS=12 \
 npm run setup
 ```
 
-交互式运行时，脚本会提示输入管理员 token。非交互式运行且需要写入 Secrets 时，必须通过 `SUBPILOT_ADMIN_TOKEN` 提供管理员 token。默认情况下脚本会自动生成配置加密密钥，并通过临时文件写入 Worker Secrets。
+交互式运行时，脚本会提示输入管理员 token。非交互式运行且需要写入 Secrets 时，必须通过 `SUBPILOT_ADMIN_TOKEN` 提供至少 24 个字符的管理员 token。默认情况下脚本会自动生成配置加密密钥，并通过临时文件写入 Worker Secrets。
+
+初始化脚本会配置登录限流：同一 Cloudflare 位置内，每个客户端 IP 默认每分钟最多尝试 10 次。Rate Limiter 的 namespace ID 默认由 Worker 名称稳定派生；同一账号内需要手动避让其它 Rate Limiter namespace 时，可用 `SUBPILOT_LOGIN_RATE_LIMIT_NAMESPACE_ID` 指定 1 到 4294967295 的正整数。
 
 ## 手动部署
 
@@ -137,7 +140,7 @@ wrangler secret put ADMIN_TOKEN_HASH
 wrangler secret put CONFIG_ENCRYPTION_KEY
 ```
 
-`ADMIN_TOKEN_HASH` 填第 4 步得到的 SHA-256 hex；`CONFIG_ENCRYPTION_KEY` 填一个足够长的随机字符串。
+管理员 token 至少应有 24 个字符。`ADMIN_TOKEN_HASH` 填第 4 步得到的 SHA-256 hex；`CONFIG_ENCRYPTION_KEY` 填一个足够长的随机字符串。
 
 6. 部署：
 
@@ -164,7 +167,7 @@ wrangler deploy
 7. 按需要在 `Configuration` 中调整显示时区；默认是 `Asia/Shanghai`，只影响后台和通知中的时间展示。
 8. 在 `Tokens` 页面轮换订阅读取 token，并复制订阅链接。
 
-订阅链接基于管理页配置的 `Managed Base URL` 生成，通常是 `https://<your-domain>/sync`。`Managed Base URL` 必须包含非根路径，不能使用 `/api`、`/app.js`、`/styles.css`、`/mitm-ca.js`、`/login.html` 或 `/index.html` 等系统已占用路径。拼接链接时会去掉 `Managed Base URL` 末尾多余的 `/`。
+订阅链接基于管理页配置的 `Managed Base URL` 生成，通常是 `https://<your-domain>/sync`。`Managed Base URL` 必须包含非根路径，不能使用 `/api`、`/vendor`、`/app.js`、`/styles.css`、`/mitm-ca.js`、`/login.html` 或 `/index.html` 等系统已占用路径；`/vendor` 的所有子路径也为静态资源保留。拼接链接时会去掉 `Managed Base URL` 末尾多余的 `/`。
 
 ```text
 https://<your-domain>/sync/<read_token>/
@@ -176,7 +179,7 @@ https://<your-domain>/sync/<read_token>/
 
 ## 上游订阅自动获取
 
-SubPilot 会把启用的上游订阅源定时拉取到 Workers KV 缓存中。这样客户端请求订阅配置时，可以优先使用已经缓存的上游内容；如果某个上游临时失败，系统会尽量沿用旧缓存，减少客户端拉取配置时直接失败的概率。
+SubPilot 会把启用的上游订阅源定时拉取到 Workers KV 加密缓存中。这样客户端请求订阅配置时，可以优先使用已经缓存的上游内容；如果某个上游临时失败，系统会尽量沿用旧缓存，减少客户端拉取配置时直接失败的概率。
 
 初次运行 `npm run setup` 时，脚本会询问自动获取间隔，默认每 12 小时一次。这个间隔写入本地 `wrangler.jsonc` 的 `triggers.crons`，由 Cloudflare Workers Cron Triggers 执行。非交互安装可以通过环境变量指定：
 
@@ -187,6 +190,26 @@ SUBPILOT_SOURCE_REFRESH_HOURS=6 npm run setup
 取值范围是 1 到 24 小时。已经部署后如需修改间隔，编辑 `wrangler.jsonc` 中的 `triggers.crons` 并重新运行 `wrangler deploy`。
 
 后台状态页会显示上游缓存与统一规则集缓存的覆盖情况、最近更新时间和各缓存项状态，并可分别强制刷新。后台和 Telegram 通知中的时间会按 `Configuration` 中的显示时区转换，格式为 `yyyy-mm-dd hh:mm:ss`；KV 中保存的系统时间仍是 UTC。Telegram bot 的 `/status` 会显示缓存概览，`/recent` 会显示最近 5 条配置拉取记录，`/refresh` 会强制获取上游订阅源，并在后台异步刷新统一规则集，完成后分别发送结果。启用 Telegram 通知后，定时获取出现失败时会发送提醒。
+
+上游与统一规则集刷新都有执行截止时间。一次刷新可以部分成功：已成功的源和规则输出会保留，失败项会在状态、预览或通知中单独报告；到达截止时间后不会再启动新的远程获取或编译任务，并尽量继续使用已有缓存。
+
+## 运行边界与 KV 一致性
+
+为适配 Cloudflare Workers 的请求、内存和子请求预算，保存与生成时采用以下主要上限：
+
+| 范围 | 上限 |
+| --- | --- |
+| 配置实体 | 20 个订阅源、20 个规则来源、40 个规则输出 |
+| 单个远程输入 | 订阅源 4 MiB；规则源 2 MiB |
+| 节点与 Host | 所有订阅源合计 10,000 个节点、20,000 条 Host；最终输出 15,000 个节点 |
+| 单个规则输出编译 | 最多 8 MiB 规则源内容（按字符数计）和 50,000 条规则 |
+| 最终客户端配置 | 最多 8 MiB（按字符数计） |
+| GeoIP 在线补全 | 每次生成最多查询 100 个不同 IP |
+| 规则覆盖诊断 | 最多展开 24 个外部源，合计 8 MiB 内容和 5,000 条规则 |
+
+完整配置快照、读取 token 记录和编译规则产物均采用版本化、追加式 KV 数据：先写完整的新版本，再让读取端选择最新的有效版本；不完整或损坏的新版本会回退到上一份有效数据。旧版本、失败写入留下的孤儿产物和迁移遗留键会延迟、分批清理，以兼容 Workers KV 的 eventual consistency；因此短时间内看到旧键仍存在属于正常现象，不应由外部脚本按固定键名直接修改或删除运行数据。涉及 Telegram webhook 的配置会在远端操作成功后才提交新快照；若提交确认失败，系统会保留旧配置并尝试恢复旧 webhook。管理页仍会串行提交保存请求。
+
+如果 Workers KV 拒绝写入或触发写入限流，API 会返回 HTTP 429。管理页会串行提交保存操作，并对短暂的 429 自动重试；若仍失败，请保留页面草稿，稍后再次保存，避免同时打开多个管理页面反复写入。
 
 ## 更新
 
@@ -208,9 +231,9 @@ npm run update
 
 第一项可以继续使用你原有的上游订阅刷新周期；第二项固定用于每天刷新统一规则集。缺少第二项时，统一规则集仍可在状态页手动刷新或在使用时生成，但不会执行每日后台刷新。修改后运行 `wrangler deploy` 使计划任务生效。全新安装会由 `npm run setup` 自动写入这两个任务。
 
-部署后首次打开后台、拉取订阅或执行定时任务时，SubPilot 会自动补齐 KV 数据结构，不需要单独执行迁移命令。即使跳过多个版本后再更新，也会按顺序处理缺失的迁移。
+部署后首次打开后台、拉取订阅或执行定时任务时，SubPilot 会自动补齐 KV 数据结构，不需要单独执行迁移命令。即使跳过多个版本后再更新，也会按顺序处理缺失的迁移。明文数据加密迁移和旧键清理会惰性、分批完成，不需要等待所有旧键删除后再使用服务。
 
-更新时不要删除本地 `wrangler.jsonc`，也不要重新运行会轮换 Secrets 的命令。尤其不要无意替换 `CONFIG_ENCRYPTION_KEY`，否则旧 KV 中已加密的订阅源 URL、Telegram Bot Token 和订阅读取 token 将无法解密。只有在你明确要重置整个部署或轮换密钥时，才使用 `npm run setup -- --force-secrets`。
+更新时不要删除本地 `wrangler.jsonc`，也不要重新运行会轮换 Secrets 的命令。尤其不要无意替换 `CONFIG_ENCRYPTION_KEY`，否则 KV 中已加密的配置快照、订阅与规则源缓存、编译规则、Telegram Bot Token 和订阅读取 token 将无法解密。只有在你明确要重置整个部署或轮换密钥时，才使用 `npm run setup -- --force-secrets`。
 
 后台状态页会显示当前应用版本和最新版本检查结果。设置页的“版本更新检查”默认关闭；启用后，定时任务每天最多访问一次 GitHub Releases。若已绑定 Telegram，有新版本时会发送一次提醒。同一个最新版本不会重复提醒。手动点击状态页“检查更新”会立即访问 GitHub Releases。
 
@@ -218,11 +241,13 @@ npm run update
 
 策略组是 Surge、Clash 和 Stash 输出共同使用的出口选择基础。内置 `Proxy` 策略组名称固定，不可删除；其他策略组可在 `Policy Groups` 页面新增、改名、禁用或调整顺序。规则中的策略出口必须引用已配置的策略组，或引用目标客户端支持的内置策略，例如 `DIRECT`、`REJECT`、`REJECT-DROP`。
 
+生成配置时，筛选后没有可用成员的非根策略组会被省略，并从父组引用中一并移除；根 `Proxy` 若最终没有可用成员，则回退到 `DIRECT`，避免生成空策略组或悬空引用。
+
 基础系统配置可以在客户端独立规则和统一规则模式之间切换。统一规则模式集中维护规则来源、规则集输出与单条分流规则，SubPilot 会拉取并编译规则来源，去重后按规则类型生成 Surge、Clash 和 Stash 所需的远程规则文件。规则集缓存每天自动刷新，也可以从状态页立即刷新。
 
 统一配置的分流规则可以启用“按策略组合并”。启用后，命中同一策略组的规则集会合并为一个输出，输出名称使用策略组名称，生成配置中的注释会列出包含的原规则集。合并组按该策略组首次出现的位置排序，组内保持原规则集顺序并去重。
 
-Surge、Clash 和 Stash 的规则页默认使用结构化编辑器。结构化模式会按页面中的行顺序生成配置文本，并在下方显示生成结果；切换到文本模式后，可以直接编辑对应配置内容。保存前系统会校验规则类型、规则集引用、策略出口和兜底规则位置，避免写入明显无效的规则配置。
+Surge、Clash 和 Stash 的规则页默认使用结构化编辑器。结构化模式会按页面中的行顺序生成配置文本，并在下方显示生成结果；切换到文本模式后，可以直接编辑对应配置内容。保存前系统会校验规则类型、规则集引用、策略出口和兜底规则位置；手工规则中的 `DOMAIN` / `DOMAIN-SUFFIX` 域名、IPv4 / IPv6 CIDR 与 `IP-ASN` / `SRC-IP-ASN` 也会做语义校验，避免写入明显无效的规则配置。
 
 在管理端生成 Surge、Clash 或 Stash 配置预览时，SubPilot 会按规则从上到下的匹配顺序做覆盖诊断。如果某条规则或规则集内的部分规则已经被前面的规则覆盖，预览区会显示诊断提示；第一层汇总是哪一段规则受到影响，展开“查看详情”后可以看到具体规则。诊断会尽量展开 Surge 的 `RULE-SET` / `DOMAIN-SET`，以及 Clash / Stash 的 `rule-providers`；远程规则集名称在提示中会简化为最后的文件名，便于阅读。
 
@@ -241,13 +266,21 @@ IP-CIDR,192.168.0.0/16,DIRECT,no-resolve
 FINAL,Proxy
 ```
 
+编译域名型规则源时，不带前缀的 `example.com` 始终按精确 `DOMAIN` 处理。前缀语义取决于来源格式：在 Surge `DOMAIN-SET` 中，`.example.com` 的前导点表示 `DOMAIN-SUFFIX`，匹配根域及其子域；在 Clash / mihomo domain provider（以及兼容的 Stash 输出）中，`+.example.com` 匹配根域和任意层级子域，`.example.com` 只匹配子域而不匹配根域，`*.example.com` 只匹配一级子域。Clash / Stash 输出会保留这些模式；无法在 Surge 中等价表达的 `.example.com` 与 `*.example.com` provider 模式会从 Surge 产物中过滤并产生诊断，而不会扩大成 `DOMAIN-SUFFIX`。
+
+统一规则会按目标客户端的能力做映射和过滤：合法的 `IP-ASN` 会保留；`no-resolve` 只在目标支持时输出；`src` 只为 Clash 保留，并让对应 IP 规则使用 classical 规则集，Surge 与 Stash 会移除该参数。目标不支持的规则类型、附加参数和内置策略不会泄漏到对应配置；例如 Surge 专属的 `CELLULAR`、`CELLULAR-ONLY`、`HYBRID`、`NO-HYBRID`，以及 Clash 专属的 `PASS-RULE`、`COMPATIBLE`，只会在对应目标中保留。Surge 独立规则必须且只能以一个 `FINAL` 兜底；Clash / Stash 独立规则必须且只能以一个 `MATCH` 或 `FINAL` 兜底，兜底项都必须位于最后。
+
+规则行解析会保留引号或复合逻辑表达式内部的逗号，避免把 `AND`、`OR`、`NOT` 子规则或带引号的值错误拆列。保存手工逻辑规则时，系统会递归校验括号和引号是否平衡、`AND` / `OR` 是否至少包含两个子规则、`NOT` 是否恰好包含一个子规则，以及每个叶子规则的类型、匹配值和附加参数是否合法；逻辑子规则不能携带策略出口。代理订阅解析同时兼容 SIP002 URL。
+
 Surge 的 `SUBNET`、`AND`、`OR`、`NOT` 等复合规则类型可以在结构化编辑器中选择，也可以在文本模式中直接编辑。Ponte 设备名会生成 `DEVICE:<name>` 策略出口，保存后可在规则中选择。
 
-Surge 页面中的 `Tailscale` 标签可维护多个 Tailscale 出站节点。每个已启用节点会在 `[Proxy]` 中生成 `tailscale` 策略，并生成对应的 `[Tailscale <section-name>]` 配置段；保存后可在 Surge 规则中直接选择该策略名称。该功能要求 Surge iOS 5.20.0+ 或 Surge Mac 6.7.0+。`Auth Key` 会进入 Worker KV 和生成的 Surge 配置，请优先使用短期、预授权、权限受限的密钥，并保护管理令牌与订阅链接。
+Surge 页面中的 `Tailscale` 标签可维护多个 Tailscale 出站节点。每个已启用节点会在 `[Proxy]` 中生成 `tailscale` 策略，并生成对应的 `[Tailscale <section-name>]` 配置段；保存后可在 Surge 规则和统一配置的分流规则中直接选择该策略名称。统一规则选择 Tailscale 策略时，仅 Surge 输出相关规则；Clash 和 Stash 配置会跳过这些规则及对应的规则集引用。底层策略留空时使用 Surge 默认的直连传输；仅在需要链式代理时填写另一个已配置的策略名称，`DIRECT` 会按留空处理且不会显式写入。生成时只下发底层策略可由实际保留的节点、策略组或其它可用 Tailscale 节点解析出的依赖闭包，悬空或循环依赖不会进入配置；测试 URL 必须使用 `http://`。该功能要求 Surge iOS 5.20.0+ 或 Surge Mac 6.7.0+。`Auth Key` 在 KV 配置快照中加密保存，但仍会以客户端所需格式进入生成的 Surge 配置，请优先使用短期、预授权、权限受限的密钥，并保护管理令牌与订阅链接。
 
 Surge 页面中的 `Map Local` 标签可用结构化编辑器配置 API Mock，也可切换到文本模式直接编辑 `[Map Local]` 内容。支持 `file`、`text`、`tiny-gif` 和 `base64` 四种响应类型，以及可选的 HTTP 状态码和响应头。匹配 HTTPS 请求时，需要同时在 MITM 页启用对应主机名。
 
 Clash / mihomo 和 Stash 的 rule-providers 是规则集来源；rules 中的 `RULE-SET` 行是实际匹配入口。SubPilot 会把 rule-providers 中尚未出现在 rules 里的规则集自动补入 rules，并默认使用 `Proxy` 作为策略出口。删除 rule-providers 中的某个规则集时，对应的 `RULE-SET` 规则会一并移除；如果在 rules 中删除某个规则集规则，系统会提示确认，并同步删除同名 rule-provider。后续再次添加 rule-provider 时，rules 会重新自动补齐。
+
+统一规则生成的远程产物按客户端使用不同 URL 后缀：Surge 为 `.list`，Clash / mihomo 为 `.yaml`，Stash 为 `.stash.yaml`。Clash 与 Stash 的 URL 不可互换，避免 Stash 请求被误识别为 Clash 产物。
 
 Shadowrocket 现在可以直接使用通用订阅链接获取 Clash YAML 配置，包含节点、策略组和规则等内容。由于 Shadowrocket 的节点订阅和配置导入是分离入口，如果需要完整配置，请在节点订阅和配置两个入口分别导入同一个订阅链接。SubPilot 不提供 Shadowrocket 专用配置页或专用文件名路径。
 
@@ -317,7 +350,7 @@ help - 查看命令列表
 
 - 如果 Bot Token 泄露，在 `@BotFather` 中使用 `/revoke` 重新生成 token，然后回到 SubPilot 后台替换 Bot Token 并重新生成绑定命令。
 - 如果要更换接收会话，先在 SubPilot 后台点击 `解除绑定`，再生成新的绑定命令并发送到新的目标会话。
-- 修改 Bot Token 后，SubPilot 会重新注册 Telegram webhook；清空 Bot Token 关闭通知时会删除旧 webhook。
+- 修改 Bot Token 后，SubPilot 会清除原 Chat ID 绑定并重新注册 Telegram webhook，需要生成新的绑定命令完成绑定；清空 Bot Token 关闭通知时会删除旧 webhook。
 
 ### 常见问题
 
@@ -330,7 +363,7 @@ help - 查看命令列表
 
 ## GeoIP MMDB
 
-后台“配置”页提供 GeoIP MMDB 上传入口，用户可上传 MaxMind DB Country 格式的 `.mmdb` 文件。上传后，IP 节点地区识别会优先使用该库。
+后台“配置”页提供 GeoIP MMDB 上传入口，用户可上传最大 25 MiB 的 MaxMind DB Country `.mmdb` 文件。管理页会直接以原始二进制上传，使用方式不变，无需手动做 Base64 或其它转换。上传后，IP 节点地区识别会优先使用该库。
 
 如果本机已经安装相关客户端，下面这些位置可能存在它们下载的 MMDB 文件。不同 MMDB 数据源有各自的许可协议，直接复制、上传或复用这些文件可能违反对应许可；使用前请自行确认文件来源和授权范围。
 

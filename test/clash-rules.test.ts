@@ -1,9 +1,51 @@
 import { describe, expect, it, vi } from "vitest";
-import { collectClashRuleCoverageWarnings } from "../src/clash-rules";
+import { collectClashRuleCoverageWarnings, validateClashLikeRules } from "../src/clash-rules";
 import { DEFAULT_CONFIG } from "../src/default-config";
 import { restoreMocksAfterEach } from "./helpers/fetch";
 
 restoreMocksAfterEach();
+
+describe("Clash and Stash logical rule validation", () => {
+  it.each(["clash", "stash"] as const)("accepts strict nested %s logical rules with quoted separators", (target) => {
+    expect(validateClashLikeRules({
+      ...DEFAULT_CONFIG,
+      [target]: {
+        ...DEFAULT_CONFIG[target],
+        ruleProviders: "",
+        rules: [
+          'OR,((DOMAIN-REGEX,"^(foo,bar)\\.example$"),(NOT,((IP-CIDR,192.0.2.0/24,no-resolve)))),Proxy',
+          "MATCH,Proxy"
+        ]
+      }
+    }, target)).toBeNull();
+  });
+
+  it.each(["clash", "stash"] as const)("rejects malformed %s logical rules", (target) => {
+    const invalidRules = [
+      "AND,((DOMAIN,a.example)),Proxy",
+      "OR,((DOMAIN,a.example)),Proxy",
+      "NOT,((DOMAIN,a.example),(DOMAIN,b.example)),Proxy",
+      "AND,((DOMAIN,a.example,Proxy),(DOMAIN,b.example)),Proxy",
+      "AND,((DOMAIN,a.example),,(DOMAIN,b.example)),Proxy",
+      "AND,((DOMAIN,a.example),(DOMAIN,b.example))),Proxy",
+      "AND,((DOMAIN,a.example),(DOMAIN,b.example))tail,Proxy",
+      "AND,((BOGUS,value),(DOMAIN,b.example)),Proxy",
+      "AND,((DOMAIN),(DOMAIN,b.example)),Proxy",
+      'AND,((DOMAIN-REGEX,"unterminated),(DOMAIN,b.example)),Proxy'
+    ];
+
+    for (const rule of invalidRules) {
+      expect(validateClashLikeRules({
+        ...DEFAULT_CONFIG,
+        [target]: {
+          ...DEFAULT_CONFIG[target],
+          ruleProviders: "",
+          rules: [rule, "MATCH,Proxy"]
+        }
+      }, target), rule).not.toBeNull();
+    }
+  });
+});
 
 describe("Clash and Stash rule coverage diagnostics", () => {
   it("reports later Clash domain and IP rules covered by earlier broader rules", async () => {
@@ -112,13 +154,18 @@ describe("Clash and Stash rule coverage diagnostics", () => {
   });
 
   it("checks Stash rules with the same provider semantics", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response([
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response([
       "payload:",
       "  - '+.example.com'"
     ].join("\n")));
 
     const warnings = await collectClashRuleCoverageWarnings({
       ...DEFAULT_CONFIG,
+      settings: {
+        ...DEFAULT_CONFIG.settings,
+        userAgentClash: "Clash/Test",
+        userAgentStash: "Stash/Test"
+      },
       stash: {
         ...DEFAULT_CONFIG.stash,
         ruleProviders: [
@@ -139,6 +186,9 @@ describe("Clash and Stash rule coverage diagnostics", () => {
     expect(warnings).toEqual([
       "Stash Rule 第 2 行规则集 Domains 内第 1 行 被前面的 第 1 行 覆盖（DOMAIN-SUFFIX,example.com 覆盖 DOMAIN-SUFFIX,example.com；DIRECT 会优先生效，Proxy 不会生效）。"
     ]);
+    expect(fetchMock).toHaveBeenCalledWith("https://rules.example.com/domains.yaml", expect.objectContaining({
+      headers: { "user-agent": "Stash/Test" }
+    }));
   });
 
   it("checks generated fallback provider rules inserted before MATCH", async () => {

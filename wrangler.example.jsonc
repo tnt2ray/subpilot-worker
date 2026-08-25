@@ -22,6 +22,16 @@
       "id": "00000000000000000000000000000000"
     }
   ],
+  "ratelimits": [
+    {
+      "name": "LOGIN_RATE_LIMITER",
+      "namespace_id": "335570497",
+      "simple": {
+        "limit": 10,
+        "period": 60
+      }
+    }
+  ],
   "triggers": {
     "crons": ["0 */12 * * *", "0 16 * * *"]
   },

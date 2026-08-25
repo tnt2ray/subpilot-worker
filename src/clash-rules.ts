@@ -1,6 +1,7 @@
 import YAML from "yaml";
-import { parseClashRuleProvidersYaml } from "./clash-rule-providers";
+import { parseClashRuleProvidersYaml, validateClashRuleProvidersYaml } from "./clash-rule-providers";
 import { splitRuleLine } from "./rule-line";
+import { validateLogicalRuleExpression } from "./logical-rules";
 import {
   collectCoverageWarnings,
   CoverageWarningCollection,
@@ -11,12 +12,16 @@ import {
 } from "./rule-coverage-core";
 import type { AppConfig, Target } from "./types";
 import { mapWithConcurrency, readResponseTextWithLimit } from "./util";
+import { CLASH_BUILT_IN_RULE_POLICIES, STASH_BUILT_IN_RULE_POLICIES } from "./rule-targets";
+import { validateRuleMatchValue } from "./rule-value-validation";
 
 const MAX_PROVIDER_CONTENT_BYTES = 2 * 1024 * 1024;
-const MAX_EXTERNAL_PROVIDER_FETCHES = 80;
-const PROVIDER_FETCH_CONCURRENCY = 6;
+const MAX_EXTERNAL_PROVIDER_FETCHES = 24;
+const PROVIDER_FETCH_CONCURRENCY = 3;
 const PROVIDER_FETCH_TIMEOUT_MS = 2500;
 const DEFAULT_MAX_COVERAGE_WARNINGS = 80;
+const MAX_COVERAGE_SOURCE_CHARACTERS = 8 * 1024 * 1024;
+const MAX_COVERAGE_RULES = 5_000;
 const VALUELESS_RULE_TYPES = new Set(["MATCH", "FINAL"]);
 const DOMAIN_RULE_TYPES = new Set(["DOMAIN", "DOMAIN-SUFFIX", "DOMAIN-KEYWORD"]);
 const IP_CIDR_RULE_TYPES = new Set(["IP-CIDR", "IP-CIDR6"]);
@@ -44,6 +49,7 @@ const PROVIDER_VALUE_RULE_TYPES = new Set([
   ...IP_CIDR_RULE_TYPES,
   ...EXACT_MATCH_RULE_TYPES
 ]);
+const NO_RESOLVE_RULE_TYPES = new Set(["RULE-SET", "GEOIP", "IP-CIDR", "IP-CIDR6", "IP-ASN"]);
 
 type Fetcher = typeof fetch;
 type ClashDiagnosticsTarget = Extract<Target, "clash" | "stash">;
@@ -68,6 +74,93 @@ interface RuleSetReference {
   label: string;
 }
 
+export function validateClashLikeRules(config: AppConfig, target: ClashDiagnosticsTarget): string | null {
+  const targetName = target === "stash" ? "Stash" : "Clash";
+  const targetConfig = target === "stash" ? config.stash : config.clash;
+  const providerError = validateClashRuleProvidersYaml(targetConfig.ruleProviders, targetName);
+  if (providerError) return providerError;
+  const providers = new Set(Object.keys(parseClashRuleProvidersYaml(targetConfig.ruleProviders)));
+  const disabledGroups = new Set(config.disabledGroups);
+  const policies = new Set([
+    ...Object.keys(config.groups).filter((name) => !disabledGroups.has(name)),
+    ...(target === "stash" ? STASH_BUILT_IN_RULE_POLICIES : CLASH_BUILT_IN_RULE_POLICIES)
+  ]);
+  const effective: Array<{ type: string; lineNumber: number }> = [];
+
+  for (const [index, rawRule] of targetConfig.rules.entries()) {
+    const lineNumber = index + 1;
+    const line = String(rawRule || "").trim();
+    if (!line || line.startsWith("#")) continue;
+    if (/^\[[^\]]+\]$/.test(line)) return `${targetName} Rule 第 ${lineNumber} 行不能包含配置段标题`;
+    const parts = splitRuleLine(line);
+    const type = (parts[0] || "").trim().toUpperCase();
+    if (!type) return `${targetName} Rule 第 ${lineNumber} 行缺少规则类型`;
+    if (parts.some((part) => !part.trim())) return `${targetName} Rule 第 ${lineNumber} 行存在空参数`;
+    const valueError = validateRuleMatchValue(type, parts[1] || "");
+    if (valueError) return `${targetName} Rule 第 ${lineNumber} 行${valueError}`;
+    effective.push({ type, lineNumber });
+
+    let policyIndex: number;
+    let optionStart: number;
+    if (type === "RULE-SET") {
+      if (parts.length < 3) return `${targetName} Rule 第 ${lineNumber} 行规则集语法应为 RULE-SET,名称,策略`;
+      if (!providers.has(parts[1]!.trim())) return `${targetName} Rule 第 ${lineNumber} 行引用了未配置的 rule-provider`;
+      policyIndex = 2;
+      optionStart = 3;
+    } else if (VALUELESS_RULE_TYPES.has(type)) {
+      if (parts.length < 2) return `${targetName} Rule 第 ${lineNumber} 行 ${type} 规则缺少策略出口`;
+      policyIndex = 1;
+      optionStart = 2;
+    } else {
+      if (!PROVIDER_VALUE_RULE_TYPES.has(type) && type !== "DOMAIN-REGEX") {
+        return `${targetName} Rule 第 ${lineNumber} 行规则类型 ${type} 不受支持`;
+      }
+      if (parts.length < 3) return `${targetName} Rule 第 ${lineNumber} 行语法应为 类型,匹配值,策略`;
+      policyIndex = 2;
+      optionStart = 3;
+    }
+
+    if (type === "AND" || type === "OR" || type === "NOT") {
+      const logicalError = validateLogicalRuleExpression(type, parts[1] || "", (leafParts) => (
+        validateClashLogicalLeaf(leafParts, providers)
+      ));
+      if (logicalError) return `${targetName} Rule 第 ${lineNumber} 行${logicalError}`;
+    }
+
+    const policy = parts[policyIndex]!.trim();
+    if (!policies.has(policy)) return `${targetName} Rule 第 ${lineNumber} 行策略出口不存在或不可用`;
+    const options = parts.slice(optionStart).map((option) => option.trim().toLowerCase());
+    if (new Set(options).size !== options.length) return `${targetName} Rule 第 ${lineNumber} 行附加参数不能重复`;
+    if (options.some((option) => option !== "no-resolve") || (options.length > 0 && !NO_RESOLVE_RULE_TYPES.has(type))) {
+      return `${targetName} Rule 第 ${lineNumber} 行附加参数不适用于 ${type}`;
+    }
+  }
+
+  const fallbacks = effective.filter(({ type }) => VALUELESS_RULE_TYPES.has(type));
+  if (fallbacks.length === 0) return `${targetName} Rule 必须保留一个 MATCH 或 FINAL 兜底规则`;
+  if (fallbacks.length > 1) return `${targetName} Rule 只能保留一个 MATCH 或 FINAL 兜底规则`;
+  if (!VALUELESS_RULE_TYPES.has(effective.at(-1)?.type ?? "")) return `${targetName} Rule 的兜底规则必须位于最后`;
+  return null;
+}
+
+function validateClashLogicalLeaf(parts: string[], providers: Set<string>): string | null {
+  const type = (parts[0] || "").trim().toUpperCase();
+  if ((!PROVIDER_VALUE_RULE_TYPES.has(type) && type !== "DOMAIN-REGEX") || type === "AND" || type === "OR" || type === "NOT") {
+    return `逻辑子规则类型 ${type || "(空)"} 不受支持`;
+  }
+  if (!(parts[1] || "").trim()) return "逻辑子规则缺少匹配值";
+  const valueError = validateRuleMatchValue(type, parts[1]!);
+  if (valueError) return `逻辑子规则${valueError}`;
+  if (type === "RULE-SET" && !providers.has(parts[1]!.trim())) return "逻辑子规则引用了未配置的 rule-provider";
+
+  const options = parts.slice(2).map((option) => option.trim().toLowerCase());
+  if (new Set(options).size !== options.length) return "逻辑子规则附加参数不能重复";
+  if (options.some((option) => option !== "no-resolve") || (options.length > 0 && !NO_RESOLVE_RULE_TYPES.has(type))) {
+    return `逻辑子规则附加参数不适用于 ${type}`;
+  }
+  return null;
+}
+
 export async function collectClashRuleCoverageWarnings(
   config: Pick<AppConfig, "settings" | "clash" | "stash">,
   target: ClashDiagnosticsTarget,
@@ -80,7 +173,10 @@ export async function collectClashRuleCoverageWarnings(
   const maxWarnings = Math.max(1, options.maxWarnings ?? DEFAULT_MAX_COVERAGE_WARNINGS);
   const collection = new CoverageWarningCollection(maxWarnings, diagnosticsName(target));
   const entries = await flattenRulesForCoverage(ruleLines, providers, config, target, options, collection);
-  collectCoverageWarnings(entries, collection, {
+  if (entries.length > MAX_COVERAGE_RULES) {
+    collection.push(`${diagnosticsName(target)} Rule 覆盖诊断仅检查前 ${MAX_COVERAGE_RULES} 条规则。`);
+  }
+  collectCoverageWarnings(entries.slice(0, MAX_COVERAGE_RULES), collection, {
     targetName: diagnosticsName(target),
     valuelessRuleTypes: VALUELESS_RULE_TYPES,
     exactMatchRuleTypes: EXACT_MATCH_RULE_TYPES,
@@ -153,7 +249,9 @@ async function resolveProviderReferences(
   }
 
   const fetcher = options.fetcher ?? globalThis.fetch.bind(globalThis);
-  const userAgent = options.userAgent ?? config.settings.userAgentClash;
+  const userAgent = options.userAgent ?? (target === "stash" ? config.settings.userAgentStash : config.settings.userAgentClash);
+  let retainedCharacters = 0;
+  let retainedRules = 0;
   await mapWithConcurrency(toFetch, PROVIDER_FETCH_CONCURRENCY, async (reference) => {
     const key = providerReferenceKey(reference);
     const provider = providers.get(reference.name);
@@ -168,8 +266,26 @@ async function resolveProviderReferences(
       return;
     }
     try {
+      if (retainedCharacters >= MAX_COVERAGE_SOURCE_CHARACTERS || retainedRules >= MAX_COVERAGE_RULES) {
+        warnings.push(`${targetName} Rule ${reference.label}规则集 ${reference.name} 因覆盖诊断总量上限而跳过。`);
+        resolved.set(key, []);
+        return;
+      }
       const content = await fetchProviderContent(provider.url, userAgent, fetcher);
-      resolved.set(key, parseProviderContentForCoverage(reference, provider, content));
+      if (retainedCharacters + content.length > MAX_COVERAGE_SOURCE_CHARACTERS) {
+        warnings.push(`${targetName} Rule ${reference.label}规则集 ${reference.name} 超出覆盖诊断 ${MAX_COVERAGE_SOURCE_CHARACTERS} 字符总量上限。`);
+        resolved.set(key, []);
+        return;
+      }
+      const parsed = parseProviderContentForCoverage(reference, provider, content);
+      if (retainedRules + parsed.length > MAX_COVERAGE_RULES) {
+        warnings.push(`${targetName} Rule ${reference.label}规则集 ${reference.name} 超出覆盖诊断 ${MAX_COVERAGE_RULES} 条规则总量上限。`);
+        resolved.set(key, []);
+        return;
+      }
+      retainedCharacters += content.length;
+      retainedRules += parsed.length;
+      resolved.set(key, parsed);
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       warnings.push(`${targetName} Rule ${reference.label}规则集 ${reference.name} 内容未参与覆盖检查：${reason}`);

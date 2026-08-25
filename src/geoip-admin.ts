@@ -1,22 +1,29 @@
-import { createGeoIpCountryReader, GEOIP_MMDB_KV_KEY, GEOIP_MMDB_META_KV_KEY, resetGeoIpCountryReader } from "./geoip";
-import { badRequest, jsonResponse } from "./util";
+import {
+  createGeoIpCountryReader,
+  GEOIP_MMDB_DATA_PREFIX,
+  GEOIP_MMDB_KV_KEY,
+  GEOIP_MMDB_META_KV_KEY,
+  resetGeoIpCountryReader
+} from "./geoip";
+import { badRequest, jsonResponse, payloadTooLarge, randomToken, readRequestBytesWithLimit, RequestBodyTooLargeError } from "./util";
 
 const MAX_MMDB_BYTES = 25 * 1024 * 1024;
-const GEOIP_LOCATION_CACHE_PREFIX = "cache:geoip:location:";
-
+const RETAINED_MMDB_VERSIONS = 3;
+const MMDB_PRUNE_GRACE_MS = 10 * 60 * 1000;
+const MAX_MMDB_PRUNES_PER_UPLOAD = 20;
 interface GeoIpMmdbMeta {
   fileName: string;
   size: number;
   updatedAt: string;
+  storageKey: string;
 }
 
 export async function readGeoIpMmdbStatus(env: Env): Promise<{ uploaded: boolean } & Partial<GeoIpMmdbMeta>> {
-  const [meta, hasData] = await Promise.all([
-    env.SUBPILOT_CONFIG.get(GEOIP_MMDB_META_KV_KEY, "json") as Promise<Partial<GeoIpMmdbMeta> | null>,
-    hasKvKey(env, GEOIP_MMDB_KV_KEY)
-  ]);
+  const meta = await env.SUBPILOT_CONFIG.get(GEOIP_MMDB_META_KV_KEY, "json") as Partial<GeoIpMmdbMeta> | null;
+  const descriptor = normalizeGeoIpMmdbMeta(meta);
+  const hasData = descriptor ? await hasKvKey(env, descriptor.storageKey) : false;
   if (!hasData) return { uploaded: false };
-  if (!meta || typeof meta !== "object") return { uploaded: false };
+  if (!meta || typeof meta !== "object" || !descriptor) return { uploaded: false };
   const fileName = typeof meta.fileName === "string" ? meta.fileName : "";
   const size = typeof meta.size === "number" && Number.isFinite(meta.size) ? meta.size : 0;
   const updatedAt = typeof meta.updatedAt === "string" ? meta.updatedAt : "";
@@ -24,13 +31,20 @@ export async function readGeoIpMmdbStatus(env: Env): Promise<{ uploaded: boolean
 }
 
 export async function handleGeoIpMmdbUpload(request: Request, env: Env): Promise<Response> {
-  const form = await request.formData().catch(() => null);
-  const file = form?.get("file");
-  if (!(file instanceof File)) return badRequest("Missing MMDB file");
-  if (file.size <= 0) return badRequest("MMDB file is empty");
-  if (file.size > MAX_MMDB_BYTES) return badRequest("MMDB file exceeds 25 MiB KV value limit");
+  const contentType = request.headers.get("content-type") ?? "";
+  if (contentType.split(";", 1)[0]?.trim().toLowerCase() !== "application/octet-stream") {
+    return badRequest("MMDB upload must use application/octet-stream");
+  }
+  let body: Uint8Array;
+  try {
+    body = await readRequestBytesWithLimit(request, MAX_MMDB_BYTES);
+  } catch (error) {
+    if (error instanceof RequestBodyTooLargeError) return payloadTooLarge("MMDB upload body is too large");
+    return badRequest("Invalid MMDB upload body");
+  }
+  if (body.byteLength <= 0) return badRequest("MMDB file is empty");
 
-  const data = await file.arrayBuffer();
+  const data = body.buffer as ArrayBuffer;
   try {
     createGeoIpCountryReader(data);
   } catch {
@@ -38,15 +52,34 @@ export async function handleGeoIpMmdbUpload(request: Request, env: Env): Promise
   }
 
   const meta: GeoIpMmdbMeta = {
-    fileName: file.name || "GeoIP.mmdb",
-    size: file.size,
-    updatedAt: new Date().toISOString()
+    fileName: uploadedFileName(request.headers.get("x-subpilot-file-name")),
+    size: body.byteLength,
+    updatedAt: new Date().toISOString(),
+    storageKey: `${GEOIP_MMDB_DATA_PREFIX}${String(Date.now()).padStart(16, "0")}-${randomToken(8)}`
   };
-  await env.SUBPILOT_CONFIG.put(GEOIP_MMDB_KV_KEY, data);
+  // Commit the immutable data first and publish it through the metadata pointer
+  // only after the data write succeeds. A failed pointer write leaves the
+  // previous database readable instead of exposing a partially updated pair.
+  await env.SUBPILOT_CONFIG.put(meta.storageKey, data);
   await env.SUBPILOT_CONFIG.put(GEOIP_MMDB_META_KV_KEY, JSON.stringify(meta));
-  await deleteGeoIpLocationCache(env);
   resetGeoIpCountryReader();
-  return jsonResponse({ uploaded: true, ...meta });
+  await pruneOldGeoIpMmdbVersions(env, meta.storageKey).catch(() => undefined);
+  return jsonResponse({
+    uploaded: true,
+    fileName: meta.fileName,
+    size: meta.size,
+    updatedAt: meta.updatedAt
+  });
+}
+
+function uploadedFileName(value: string | null): string {
+  if (!value) return "GeoIP.mmdb";
+  try {
+    const decoded = decodeURIComponent(value).trim();
+    return decoded && decoded.length <= 255 && !/[\r\n/\\]/.test(decoded) ? decoded : "GeoIP.mmdb";
+  } catch {
+    return "GeoIP.mmdb";
+  }
 }
 
 async function hasKvKey(env: Env, key: string): Promise<boolean> {
@@ -54,14 +87,35 @@ async function hasKvKey(env: Env, key: string): Promise<boolean> {
   return page.keys.some((entry) => entry.name === key);
 }
 
-async function deleteGeoIpLocationCache(env: Env): Promise<void> {
-  let cursor: string | undefined;
-  do {
-    const options: KVNamespaceListOptions = cursor
-      ? { prefix: GEOIP_LOCATION_CACHE_PREFIX, cursor }
-      : { prefix: GEOIP_LOCATION_CACHE_PREFIX };
-    const page = await env.SUBPILOT_CONFIG.list(options);
-    await Promise.all(page.keys.map((key) => env.SUBPILOT_CONFIG.delete(key.name)));
-    cursor = page.list_complete ? undefined : page.cursor;
-  } while (cursor);
+function normalizeGeoIpMmdbMeta(meta: Partial<GeoIpMmdbMeta> | null): {
+  storageKey: string;
+} | null {
+  if (!meta || typeof meta !== "object") return null;
+  const updatedAt = typeof meta.updatedAt === "string" ? meta.updatedAt : "";
+  if (!updatedAt || !Number.isFinite(Date.parse(updatedAt))) return null;
+  const storageKey = typeof meta.storageKey === "string" ? meta.storageKey : GEOIP_MMDB_KV_KEY;
+  if (storageKey !== GEOIP_MMDB_KV_KEY && !storageKey.startsWith(GEOIP_MMDB_DATA_PREFIX)) return null;
+  return { storageKey };
+}
+
+async function pruneOldGeoIpMmdbVersions(env: Env, currentStorageKey: string): Promise<void> {
+  const page = await env.SUBPILOT_CONFIG.list({ prefix: GEOIP_MMDB_DATA_PREFIX });
+  const retained = new Set(page.keys
+    .map((entry) => entry.name)
+    .sort()
+    .reverse()
+    .slice(0, RETAINED_MMDB_VERSIONS));
+  retained.add(currentStorageKey);
+  const cutoff = Date.now() - MMDB_PRUNE_GRACE_MS;
+  const stale = page.keys
+    .map((entry) => entry.name)
+    .filter((key) => !retained.has(key) && geoIpMmdbStorageTimestamp(key) < cutoff)
+    .slice(0, MAX_MMDB_PRUNES_PER_UPLOAD);
+  await Promise.all(stale.map((key) => env.SUBPILOT_CONFIG.delete(key)));
+}
+
+function geoIpMmdbStorageTimestamp(key: string): number {
+  const raw = key.slice(GEOIP_MMDB_DATA_PREFIX.length).split("-", 1)[0] ?? "";
+  const timestamp = Number(raw);
+  return Number.isSafeInteger(timestamp) ? timestamp : 0;
 }

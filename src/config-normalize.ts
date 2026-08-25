@@ -10,6 +10,7 @@ import {
 } from "./rule-set-types";
 import { inferUrlRewriteMitmHostnames } from "./surge-url-rewrite";
 import { ruleSetPathName } from "./managed-url";
+import { splitRuleLine } from "./rule-line";
 import { CHAIN_EXIT_PROTOCOLS, type AppConfig, type ChainExitProtocol, type NotificationChannel, type SourceConfig, type StaticProxyNodeConfig, type SurgeIpv6VifMode, type Target } from "./types";
 import { normalizeDisplayTimeZone } from "./util";
 
@@ -44,7 +45,7 @@ export function normalizeConfig(input: AppConfig): AppConfig {
       userAgentClash: input.settings?.userAgentClash || DEFAULT_CONFIG.settings.userAgentClash,
       userAgentStash: input.settings?.userAgentStash || DEFAULT_CONFIG.settings.userAgentStash,
       userAgentShadowrocket: input.settings?.userAgentShadowrocket || DEFAULT_CONFIG.settings.userAgentShadowrocket,
-      excludeKeywords: Array.isArray(input.settings?.excludeKeywords) ? input.settings.excludeKeywords : [],
+      excludeKeywords: stringArray(input.settings?.excludeKeywords, []),
       geoipRenameEnabled: input.settings?.geoipRenameEnabled !== false,
       featureTagRules: stringArray(input.settings?.featureTagRules, DEFAULT_CONFIG.settings.featureTagRules),
       updateCheckEnabled: input.settings?.updateCheckEnabled === true,
@@ -76,7 +77,8 @@ function normalizeGroups(input: Record<string, string>): Record<string, string> 
 }
 
 function normalizeGroupSpec(name: string, spec: string, groupNames: Set<string>): string {
-  const [type = "select", ...items] = splitGroupSpec(String(spec));
+  const [rawType = "select", ...items] = splitGroupSpec(String(spec));
+  const type = rawType.trim().toLowerCase() || "select";
   if (isSubnetGroupType(type)) {
     const filtered: string[] = [];
     let hasDefault = false;
@@ -182,12 +184,37 @@ function normalizeSourceFetchUserAgent(value: unknown): SourceConfig["fetchUserA
 
 export function normalizeRuleSets(input: Partial<RuleSetConfig> | undefined): RuleSetConfig {
   const ruleSets = input ?? {};
+  const mode = ruleSets.mode === "compiled" ? "compiled" : "manual";
+  const directRules = Array.isArray(ruleSets.directRules) ? normalizeRuleSetDirectRules(ruleSets.directRules) : [];
+  if (mode === "compiled" && !directRules.some(isEnabledFallbackRule)) {
+    directRules.push(defaultCompiledFallbackRule(directRules));
+  }
   return {
-    mode: ruleSets.mode === "compiled" ? "compiled" : "manual",
+    mode,
     aggregateByPolicy: ruleSets.aggregateByPolicy === true,
     sources: Array.isArray(ruleSets.sources) ? normalizeRuleSetSources(ruleSets.sources) : [],
     outputs: Array.isArray(ruleSets.outputs) ? normalizeRuleSetOutputs(ruleSets.outputs) : [],
-    directRules: Array.isArray(ruleSets.directRules) ? normalizeRuleSetDirectRules(ruleSets.directRules) : []
+    directRules: directRules.sort(compareByOrder)
+  };
+}
+
+function isEnabledFallbackRule(rule: RuleSetDirectRule): boolean {
+  if (!rule.enabled) return false;
+  const type = (splitRuleLine(rule.rule)[0] || "").trim().toUpperCase();
+  return type === "FINAL" || type === "MATCH";
+}
+
+function defaultCompiledFallbackRule(existing: RuleSetDirectRule[]): RuleSetDirectRule {
+  const ids = new Set(existing.map((rule) => rule.id));
+  let id = "subpilot-default-final";
+  for (let suffix = 2; ids.has(id); suffix += 1) id = `subpilot-default-final-${suffix}`;
+  return {
+    id,
+    name: "Final",
+    enabled: true,
+    rule: "FINAL,Proxy",
+    policy: "Proxy",
+    order: existing.reduce((maximum, rule) => Math.max(maximum, rule.order), -1) + 1
   };
 }
 
@@ -430,7 +457,7 @@ function normalizeSurgeTailscaleNodes(value: unknown): AppConfig["surge"]["tails
       preferIpv6: record.preferIpv6 === true,
       dnsServer: stringArray(record.dnsServer, []).filter((item) => !/[\r\n]/.test(item)),
       mtu: clampNumber(record.mtu, 576, 1420, 1280),
-      underlyingProxy: surgeTailscalePolicyValue(record.underlyingProxy),
+      underlyingProxy: normalizeSurgeTailscaleUnderlyingProxy(record.underlyingProxy),
       testUrl: surgeTailscalePolicyValue(record.testUrl),
       testTimeout: clampNumber(record.testTimeout, 1, 60, 5),
       enabled: record.enabled !== false
@@ -446,6 +473,11 @@ function surgeTailscaleValue(value: unknown): string {
 function surgeTailscalePolicyValue(value: unknown): string {
   const normalized = surgeTailscaleValue(value);
   return normalized.includes(",") ? "" : normalized;
+}
+
+function normalizeSurgeTailscaleUnderlyingProxy(value: unknown): string {
+  const normalized = surgeTailscalePolicyValue(value);
+  return normalized.toUpperCase() === "DIRECT" ? "" : normalized;
 }
 
 function normalizeSurgeMitm(input: Partial<AppConfig["surge"]["mitm"]> | undefined): AppConfig["surge"]["mitm"] {

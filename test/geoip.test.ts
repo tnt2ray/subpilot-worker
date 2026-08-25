@@ -34,6 +34,11 @@ function makeEnv(kv = new Map<string, string | ArrayBuffer>()): Env {
   return makeTestEnv(kv).env;
 }
 
+function cachedLocation(kv: Map<string, string | ArrayBuffer>, ip: string): Record<string, unknown> {
+  const entry = [...kv.entries()].filter(([key]) => key.startsWith("cache:geoip:location:") && key.endsWith(`:${ip}`)).at(-1);
+  return JSON.parse(String(entry?.[1] ?? "{}")) as Record<string, unknown>;
+}
+
 describe("geoip lookup", () => {
   beforeEach(() => {
     resetGeoIpCountryReader();
@@ -52,7 +57,7 @@ describe("geoip lookup", () => {
       name: "US",
       labels: ["US"]
     });
-    expect(JSON.parse(kv.get("cache:geoip:location:162.159.34.96") as string)).toMatchObject({
+    expect(cachedLocation(kv, "162.159.34.96")).toMatchObject({
       countryCode: "US",
       source: "mmdb"
     });
@@ -73,7 +78,7 @@ describe("geoip lookup", () => {
       countryCode: "US",
       source: "mmdb"
     });
-    expect(JSON.parse(staleKv.get("cache:geoip:location:162.159.34.96") as string).countryCode).toBe("US");
+    expect(cachedLocation(staleKv, "162.159.34.96").countryCode).toBe("US");
     expect(mmdb.constructorInputs).toHaveLength(1);
 
     staleKv.set("geoip:mmdb:country:meta", JSON.stringify({ updatedAt: "2026-06-21T01:00:00.000Z" }));

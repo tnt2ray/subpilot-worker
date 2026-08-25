@@ -59,9 +59,77 @@ describe("release update checks", () => {
     const cachedStatus = await getUpdateStatus(cachedEnv);
 
     expect(cachedStatus.updateAvailable).toBe(false);
+    expect(cachedStatus.releaseUrl).toBeNull();
     expect(cachedFetchMock).not.toHaveBeenCalled();
 
     await storeNotifiedUpdateVersion(env, "1.2.0");
     await expect(readNotifiedUpdateVersion(env)).resolves.toBe("1.2.0");
+  });
+
+  it("bounds GitHub responses and rejects untrusted release links", async () => {
+    const { env } = makeTestEnv();
+    const redirectResponse = new Response("", { status: 200 });
+    Object.defineProperty(redirectResponse, "url", {
+      value: "https://github.com/tnt2ray/subpilot-worker/releases/tag/v88.0.0"
+    });
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response("oversized", {
+        headers: { "content-length": String(65 * 1024) }
+      }))
+      .mockResolvedValueOnce(redirectResponse);
+
+    const status = await getUpdateStatus(env, { force: true });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(status).toMatchObject({
+      latestVersion: "88.0.0",
+      releaseUrl: "https://github.com/tnt2ray/subpilot-worker/releases/tag/v88.0.0",
+      error: null
+    });
+
+    vi.restoreAllMocks();
+    const { env: maliciousEnv } = makeTestEnv();
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(new Response(JSON.stringify({
+      tag_name: "v89.0.0",
+      html_url: "javascript:alert(1)"
+    })));
+
+    await expect(getUpdateStatus(maliciousEnv, { force: true })).resolves.toMatchObject({
+      latestVersion: "89.0.0",
+      releaseUrl: "https://github.com/tnt2ray/subpilot-worker/releases/latest"
+    });
+  });
+
+  it("returns a successful live result after one failed cache write without retrying the same KV key", async () => {
+    const { env } = makeTestEnv();
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(new Response(JSON.stringify({
+      tag_name: "v77.0.0",
+      html_url: "https://github.com/tnt2ray/subpilot-worker/releases/tag/v77.0.0"
+    })));
+    const put = vi.spyOn(env.SUBPILOT_CONFIG, "put").mockRejectedValue(new Error("KV PUT rate limit"));
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    await expect(getUpdateStatus(env, { force: true })).resolves.toMatchObject({
+      latestVersion: "77.0.0",
+      updateAvailable: true,
+      error: null
+    });
+    expect(put).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not trust a cached timestamp from the future", async () => {
+    const { env } = makeTestEnv(new Map([["stats:updateCheck:latest", JSON.stringify({
+      latestVersion: "1.0.0",
+      releaseUrl: "https://github.com/tnt2ray/subpilot-worker/releases/tag/v1.0.0",
+      checkedAt: new Date(Date.now() + 60_000).toISOString(),
+      error: null
+    })]]));
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(new Response(JSON.stringify({
+      tag_name: "v78.0.0",
+      html_url: "https://github.com/tnt2ray/subpilot-worker/releases/tag/v78.0.0"
+    })));
+
+    await expect(getUpdateStatus(env)).resolves.toMatchObject({ latestVersion: "78.0.0" });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });

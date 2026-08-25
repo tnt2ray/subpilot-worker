@@ -1,8 +1,13 @@
 import { APP_VERSION, RELEASE_REPOSITORY } from "./version";
+import { fetchWithTimeout } from "./upstream-fetch";
+import { readResponseTextWithLimit } from "./util";
 
 const UPDATE_CHECK_KEY = "stats:updateCheck:latest";
 const UPDATE_CHECK_NOTIFIED_KEY = "stats:updateCheck:notifiedVersion";
 const UPDATE_CHECK_CACHE_SECONDS = 24 * 60 * 60;
+const UPDATE_CHECK_TIMEOUT_MS = 5_000;
+const MAX_UPDATE_RESPONSE_BYTES = 64 * 1024;
+const RELEASE_BASE_URL = `https://github.com/${RELEASE_REPOSITORY}/releases/`;
 
 export interface UpdateStatus {
   currentVersion: string;
@@ -31,9 +36,10 @@ export async function getUpdateStatus(env: Env, options: { force?: boolean } = {
   }
 
   const checkedAt = new Date().toISOString();
+  let status: UpdateStatus;
   try {
     const latest = await fetchLatestRelease();
-    const status: UpdateStatus = {
+    status = {
       currentVersion: APP_VERSION,
       latestVersion: latest.version,
       updateAvailable: compareVersions(latest.version, APP_VERSION) > 0,
@@ -41,20 +47,22 @@ export async function getUpdateStatus(env: Env, options: { force?: boolean } = {
       checkedAt,
       error: null
     };
-    await storeUpdateStatus(env, status);
-    return status;
   } catch (error) {
-    const status: UpdateStatus = {
+    status = {
       currentVersion: APP_VERSION,
       latestVersion: normalizeVersion(cached?.latestVersion),
       updateAvailable: cached ? compareVersions(normalizeVersion(cached.latestVersion) || APP_VERSION, APP_VERSION) > 0 : false,
-      releaseUrl: typeof cached?.releaseUrl === "string" ? cached.releaseUrl : null,
+      releaseUrl: normalizeReleaseUrl(cached?.releaseUrl),
       checkedAt,
       error: error instanceof Error ? error.message : String(error)
     };
-    await storeUpdateStatus(env, status);
-    return status;
   }
+  // The update result is still useful if the non-critical cache write fails.
+  // Keeping the write outside the fetch try/catch also prevents an immediate
+  // retry to the same KV key, which would violate KV's one-write-per-second
+  // limit and obscure a successful GitHub response as a fetch error.
+  await storeUpdateStatus(env, status).catch(logUpdateCacheWriteFailure);
+  return status;
 }
 
 export async function readNotifiedUpdateVersion(env: Env): Promise<string | null> {
@@ -85,7 +93,7 @@ function normalizeStoredUpdateStatus(stored: StoredUpdateStatus | null): UpdateS
     currentVersion: APP_VERSION,
     latestVersion,
     updateAvailable: latestVersion ? compareVersions(latestVersion, APP_VERSION) > 0 : false,
-    releaseUrl: typeof stored?.releaseUrl === "string" ? stored.releaseUrl : null,
+    releaseUrl: normalizeReleaseUrl(stored?.releaseUrl),
     checkedAt: typeof stored?.checkedAt === "string" ? stored.checkedAt : null,
     error: typeof stored?.error === "string" ? stored.error : null
   };
@@ -94,7 +102,15 @@ function normalizeStoredUpdateStatus(stored: StoredUpdateStatus | null): UpdateS
 function isFreshCheck(checkedAt: unknown): boolean {
   if (typeof checkedAt !== "string") return false;
   const time = Date.parse(checkedAt);
-  return Number.isFinite(time) && Date.now() - time < UPDATE_CHECK_CACHE_SECONDS * 1000;
+  const age = Date.now() - time;
+  return Number.isFinite(time) && age >= 0 && age < UPDATE_CHECK_CACHE_SECONDS * 1000;
+}
+
+function logUpdateCacheWriteFailure(error: unknown): void {
+  console.warn(JSON.stringify({
+    level: "warn",
+    message: `Update status cache write failed: ${error instanceof Error ? error.message : String(error)}`
+  }));
 }
 
 async function fetchLatestRelease(): Promise<{ version: string; url: string }> {
@@ -113,40 +129,65 @@ async function fetchLatestRelease(): Promise<{ version: string; url: string }> {
 }
 
 async function fetchLatestReleaseFromApi(): Promise<{ version: string; url: string }> {
-  const response = await fetch(`https://api.github.com/repos/${RELEASE_REPOSITORY}/releases/latest`, {
+  return fetchWithTimeout(globalThis.fetch, `https://api.github.com/repos/${RELEASE_REPOSITORY}/releases/latest`, {
     headers: {
       accept: "application/vnd.github+json",
       "user-agent": `SubPilot/${APP_VERSION}`
     }
+  }, UPDATE_CHECK_TIMEOUT_MS, async (response) => {
+    if (!response.ok) {
+      await response.body?.cancel().catch(() => undefined);
+      throw new Error(`GitHub release check failed: HTTP ${response.status}`);
+    }
+    const text = await readResponseTextWithLimit(response, MAX_UPDATE_RESPONSE_BYTES, "GitHub release response");
+    let body: { tag_name?: unknown; html_url?: unknown };
+    try {
+      body = JSON.parse(text) as { tag_name?: unknown; html_url?: unknown };
+    } catch {
+      throw new Error("GitHub latest release returned invalid JSON");
+    }
+    const version = normalizeVersion(body.tag_name);
+    if (!version) throw new Error("GitHub latest release has no valid tag_name");
+    return {
+      version,
+      url: normalizeReleaseUrl(body.html_url) ?? `${RELEASE_BASE_URL}latest`
+    };
   });
-  if (!response.ok) {
-    await response.body?.cancel().catch(() => undefined);
-    throw new Error(`GitHub release check failed: HTTP ${response.status}`);
-  }
-  const body = await response.json() as { tag_name?: unknown; html_url?: unknown };
-  const version = normalizeVersion(body.tag_name);
-  if (!version) throw new Error("GitHub latest release has no valid tag_name");
-  return {
-    version,
-    url: typeof body.html_url === "string" ? body.html_url : `https://github.com/${RELEASE_REPOSITORY}/releases/latest`
-  };
 }
 
 async function fetchLatestReleaseFromRedirect(): Promise<{ version: string; url: string }> {
-  const response = await fetch(`https://github.com/${RELEASE_REPOSITORY}/releases/latest`, {
+  return fetchWithTimeout(globalThis.fetch, `${RELEASE_BASE_URL}latest`, {
     redirect: "follow",
     headers: {
       accept: "text/html",
       "user-agent": `SubPilot/${APP_VERSION}`
     }
-  });
-  await response.body?.cancel().catch(() => undefined);
-  if (!response.ok) throw new Error(`GitHub release redirect check failed: HTTP ${response.status}`);
+  }, UPDATE_CHECK_TIMEOUT_MS, async (response) => {
+    await response.body?.cancel().catch(() => undefined);
+    if (!response.ok) throw new Error(`GitHub release redirect check failed: HTTP ${response.status}`);
 
-  const releaseUrl = response.url || `https://github.com/${RELEASE_REPOSITORY}/releases/latest`;
-  const version = normalizeVersion(releaseUrl.match(/\/releases\/tag\/([^/?#]+)/)?.[1]);
-  if (!version) throw new Error("GitHub release redirect has no valid tag");
-  return { version, url: releaseUrl };
+    const releaseUrl = normalizeReleaseUrl(response.url);
+    if (!releaseUrl) throw new Error("GitHub release redirect returned an untrusted URL");
+    const version = normalizeVersion(releaseUrl.match(/\/releases\/tag\/([^/?#]+)/)?.[1]);
+    if (!version) throw new Error("GitHub release redirect has no valid tag");
+    return { version, url: releaseUrl };
+  });
+}
+
+function normalizeReleaseUrl(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  try {
+    const url = new URL(value);
+    const expectedPrefix = `/${RELEASE_REPOSITORY}/releases/`;
+    if (url.protocol !== "https:" || url.hostname !== "github.com" || !url.pathname.startsWith(expectedPrefix)) return null;
+    url.username = "";
+    url.password = "";
+    url.search = "";
+    url.hash = "";
+    return url.toString();
+  } catch {
+    return null;
+  }
 }
 
 function normalizeVersion(value: unknown): string | null {

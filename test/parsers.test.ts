@@ -3,6 +3,56 @@ import { maybeDecodeBase64, parseHostEntries, parseManualSurge, parseSubscriptio
 import { CHAIN_EXIT_PROXY_NAME } from "../src/types";
 
 describe("proxy parsing", () => {
+  it("parses SIP002 Shadowsocks userinfo, legacy payloads, AEAD-2022 credentials, and plugins", () => {
+    const encodedUserInfo = btoa("aes-256-gcm:pass").replace(/=/g, "").replace(/\+/g, "-").replace(/\//g, "_");
+    const [encoded] = parseSubscription(`ss://${encodedUserInfo}@1.2.3.4:8388#Encoded`, "src");
+    expect(encoded).toMatchObject({
+      name: "Encoded",
+      type: "ss",
+      server: "1.2.3.4",
+      port: 8388,
+      cipher: "aes-256-gcm",
+      password: "pass"
+    });
+
+    const legacyPayload = btoa("chacha20-ietf-poly1305:legacy-pass@legacy.example.com:443");
+    const [legacy] = parseSubscription(`ss://${legacyPayload}#Legacy`, "src");
+    expect(legacy).toMatchObject({
+      name: "Legacy",
+      server: "legacy.example.com",
+      port: 443,
+      cipher: "chacha20-ietf-poly1305",
+      password: "legacy-pass"
+    });
+
+    const legacyWithoutPadding = legacyPayload.replace(/=+$/, "");
+    const [legacyWithPathSeparator] = parseSubscription(`ss://${legacyWithoutPadding}/#Legacy-Slash`, "src");
+    expect(legacyWithPathSeparator).toMatchObject({
+      name: "Legacy-Slash",
+      server: "legacy.example.com",
+      port: 443,
+      cipher: "chacha20-ietf-poly1305",
+      password: "legacy-pass"
+    });
+
+    const [aead2022] = parseSubscription(
+      "ss://2022-blake3-aes-128-gcm:base64-key@example.com:8388#AEAD-2022",
+      "src"
+    );
+    expect(aead2022).toMatchObject({
+      cipher: "2022-blake3-aes-128-gcm",
+      password: "base64-key"
+    });
+
+    const pluginValue = encodeURIComponent("obfs-local;obfs=http;obfs-host=cdn.example.com");
+    const [plugin] = parseSubscription(`ss://${encodedUserInfo}@plugin.example.com:8388?plugin=${pluginValue}#Plugin`, "src");
+    expect(toClashProxy(plugin!)).toMatchObject({
+      plugin: "obfs",
+      "plugin-opts": { mode: "http", host: "cdn.example.com" }
+    });
+    expect(toSurgeLine(plugin!)).toContain("obfs=http, obfs-host=cdn.example.com");
+  });
+
   it("rejects upstream YAML proxy and host fields containing line breaks or control characters", () => {
     const injectedName = parseSubscription([
       "proxies:",

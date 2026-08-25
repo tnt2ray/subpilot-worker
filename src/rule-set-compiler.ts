@@ -12,11 +12,16 @@ import {
   type RuleSetSourceCacheFailure,
   type RuleSetSourceFetchResult
 } from "./rule-set-cache";
-import { RULE_SET_BUCKETS, type RuleSetBucket, type RuleSetOutput, type RuleSetOutputTarget } from "./rule-set-types";
+import { RULE_SET_BUCKETS, RULE_SET_TARGETS, type RuleSetBucket, type RuleSetOutput, type RuleSetOutputTarget } from "./rule-set-types";
 import { planRuleSetArtifacts } from "./rule-set-artifacts";
 import { compiledRuleProviderName } from "./rule-provider-name";
 import { splitRuleLine } from "./rule-line";
-import { renderDirectRuleForTarget } from "./rule-targets";
+import {
+  configuredTailscalePolicyNames,
+  isRulePolicyCompatibleWithTarget,
+  renderDirectRuleForTarget,
+  renderRuleSetRuleForTarget
+} from "./rule-targets";
 import { effectiveRuleSetOutputs, planRuleSetOutputs } from "./rule-set-outputs";
 import type { AppConfig } from "./types";
 
@@ -28,7 +33,19 @@ export interface RuleSetRefreshResult {
   updatedAt: string;
   warnings: string[];
   failures: RuleSetSourceCacheFailure[];
+  outputFailures: RuleSetOutputRefreshFailure[];
   outputs: CompiledRuleSetStatusItem[];
+}
+
+export interface RuleSetOutputRefreshFailure {
+  outputName: string;
+  reason: string;
+  usedCachedManifest: boolean;
+}
+
+export interface RuleSetRefreshOptions {
+  /** Absolute Unix timestamp in milliseconds after which no new fetch or output compilation starts. */
+  deadline?: number;
 }
 
 export interface CompiledRuleSetReferencePlan {
@@ -44,10 +61,14 @@ interface CompileOptions {
   forceSourceRefresh?: boolean;
   sourceContentByKey?: Map<string, RuleSetSourceFetchResult>;
   sourceErrorsByKey?: Map<string, string>;
+  deadline?: number;
 }
 
 const FINAL_RULE_TYPES = new Set(["FINAL", "MATCH"]);
 const RULE_SET_UPDATE_INTERVAL_SECONDS = 24 * 60 * 60;
+const RULE_SET_COMPILER_REVISION = 4;
+const MAX_RULE_SET_OUTPUT_SOURCE_CHARACTERS = 8 * 1024 * 1024;
+const MAX_RULE_SET_OUTPUT_RULES = 50_000;
 
 export async function compileRuleSetOutput(
   env: Env,
@@ -61,8 +82,13 @@ export async function compileRuleSetOutput(
   const sourceById = new Map(config.ruleSets.sources.map((source) => [source.id, source]));
   const parsedRules: ParsedRuleSetRule[] = [];
   let usedCachedSource = false;
+  let sourceCharacters = 0;
 
   for (const sourceId of output.sourceIds) {
+    if (refreshDeadlineExceeded(options.deadline)) {
+      sourceErrors.push("规则集刷新已超过截止时间");
+      break;
+    }
     const source = sourceById.get(sourceId);
     if (!source) {
       warnings.push(`${output.name}: 规则来源 ${sourceId} 不存在。`);
@@ -81,14 +107,24 @@ export async function compileRuleSetOutput(
       }
       const result = options.sourceContentByKey?.get(sourceKey) ?? await fetchCachedRuleSetSource(env, source, {
         allowCachedFallback: true,
-        forceRefresh: Boolean(options.forceSourceRefresh)
+        forceRefresh: Boolean(options.forceSourceRefresh),
+        ...(options.deadline !== undefined ? { deadline: options.deadline } : {})
       });
       if (result.usedCachedContent) {
         usedCachedSource = true;
         if (result.warning) warnings.push(`${output.name}: 刷新失败，继续使用旧规则集源缓存：${result.warning}`);
+      } else if (result.warning) {
+        warnings.push(`${output.name}: ${result.warning}`);
       }
       const { content } = result;
+      if (sourceCharacters + content.length > MAX_RULE_SET_OUTPUT_SOURCE_CHARACTERS) {
+        throw new Error(`${output.name}: 规则来源内容总量超过 ${MAX_RULE_SET_OUTPUT_SOURCE_CHARACTERS} 字符限制`);
+      }
+      sourceCharacters += content.length;
       const parsed = parseRuleSetContent(content, source.format, source.name);
+      if (parsedRules.length + parsed.rules.length > MAX_RULE_SET_OUTPUT_RULES) {
+        throw new Error(`${output.name}: 编译规则数量超过 ${MAX_RULE_SET_OUTPUT_RULES} 条限制`);
+      }
       parsedRules.push(...parsed.rules);
       warnings.push(...parsed.warnings);
     } catch (error) {
@@ -97,11 +133,17 @@ export async function compileRuleSetOutput(
   }
 
   const inline = parseInlineRuleSetLines(output.inlineRules, `${output.name} 内联规则`);
-  parsedRules.push(...inline.rules);
+  if (parsedRules.length + inline.rules.length > MAX_RULE_SET_OUTPUT_RULES) {
+    sourceErrors.push(`${output.name}: 编译规则数量超过 ${MAX_RULE_SET_OUTPUT_RULES} 条限制`);
+  } else {
+    parsedRules.push(...inline.rules);
+  }
   warnings.push(...inline.warnings);
 
   if (sourceErrors.length > 0) {
-    const existing = options.allowStaleFallback ? await readCompiledRuleSetManifest(env, output.name) : null;
+    const existing = options.allowStaleFallback && !refreshDeadlineExceeded(options.deadline)
+      ? await readCompiledRuleSetManifest(env, output.name)
+      : null;
     if (existing?.outputFingerprint === ruleSetOutputFingerprint(output)) {
       return {
         manifest: {
@@ -128,6 +170,7 @@ export async function compileRuleSetOutput(
     buckets[rule.bucket].push(rule);
   }
   warnings.push(...collectDomainContainmentWarnings(buckets.domain));
+  warnings.push(...collectTargetCompatibilityWarnings(parsedRules));
 
   const manifest: CompiledRuleSetManifest = {
     outputName: output.name,
@@ -138,11 +181,38 @@ export async function compileRuleSetOutput(
     ruleCount: RULE_SET_BUCKETS.reduce((sum, bucket) => sum + buckets[bucket].length, 0),
     duplicateCount,
     buckets: RULE_SET_BUCKETS.flatMap((bucket) => buckets[bucket].length > 0
-      ? [{ bucket, count: buckets[bucket].length, targets: ["surge", "clash", "stash"] as RuleSetOutputTarget[] }]
+      ? [{
+        bucket,
+        count: buckets[bucket].length,
+        targets: RULE_SET_TARGETS.filter((target) => buckets[bucket].some((rule) => renderRuleSetRuleForTarget(rule.raw, target) !== null)),
+        targetCounts: Object.fromEntries(RULE_SET_TARGETS.map((target) => [
+          target,
+          buckets[bucket].filter((rule) => renderRuleSetRuleForTarget(rule.raw, target) !== null).length
+        ]))
+      }]
       : []),
     warnings
   };
-  await writeCompiledRuleSet(env, manifest, buckets);
+  try {
+    await writeCompiledRuleSet(env, manifest, buckets);
+  } catch (error) {
+    const existing = options.allowStaleFallback
+      ? await readCompiledRuleSetManifest(env, output.name).catch(() => null)
+      : null;
+    if (existing?.outputFingerprint === ruleSetOutputFingerprint(output)) {
+      return {
+        manifest: {
+          ...existing,
+          warnings: [
+            ...existing.warnings,
+            `${output.name}: 新编译缓存写入失败，继续使用旧版本：${error instanceof Error ? error.message : String(error)}`
+          ]
+        },
+        stale: true
+      };
+    }
+    throw error;
+  }
   return { manifest, stale: usedCachedSource };
 }
 
@@ -158,6 +228,7 @@ export async function ensureCompiledRuleSet(
 
 function ruleSetOutputFingerprint(output: RuleSetOutput): string {
   return JSON.stringify({
+    compilerRevision: RULE_SET_COMPILER_REVISION,
     policy: output.policy,
     sourceIds: output.sourceIds,
     inlineRules: output.inlineRules,
@@ -165,20 +236,26 @@ function ruleSetOutputFingerprint(output: RuleSetOutput): string {
   });
 }
 
-export async function refreshRuleSetCaches(env: Env, config: AppConfig, outputName?: string): Promise<RuleSetRefreshResult> {
+export async function refreshRuleSetCaches(
+  env: Env,
+  config: AppConfig,
+  outputName?: string,
+  options: RuleSetRefreshOptions = {}
+): Promise<RuleSetRefreshResult> {
   const effectiveOutputs = effectiveRuleSetOutputs(config.ruleSets);
   const outputs = outputName
     ? effectiveOutputs.filter((output) => output.name === outputName)
     : effectiveOutputs;
   if (outputName && outputs.length === 0) throw new Error("Rule set output not found");
   const sourcesToRefresh = ruleSetSourcesForOutputs(config, outputs, Boolean(outputName));
-  return refreshRuleSetOutputs(env, config, outputs, sourcesToRefresh, !outputName);
+  return refreshRuleSetOutputs(env, config, outputs, sourcesToRefresh, !outputName, options);
 }
 
 export async function refreshChangedRuleSetCaches(
   env: Env,
   previousConfig: AppConfig,
-  config: AppConfig
+  config: AppConfig,
+  options: RuleSetRefreshOptions = {}
 ): Promise<RuleSetRefreshResult | null> {
   if (config.ruleSets.mode !== "compiled") return null;
   const outputs = changedRuleSetOutputs(previousConfig, config);
@@ -187,7 +264,7 @@ export async function refreshChangedRuleSetCaches(
   const sourcesToRefresh = previousConfig.ruleSets.mode !== "compiled"
     ? config.ruleSets.sources.filter((source) => source.enabled && source.url)
     : config.ruleSets.sources.filter((source) => source.enabled && source.url && changedSourceIds.has(source.id));
-  return refreshRuleSetOutputs(env, config, outputs, sourcesToRefresh, false);
+  return refreshRuleSetOutputs(env, config, outputs, sourcesToRefresh, false, options);
 }
 
 async function refreshRuleSetOutputs(
@@ -195,22 +272,40 @@ async function refreshRuleSetOutputs(
   config: AppConfig,
   outputs: RuleSetOutput[],
   sourcesToRefresh: AppConfig["ruleSets"]["sources"],
-  pruneUnexpected: boolean
+  pruneUnexpected: boolean,
+  options: RuleSetRefreshOptions
 ): Promise<RuleSetRefreshResult> {
-  const sourceRefresh = await refreshRuleSetSourceCaches(env, config, sourcesToRefresh, { pruneUnexpected });
-  const compiledDeleted = pruneUnexpected ? await pruneCompiledRuleSetCaches(env, config) : 0;
+  const sourceRefresh = await refreshRuleSetSourceCaches(env, config, sourcesToRefresh, {
+    pruneUnexpected,
+    ...(options.deadline !== undefined ? { deadline: options.deadline } : {})
+  });
+  const canContinue = !refreshDeadlineExceeded(options.deadline);
+  const compiledDeleted = pruneUnexpected && canContinue ? await pruneCompiledRuleSetCaches(env, config) : 0;
 
   let refreshed = 0;
   let failed = 0;
   let cached = 0;
   const warnings = new Set(sourceRefresh.warnings);
+  const outputFailures: RuleSetOutputRefreshFailure[] = [];
+  if (pruneUnexpected && !canContinue) warnings.add("规则集刷新已到截止时间，跳过过期编译缓存清理。");
 
-  for (const output of outputs) {
+  for (let outputIndex = 0; outputIndex < outputs.length; outputIndex += 1) {
+    const output = outputs[outputIndex]!;
+    if (refreshDeadlineExceeded(options.deadline)) {
+      const reason = "规则集刷新已超过截止时间";
+      for (const remaining of outputs.slice(outputIndex)) {
+        failed += 1;
+        outputFailures.push({ outputName: remaining.name, reason, usedCachedManifest: false });
+        warnings.add(`${remaining.name}: ${reason}。`);
+      }
+      break;
+    }
     try {
       const result = await compileRuleSetOutput(env, config, output, {
         allowStaleFallback: true,
         sourceContentByKey: sourceRefresh.contentByKey,
-        sourceErrorsByKey: sourceRefresh.errorsByKey
+        sourceErrorsByKey: sourceRefresh.errorsByKey,
+        ...(options.deadline !== undefined ? { deadline: options.deadline } : {})
       });
       if (result.stale) {
         cached += 1;
@@ -220,7 +315,14 @@ async function refreshRuleSetOutputs(
       for (const warning of result.manifest.warnings) warnings.add(warning);
     } catch (error) {
       failed += 1;
-      warnings.add(`${output.name}: ${error instanceof Error ? error.message : String(error)}`);
+      const reason = error instanceof Error ? error.message : String(error);
+      const existing = refreshDeadlineExceeded(options.deadline)
+        ? null
+        : await readCompiledRuleSetManifest(env, output.name);
+      const usedCachedManifest = existing !== null;
+      if (usedCachedManifest) cached += 1;
+      outputFailures.push({ outputName: output.name, reason, usedCachedManifest });
+      warnings.add(`${output.name}: ${reason}${usedCachedManifest ? "，继续使用旧编译缓存" : ""}`);
     }
   }
 
@@ -232,8 +334,13 @@ async function refreshRuleSetOutputs(
     updatedAt: new Date().toISOString(),
     warnings: [...warnings],
     failures: sourceRefresh.failures,
-    outputs: await readRuleSetStatus(env, config)
+    outputFailures,
+    outputs: refreshDeadlineExceeded(options.deadline) ? [] : await readRuleSetStatus(env, config)
   };
+}
+
+function refreshDeadlineExceeded(deadline: number | undefined): boolean {
+  return deadline !== undefined && Date.now() >= deadline;
 }
 
 export async function readRuleSetStatus(env: Env, config: AppConfig): Promise<CompiledRuleSetStatusItem[]> {
@@ -267,6 +374,7 @@ export async function buildCompiledRuleSetReferencePlan(
   };
   const directRules = config.ruleSets.directRules.filter((rule) => rule.enabled);
   const outputPlans = planRuleSetOutputs(config.ruleSets);
+  const tailscalePolicies = configuredTailscalePolicyNames(config);
   const items = [
     ...outputPlans.map((outputPlan) => ({ kind: "output" as const, outputPlan, order: outputPlan.output.order })),
     ...directRules.map((rule) => ({ kind: "direct" as const, rule, order: rule.order }))
@@ -275,8 +383,22 @@ export async function buildCompiledRuleSetReferencePlan(
 
   for (const item of items) {
     if (item.kind === "direct") {
+      if (target !== "surge" && tailscalePolicies.has(item.rule.policy.trim())) {
+        plan.warnings.push(`${item.rule.name}: Tailscale 策略 ${item.rule.policy} 仅支持 Surge，已从 ${targetName(target)} 输出过滤。`);
+        continue;
+      }
+      if (!isRulePolicyCompatibleWithTarget(item.rule.policy, target)) {
+        plan.warnings.push(`${item.rule.name}: 策略 ${item.rule.policy} 不受 ${targetName(target)} 支持，已过滤。`);
+        continue;
+      }
       const line = renderDirectRuleForTarget(item.rule, target);
-      if (!line) continue;
+      if (!line) {
+        plan.warnings.push(`${item.rule.name}: 规则语法不受 ${targetName(target)} 支持，已过滤。`);
+        continue;
+      }
+      if (!isFinalRuleLine(line) && directRuleMatchSignature(item.rule.rule) !== directRuleMatchSignature(line)) {
+        plan.warnings.push(`${item.rule.name}: 规则语法已映射为 ${targetName(target)} 兼容格式。`);
+      }
       if (isFinalRuleLine(line)) {
         finalDirectRules.push(line);
       } else {
@@ -286,6 +408,14 @@ export async function buildCompiledRuleSetReferencePlan(
     }
     try {
       const { output, includedOutputNames } = item.outputPlan;
+      if (target !== "surge" && tailscalePolicies.has(output.policy.trim())) {
+        plan.warnings.push(`${output.name}: Tailscale 策略 ${output.policy} 仅支持 Surge，已从 ${targetName(target)} 输出过滤。`);
+        continue;
+      }
+      if (!isRulePolicyCompatibleWithTarget(output.policy, target)) {
+        plan.warnings.push(`${output.name}: 策略 ${output.policy} 不受 ${targetName(target)} 支持，已过滤。`);
+        continue;
+      }
       const manifest = await ensureCompiledRuleSet(env, config, output);
       const surgeStart = plan.surgeRules.length;
       const clashStart = plan.clashRules.length;
@@ -358,6 +488,11 @@ function isFinalRuleLine(line: string): boolean {
   return FINAL_RULE_TYPES.has(type);
 }
 
+function directRuleMatchSignature(line: string): string {
+  const parts = splitRuleLine(line);
+  return [(parts[0] || "").trim().toUpperCase(), (parts[1] || "").trim()].join("\0");
+}
+
 function surgeRuleSetOptions(output: RuleSetOutput, includesIpCidr: boolean): string[] {
   const options = output.surgeOptions.filter((option) => !/^update-interval=/i.test(option));
   if (includesIpCidr && !options.some((option) => option.toLowerCase() === "no-resolve")) {
@@ -390,6 +525,37 @@ function collectDomainContainmentWarnings(rules: ParsedRuleSetRule[]): string[] 
 
 function normalizeDomain(value: string): string {
   return value.trim().replace(/^\+\./, "").replace(/^\*\./, "").replace(/^\./, "").replace(/\.$/, "").toLowerCase();
+}
+
+function collectTargetCompatibilityWarnings(rules: ParsedRuleSetRule[]): string[] {
+  const summaries = new Map<string, { label: string; type: string; target: RuleSetOutputTarget; renderedType: string | null; count: number }>();
+  for (const rule of rules) {
+    const diagnosticType = rule.clashDomainPattern ? "Clash domain-provider 模式" : rule.type;
+    for (const target of RULE_SET_TARGETS) {
+      const rendered = renderRuleSetRuleForTarget(rule.raw, target);
+      const renderedType = rendered === null
+        ? null
+        : (splitRuleLine(rendered)[0] || "").trim().toUpperCase();
+      if (rendered !== null && canonicalRuleForComparison(rendered, renderedType || rule.type) === canonicalRuleForComparison(rule.raw, rule.type)) continue;
+      const key = `${diagnosticType}\0${target}\0${renderedType ?? "filtered"}`;
+      const existing = summaries.get(key);
+      if (existing) existing.count += 1;
+      else summaries.set(key, { label: rule.label, type: diagnosticType, target, renderedType, count: 1 });
+    }
+  }
+  return [...summaries.values()].map((item) => item.renderedType === null
+    ? `${item.label}${item.type} 不受 ${targetName(item.target)} 支持，已从该目标规则集过滤${item.count > 1 ? `（共 ${item.count} 条）` : ""}。`
+    : `${item.label}${item.type} 在 ${targetName(item.target)} 输出中映射为 ${item.renderedType}${item.count > 1 ? `（共 ${item.count} 条）` : ""}。`);
+}
+
+function canonicalRuleForComparison(rule: string, type: string): string {
+  const parts = splitRuleLine(rule);
+  return [type.toUpperCase(), ...parts.slice(1).map((part) => part.trim())].join(",");
+}
+
+function targetName(target: RuleSetOutputTarget): string {
+  if (target === "surge") return "Surge";
+  return target === "stash" ? "Stash" : "Clash";
 }
 
 function ruleSetSourcesForOutputs(config: AppConfig, outputs: RuleSetOutput[], outputSpecific: boolean): AppConfig["ruleSets"]["sources"] {

@@ -1,10 +1,16 @@
-import { lookupIpRegion, type RegionInfo } from "./geoip";
+import { lookupIpRegions, type RegionInfo } from "./geoip";
 import { parseConfiguredProxyNode } from "./parsers";
+import {
+  CLASH_BUILT_IN_RULE_POLICIES,
+  STASH_BUILT_IN_RULE_POLICIES,
+  SURGE_BUILT_IN_RULE_POLICIES
+} from "./rule-targets";
 import { CHAIN_EXIT_PROXY_NAME, type AppConfig, type ProxyNode, type Target } from "./types";
 
 const SURGE_PROTOCOLS = new Set(["http", "https", "socks5", "socks5-tls", "ss", "snell", "trojan", "vmess", "hysteria2", "hy2", "tuic", "anytls", "trust-tunnel", "ssh"]);
 const CLASH_PROTOCOLS = new Set([...SURGE_PROTOCOLS, "vless"]);
 const UNKNOWN_REGION_NAME = "ZZ";
+const MAX_GEOIP_LOOKUPS_PER_GENERATION = 100;
 const CITY_COUNTRY_ALIASES = new Map<string, string>([
   ["amsterdam", "NL"],
   ["ashburn", "US"],
@@ -198,6 +204,50 @@ export function buildChainNodes(nodes: ProxyNode[]): ProxyNode[] {
   });
 }
 
+export function ensureUniqueProxyPolicyNames(
+  nodes: ProxyNode[],
+  config: AppConfig,
+  warnings: string[],
+  additionalReservedNames: Iterable<string> = []
+): ProxyNode[] {
+  const groupNames = new Set(Object.keys(config.groups));
+  const reserved = new Set([
+    ...config.surge.tailscaleNodes.map((node) => node.name),
+    ...additionalReservedNames
+  ]);
+  const reservedBuiltIns = new Set([
+    ...SURGE_BUILT_IN_RULE_POLICIES,
+    ...CLASH_BUILT_IN_RULE_POLICIES,
+    ...STASH_BUILT_IN_RULE_POLICIES
+  ]);
+  const used = new Set(reserved);
+  const output = [...nodes];
+  const orderedIndexes = nodes.map((_node, index) => index).sort((left, right) => {
+    const manualOrder = Number(Boolean(nodes[right]?.manual)) - Number(Boolean(nodes[left]?.manual));
+    return manualOrder || left - right;
+  });
+  for (const index of orderedIndexes) {
+    const node = nodes[index]!;
+    const base = node.name.trim() || "Proxy Node";
+    let candidate = base;
+    let suffix = 2;
+    while (
+      used.has(candidate)
+      || (!node.manual && groupNames.has(candidate))
+      || reservedBuiltIns.has(candidate.toUpperCase())
+    ) {
+      candidate = `${base} ${suffix}`;
+      suffix += 1;
+    }
+    used.add(candidate);
+    if (candidate !== node.name) {
+      warnings.push(`代理节点策略名 ${node.name} 与已有策略重名，已重命名为 ${candidate}。`);
+      output[index] = { ...node, name: candidate };
+    }
+  }
+  return output;
+}
+
 export function parseFeatureTagRules(lines: string[] = []): FeatureTagRule[] {
   return lines.flatMap((line) => {
     const [rawTag, rawKeywords] = line.split(/=(.*)/s);
@@ -237,20 +287,38 @@ export function isIPv6(value: string): boolean {
 }
 
 function filterNodesForTarget(nodes: ProxyNode[], target: Target): ProxyNode[] {
+  return nodes.filter((node) => isProxyNodeSupportedForTarget(node, target));
+}
+
+export function isProxyNodeSupportedForTarget(node: Pick<ProxyNode, "type">, target: Target): boolean {
   const supported = target === "surge" ? SURGE_PROTOCOLS : CLASH_PROTOCOLS;
-  return nodes.filter((node) => supported.has(node.type.toLowerCase()));
+  return supported.has(node.type.toLowerCase());
 }
 
 async function renameByNodeRegion(env: Env, nodes: ProxyNode[], featureTagRuleLines: string[], warnings: string[]): Promise<ProxyNode[]> {
   const featureTagRules = parseFeatureTagRules(featureTagRuleLines);
   const counters = new Map<string, number>();
   const renamed: ProxyNode[] = [];
+  const lookupIps = [...new Set(nodes.flatMap((node) => {
+    if (node.manual || node.name === CHAIN_EXIT_PROXY_NAME || isKnownRegion(inferRegionFromName(node.originalName ?? node.name))) return [];
+    const server = normalizeServerAddress(node.server);
+    return isIpAddress(server) ? [server] : [];
+  }))];
+  const selectedLookupIps = lookupIps.slice(0, MAX_GEOIP_LOOKUPS_PER_GENERATION);
+  const skippedLookupIps = new Set(lookupIps.slice(MAX_GEOIP_LOOKUPS_PER_GENERATION));
+  const regionByIp = await lookupIpRegions(env, selectedLookupIps).catch((error) => {
+    warnings.push(`GeoIP batch lookup failed: ${error instanceof Error ? error.message : String(error)}`);
+    return new Map<string, RegionInfo | null>();
+  });
+  if (skippedLookupIps.size > 0) {
+    warnings.push(`GeoIP rename skipped ${skippedLookupIps.size} unique IPs after the ${MAX_GEOIP_LOOKUPS_PER_GENERATION} lookup request limit.`);
+  }
   for (const node of nodes) {
     if (node.manual || node.name === CHAIN_EXIT_PROXY_NAME) {
       renamed.push({ ...node });
       continue;
     }
-    const region = await inferRegionForNode(env, node, warnings);
+    const region = inferRegionForNode(node, warnings, regionByIp, skippedLookupIps);
     const code = region.name;
     const counterKey = `${sourceNameTag(node.sourceName)}\0${code}`;
     const next = (counters.get(counterKey) ?? 0) + 1;
@@ -278,20 +346,20 @@ function sourceNameTag(sourceName: string | undefined): string {
   return unwrapped ? `[${unwrapped}]` : "";
 }
 
-async function inferRegionForNode(env: Env, node: ProxyNode, warnings: string[]): Promise<RegionInfo> {
+function inferRegionForNode(
+  node: ProxyNode,
+  warnings: string[],
+  regionByIp: Map<string, RegionInfo | null>,
+  skippedLookupIps: Set<string>
+): RegionInfo {
   const server = normalizeServerAddress(node.server);
   const nameRegion = inferRegionFromName(node.originalName ?? node.name);
   if (isKnownRegion(nameRegion)) return nameRegion;
   if (!isIpAddress(server)) return nameRegion;
-  try {
-    const region = await lookupIpRegion(env, server);
-    if (region) return region;
-  } catch (error) {
-    warnings.push(`${server}: ${error instanceof Error ? error.message : String(error)}`);
-    if (isKnownRegion(nameRegion)) return nameRegion;
-    return unknownRegion();
-  }
+  const region = regionByIp.get(server);
+  if (region) return region;
   if (isKnownRegion(nameRegion)) return nameRegion;
+  if (skippedLookupIps.has(server)) return unknownRegion();
   warnings.push(`${server}: GeoIP lookup returned no region and original node name has no region`);
   return unknownRegion();
 }

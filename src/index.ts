@@ -1,7 +1,7 @@
 import { clearSessionCookie, createSession, getOrCreateReadToken, isAdminRequest, rotateReadToken, sessionCookie, validateAdminToken, validateReadToken } from "./auth";
 import { mergeConfigPatch, sanitizeConfigAfterPatch, validateConfigForSave } from "./config-api";
 import { runKvMigrations } from "./config-schema";
-import { loadConfig, normalizeTarget, readStoredReadToken, saveConfig, withInferredManagedBaseUrl } from "./config-store";
+import { loadConfig, normalizeTarget, saveConfig, withInferredManagedBaseUrl } from "./config-store";
 import { readConfigFetchStats, recordConfigFetch } from "./fetch-stats";
 import { generateConfig, generateForRequest, inferTarget } from "./generator";
 import { handleGeoIpMmdbUpload, readGeoIpMmdbStatus } from "./geoip-admin";
@@ -16,11 +16,19 @@ import { configFileNameForTarget } from "./target-files";
 import { handleTelegramBindCode, handleTelegramUnbind, handleTelegramWebhook, saveConfigWithTelegramWebhook } from "./telegram";
 import { readCachedUpdateStatus, getUpdateStatus } from "./update-check";
 import { APP_VERSION, RELEASE_REPOSITORY } from "./version";
-import { badRequest, forbidden, jsonResponse, notFound, payloadTooLarge, readRequestJsonWithLimit, RequestBodyTooLargeError, sha256Hex, textResponse, unauthorized } from "./util";
+import { badRequest, forbidden, jsonResponse, notFound, payloadTooLarge, readRequestJsonWithLimit, RequestBodyTooLargeError, sha256Hex, textResponse, tooManyRequests, unauthorized } from "./util";
 
 const SOURCE_REFRESH_CRON = "0 */12 * * *";
 const RULE_SET_REFRESH_CRON = "0 16 * * *";
 const MAX_LOGIN_REQUEST_BYTES = 4 * 1024;
+const MAX_CONFIG_REQUEST_BYTES = 2 * 1024 * 1024;
+const LOGIN_RATE_LIMIT = 10;
+const LOGIN_RATE_LIMIT_PERIOD_SECONDS = 60;
+const MAX_FALLBACK_LOGIN_KEYS = 1_024;
+const WAIT_UNTIL_REFRESH_DEADLINE_MS = 18_000;
+const MANUAL_REFRESH_DEADLINE_MS = 20_000;
+const SCHEDULED_REFRESH_DEADLINE_MS = 12 * 60 * 1000;
+const fallbackLoginAttempts = new WeakMap<object, Map<string, { count: number; startedAt: number }>>();
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -28,6 +36,7 @@ export default {
       return await route(request, env, ctx);
     } catch (error) {
       console.error(JSON.stringify({ level: "error", message: error instanceof Error ? error.message : String(error) }));
+      if (isKvWriteRateLimitError(error)) return tooManyRequests("Configuration storage is busy; retry shortly", 2);
       return jsonResponse({ error: "Internal server error" }, { status: 500 });
     }
   },
@@ -35,24 +44,34 @@ export default {
     const config = await loadConfig(env);
     if (controller.cron === RULE_SET_REFRESH_CRON) {
       if (config.ruleSets.mode !== "compiled") return;
-      const ruleSetResult = await refreshRuleSetCaches(env, config);
+      const ruleSetResult = await refreshRuleSetCaches(env, config, undefined, {
+        deadline: Date.now() + SCHEDULED_REFRESH_DEADLINE_MS
+      });
       await notifyRuleSetRefreshFailures(env, config, ruleSetResult, "scheduled");
       await warmScheduledRuleSetWorkerCache(env, config);
       return;
     }
     if (controller.cron !== SOURCE_REFRESH_CRON) return;
-    const result = await refreshSourceCache(env, config);
+    const result = await refreshSourceCache(env, config, {
+      deadline: Date.now() + SCHEDULED_REFRESH_DEADLINE_MS
+    });
     await notifySourceRefreshFailures(env, config, result, "scheduled");
     await notifyVersionUpdateAvailable(env, config);
   }
 } satisfies ExportedHandler<Env>;
+
+function isKvWriteRateLimitError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /(?:KV|put|write|rate)[^\n]{0,120}(?:429|too many|rate.?limit)/i.test(message)
+    || /(?:429|too many|rate.?limit)[^\n]{0,120}(?:KV|put|write)/i.test(message);
+}
 
 async function route(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   const url = new URL(request.url);
   if (request.method === "OPTIONS") return new Response(null, { headers: corsHeaders() });
 
   if (url.pathname === "/api/login" && request.method === "POST") return handleLogin(request, env);
-  if (url.pathname === "/api/logout" && request.method === "POST") return handleLogout();
+  if (url.pathname === "/api/logout" && request.method === "POST") return handleLogout(request);
   if (url.pathname === "/api/session" && request.method === "GET") {
     return jsonResponse({ ok: await isAdminRequest(env, request) });
   }
@@ -78,6 +97,10 @@ async function route(request: Request, env: Env, ctx: ExecutionContext): Promise
 }
 
 async function handleLogin(request: Request, env: Env): Promise<Response> {
+  if (!await consumeLoginAttempt(env, loginRateKey(request))) {
+    await request.body?.cancel().catch(() => undefined);
+    return tooManyRequests("Too many login attempts", LOGIN_RATE_LIMIT_PERIOD_SECONDS);
+  }
   let body: unknown;
   try {
     body = await readRequestJsonWithLimit<unknown>(request, MAX_LOGIN_REQUEST_BYTES);
@@ -94,8 +117,10 @@ async function handleLogin(request: Request, env: Env): Promise<Response> {
   return jsonResponse({ ok: true }, { headers: { "set-cookie": sessionCookie(session, new URL(request.url).protocol === "https:") } });
 }
 
-function handleLogout(): Response {
-  return jsonResponse({ ok: true }, { headers: { "set-cookie": clearSessionCookie() } });
+function handleLogout(request: Request): Response {
+  return jsonResponse({ ok: true }, {
+    headers: { "set-cookie": clearSessionCookie(new URL(request.url).protocol === "https:") }
+  });
 }
 
 async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -132,7 +157,9 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
   }
   if (url.pathname === "/api/cache/source/refresh" && request.method === "POST") {
     const config = await loadConfig(env);
-    const result = await refreshSourceCache(env, config);
+    const result = await refreshSourceCache(env, config, {
+      deadline: Date.now() + MANUAL_REFRESH_DEADLINE_MS
+    });
     return jsonResponse({
       ...result,
       notification: await notifySourceRefreshFailures(env, config, result, "manual")
@@ -151,29 +178,44 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
     return handleTelegramUnbind(request, env);
   }
   if (url.pathname === "/api/config" && request.method === "PUT") {
-    const config = await request.json().catch(() => null);
-    if (!config || typeof config !== "object") return badRequest("Invalid config body");
+    let config: unknown;
+    try {
+      config = await readRequestJsonWithLimit<unknown>(request, MAX_CONFIG_REQUEST_BYTES);
+    } catch (error) {
+      if (error instanceof RequestBodyTooLargeError) return payloadTooLarge("Config request body is too large");
+      config = null;
+    }
+    if (!config || typeof config !== "object" || Array.isArray(config)) return badRequest("Invalid config body");
     const current = await loadConfig(env);
     const next = config as Awaited<ReturnType<typeof loadConfig>>;
     const validationError = validateConfigForSave(next);
     if (validationError) return badRequest(validationError);
     const saved = await saveConfigWithTelegramWebhook(env, current, next, request.url);
-    await refreshChangedSourceCache(env, current, saved);
-    scheduleRuleSetRefresh(env, ctx, current, saved, request.url);
+    scheduleChangedCacheRefresh(env, ctx, current, saved, request.url);
     return jsonResponse(saved);
   }
   if (url.pathname === "/api/config" && request.method === "PATCH") {
-    const patch = await request.json().catch(() => null);
-    if (!patch || typeof patch !== "object") return badRequest("Invalid config patch");
+    let patch: unknown;
+    try {
+      patch = await readRequestJsonWithLimit<unknown>(request, MAX_CONFIG_REQUEST_BYTES);
+    } catch (error) {
+      if (error instanceof RequestBodyTooLargeError) return payloadTooLarge("Config request body is too large");
+      patch = null;
+    }
+    if (!patch || typeof patch !== "object" || Array.isArray(patch)) return badRequest("Invalid config patch");
     const current = await loadConfig(env);
     const config = withInferredManagedBaseUrl(current, request.url);
     const normalizedPatch = patch as Partial<Awaited<ReturnType<typeof loadConfig>>>;
-    const next = sanitizeConfigAfterPatch(mergeConfigPatch(config, normalizedPatch), normalizedPatch);
+    let next: Awaited<ReturnType<typeof loadConfig>>;
+    try {
+      next = sanitizeConfigAfterPatch(mergeConfigPatch(config, normalizedPatch), normalizedPatch);
+    } catch {
+      return badRequest("Invalid config patch");
+    }
     const validationError = validateConfigForSave(next);
     if (validationError) return badRequest(validationError);
     const saved = await saveConfigWithTelegramWebhook(env, current, next, request.url);
-    await refreshChangedSourceCache(env, current, saved);
-    scheduleRuleSetRefresh(env, ctx, current, saved, request.url);
+    scheduleChangedCacheRefresh(env, ctx, current, saved, request.url);
     return jsonResponse(saved);
   }
   if (url.pathname === "/api/preview" && request.method === "POST") {
@@ -196,6 +238,48 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
     return jsonResponse({ token, hash: await sha256Hex(token) });
   }
   return notFound();
+}
+
+async function consumeLoginAttempt(env: Env, key: string): Promise<boolean> {
+  const limiter = (env as Env & { LOGIN_RATE_LIMITER?: RateLimit }).LOGIN_RATE_LIMITER;
+  if (limiter) {
+    try {
+      return (await limiter.limit({ key })).success;
+    } catch (error) {
+      console.warn(JSON.stringify({
+        level: "warn",
+        message: `Login rate limiter failed; using isolate fallback: ${error instanceof Error ? error.message : String(error)}`
+      }));
+    }
+  }
+
+  const now = Date.now();
+  let attempts = fallbackLoginAttempts.get(env);
+  if (!attempts) {
+    attempts = new Map();
+    fallbackLoginAttempts.set(env, attempts);
+  }
+  const current = attempts.get(key);
+  if (!current || now - current.startedAt >= LOGIN_RATE_LIMIT_PERIOD_SECONDS * 1000) {
+    if (attempts.size >= MAX_FALLBACK_LOGIN_KEYS) {
+      for (const [storedKey, value] of attempts) {
+        if (now - value.startedAt >= LOGIN_RATE_LIMIT_PERIOD_SECONDS * 1000) attempts.delete(storedKey);
+      }
+      if (attempts.size >= MAX_FALLBACK_LOGIN_KEYS) {
+        const oldestKey = attempts.keys().next().value as string | undefined;
+        if (oldestKey) attempts.delete(oldestKey);
+      }
+    }
+    attempts.set(key, { count: 1, startedAt: now });
+    return true;
+  }
+  current.count += 1;
+  return current.count <= LOGIN_RATE_LIMIT;
+}
+
+function loginRateKey(request: Request): string {
+  const clientIp = request.headers.get("cf-connecting-ip")?.trim() ?? "";
+  return `admin-login:${clientIp && clientIp.length <= 64 ? clientIp : "unknown"}`;
 }
 
 async function handleSync(request: Request, env: Env, ctx: ExecutionContext, managedBasePath: string): Promise<Response> {
@@ -231,27 +315,42 @@ function buildManagedRequestUrl(config: Awaited<ReturnType<typeof loadConfig>>, 
   return managedSubscriptionUrl(config, requestUrl, token);
 }
 
-function scheduleRuleSetRefresh(
+function scheduleChangedCacheRefresh(
   env: Env,
   ctx: ExecutionContext,
   previousConfig: Awaited<ReturnType<typeof loadConfig>>,
   config: Awaited<ReturnType<typeof loadConfig>>,
   requestUrl: string
 ): void {
-  if (config.ruleSets.mode !== "compiled") return;
+  const deadline = Date.now() + WAIT_UNTIL_REFRESH_DEADLINE_MS;
   ctx.waitUntil((async () => {
-    const result = await refreshChangedRuleSetCaches(env, previousConfig, config);
-    if (result) {
-      await notifyRuleSetRefreshFailures(env, config, result, "config");
-      await warmCompiledRuleSetWorkerCache(env, config, requestUrl, await getOrCreateReadToken(env));
+    const [sourceResult, ruleSetResult] = await Promise.all([
+      refreshChangedSourceCache(env, previousConfig, config, { deadline }),
+      refreshChangedRuleSetCaches(env, previousConfig, config, { deadline })
+    ]);
+    if (ruleSetResult) {
+      if (Date.now() < deadline) {
+        await warmCompiledRuleSetWorkerCache(
+          env,
+          config,
+          requestUrl,
+          await getOrCreateReadToken(env),
+          undefined,
+          { deadline }
+        );
+      }
     }
+    await Promise.all([
+      sourceResult ? notifySourceRefreshFailures(env, config, sourceResult, "config") : Promise.resolve(null),
+      ruleSetResult ? notifyRuleSetRefreshFailures(env, config, ruleSetResult, "config") : Promise.resolve(null)
+    ]);
   })().catch((error) => {
     console.error(JSON.stringify({ level: "error", message: error instanceof Error ? error.message : String(error) }));
   }));
 }
 
 async function warmScheduledRuleSetWorkerCache(env: Env, config: Awaited<ReturnType<typeof loadConfig>>): Promise<void> {
-  const token = await readStoredReadToken(env);
+  const token = await getOrCreateReadToken(env);
   if (!token || !config.settings.managedBaseUrl) return;
   await warmCompiledRuleSetWorkerCache(env, config, config.settings.managedBaseUrl, token);
 }

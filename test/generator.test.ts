@@ -144,9 +144,44 @@ describe("generation", () => {
     expect(headersByUrl.get("https://example.com/shadowrocket-sub")).toEqual({ "user-agent": "Shadowrocket/Test" });
   });
 
+  it("limits simultaneous upstream source fetches", async () => {
+    const releases: Array<() => void> = [];
+    let active = 0;
+    let maximumActive = 0;
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+      active += 1;
+      maximumActive = Math.max(maximumActive, active);
+      await new Promise<void>((resolve) => releases.push(resolve));
+      active -= 1;
+      return new Response("Node = trojan, node.example.com, 443, password=p");
+    });
+    const env = makeEnv();
+    const config = {
+      ...DEFAULT_CONFIG,
+      sources: Array.from({ length: 4 }, (_item, index) => ({
+        id: `src${index + 1}`,
+        name: `Source ${index + 1}`,
+        url: `https://example.com/sub-${index + 1}`,
+        fetchUserAgent: "surge" as const,
+        enabled: true
+      }))
+    };
+
+    const generated = generateConfig(env, config, "surge", "https://subpilot.example.com/sync/token/");
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    expect(maximumActive).toBe(2);
+
+    releases.splice(0).forEach((release) => release());
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(4));
+    expect(maximumActive).toBe(2);
+    releases.splice(0).forEach((release) => release());
+
+    await expect(generated).resolves.toMatchObject({ fetchedSources: 4 });
+  });
+
   it("skips source subscriptions that exceed the bounded read limit", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("too large", {
-      headers: { "content-length": String(11 * 1024 * 1024) }
+      headers: { "content-length": String(5 * 1024 * 1024) }
     }));
     const env = makeEnv();
     const config = {
@@ -163,7 +198,7 @@ describe("generation", () => {
     const result = await generateConfig(env, config, "surge", "https://subpilot.example.com/sync/token/");
 
     expect(result.proxyCount).toBe(0);
-    expect(result.warnings).toContain("Big Source: Source subscription exceeds 10 MiB limit");
+    expect(result.warnings).toContain("Big Source: Source subscription exceeds 4 MiB limit");
   });
 
   it("filters candidate nodes by the final output target", async () => {
@@ -1010,6 +1045,7 @@ describe("generation", () => {
     const fetchMock = mockSubscription("JP 1 = trojan, jp.example.com, 443, password=p");
     const kv = new Map<string, string>();
     const env = {
+      CONFIG_ENCRYPTION_KEY: "config-secret",
       SUBPILOT_CONFIG: {
         get: async (key: string) => kv.get(key) ?? null,
         put: async (key: string, value: string) => { kv.set(key, value); },

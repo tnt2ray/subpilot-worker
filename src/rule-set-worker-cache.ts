@@ -4,7 +4,7 @@ import {
   readCompiledRuleSetManifest,
   type CompiledRuleSetManifest
 } from "./rule-set-cache";
-import type { RuleSetOutput, RuleSetOutputTarget } from "./rule-set-types";
+import { RULE_SET_TARGETS, type RuleSetOutput, type RuleSetOutputTarget } from "./rule-set-types";
 import { effectiveRuleSetOutputs } from "./rule-set-outputs";
 import { planRuleSetArtifacts } from "./rule-set-artifacts";
 import type { AppConfig } from "./types";
@@ -12,7 +12,12 @@ import { sha256Hex } from "./util";
 
 const RULE_SET_WORKER_CACHE_TTL_SECONDS = 12 * 60 * 60;
 const INTERNAL_CACHE_VERSION_PARAM = "__subpilot_version";
-const RULE_SET_PUBLIC_TARGETS = ["surge", "clash"] as const;
+const RULE_SET_WORKER_CACHE_WARM_CONCURRENCY = 4;
+
+export interface RuleSetWorkerCacheWarmOptions {
+  /** Absolute Unix timestamp in milliseconds after which no new cache work starts. */
+  deadline?: number;
+}
 
 export async function compiledRuleSetFileResponse(content: string, target: RuleSetOutputTarget): Promise<Response> {
   return new Response(content, {
@@ -60,40 +65,57 @@ export async function warmCompiledRuleSetWorkerCache(
   config: AppConfig,
   requestUrl: string,
   token: string,
-  outputs?: RuleSetOutput[]
+  outputs?: RuleSetOutput[],
+  options: RuleSetWorkerCacheWarmOptions = {}
 ): Promise<{ cached: number }> {
   if (!token || !workerCacheAvailable()) return { cached: 0 };
   const enabledOutputs = outputs ?? effectiveRuleSetOutputs(config.ruleSets);
-  const writes: Promise<void>[] = [];
+  let cursor = 0;
+  let cached = 0;
 
-  for (const output of enabledOutputs) {
-    const manifest = await readCompiledRuleSetManifest(env, output.name);
-    if (!manifest) continue;
-    writes.push(...await compiledRuleSetCacheWritesForOutput(env, config, requestUrl, token, manifest));
-  }
+  const worker = async (): Promise<void> => {
+    while (cursor < enabledOutputs.length && !workerCacheWarmDeadlineExceeded(options.deadline)) {
+      const output = enabledOutputs[cursor++];
+      if (!output) return;
+      const manifest = await readCompiledRuleSetManifest(env, output.name);
+      if (!manifest || workerCacheWarmDeadlineExceeded(options.deadline)) continue;
+      cached += await warmCompiledRuleSetCacheForOutput(env, config, requestUrl, token, manifest, options.deadline);
+    }
+  };
 
-  await Promise.all(writes);
-  return { cached: writes.length };
+  await Promise.all(Array.from(
+    { length: Math.min(RULE_SET_WORKER_CACHE_WARM_CONCURRENCY, enabledOutputs.length) },
+    worker
+  ));
+  return { cached };
 }
 
-async function compiledRuleSetCacheWritesForOutput(
+async function warmCompiledRuleSetCacheForOutput(
   env: Env,
   config: AppConfig,
   requestUrl: string,
   token: string,
-  manifest: CompiledRuleSetManifest
-): Promise<Promise<void>[]> {
-  const writes: Promise<void>[] = [];
-  for (const target of RULE_SET_PUBLIC_TARGETS) {
+  manifest: CompiledRuleSetManifest,
+  deadline?: number
+): Promise<number> {
+  let cached = 0;
+  for (const target of RULE_SET_TARGETS) {
     for (const artifact of planRuleSetArtifacts(manifest.buckets, target)) {
-      const content = await readCompiledRuleSetBucket(env, manifest.outputName, artifact.bucket, target);
+      if (workerCacheWarmDeadlineExceeded(deadline)) return cached;
+      const content = await readCompiledRuleSetBucket(env, manifest.outputName, artifact.bucket, target, manifest);
       if (content === null) continue;
       const url = managedRuleSetUrl(config, requestUrl, token, manifest.outputName, artifact.bucket, target);
       const response = await compiledRuleSetFileResponse(content, target);
-      writes.push(cacheCompiledRuleSetResponse(url, manifest.updatedAt, response));
+      if (workerCacheWarmDeadlineExceeded(deadline)) return cached;
+      await cacheCompiledRuleSetResponse(url, manifest.updatedAt, response);
+      cached += 1;
     }
   }
-  return writes;
+  return cached;
+}
+
+function workerCacheWarmDeadlineExceeded(deadline: number | undefined): boolean {
+  return deadline !== undefined && Date.now() >= deadline;
 }
 
 function ruleSetContentType(target: RuleSetOutputTarget): string {

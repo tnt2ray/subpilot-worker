@@ -164,7 +164,7 @@ textarea:disabled {
 }
 
 .luci-menu:hover,
-.luci-menu:focus-within {
+.luci-menu.expanded {
   width: var(--menu-expanded);
   padding: 16px 12px;
 }
@@ -187,7 +187,7 @@ textarea:disabled {
   appearance: none;
   cursor: pointer;
   opacity: 1;
-  pointer-events: none;
+  pointer-events: auto;
   transition: opacity .14s ease;
 }
 
@@ -204,12 +204,16 @@ textarea:disabled {
 }
 
 .luci-menu:hover .menu-indicator,
-.luci-menu:focus-within .menu-indicator {
-  opacity: 0;
-  pointer-events: none;
+.luci-menu.expanded .menu-indicator {
+  right: 4px;
+  left: auto;
+  width: 42px;
+  opacity: 1;
+  pointer-events: auto;
 }
 
 .luci-menu a,
+.luci-menu .menu-action,
 .menu-heading {
   display: flex;
   align-items: center;
@@ -230,6 +234,19 @@ textarea:disabled {
   white-space: nowrap;
 }
 
+.luci-menu .menu-action {
+  width: 100%;
+  justify-content: flex-start;
+  margin-top: 14px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  padding: 0 12px;
+  background: transparent;
+  color: var(--on-dark-soft);
+  box-shadow: none;
+  white-space: nowrap;
+}
+
 .luci-menu a > span {
   min-width: 0;
   overflow: hidden;
@@ -240,22 +257,37 @@ textarea:disabled {
   white-space: nowrap;
 }
 
+.luci-menu .menu-action > span {
+  min-width: 0;
+  overflow: hidden;
+  opacity: 0;
+  transform: translateX(-4px);
+  text-overflow: ellipsis;
+  transition: opacity .14s ease, transform .14s ease;
+}
+
 .luci-menu:hover a > span,
-.luci-menu:focus-within a > span {
+.luci-menu.expanded a > span,
+.luci-menu:hover .menu-action > span,
+.luci-menu.expanded .menu-action > span {
   opacity: 1;
   transform: translateX(0);
 }
 
 .luci-menu:hover a,
-.luci-menu:focus-within a,
+.luci-menu.expanded a,
+.luci-menu:hover .menu-action,
+.luci-menu.expanded .menu-action,
 .luci-menu:hover .menu-heading,
-.luci-menu:focus-within .menu-heading {
+.luci-menu.expanded .menu-heading {
   opacity: 1;
   pointer-events: auto;
 }
 
 .luci-menu a:hover,
-.luci-menu a.active {
+.luci-menu a.active,
+.luci-menu .menu-action:hover,
+.luci-menu .menu-action:focus-visible {
   border-color: var(--surface-dark-elevated);
   background: var(--surface-dark-elevated);
   color: var(--on-dark);
@@ -279,7 +311,7 @@ textarea:disabled {
 }
 
 .luci-menu:hover .menu-heading,
-.luci-menu:focus-within .menu-heading {
+.luci-menu.expanded .menu-heading {
   height: auto;
   min-height: 38px;
   margin: 18px 0 6px;
@@ -2352,7 +2384,7 @@ dd {
   }
 
   .luci-menu:hover,
-  .luci-menu:focus-within {
+  .luci-menu.expanded {
     width: 100%;
     max-width: 100vw;
     padding: 6px 8px;
@@ -2370,8 +2402,10 @@ dd {
     display: none;
   }
 
-  .luci-menu a {
+  .luci-menu a,
+  .luci-menu .menu-action {
     flex: 0 0 auto;
+    width: auto;
     align-items: center;
     justify-content: center;
     height: 40px;
@@ -2383,7 +2417,8 @@ dd {
     pointer-events: auto;
   }
 
-  .luci-menu a > span {
+  .luci-menu a > span,
+  .luci-menu .menu-action > span {
     opacity: 1;
     transform: none;
   }

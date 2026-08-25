@@ -39,7 +39,7 @@ export function parseSyncPath(pathname: string, managedBasePath: string): SyncPa
   if (mainMatch) return { token: mainMatch[1]! };
   const fileMatch = pathname.match(new RegExp(`^${base}/${tokenPattern}/([^/]+)$`));
   if (fileMatch && isConfigFileName(fileMatch[2]!)) return { token: fileMatch[1]!, fileName: fileMatch[2]! };
-  const namedRuleSetMatch = pathname.match(new RegExp(`^${base}/${tokenPattern}/r/([^/]+)\\.(list|yaml)$`));
+  const namedRuleSetMatch = pathname.match(new RegExp(`^${base}/${tokenPattern}/r/([^/]+?)\\.(list|stash\\.yaml|yaml)$`));
   if (namedRuleSetMatch) {
     const artifactName = safeDecodePathSegment(namedRuleSetMatch[2]!);
     if (!artifactName) return null;
@@ -47,7 +47,7 @@ export function parseSyncPath(pathname: string, managedBasePath: string): SyncPa
       token: namedRuleSetMatch[1]!,
       ruleSet: {
         artifactName,
-        target: namedRuleSetMatch[3] === "list" ? "surge" : "clash"
+        target: ruleSetTargetForExtension(namedRuleSetMatch[3]!)
       }
     };
   }
@@ -98,7 +98,7 @@ export function managedRuleSetUrl(
   const artifactName = ruleSetArtifactName(outputName, bucket);
   managed.pathname = joinManagedRelativePath(
     managed.pathname,
-    `${token}/r/${encodeURIComponent(artifactName)}.${target === "surge" ? "list" : "yaml"}`
+    `${token}/r/${encodeURIComponent(artifactName)}.${ruleSetExtension(target)}`
   );
   managed.search = "";
   managed.hash = "";
@@ -136,4 +136,16 @@ function safeDecodePathSegment(value: string): string | null {
   } catch {
     return null;
   }
+}
+
+function ruleSetExtension(target: RuleSetOutputTarget): string {
+  if (target === "surge") return "list";
+  if (target === "stash") return "stash.yaml";
+  return "yaml";
+}
+
+function ruleSetTargetForExtension(extension: string): RuleSetOutputTarget {
+  if (extension === "list") return "surge";
+  if (extension === "stash.yaml") return "stash";
+  return "clash";
 }

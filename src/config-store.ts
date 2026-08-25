@@ -1,19 +1,47 @@
 import { DEFAULT_CONFIG } from "./default-config";
-import { ensureKvSchema } from "./config-schema";
+import { CONFIG_SCHEMA_VERSION_KEY, CURRENT_KV_SCHEMA_VERSION, ensureKvSchema } from "./config-schema";
 import { normalizeChain, normalizeClash, normalizeConfig, normalizeRuleSets, normalizeStash, normalizeSurge } from "./config-normalize";
-import { decryptText, encryptText, sealSources, unsealSources } from "./crypto-store";
+import { decryptJson, decryptText, encryptJson, unsealSources } from "./crypto-store";
+import { listKvKeys } from "./kv-helpers";
 import { pruneRuleSetCaches } from "./rule-set-cache";
 import type { RuleSetConfig, RuleSetDirectRule, RuleSetOutput, RuleSetSource } from "./rule-set-types";
 import { getSecret, requireSecret } from "./secrets";
 import { pruneSourceCache } from "./source-cache";
 import type { AppConfig, SourceConfig, StaticProxyNodeConfig } from "./types";
-import { sha256Hex } from "./util";
+import { base64Url, mapWithConcurrency, randomToken, sha256Hex } from "./util";
 
 export { inferManagedBaseUrl, normalizeConfig, normalizeTarget, withInferredManagedBaseUrl } from "./config-normalize";
 export { validateManagedBaseUrl, validateProxyPolicyNameConflicts } from "./config-validation";
 
 const CONFIG_UPDATED_AT_KEY = "config:updatedAt";
-const READ_TOKEN_HASH_KEY = "auth:read_token_hash";
+export const CONFIG_SNAPSHOT_KEY = "config:snapshot";
+export const CONFIG_SNAPSHOT_VERSION_PREFIX = "config:snapshot:version:";
+export const CONFIG_MIGRATED_SNAPSHOT_KEY = "config:snapshot:migrated";
+export const CONFIG_MIGRATED_SNAPSHOT_PREFIX = `${CONFIG_MIGRATED_SNAPSHOT_KEY}:`;
+const CONFIG_SNAPSHOT_CLEANUP_PENDING_KEY = "config:snapshot:legacyCleanupPending";
+const CONFIG_SNAPSHOT_CLEANUP_PENDING_PREFIX = `${CONFIG_SNAPSHOT_CLEANUP_PENDING_KEY}:`;
+const CONFIG_SNAPSHOT_CLEANUP_COMPLETE_PREFIX = `config:snapshot:legacyCleanupComplete:${CURRENT_KV_SCHEMA_VERSION}:`;
+const CONFIG_SNAPSHOT_CLEANUP_COMPLETE_BASE_PREFIX = "config:snapshot:legacyCleanupComplete:";
+const CONFIG_SNAPSHOT_VERSION = 1;
+const CONFIG_SNAPSHOT_CLEANUP_GRACE_MS = 5 * 60 * 1000;
+const CONFIG_SNAPSHOT_CLEANUP_BATCH_SIZE = 200;
+const CONFIG_SNAPSHOT_RETAINED_VALID_VERSIONS = 3;
+const CONFIG_SNAPSHOT_VERSION_PRUNE_BATCH_SIZE = 20;
+const CONFIG_SNAPSHOT_VERSION_LIST_LIMIT = 64;
+const CONFIG_SNAPSHOT_LOGICAL_TIME_MAX = Number.MAX_SAFE_INTEGER;
+export const READ_TOKEN_RECORD_KEY = "auth:read_token_record";
+export const READ_TOKEN_MIGRATED_RECORD_KEY = "auth:read_token_record:migrated";
+export const READ_TOKEN_INITIAL_RECORD_PREFIX = "auth:read_token_initial:";
+export const READ_TOKEN_MIGRATION_RECORD_PREFIX = "auth:read_token_migration:";
+export const READ_TOKEN_ROTATION_PREFIX = "auth:read_token_rotation:";
+const READ_TOKEN_RECORD_VERSION = 1;
+const READ_TOKEN_CLEANUP_PENDING_KEY = "auth:read_token_cleanup_pending";
+const READ_TOKEN_CLEANUP_PENDING_PREFIX = `${READ_TOKEN_CLEANUP_PENDING_KEY}:`;
+const READ_TOKEN_CLEANUP_COMPLETE_PREFIX = `auth:read_token_cleanup_complete:${READ_TOKEN_RECORD_VERSION}:`;
+const READ_TOKEN_CLEANUP_GRACE_MS = 5 * 60 * 1000;
+const READ_TOKEN_ROTATION_SLOT_MS = 30 * 1000;
+const LEGACY_READ_TOKEN_HASH_KEY = "auth:read_token_hash";
+const LEGACY_READ_TOKEN_KEY = "auth:read_token";
 const SETTINGS_PREFIX = "config:settings:";
 const TELEGRAM_BOT_TOKEN_KEY = `${SETTINGS_PREFIX}notificationTelegramBotToken`;
 const TELEGRAM_WEBHOOK_SECRET_KEY = `${SETTINGS_PREFIX}notificationTelegramWebhookSecret`;
@@ -24,7 +52,6 @@ const SOURCE_INDEX_KEY = "config:sources:index";
 const SOURCE_PREFIX = "config:sources:";
 const PROXY_NODE_INDEX_KEY = "config:proxyNodes:index";
 const PROXY_NODE_PREFIX = "config:proxyNodes:";
-const CHAIN_PREFIX = "config:chain:";
 const RULE_SET_MODE_KEY = "config:ruleSets:mode";
 const RULE_SET_AGGREGATE_BY_POLICY_KEY = "config:ruleSets:aggregateByPolicy";
 const RULE_SET_SOURCE_INDEX_KEY = "config:ruleSetSources:index";
@@ -36,7 +63,43 @@ const RULE_SET_DIRECT_RULE_PREFIX = "config:ruleSetDirectRules:";
 const SURGE_PREFIX = "config:surge:";
 const CLASH_PREFIX = "config:clash:";
 const STASH_PREFIX = "config:stash:";
-const READ_TOKEN_KEY = "auth:read_token";
+
+interface ConfigSnapshot {
+  version: typeof CONFIG_SNAPSHOT_VERSION;
+  config: AppConfig;
+}
+
+interface ConfigSnapshotRevision {
+  key: string;
+  logicalTime: number;
+}
+
+interface StoredConfigSnapshotResult {
+  config: AppConfig | null;
+  found: boolean;
+  key: string | null;
+}
+
+export interface PreparedConfigSave {
+  readonly config: AppConfig;
+  readonly snapshotKey: string;
+  readonly logicalTime: number;
+}
+
+// These process-wide scalars are an ID allocator, not request-scoped data or an
+// I/O promise. Saves issued by one isolate are ordered monotonically even if
+// the wall clock moves backwards. Across isolates, equal time/sequence values
+// use the nonce only as a deterministic conflict tie-breaker.
+let lastConfigSnapshotWallTime = -1;
+let configSnapshotWallTimeSequence = 0;
+
+interface ReadTokenRecord {
+  version: typeof READ_TOKEN_RECORD_VERSION;
+  token: string;
+  hash: string;
+  rotatedAt?: number;
+  legacyCleanupRequired?: boolean;
+}
 
 const SETTING_KEYS = [
   "managedBaseUrl",
@@ -128,68 +191,558 @@ const STASH_KEYS = [
 ] as const satisfies readonly (keyof AppConfig["stash"])[];
 
 export async function loadConfig(env: Env): Promise<AppConfig> {
-  const config = await loadStoredConfig(env);
-  return unsealConfig(env, config);
+  return loadConfigUnlocked(env);
+}
+
+async function loadConfigUnlocked(env: Env): Promise<AppConfig> {
+  await ensureKvSchema(env);
+  const stored = await readStoredConfigSnapshot(env);
+  if (stored.config) {
+    await maintainConfigCleanup(env).catch(logConfigHousekeepingFailure);
+    return stored.config;
+  }
+
+  const remainingLegacyKeys = await legacyConfigKeys(env);
+  if (stored.found && remainingLegacyKeys.length === 0) {
+    throw new Error("No valid encrypted config snapshot is available");
+  }
+  const legacy = await loadLegacyStoredConfig(env);
+  const config = await canonicalizeConfigSources(env, legacy);
+  const concurrent = await readStoredConfigSnapshot(env);
+  if (concurrent.config) {
+    await maintainConfigCleanup(env).catch(logConfigHousekeepingFailure);
+    return concurrent.config;
+  }
+  await migrateConfigSnapshot(env, config);
+  return config;
 }
 
 export async function saveConfig(env: Env, config: AppConfig): Promise<AppConfig> {
+  return commitPreparedConfigSave(env, await prepareConfigSave(env, config));
+}
+
+export async function prepareConfigSave(env: Env, config: AppConfig): Promise<PreparedConfigSave> {
   await ensureKvSchema(env);
-  const normalized = normalizeConfig({ ...config, updatedAt: new Date().toISOString() });
-  const sealedSources = await sealSources(normalized.sources, requireSecret(env, "CONFIG_ENCRYPTION_KEY"));
+  // Fail before callers perform any related external side effect.
+  requireSecret(env, "CONFIG_ENCRYPTION_KEY");
+  const revision = nextConfigSnapshotRevision();
+  return {
+    config: await canonicalizeConfigSources(env, normalizeConfig({
+      ...config,
+      updatedAt: new Date(revision.logicalTime).toISOString()
+    })),
+    snapshotKey: revision.key,
+    logicalTime: revision.logicalTime
+  };
+}
 
-  await Promise.all([
-    putJson(env, CONFIG_UPDATED_AT_KEY, normalized.updatedAt),
-    saveSettings(env, normalized.settings),
-    saveGroups(env, normalized.groups),
-    saveDisabledGroups(env, normalized.disabledGroups),
-    saveSources(env, sealedSources),
-    saveProxyNodes(env, normalized.proxyNodes),
-    saveChain(env, normalized.chain),
-    saveRuleSets(env, normalized.ruleSets),
-    saveSurge(env, normalized.surge),
-    saveClash(env, normalized.clash),
-    saveStash(env, normalized.stash)
+export async function commitPreparedConfigSave(env: Env, prepared: PreparedConfigSave): Promise<AppConfig> {
+  await writeConfigSnapshot(env, prepared.config, prepared.snapshotKey);
+  await finishCommittedConfigSave(env, prepared);
+  return prepared.config;
+}
+
+export async function recoverCommittedPreparedConfigSave(
+  env: Env,
+  prepared: PreparedConfigSave
+): Promise<AppConfig | null> {
+  const stored = await env.SUBPILOT_CONFIG.get(prepared.snapshotKey);
+  if (stored === null) return null;
+  const config = await tryDecryptConfigSnapshot(env, stored);
+  if (!config || JSON.stringify(config) !== JSON.stringify(prepared.config)) return null;
+  await finishCommittedConfigSave(env, prepared);
+  return config;
+}
+
+async function finishCommittedConfigSave(env: Env, prepared: PreparedConfigSave): Promise<void> {
+  const results = await Promise.allSettled([
+    pruneSourceCache(env, prepared.config),
+    pruneRuleSetCaches(env, prepared.config),
+    pruneConfigSnapshotVersions(env, {
+      key: prepared.snapshotKey,
+      logicalTime: prepared.logicalTime
+    })
   ]);
-
-  await Promise.all([
-    pruneSourceCache(env, normalized),
-    pruneRuleSetCaches(env, normalized)
-  ]);
-
-  return normalized;
+  for (const result of results) {
+    if (result.status === "rejected") logConfigHousekeepingFailure(result.reason);
+  }
+  await maintainConfigCleanup(env).catch(logConfigHousekeepingFailure);
 }
 
 export async function readStoredReadTokenHash(env: Env): Promise<string | null> {
-  return env.SUBPILOT_CONFIG.get(READ_TOKEN_HASH_KEY);
+  const state = await readTokenState(env);
+  return state.record?.hash ?? state.legacyHash;
 }
 
 export async function readStoredReadToken(env: Env): Promise<string | null> {
-  const stored = await env.SUBPILOT_CONFIG.get(READ_TOKEN_KEY);
-  if (!stored) return null;
-  const secret = getSecret(env, "CONFIG_ENCRYPTION_KEY");
-  if (!stored.startsWith("v1.")) return null;
-  if (!secret) throw new Error("CONFIG_ENCRYPTION_KEY secret is required");
+  return (await readTokenState(env)).record?.token ?? null;
+}
+
+export async function storeReadToken(env: Env, token: string): Promise<void> {
+  const record = await createReadTokenRecord(token);
+  await writeReadTokenRecord(env, record);
+  await maintainReadTokenCleanup(env, false).catch(logConfigHousekeepingFailure);
+}
+
+export async function storeInitialReadToken(env: Env, token: string): Promise<string> {
+  const state = await readTokenState(env);
+  if (state.record) return state.record.token;
+  const legacyCleanupRequired = state.legacyHash !== null;
+  const record = await createReadTokenRecord(token, { legacyCleanupRequired });
+  await writeReadTokenRecord(
+    env,
+    record,
+    appendOnlyReadTokenKey(legacyCleanupRequired ? READ_TOKEN_MIGRATION_RECORD_PREFIX : READ_TOKEN_INITIAL_RECORD_PREFIX)
+  );
+  await maintainReadTokenCleanup(env, legacyCleanupRequired).catch(logConfigHousekeepingFailure);
+  return token;
+}
+
+export async function rotateStoredReadToken(env: Env): Promise<string> {
+  const now = Date.now();
+  const rotationSlot = Math.floor(now / READ_TOKEN_ROTATION_SLOT_MS);
+  const token = await deriveRotatedReadToken(env, rotationSlot);
+  const legacyCleanupRequired = await legacyReadTokenKeysExist(env).catch(() => true);
+  await writeReadTokenRecord(
+    env,
+    await createReadTokenRecord(token, { rotatedAt: now, legacyCleanupRequired }),
+    readTokenRotationKey(rotationSlot)
+  );
+  await maintainReadTokenCleanup(env, legacyCleanupRequired).catch(logConfigHousekeepingFailure);
+  return token;
+}
+
+export async function deterministicInitialReadToken(env: Env): Promise<string> {
+  return deriveReadToken(env, "subpilot:initial-read-token:v1");
+}
+
+async function writeConfigSnapshot(env: Env, config: AppConfig, key = CONFIG_SNAPSHOT_KEY): Promise<void> {
+  const snapshot: ConfigSnapshot = { version: CONFIG_SNAPSHOT_VERSION, config };
+  const encrypted = await encryptJson(requireSecret(env, "CONFIG_ENCRYPTION_KEY"), snapshot);
+  await env.SUBPILOT_CONFIG.put(key, encrypted);
+}
+
+async function readStoredConfigSnapshot(env: Env): Promise<StoredConfigSnapshotResult> {
+  const versionedPage = await env.SUBPILOT_CONFIG.list({
+    prefix: CONFIG_SNAPSHOT_VERSION_PREFIX,
+    limit: CONFIG_SNAPSHOT_VERSION_LIST_LIMIT
+  });
+  const versionedKeys = versionedPage.keys.map((entry) => entry.name).sort();
+  let found = versionedKeys.length > 0;
+  if (found) requireSecret(env, "CONFIG_ENCRYPTION_KEY");
+  for (const key of versionedKeys) {
+    const stored = await env.SUBPILOT_CONFIG.get(key);
+    if (stored === null) continue;
+    const config = await tryDecryptConfigSnapshot(env, stored);
+    if (config) return { config, found: true, key };
+  }
+
+  const fixed = await env.SUBPILOT_CONFIG.get(CONFIG_SNAPSHOT_KEY);
+  if (fixed !== null) {
+    found = true;
+    requireSecret(env, "CONFIG_ENCRYPTION_KEY");
+    const config = await tryDecryptConfigSnapshot(env, fixed);
+    if (config) return { config, found: true, key: CONFIG_SNAPSHOT_KEY };
+  }
+
+  const migratedKeys = (await listKvKeys(env, CONFIG_MIGRATED_SNAPSHOT_PREFIX)).sort().reverse();
+  if (migratedKeys.length > 0) {
+    found = true;
+    requireSecret(env, "CONFIG_ENCRYPTION_KEY");
+  }
+  for (const key of migratedKeys) {
+    const migrated = await env.SUBPILOT_CONFIG.get(key);
+    if (migrated === null) continue;
+    const config = await tryDecryptConfigSnapshot(env, migrated);
+    if (config) return { config, found: true, key };
+  }
+
+  const migratedFixed = await env.SUBPILOT_CONFIG.get(CONFIG_MIGRATED_SNAPSHOT_KEY);
+  if (migratedFixed !== null) {
+    found = true;
+    requireSecret(env, "CONFIG_ENCRYPTION_KEY");
+    const config = await tryDecryptConfigSnapshot(env, migratedFixed);
+    if (config) return { config, found: true, key: CONFIG_MIGRATED_SNAPSHOT_KEY };
+  }
+  return { config: null, found, key: null };
+}
+
+async function tryDecryptConfigSnapshot(env: Env, stored: string): Promise<AppConfig | null> {
   try {
-    return await decryptText(secret, stored);
+    return await decryptConfigSnapshot(env, stored);
   } catch {
     return null;
   }
 }
 
-export async function storeReadToken(env: Env, token: string): Promise<void> {
-  const value = await encryptText(requireSecret(env, "CONFIG_ENCRYPTION_KEY"), token);
-  await Promise.all([
-    env.SUBPILOT_CONFIG.put(READ_TOKEN_KEY, value),
-    storeReadTokenHash(env, await sha256Hex(token))
+async function decryptConfigSnapshot(env: Env, stored: string): Promise<AppConfig> {
+  const snapshot = await decryptJson<unknown>(requireSecret(env, "CONFIG_ENCRYPTION_KEY"), stored);
+  if (!isConfigSnapshot(snapshot)) throw new Error("Unsupported config snapshot");
+  return canonicalizeConfigSources(env, normalizeConfig(snapshot.config));
+}
+
+function isConfigSnapshot(value: unknown): value is ConfigSnapshot {
+  if (!value || typeof value !== "object") return false;
+  const snapshot = value as Partial<ConfigSnapshot>;
+  return snapshot.version === CONFIG_SNAPSHOT_VERSION
+    && Boolean(snapshot.config)
+    && typeof snapshot.config === "object";
+}
+
+async function migrateConfigSnapshot(env: Env, config: AppConfig): Promise<void> {
+  await writeConfigSnapshot(env, config, appendOnlyConfigMigrationKey());
+  await maintainConfigCleanup(env).catch(logConfigHousekeepingFailure);
+}
+
+function nextConfigSnapshotRevision(): ConfigSnapshotRevision {
+  const logicalTime = Math.max(Date.now(), lastConfigSnapshotWallTime);
+  if (logicalTime === lastConfigSnapshotWallTime) {
+    configSnapshotWallTimeSequence += 1;
+  } else {
+    lastConfigSnapshotWallTime = logicalTime;
+    configSnapshotWallTimeSequence = 0;
+  }
+  const inverseTime = CONFIG_SNAPSHOT_LOGICAL_TIME_MAX - logicalTime;
+  const inverseSequence = CONFIG_SNAPSHOT_LOGICAL_TIME_MAX - configSnapshotWallTimeSequence;
+  return {
+    key: `${CONFIG_SNAPSHOT_VERSION_PREFIX}${String(inverseTime).padStart(16, "0")}:${String(inverseSequence).padStart(16, "0")}:${randomToken(8)}`,
+    logicalTime
+  };
+}
+
+async function pruneConfigSnapshotVersions(env: Env, current: ConfigSnapshotRevision): Promise<void> {
+  const page = await env.SUBPILOT_CONFIG.list({
+    prefix: CONFIG_SNAPSHOT_VERSION_PREFIX,
+    limit: CONFIG_SNAPSHOT_VERSION_LIST_LIMIT
+  });
+  const listedKeys = page.keys.map((entry) => entry.name).sort();
+  const candidates = [...new Set([current.key, ...listedKeys])].sort();
+  const listed = new Set(listedKeys);
+  const cutoff = Date.now() - CONFIG_SNAPSHOT_CLEANUP_GRACE_MS;
+  const retainedValid: string[] = [];
+  let hasPropagatedVersion = false;
+  for (const key of candidates) {
+    let valid = false;
+    if (key === current.key) {
+      valid = true;
+    } else {
+      const stored = await env.SUBPILOT_CONFIG.get(key);
+      valid = stored !== null && await tryDecryptConfigSnapshot(env, stored) !== null;
+    }
+    if (!valid) continue;
+    if (retainedValid.length < CONFIG_SNAPSHOT_RETAINED_VALID_VERSIONS) retainedValid.push(key);
+    if (listed.has(key) && configSnapshotLogicalTimeFromKey(key) < cutoff) hasPropagatedVersion = true;
+    if (retainedValid.length >= CONFIG_SNAPSHOT_RETAINED_VALID_VERSIONS && hasPropagatedVersion) break;
+  }
+  if (retainedValid.length < CONFIG_SNAPSHOT_RETAINED_VALID_VERSIONS) return;
+
+  const retained = new Set(retainedValid);
+  const staleVersionKeys = listedKeys.filter((key) => (
+    !retained.has(key)
+    && configSnapshotLogicalTimeFromKey(key) < cutoff
+  ));
+  const deleteKeys = staleVersionKeys.slice(0, CONFIG_SNAPSHOT_VERSION_PRUNE_BATCH_SIZE);
+
+  if (hasPropagatedVersion && deleteKeys.length < CONFIG_SNAPSHOT_VERSION_PRUNE_BATCH_SIZE) {
+    const [fixed, migratedFixed, migratedKeys] = await Promise.all([
+      env.SUBPILOT_CONFIG.get(CONFIG_SNAPSHOT_KEY),
+      env.SUBPILOT_CONFIG.get(CONFIG_MIGRATED_SNAPSHOT_KEY),
+      listKvKeys(env, CONFIG_MIGRATED_SNAPSHOT_PREFIX)
+    ]);
+    const legacyCandidates = [
+      ...(fixed === null ? [] : [CONFIG_SNAPSHOT_KEY]),
+      ...(migratedFixed === null ? [] : [CONFIG_MIGRATED_SNAPSHOT_KEY]),
+      ...migratedKeys.sort()
+    ];
+    deleteKeys.push(...legacyCandidates.slice(0, CONFIG_SNAPSHOT_VERSION_PRUNE_BATCH_SIZE - deleteKeys.length));
+  }
+  await mapWithConcurrency([...new Set(deleteKeys)], 10, async (key) => env.SUBPILOT_CONFIG.delete(key));
+}
+
+function configSnapshotLogicalTimeFromKey(key: string): number {
+  if (!key.startsWith(CONFIG_SNAPSHOT_VERSION_PREFIX)) return 0;
+  const inverse = Number(key.slice(CONFIG_SNAPSHOT_VERSION_PREFIX.length).split(":", 1)[0]);
+  if (!Number.isSafeInteger(inverse) || inverse < 0 || inverse > CONFIG_SNAPSHOT_LOGICAL_TIME_MAX) return 0;
+  return CONFIG_SNAPSHOT_LOGICAL_TIME_MAX - inverse;
+}
+
+type CleanupState = "missing" | "pending" | "complete";
+
+async function maintainConfigCleanup(env: Env): Promise<void> {
+  const state = await retryConfigCleanup(env);
+  if (state !== "missing") return;
+  if ((await legacyConfigKeys(env)).length > 0) {
+    await scheduleConfigCleanup(env);
+  } else {
+    await markConfigCleanupComplete(env);
+  }
+}
+
+async function retryConfigCleanup(env: Env): Promise<CleanupState> {
+  const [completeKeys, pendingKeys, legacyPending] = await Promise.all([
+    listKvKeys(env, CONFIG_SNAPSHOT_CLEANUP_COMPLETE_PREFIX),
+    listKvKeys(env, CONFIG_SNAPSHOT_CLEANUP_PENDING_PREFIX),
+    env.SUBPILOT_CONFIG.get(CONFIG_SNAPSHOT_CLEANUP_PENDING_KEY)
   ]);
+  if (completeKeys.length > 0) return "complete";
+
+  const notBeforeValues = pendingKeys
+    .map(configCleanupNotBeforeFromKey)
+    .filter((value): value is number => value !== null);
+  const legacyNotBefore = normalizeCleanupNotBefore(legacyPending);
+  if (legacyNotBefore !== null) notBeforeValues.push(legacyNotBefore);
+  if (notBeforeValues.length === 0) return "missing";
+  if (Date.now() < Math.min(...notBeforeValues)) return "pending";
+  return await cleanupLegacyConfigKeys(env) ? "complete" : "pending";
 }
 
-export async function storeReadTokenHash(env: Env, hash: string): Promise<void> {
-  await env.SUBPILOT_CONFIG.put(READ_TOKEN_HASH_KEY, hash);
+async function scheduleConfigCleanup(env: Env): Promise<void> {
+  const notBefore = Date.now() + CONFIG_SNAPSHOT_CLEANUP_GRACE_MS;
+  await env.SUBPILOT_CONFIG.put(
+    `${CONFIG_SNAPSHOT_CLEANUP_PENDING_PREFIX}${String(notBefore).padStart(16, "0")}:${randomToken(8)}`,
+    String(notBefore)
+  );
 }
 
-async function loadStoredConfig(env: Env): Promise<AppConfig> {
-  await ensureKvSchema(env);
+async function cleanupLegacyConfigKeys(env: Env): Promise<boolean> {
+  const legacyKeys = await legacyConfigKeys(env);
+  const batch = legacyKeys.slice(0, CONFIG_SNAPSHOT_CLEANUP_BATCH_SIZE);
+  await mapWithConcurrency(batch, 20, async (key) => env.SUBPILOT_CONFIG.delete(key));
+  if (legacyKeys.length > batch.length) return false;
+  await markConfigCleanupComplete(env);
+  return true;
+}
+
+async function markConfigCleanupComplete(env: Env): Promise<void> {
+  await env.SUBPILOT_CONFIG.put(`${CONFIG_SNAPSHOT_CLEANUP_COMPLETE_PREFIX}${randomToken(8)}`, "1");
+}
+
+async function legacyConfigKeys(env: Env): Promise<string[]> {
+  const keys = await listKvKeys(env, "config:");
+  return keys.filter((key) => key !== CONFIG_SCHEMA_VERSION_KEY
+    && key !== CONFIG_SNAPSHOT_KEY
+    && key !== CONFIG_MIGRATED_SNAPSHOT_KEY
+    && key !== CONFIG_SNAPSHOT_CLEANUP_PENDING_KEY
+    && !key.startsWith(CONFIG_MIGRATED_SNAPSHOT_PREFIX)
+    && !key.startsWith(CONFIG_SNAPSHOT_VERSION_PREFIX)
+    && !key.startsWith(CONFIG_SNAPSHOT_CLEANUP_PENDING_PREFIX)
+    && !key.startsWith(CONFIG_SNAPSHOT_CLEANUP_COMPLETE_BASE_PREFIX));
+}
+
+function appendOnlyConfigMigrationKey(): string {
+  return `${CONFIG_MIGRATED_SNAPSHOT_PREFIX}${String(Date.now()).padStart(16, "0")}:${randomToken(8)}`;
+}
+
+function configCleanupNotBeforeFromKey(key: string): number | null {
+  return normalizeCleanupNotBefore(key.slice(CONFIG_SNAPSHOT_CLEANUP_PENDING_PREFIX.length).split(":", 1)[0]);
+}
+
+function normalizeCleanupNotBefore(value: unknown): number | null {
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed >= 1_000_000_000_000 ? parsed : null;
+}
+
+function logConfigHousekeepingFailure(error: unknown): void {
+  console.warn(JSON.stringify({
+    level: "warn",
+    message: `Config housekeeping failed: ${error instanceof Error ? error.message : String(error)}`
+  }));
+}
+
+async function canonicalizeConfigSources(env: Env, config: AppConfig): Promise<AppConfig> {
+  const sources = await unsealSources(config.sources, getSecret(env, "CONFIG_ENCRYPTION_KEY"));
+  return {
+    ...config,
+    sources: sources.map(({ urlEncrypted: _urlEncrypted, ...source }) => source)
+  };
+}
+
+async function readTokenState(env: Env): Promise<{ record: ReadTokenRecord | null; legacyHash: string | null }> {
+  const rotationKeys = await listKvKeys(env, READ_TOKEN_ROTATION_PREFIX);
+  const latestRotationKey = rotationKeys.sort().at(-1);
+  if (latestRotationKey) {
+    const rotatedStored = await env.SUBPILOT_CONFIG.get(latestRotationKey);
+    if (rotatedStored === null) throw new Error("Encrypted read token rotation record is unavailable");
+    const record = await decryptReadTokenRecord(env, rotatedStored);
+    await maintainReadTokenCleanup(env, record.legacyCleanupRequired === true).catch(logConfigHousekeepingFailure);
+    return { record, legacyHash: null };
+  }
+  const stored = await env.SUBPILOT_CONFIG.get(READ_TOKEN_RECORD_KEY);
+  if (stored !== null) {
+    const record = await decryptReadTokenRecord(env, stored);
+    await maintainReadTokenCleanup(env, record.legacyCleanupRequired === true).catch(logConfigHousekeepingFailure);
+    return { record, legacyHash: null };
+  }
+  const migratedStored = await env.SUBPILOT_CONFIG.get(READ_TOKEN_MIGRATED_RECORD_KEY);
+  if (migratedStored !== null) {
+    const record = await decryptReadTokenRecord(env, migratedStored);
+    await maintainReadTokenCleanup(env, true).catch(logConfigHousekeepingFailure);
+    return { record, legacyHash: null };
+  }
+  const migratedRecord = await readLatestReadTokenRecord(env, READ_TOKEN_MIGRATION_RECORD_PREFIX);
+  if (migratedRecord) {
+    await maintainReadTokenCleanup(env, true).catch(logConfigHousekeepingFailure);
+    return { record: migratedRecord, legacyHash: null };
+  }
+  const initialRecord = await readLatestReadTokenRecord(env, READ_TOKEN_INITIAL_RECORD_PREFIX);
+  if (initialRecord) {
+    await maintainReadTokenCleanup(env, initialRecord.legacyCleanupRequired === true).catch(logConfigHousekeepingFailure);
+    return { record: initialRecord, legacyHash: null };
+  }
+
+  const [legacyToken, legacyHash] = await Promise.all([
+    env.SUBPILOT_CONFIG.get(LEGACY_READ_TOKEN_KEY),
+    env.SUBPILOT_CONFIG.get(LEGACY_READ_TOKEN_HASH_KEY)
+  ]);
+  if (legacyToken === null) {
+    return { record: null, legacyHash: normalizeReadTokenHash(legacyHash) };
+  }
+  if (!legacyToken.startsWith("v1.")) return { record: null, legacyHash: null };
+
+  let token: string;
+  try {
+    token = await decryptText(requireSecret(env, "CONFIG_ENCRYPTION_KEY"), legacyToken);
+  } catch {
+    return { record: null, legacyHash: null };
+  }
+  if (!token) return { record: null, legacyHash: null };
+
+  const record = await createReadTokenRecord(token, { legacyCleanupRequired: true });
+  await writeReadTokenRecord(env, record, appendOnlyReadTokenKey(READ_TOKEN_MIGRATION_RECORD_PREFIX));
+  await maintainReadTokenCleanup(env, true).catch(logConfigHousekeepingFailure);
+  return { record, legacyHash: null };
+}
+
+async function readLatestReadTokenRecord(env: Env, prefix: string): Promise<ReadTokenRecord | null> {
+  const keys = await listKvKeys(env, prefix);
+  const latestKey = keys.sort().at(-1);
+  if (!latestKey) return null;
+  const stored = await env.SUBPILOT_CONFIG.get(latestKey);
+  if (stored === null) throw new Error("Encrypted read token record is unavailable");
+  return decryptReadTokenRecord(env, stored);
+}
+
+async function decryptReadTokenRecord(env: Env, stored: string): Promise<ReadTokenRecord> {
+  try {
+    const value = await decryptJson<unknown>(requireSecret(env, "CONFIG_ENCRYPTION_KEY"), stored);
+    if (!value || typeof value !== "object") throw new Error("Invalid record");
+    const record = value as Partial<ReadTokenRecord>;
+    if (record.version !== READ_TOKEN_RECORD_VERSION || typeof record.token !== "string" || !record.token) throw new Error("Invalid record");
+    if (normalizeReadTokenHash(record.hash) === null) throw new Error("Invalid record");
+    if (record.rotatedAt !== undefined && (!Number.isSafeInteger(record.rotatedAt) || record.rotatedAt < 0)) throw new Error("Invalid record");
+    if (record.legacyCleanupRequired !== undefined && typeof record.legacyCleanupRequired !== "boolean") throw new Error("Invalid record");
+    const computedHash = await sha256Hex(record.token);
+    if (computedHash !== record.hash) throw new Error("Invalid record");
+    return record as ReadTokenRecord;
+  } catch {
+    throw new Error("Encrypted read token record is invalid");
+  }
+}
+
+async function createReadTokenRecord(token: string, options: {
+  rotatedAt?: number;
+  legacyCleanupRequired?: boolean;
+} = {}): Promise<ReadTokenRecord> {
+  return {
+    version: READ_TOKEN_RECORD_VERSION,
+    token,
+    hash: await sha256Hex(token),
+    ...(options.rotatedAt === undefined ? {} : { rotatedAt: options.rotatedAt }),
+    ...(options.legacyCleanupRequired === true ? { legacyCleanupRequired: true } : {})
+  };
+}
+
+async function writeReadTokenRecord(env: Env, record: ReadTokenRecord, key = READ_TOKEN_RECORD_KEY): Promise<void> {
+  const encrypted = await encryptJson(requireSecret(env, "CONFIG_ENCRYPTION_KEY"), record);
+  await env.SUBPILOT_CONFIG.put(key, encrypted);
+}
+
+async function maintainReadTokenCleanup(env: Env, ensureScheduled: boolean): Promise<void> {
+  const state = await retryReadTokenCleanup(env);
+  if (state === "missing" && ensureScheduled) await scheduleReadTokenCleanupIfNeeded(env);
+}
+
+async function retryReadTokenCleanup(env: Env): Promise<CleanupState> {
+  const [completeKeys, pendingKeys, legacyPending] = await Promise.all([
+    listKvKeys(env, READ_TOKEN_CLEANUP_COMPLETE_PREFIX),
+    listKvKeys(env, READ_TOKEN_CLEANUP_PENDING_PREFIX),
+    env.SUBPILOT_CONFIG.get(READ_TOKEN_CLEANUP_PENDING_KEY)
+  ]);
+  if (completeKeys.length > 0) return "complete";
+
+  const notBeforeValues = pendingKeys
+    .map(readTokenCleanupNotBeforeFromKey)
+    .filter((value): value is number => value !== null);
+  const legacyNotBefore = normalizeCleanupNotBefore(legacyPending);
+  if (legacyNotBefore !== null) notBeforeValues.push(legacyNotBefore);
+  if (notBeforeValues.length === 0) return "missing";
+  if (Date.now() < Math.min(...notBeforeValues)) return "pending";
+  await cleanupLegacyReadTokenKeys(env);
+  return "complete";
+}
+
+async function scheduleReadTokenCleanupIfNeeded(env: Env): Promise<void> {
+  if (await legacyReadTokenKeysExist(env)) await scheduleReadTokenCleanup(env);
+}
+
+async function scheduleReadTokenCleanup(env: Env): Promise<void> {
+  const notBefore = Date.now() + READ_TOKEN_CLEANUP_GRACE_MS;
+  await env.SUBPILOT_CONFIG.put(
+    `${READ_TOKEN_CLEANUP_PENDING_PREFIX}${String(notBefore).padStart(16, "0")}:${randomToken(8)}`,
+    String(notBefore)
+  );
+}
+
+async function cleanupLegacyReadTokenKeys(env: Env): Promise<void> {
+  await Promise.all([
+    env.SUBPILOT_CONFIG.delete(LEGACY_READ_TOKEN_KEY),
+    env.SUBPILOT_CONFIG.delete(LEGACY_READ_TOKEN_HASH_KEY)
+  ]);
+  await env.SUBPILOT_CONFIG.put(`${READ_TOKEN_CLEANUP_COMPLETE_PREFIX}${randomToken(8)}`, "1");
+}
+
+async function legacyReadTokenKeysExist(env: Env): Promise<boolean> {
+  const [legacyToken, legacyHash] = await Promise.all([
+    env.SUBPILOT_CONFIG.get(LEGACY_READ_TOKEN_KEY),
+    env.SUBPILOT_CONFIG.get(LEGACY_READ_TOKEN_HASH_KEY)
+  ]);
+  return legacyToken !== null || legacyHash !== null;
+}
+
+function appendOnlyReadTokenKey(prefix: string): string {
+  return `${prefix}${randomToken(8)}`;
+}
+
+function readTokenCleanupNotBeforeFromKey(key: string): number | null {
+  return normalizeCleanupNotBefore(key.slice(READ_TOKEN_CLEANUP_PENDING_PREFIX.length).split(":", 1)[0]);
+}
+
+async function deriveRotatedReadToken(env: Env, rotationSlot: number): Promise<string> {
+  return deriveReadToken(env, `subpilot:rotated-read-token:v1:${rotationSlot}`);
+}
+
+function readTokenRotationKey(rotationSlot: number): string {
+  return `${READ_TOKEN_ROTATION_PREFIX}${String(rotationSlot).padStart(16, "0")}:${randomToken(8)}`;
+}
+
+async function deriveReadToken(env: Env, purpose: string): Promise<string> {
+  const secret = requireSecret(env, "CONFIG_ENCRYPTION_KEY");
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+  const signature = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(purpose));
+  return base64Url(new Uint8Array(signature));
+}
+
+function normalizeReadTokenHash(value: unknown): string | null {
+  return typeof value === "string" && /^[a-f0-9]{64}$/i.test(value) ? value.toLowerCase() : null;
+}
+
+async function loadLegacyStoredConfig(env: Env): Promise<AppConfig> {
   const [settings, groups, disabledGroups, sources, proxyNodes, chain, ruleSets, surge, clash, stash, updatedAt] = await Promise.all([
     loadSettings(env),
     loadGroups(env),
@@ -220,13 +773,6 @@ async function loadStoredConfig(env: Env): Promise<AppConfig> {
   });
 }
 
-async function unsealConfig(env: Env, config: AppConfig): Promise<AppConfig> {
-  return {
-    ...config,
-    sources: await unsealSources(config.sources, getSecret(env, "CONFIG_ENCRYPTION_KEY"))
-  };
-}
-
 async function loadSettings(env: Env): Promise<Partial<AppConfig["settings"]>> {
   const output: Partial<AppConfig["settings"]> = {};
   await Promise.all(SETTING_KEYS.map(async (key) => {
@@ -238,20 +784,6 @@ async function loadSettings(env: Env): Promise<Partial<AppConfig["settings"]>> {
   const telegramWebhookSecret = await loadEncryptedSetting(env, TELEGRAM_WEBHOOK_SECRET_KEY);
   if (telegramWebhookSecret !== null) output.notificationTelegramWebhookSecret = telegramWebhookSecret;
   return output;
-}
-
-async function saveSettings(env: Env, settings: AppConfig["settings"]): Promise<void> {
-  const telegramBotToken = settings.notificationTelegramBotToken.trim();
-  const telegramWebhookSecret = settings.notificationTelegramWebhookSecret.trim();
-  await Promise.all([
-    ...SETTING_KEYS.map((key) => putJson(env, `${SETTINGS_PREFIX}${key}`, settings[key])),
-    telegramBotToken
-      ? env.SUBPILOT_CONFIG.put(TELEGRAM_BOT_TOKEN_KEY, await encryptText(requireSecret(env, "CONFIG_ENCRYPTION_KEY"), telegramBotToken))
-      : env.SUBPILOT_CONFIG.delete(TELEGRAM_BOT_TOKEN_KEY),
-    telegramWebhookSecret
-      ? env.SUBPILOT_CONFIG.put(TELEGRAM_WEBHOOK_SECRET_KEY, await encryptText(requireSecret(env, "CONFIG_ENCRYPTION_KEY"), telegramWebhookSecret))
-      : env.SUBPILOT_CONFIG.delete(TELEGRAM_WEBHOOK_SECRET_KEY)
-  ]);
 }
 
 async function loadEncryptedSetting(env: Env, key: string): Promise<string | null> {
@@ -271,25 +803,8 @@ async function loadGroups(env: Env): Promise<Record<string, string>> {
   return Object.fromEntries(entries.filter((entry): entry is [string, string] => entry !== null));
 }
 
-async function saveGroups(env: Env, groups: Record<string, string>): Promise<void> {
-  const previous = await getJson<string[]>(env, GROUP_INDEX_KEY) ?? [];
-  const names = Object.keys(groups);
-  const nextKeys = new Set(names.map(encodeKey));
-  await Promise.all([
-    putJson(env, GROUP_INDEX_KEY, names),
-    ...names.map((name) => env.SUBPILOT_CONFIG.put(`${GROUP_PREFIX}${encodeKey(name)}`, groups[name]!)),
-    ...previous
-      .filter((name) => !nextKeys.has(encodeKey(name)))
-      .map((name) => env.SUBPILOT_CONFIG.delete(`${GROUP_PREFIX}${encodeKey(name)}`))
-  ]);
-}
-
 async function loadDisabledGroups(env: Env): Promise<string[]> {
   return await getJson<string[]>(env, GROUP_DISABLED_KEY) ?? DEFAULT_CONFIG.disabledGroups;
-}
-
-async function saveDisabledGroups(env: Env, disabledGroups: string[]): Promise<void> {
-  await putJson(env, GROUP_DISABLED_KEY, disabledGroups);
 }
 
 async function loadSources(env: Env): Promise<SourceConfig[]> {
@@ -300,19 +815,6 @@ async function loadSources(env: Env): Promise<SourceConfig[]> {
   return sources.filter((source): source is SourceConfig => Boolean(source));
 }
 
-async function saveSources(env: Env, sources: SourceConfig[]): Promise<void> {
-  const previous = await getJson<string[]>(env, SOURCE_INDEX_KEY) ?? [];
-  const ids = sources.map((source) => source.id);
-  const nextIds = new Set(ids);
-  await Promise.all([
-    putJson(env, SOURCE_INDEX_KEY, ids),
-    ...sources.map((source) => putJson(env, `${SOURCE_PREFIX}${encodeKey(source.id)}`, source)),
-    ...previous
-      .filter((id) => !nextIds.has(id))
-      .map((id) => env.SUBPILOT_CONFIG.delete(`${SOURCE_PREFIX}${encodeKey(id)}`))
-  ]);
-}
-
 async function loadProxyNodes(env: Env): Promise<StaticProxyNodeConfig[]> {
   const ids = await getJson<string[]>(env, PROXY_NODE_INDEX_KEY);
   if (!ids) return DEFAULT_CONFIG.proxyNodes;
@@ -321,25 +823,8 @@ async function loadProxyNodes(env: Env): Promise<StaticProxyNodeConfig[]> {
   return nodes.filter((node): node is StaticProxyNodeConfig => Boolean(node));
 }
 
-async function saveProxyNodes(env: Env, nodes: StaticProxyNodeConfig[]): Promise<void> {
-  const previous = await getJson<string[]>(env, PROXY_NODE_INDEX_KEY) ?? [];
-  const ids = nodes.map((node) => node.id);
-  const nextIds = new Set(ids);
-  await Promise.all([
-    putJson(env, PROXY_NODE_INDEX_KEY, ids),
-    ...nodes.map((node) => putJson(env, `${PROXY_NODE_PREFIX}${encodeKey(node.id)}`, node)),
-    ...previous
-      .filter((id) => !nextIds.has(id))
-      .map((id) => env.SUBPILOT_CONFIG.delete(`${PROXY_NODE_PREFIX}${encodeKey(id)}`))
-  ]);
-}
-
 async function loadChain(_env: Env): Promise<AppConfig["chain"]> {
   return normalizeChain(undefined);
-}
-
-async function saveChain(env: Env, _chain: AppConfig["chain"]): Promise<void> {
-  await env.SUBPILOT_CONFIG.delete(`${CHAIN_PREFIX}filter`);
 }
 
 async function loadRuleSets(env: Env): Promise<RuleSetConfig> {
@@ -359,35 +844,12 @@ async function loadRuleSets(env: Env): Promise<RuleSetConfig> {
   });
 }
 
-async function saveRuleSets(env: Env, ruleSets: RuleSetConfig): Promise<void> {
-  await Promise.all([
-    putJson(env, RULE_SET_MODE_KEY, ruleSets.mode),
-    putJson(env, RULE_SET_AGGREGATE_BY_POLICY_KEY, ruleSets.aggregateByPolicy),
-    saveRuleSetSources(env, ruleSets.sources),
-    saveRuleSetOutputs(env, ruleSets.outputs),
-    saveRuleSetDirectRules(env, ruleSets.directRules)
-  ]);
-}
-
 async function loadRuleSetSources(env: Env): Promise<RuleSetSource[]> {
   const ids = await getJson<string[]>(env, RULE_SET_SOURCE_INDEX_KEY);
   if (!ids) return DEFAULT_CONFIG.ruleSets.sources;
 
   const sources = await Promise.all(ids.map((id) => getJson<RuleSetSource>(env, `${RULE_SET_SOURCE_PREFIX}${encodeKey(id)}`)));
   return sources.filter((source): source is RuleSetSource => Boolean(source));
-}
-
-async function saveRuleSetSources(env: Env, sources: RuleSetSource[]): Promise<void> {
-  const previous = await getJson<string[]>(env, RULE_SET_SOURCE_INDEX_KEY) ?? [];
-  const ids = sources.map((source) => source.id);
-  const nextIds = new Set(ids);
-  await Promise.all([
-    putJson(env, RULE_SET_SOURCE_INDEX_KEY, ids),
-    ...sources.map((source) => putJson(env, `${RULE_SET_SOURCE_PREFIX}${encodeKey(source.id)}`, source)),
-    ...previous
-      .filter((id) => !nextIds.has(id))
-      .map((id) => env.SUBPILOT_CONFIG.delete(`${RULE_SET_SOURCE_PREFIX}${encodeKey(id)}`))
-  ]);
 }
 
 async function loadRuleSetOutputs(env: Env): Promise<RuleSetOutput[]> {
@@ -398,19 +860,6 @@ async function loadRuleSetOutputs(env: Env): Promise<RuleSetOutput[]> {
   return outputs.filter((output): output is RuleSetOutput => Boolean(output));
 }
 
-async function saveRuleSetOutputs(env: Env, outputs: RuleSetOutput[]): Promise<void> {
-  const previous = await getJson<string[]>(env, RULE_SET_OUTPUT_INDEX_KEY) ?? [];
-  const names = outputs.map((output) => output.name);
-  const nextNames = new Set(names);
-  await Promise.all([
-    putJson(env, RULE_SET_OUTPUT_INDEX_KEY, names),
-    ...outputs.map((output) => putJson(env, `${RULE_SET_OUTPUT_PREFIX}${encodeKey(output.name)}`, output)),
-    ...previous
-      .filter((name) => !nextNames.has(name))
-      .map((name) => env.SUBPILOT_CONFIG.delete(`${RULE_SET_OUTPUT_PREFIX}${encodeKey(name)}`))
-  ]);
-}
-
 async function loadRuleSetDirectRules(env: Env): Promise<RuleSetDirectRule[]> {
   const ids = await getJson<string[]>(env, RULE_SET_DIRECT_RULE_INDEX_KEY);
   if (!ids) return DEFAULT_CONFIG.ruleSets.directRules;
@@ -419,42 +868,19 @@ async function loadRuleSetDirectRules(env: Env): Promise<RuleSetDirectRule[]> {
   return rules.filter((rule): rule is RuleSetDirectRule => Boolean(rule));
 }
 
-async function saveRuleSetDirectRules(env: Env, rules: RuleSetDirectRule[]): Promise<void> {
-  const previous = await getJson<string[]>(env, RULE_SET_DIRECT_RULE_INDEX_KEY) ?? [];
-  const ids = rules.map((rule) => rule.id);
-  const nextIds = new Set(ids);
-  await Promise.all([
-    putJson(env, RULE_SET_DIRECT_RULE_INDEX_KEY, ids),
-    ...rules.map((rule) => putJson(env, `${RULE_SET_DIRECT_RULE_PREFIX}${encodeKey(rule.id)}`, rule)),
-    ...previous
-      .filter((id) => !nextIds.has(id))
-      .map((id) => env.SUBPILOT_CONFIG.delete(`${RULE_SET_DIRECT_RULE_PREFIX}${encodeKey(id)}`))
-  ]);
-}
-
 async function loadSurge(env: Env): Promise<AppConfig["surge"]> {
   return loadConfigSection(env, SURGE_PREFIX, SURGE_KEYS, DEFAULT_CONFIG.surge, normalizeSurge);
-}
-
-async function saveSurge(env: Env, surge: AppConfig["surge"]): Promise<void> {
-  await saveConfigSection(env, SURGE_PREFIX, SURGE_KEYS, surge);
 }
 
 async function loadClash(env: Env): Promise<AppConfig["clash"]> {
   return loadConfigSection(env, CLASH_PREFIX, CLASH_KEYS, DEFAULT_CONFIG.clash, normalizeClash);
 }
 
-async function saveClash(env: Env, clash: AppConfig["clash"]): Promise<void> {
-  await saveConfigSection(env, CLASH_PREFIX, CLASH_KEYS, clash);
-}
 
 async function loadStash(env: Env): Promise<AppConfig["stash"]> {
   return loadConfigSection(env, STASH_PREFIX, STASH_KEYS, DEFAULT_CONFIG.stash, normalizeStash);
 }
 
-async function saveStash(env: Env, stash: AppConfig["stash"]): Promise<void> {
-  await saveConfigSection(env, STASH_PREFIX, STASH_KEYS, stash);
-}
 
 async function loadConfigSection<T extends object, K extends keyof T>(
   env: Env,
@@ -470,15 +896,6 @@ async function loadConfigSection<T extends object, K extends keyof T>(
   return normalize(Object.fromEntries(entries) as Partial<T>);
 }
 
-async function saveConfigSection<T extends object, K extends keyof T>(
-  env: Env,
-  prefix: string,
-  keys: readonly K[],
-  value: T
-): Promise<void> {
-  await Promise.all(keys.map((key) => putJson(env, `${prefix}${String(key)}`, value[key])));
-}
-
 async function getJson<T>(env: Env, key: string): Promise<T | undefined> {
   const value = await env.SUBPILOT_CONFIG.get(key);
   if (value === null) return undefined;
@@ -487,10 +904,6 @@ async function getJson<T>(env: Env, key: string): Promise<T | undefined> {
   } catch {
     return undefined;
   }
-}
-
-function putJson(env: Env, key: string, value: unknown): Promise<void> {
-  return env.SUBPILOT_CONFIG.put(key, JSON.stringify(value));
 }
 
 function encodeKey(value: string): string {

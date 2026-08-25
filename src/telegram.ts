@@ -1,9 +1,17 @@
-import { loadConfig, saveConfig, withInferredManagedBaseUrl } from "./config-store";
+import {
+  commitPreparedConfigSave,
+  loadConfig,
+  prepareConfigSave,
+  recoverCommittedPreparedConfigSave,
+  saveConfig,
+  withInferredManagedBaseUrl
+} from "./config-store";
 import { readConfigFetchStats } from "./fetch-stats";
 import { refreshRuleSetCaches, type RuleSetRefreshResult } from "./rule-set-compiler";
 import { refreshSourceCache } from "./source-cache";
 import { formatSourceCacheStatusLines } from "./source-cache-format";
-import { formatTimestampInTimeZone, badRequest, forbidden, jsonResponse, randomToken, sha256Hex, timingSafeEqualString } from "./util";
+import { fetchWithTimeout } from "./upstream-fetch";
+import { formatTimestampInTimeZone, badRequest, forbidden, jsonResponse, payloadTooLarge, randomToken, readRequestJsonWithLimit, readResponseTextWithLimit, RequestBodyTooLargeError, sha256Hex, timingSafeEqualString } from "./util";
 
 type LoadedConfig = Awaited<ReturnType<typeof loadConfig>>;
 
@@ -25,9 +33,20 @@ interface TelegramCommand {
 const TELEGRAM_BIND_KEY = "auth:telegram_bind";
 const TELEGRAM_BIND_TTL_MS = 10 * 60 * 1000;
 const TELEGRAM_RECENT_FETCH_LIMIT = 5;
+const MAX_TELEGRAM_BIND_REQUEST_BYTES = 8 * 1024;
+const MAX_TELEGRAM_WEBHOOK_REQUEST_BYTES = 256 * 1024;
+const MAX_TELEGRAM_RESPONSE_BYTES = 64 * 1024;
+const TELEGRAM_REQUEST_TIMEOUT_MS = 8_000;
+const WAIT_UNTIL_REFRESH_DEADLINE_MS = 18_000;
 
 export async function handleTelegramBindCode(request: Request, env: Env): Promise<Response> {
-  const body = await request.json<{ token?: string }>().catch((): { token?: string } => ({}));
+  let body: { token?: string };
+  try {
+    body = await readRequestJsonWithLimit<{ token?: string }>(request, MAX_TELEGRAM_BIND_REQUEST_BYTES);
+  } catch (error) {
+    if (error instanceof RequestBodyTooLargeError) return payloadTooLarge("Telegram bind request body is too large");
+    body = {};
+  }
   const config = await loadConfig(env);
   const token = (typeof body.token === "string" ? body.token.trim() : "") || config.settings.notificationTelegramBotToken.trim();
   if (!token) return badRequest("Telegram bot token is required");
@@ -42,7 +61,7 @@ export async function handleTelegramBindCode(request: Request, env: Env): Promis
   }, request.url);
   const code = randomTelegramBindCode();
   const expiresAt = new Date(Date.now() + TELEGRAM_BIND_TTL_MS).toISOString();
-  await storeTelegramBindCode(env, code, expiresAt);
+  await storeTelegramBindCode(env, code, expiresAt, token);
   return jsonResponse({
     code,
     command: `/bind ${code}`,
@@ -72,7 +91,13 @@ export async function handleTelegramWebhook(request: Request, env: Env, ctx: Exe
     return forbidden("Invalid Telegram webhook secret");
   }
 
-  const update = await request.json().catch(() => null);
+  let update: unknown;
+  try {
+    update = await readRequestJsonWithLimit<unknown>(request, MAX_TELEGRAM_WEBHOOK_REQUEST_BYTES);
+  } catch (error) {
+    if (error instanceof RequestBodyTooLargeError) return payloadTooLarge("Telegram webhook body is too large");
+    update = null;
+  }
   const message = telegramTextMessageCandidate(update);
   const code = message ? telegramBindCode(message.text) : "";
   const chat = message ? normalizeTelegramChat(message.chat) : null;
@@ -81,7 +106,7 @@ export async function handleTelegramWebhook(request: Request, env: Env, ctx: Exe
   if (message && chat && isTelegramBindAttempt(message.text) && boundChatId) {
     return jsonResponse({ ok: true });
   }
-  if (message && chat && code && await consumeTelegramBindCode(env, code)) {
+  if (message && chat && code && await consumeTelegramBindCode(env, code, config.settings.notificationTelegramBotToken.trim())) {
     await saveConfig(env, {
       ...config,
       settings: {
@@ -120,6 +145,9 @@ export async function saveConfigWithTelegramWebhook(
     ...next,
     settings: {
       ...next.settings,
+      notificationTelegramChatId: nextToken && nextToken === currentToken
+        ? next.settings.notificationTelegramChatId
+        : "",
       notificationTelegramWebhookSecret: nextSecret
     }
   };
@@ -130,30 +158,33 @@ export async function saveConfigWithTelegramWebhook(
   );
   const needsDeletePrevious = Boolean(currentToken) && (!nextToken || currentToken !== nextToken);
 
-  const saved = await saveConfig(env, prepared);
-  if (!needsSet && !needsDeletePrevious) return saved;
+  const staged = await prepareConfigSave(env, prepared);
+  if (!needsSet && !needsDeletePrevious) return commitPreparedConfigSave(env, staged);
 
-  let nextWebhookAttempted = false;
+  let commitAttempted = false;
   try {
     if (needsSet) {
-      nextWebhookAttempted = true;
       await setTelegramWebhook(nextToken, nextUrl, nextSecret);
     }
     if (needsDeletePrevious) await deleteTelegramWebhook(currentToken);
-    return saved;
+    commitAttempted = true;
+    return await commitPreparedConfigSave(env, staged);
   } catch (error) {
+    if (commitAttempted) {
+      const committed = await recoverCommittedPreparedConfigSave(env, staged).catch((recoveryError) => {
+        console.error(JSON.stringify({
+          level: "error",
+          message: `Failed to verify the Telegram config commit: ${recoveryError instanceof Error ? recoveryError.message : String(recoveryError)}`
+        }));
+        return null;
+      });
+      if (committed) return committed;
+    }
     await compensateTelegramWebhookFailure({
       currentToken,
       nextToken,
       previousSecret,
-      previousUrl,
-      nextWebhookAttempted
-    });
-    await saveConfig(env, current).catch((rollbackError) => {
-      console.error(JSON.stringify({
-        level: "error",
-        message: `Failed to roll back Telegram config after webhook update failure: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`
-      }));
+      previousUrl
     });
     throw error;
   }
@@ -164,20 +195,29 @@ async function compensateTelegramWebhookFailure(options: {
   nextToken: string;
   previousSecret: string;
   previousUrl: string;
-  nextWebhookAttempted: boolean;
 }): Promise<void> {
-  if (!options.nextWebhookAttempted) return;
-  try {
-    if (options.currentToken && options.currentToken === options.nextToken && options.previousSecret) {
-      await setTelegramWebhook(options.currentToken, options.previousUrl, options.previousSecret);
-    } else if (options.nextToken) {
-      await deleteTelegramWebhook(options.nextToken);
+  const compensations: Array<{ action: string; run: () => Promise<void> }> = [];
+  if (options.nextToken && options.nextToken !== options.currentToken) {
+    compensations.push({
+      action: "delete the replacement webhook",
+      run: () => deleteTelegramWebhook(options.nextToken)
+    });
+  }
+  if (options.currentToken) {
+    compensations.push({
+      action: "restore the previous webhook",
+      run: () => setTelegramWebhook(options.currentToken, options.previousUrl, options.previousSecret)
+    });
+  }
+  for (const compensation of compensations) {
+    try {
+      await compensation.run();
+    } catch (error) {
+      console.error(JSON.stringify({
+        level: "error",
+        message: `Failed to ${compensation.action}: ${error instanceof Error ? error.message : String(error)}`
+      }));
     }
-  } catch (error) {
-    console.error(JSON.stringify({
-      level: "error",
-      message: `Failed to compensate Telegram webhook update: ${error instanceof Error ? error.message : String(error)}`
-    }));
   }
 }
 
@@ -206,12 +246,13 @@ async function handleTelegramCommand(
       await sendTelegramBotMessage(token, chat.id, formatTelegramRecentFetchesMessage(await readConfigFetchStats(env), config.settings.displayTimeZone));
       return;
     case "refresh": {
+      const deadline = Date.now() + WAIT_UNTIL_REFRESH_DEADLINE_MS;
       const startMessage = sendTelegramBotMessage(token, chat.id, config.ruleSets.mode === "compiled"
         ? "开始强制重新拉取上游订阅源；规则集将在后台异步刷新，完成后分别发送结果。"
         : "开始强制重新拉取上游订阅源。完成后会发送结果。").catch(logTelegramCommandFailure);
-      scheduleTelegramRuleSetRefresh(env, ctx, config, chat.id);
+      scheduleTelegramRuleSetRefresh(env, ctx, config, chat.id, deadline);
       await startMessage;
-      await handleTelegramRefreshCommand(env, chat.id);
+      await handleTelegramRefreshCommand(env, chat.id, deadline);
       return;
     }
     default:
@@ -223,14 +264,15 @@ function scheduleTelegramRuleSetRefresh(
   env: Env,
   ctx: ExecutionContext,
   config: LoadedConfig,
-  chatId: string
+  chatId: string,
+  deadline: number
 ): void {
   if (config.ruleSets.mode !== "compiled") return;
   const token = config.settings.notificationTelegramBotToken.trim();
   if (!token) return;
   ctx.waitUntil((async () => {
     try {
-      const result = await refreshRuleSetCaches(env, config);
+      const result = await refreshRuleSetCaches(env, config, undefined, { deadline });
       await sendTelegramBotMessage(token, chatId, formatTelegramRuleSetRefreshResultMessage(result, config.settings.displayTimeZone));
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -239,12 +281,12 @@ function scheduleTelegramRuleSetRefresh(
   })());
 }
 
-async function handleTelegramRefreshCommand(env: Env, chatId: string): Promise<void> {
+async function handleTelegramRefreshCommand(env: Env, chatId: string, deadline: number): Promise<void> {
   const config = await loadConfig(env);
   const token = config.settings.notificationTelegramBotToken.trim();
   if (!token) return;
   try {
-    const result = await refreshSourceCache(env, config);
+    const result = await refreshSourceCache(env, config, { deadline });
     await sendTelegramBotMessage(token, chatId, formatTelegramRefreshResultMessage(result, config.settings.displayTimeZone));
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -374,21 +416,37 @@ function randomTelegramBindCode(): string {
   return [...bytes].map((byte) => alphabet[byte % alphabet.length]).join("");
 }
 
-async function storeTelegramBindCode(env: Env, code: string, expiresAt: string): Promise<void> {
+async function storeTelegramBindCode(env: Env, code: string, expiresAt: string, botToken: string): Promise<void> {
   await env.SUBPILOT_CONFIG.put(TELEGRAM_BIND_KEY, JSON.stringify({
     codeHash: await sha256Hex(code),
+    botTokenHash: await sha256Hex(botToken),
     expiresAt
   }));
 }
 
-async function consumeTelegramBindCode(env: Env, code: string): Promise<boolean> {
-  const stored = await env.SUBPILOT_CONFIG.get(TELEGRAM_BIND_KEY, "json") as { codeHash?: unknown; expiresAt?: unknown } | null;
-  if (!stored || typeof stored.codeHash !== "string" || typeof stored.expiresAt !== "string") return false;
-  if (Date.parse(stored.expiresAt) <= Date.now()) {
+async function consumeTelegramBindCode(env: Env, code: string, botToken: string): Promise<boolean> {
+  const stored = await env.SUBPILOT_CONFIG.get(TELEGRAM_BIND_KEY, "json") as { codeHash?: unknown; botTokenHash?: unknown; expiresAt?: unknown } | null;
+  if (
+    !stored
+    || typeof stored.codeHash !== "string"
+    || typeof stored.expiresAt !== "string"
+  ) return false;
+  const expiresAt = Date.parse(stored.expiresAt);
+  if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
     await env.SUBPILOT_CONFIG.delete(TELEGRAM_BIND_KEY);
     return false;
   }
-  const ok = await timingSafeEqualString(await sha256Hex(code), stored.codeHash);
+  // Bind codes created before token binding was introduced cannot be proven to
+  // belong to the currently configured bot, so invalidate them on first use.
+  if (typeof stored.botTokenHash !== "string") {
+    await env.SUBPILOT_CONFIG.delete(TELEGRAM_BIND_KEY);
+    return false;
+  }
+  const [codeMatches, tokenMatches] = await Promise.all([
+    timingSafeEqualString(await sha256Hex(code), stored.codeHash),
+    timingSafeEqualString(await sha256Hex(botToken), stored.botTokenHash)
+  ]);
+  const ok = codeMatches && tokenMatches;
   if (ok) await env.SUBPILOT_CONFIG.delete(TELEGRAM_BIND_KEY);
   return ok;
 }
@@ -414,31 +472,29 @@ function telegramWebhookUrlForConfig(config: LoadedConfig, requestUrl: string): 
 async function setTelegramWebhook(token: string, url: string, secret: string): Promise<void> {
   const body = new URLSearchParams({
     url,
-    secret_token: secret,
     drop_pending_updates: "true",
     allowed_updates: JSON.stringify(["message", "edited_message", "channel_post", "edited_channel_post"])
   });
-  const response = await globalThis.fetch(`https://api.telegram.org/bot${token}/setWebhook`, {
+  if (secret) body.set("secret_token", secret);
+  await requestTelegramApi(`https://api.telegram.org/bot${token}/setWebhook`, {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
     body
-  });
-  await assertTelegramOk(response, "Telegram setWebhook failed");
+  }, "Telegram setWebhook failed");
 }
 
 async function deleteTelegramWebhook(token: string): Promise<void> {
   const body = new URLSearchParams({ drop_pending_updates: "true" });
-  const response = await globalThis.fetch(`https://api.telegram.org/bot${token}/deleteWebhook`, {
+  await requestTelegramApi(`https://api.telegram.org/bot${token}/deleteWebhook`, {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
     body
-  });
-  await assertTelegramOk(response, "Telegram deleteWebhook failed");
+  }, "Telegram deleteWebhook failed");
 }
 
 async function sendTelegramBotMessage(token: string, chatId: string, text: string): Promise<void> {
   if (!token || !chatId) return;
-  const response = await globalThis.fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+  await requestTelegramApi(`https://api.telegram.org/bot${token}/sendMessage`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
@@ -446,8 +502,7 @@ async function sendTelegramBotMessage(token: string, chatId: string, text: strin
       text,
       disable_web_page_preview: true
     })
-  });
-  await assertTelegramOk(response, "Telegram sendMessage failed");
+  }, "Telegram sendMessage failed");
 }
 
 function logTelegramFeedbackFailure(error: unknown): void {
@@ -458,8 +513,20 @@ function logTelegramCommandFailure(error: unknown): void {
   console.warn(JSON.stringify({ level: "warn", message: `Telegram command handling failed: ${error instanceof Error ? error.message : String(error)}` }));
 }
 
+async function requestTelegramApi(url: string, init: RequestInit, fallback: string): Promise<void> {
+  await fetchWithTimeout(globalThis.fetch, url, init, TELEGRAM_REQUEST_TIMEOUT_MS, async (response) => {
+    await assertTelegramOk(response, fallback);
+  });
+}
+
 async function assertTelegramOk(response: Response, fallback: string): Promise<void> {
-  const result = await response.json<{ ok?: unknown; description?: unknown }>().catch(() => null);
+  const text = await readResponseTextWithLimit(response, MAX_TELEGRAM_RESPONSE_BYTES, "Telegram response");
+  let result: { ok?: unknown; description?: unknown } | null = null;
+  try {
+    result = JSON.parse(text) as { ok?: unknown; description?: unknown };
+  } catch {
+    result = null;
+  }
   if (response.ok && result?.ok === true) return;
   const description = typeof result?.description === "string" ? result.description : `HTTP ${response.status}`;
   throw new Error(`${fallback}: ${description}`);

@@ -68,7 +68,7 @@ describe("managed subscription URL helpers", () => {
     expect(managedRuleSetUrl(configuredConfig, "https://admin.example.com/api/preview", "read-token", "Docker", "combined", "clash"))
       .toBe("https://links.example.com/sywwqnc/read-token/r/Docker.yaml");
     expect(managedRuleSetUrl(configuredConfig, "https://admin.example.com/api/preview", "read-token", "Docker", "combined", "stash"))
-      .toBe("https://links.example.com/sywwqnc/read-token/r/Docker.yaml");
+      .toBe("https://links.example.com/sywwqnc/read-token/r/Docker.stash.yaml");
   });
 
   it("parses named rule set files and rejects directory-style paths", () => {
@@ -93,6 +93,13 @@ describe("managed subscription URL helpers", () => {
       ruleSet: {
         artifactName: "Docker",
         target: "clash"
+      }
+    });
+    expect(parseSyncPath("/sync/read-token/r/Docker.stash.yaml", "/sync")).toEqual({
+      token: "read-token",
+      ruleSet: {
+        artifactName: "Docker",
+        target: "stash"
       }
     });
   });

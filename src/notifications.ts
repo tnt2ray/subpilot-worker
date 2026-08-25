@@ -3,8 +3,10 @@ import type { RuleSetRefreshResult } from "./rule-set-compiler";
 import type { SourceCacheRefreshResult } from "./source-cache";
 import type { AppConfig } from "./types";
 import { getUpdateStatus, readNotifiedUpdateVersion, storeNotifiedUpdateVersion } from "./update-check";
+import { fetchWithTimeout } from "./upstream-fetch";
 
 type RefreshTrigger = "config" | "manual" | "scheduled";
+const TELEGRAM_NOTIFICATION_TIMEOUT_MS = 8_000;
 
 export interface NotificationDeliveryResult {
   telegram: "disabled" | "sent" | "failed";
@@ -165,7 +167,7 @@ async function sendTelegramNotification(
   }
 
   try {
-    const response = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+    await fetchWithTimeout(globalThis.fetch, `https://api.telegram.org/bot${token}/sendMessage`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -173,12 +175,10 @@ async function sendTelegramNotification(
         text: message,
         disable_web_page_preview: true
       })
-    });
-    if (!response.ok) {
+    }, TELEGRAM_NOTIFICATION_TIMEOUT_MS, async (response) => {
       await response.body?.cancel().catch(() => undefined);
-      throw new Error(`HTTP ${response.status}`);
-    }
-    await response.body?.cancel().catch(() => undefined);
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    });
     return "sent";
   } catch (error) {
     warnings.push(`Telegram notification failed: ${error instanceof Error ? error.message : String(error)}`);

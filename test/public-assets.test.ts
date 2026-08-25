@@ -95,7 +95,10 @@ describe("admin static assets", () => {
     expect(html).not.toContain('id="clearUnifiedRealIpDomainsBtn"');
     expect(html.match(/data-code-editor-rows="(?:6|8)"/g)).toHaveLength(3);
     expect(html.match(/data-unified-common-target-control/g)).toHaveLength(9);
-    expect(html.match(/role="tabpanel"/g)).toHaveLength(3);
+    expect(html.match(/role="tab"/g)).toHaveLength(22);
+    expect(html.match(/role="tabpanel"/g)).toHaveLength(22);
+    expect(html.match(/aria-controls="(?:surge|clash|stash)-panel-/g)).toHaveLength(19);
+    expect(html.match(/aria-labelledby="(?:surge|clash|stash)-tab-/g)).toHaveLength(19);
     expect(html).toContain('aria-controls="unified-config-panel-general"');
     expect(html).toContain('aria-controls="unified-config-panel-dns"');
     expect(html).toContain('aria-controls="unified-config-panel-rules"');
@@ -115,9 +118,16 @@ describe("admin static assets", () => {
     expect(app).toContain('if (!compiled && activeUnifiedConfigTab === "rules") activeUnifiedConfigTab = "general"');
     expect(app).toContain('page === "unified-config"');
     expect(app).toContain("common: cloneConfig(ensureUnifiedCommonDraft())");
-    expect(app).toContain("buildUnifiedCommonPatch(common, ensureRuleSets())");
+    expect(app).toContain("buildUnifiedCommonPatch(common, ruleSetsForSave)");
     expect(app).not.toContain("validateUnifiedConfig");
     expect(app).toContain('render({ preserveUnifiedCommonDraft: page !== "unified-config" })');
+    expect(app).toContain("if (state && nextPage !== activePage) {");
+    expect(app).toContain('window.addEventListener("beforeunload", handleBeforeUnload)');
+    expect(app).toContain("applyStoredPageDrafts(page)");
+    expect(app).toContain("restoreStateForPage(nextPage)");
+    expect(html).toContain('<nav id="mainMenu"');
+    expect(html).toContain('<h1 id="pageTitle" tabindex="-1">');
+    expect(app).toContain('panel.setAttribute("aria-hidden", active ? "false" : "true")');
     expect(app).toContain('CODE_EDITOR_PAGES = new Set(["proxy-nodes", "unified-config"');
     expect(html.match(/data-manual-rule-tab/g)).toHaveLength(4);
     expect(html.match(/data-manual-rule-panel/g)).toHaveLength(4);
@@ -173,6 +183,7 @@ describe("admin static assets", () => {
     expect(app).toContain('previewWarnings: "诊断提示："');
     expect(app).toContain('class="diagnostic-group warning"');
     expect(app).toContain("查看详情");
+    expect(app).toContain('t("previewDetails")');
     expect(css).toContain(".validation-messages .diagnostic-group");
     expect(css).toContain(".validation-messages .diagnostic-detail-list");
     expect(css).toContain(".config-code-editor .cm-gutter.cm-lineNumbers");
@@ -195,6 +206,24 @@ describe("admin static assets", () => {
     expect(html).not.toContain('id="systemSchemaVersion"');
     expect(app).not.toContain("kvSchemaVersion");
     expect(css).toContain(".status-grid {\n  display: grid;\n  grid-template-columns: minmax(0, 1fr);");
+
+    expect(html).toContain('id="logoutBtn"');
+    expect(html).toContain('id="tokenRotationStatus"');
+    expect(html).toContain('id="surgeTailscaleValidation"');
+    expect(html).toContain('id="managedBaseUrlValidation"');
+    expect(app).toContain('window.confirm(t("rotateReadTokenConfirm"))');
+    expect(app).toContain("if (rotateTokenInFlight");
+    expect(app).toContain('request("/api/logout", { method: "POST"');
+    expect(app).toContain('document.querySelectorAll("#workspace input, #workspace textarea")');
+    expect(app).toContain("refs.telegramBindStatus,");
+    expect(app).toContain("refs.fetchRecordsTableBody,");
+    expect(app).toContain("currentReadToken = \"\"");
+    expect(app).toContain("currentPreviewContent = \"\"");
+    expect(app).toContain('refs.notificationTelegramBotToken.addEventListener("input", handleTelegramBotTokenInput)');
+    expect(app).toContain('url.protocol === "https:" && url.hostname.toLowerCase() === "github.com"');
+    expect(app).toContain('setSaveStatus("idle");\n        window.alert(t("surgeTailscaleValidationError"))');
+    expect(app).toContain("validateCompiledRuleSetFallback(ensureRuleSets())");
+    expect(readPublicFile("app.js")).not.toMatch(/[一-龥]/u);
   });
 
   it("keeps runtime status version aligned with package metadata", () => {
@@ -500,6 +529,950 @@ describe("admin static assets", () => {
         order: 1
       }],
       outputs: [{ name: "First", sourceIds: ["generated-1"] }]
+    });
+  });
+
+  it("offers enabled Tailscale policies in the unified rule target selector", () => {
+    const app = readPublicFile("app.js");
+    const sandbox: {
+      result?: string;
+      state: {
+        surge: {
+          tailscaleNodes: Array<{ name: string; authKey: string; enabled: boolean }>;
+        };
+      };
+      CLASH_BUILT_IN_POLICIES: string[];
+      groupEntries: () => Array<[string, string]>;
+      escapeHtml: (value: unknown) => string;
+      renderPolicyLabel: (value: string) => string;
+    } = {
+      state: {
+        surge: {
+          tailscaleNodes: [
+            { name: "Tailnet Exit", authKey: "tskey-auth-test", enabled: true },
+            { name: "Disabled Tailnet", authKey: "tskey-auth-disabled", enabled: false },
+            { name: "Missing Key", authKey: "", enabled: true }
+          ]
+        }
+      },
+      CLASH_BUILT_IN_POLICIES: ["DIRECT", "REJECT"],
+      groupEntries: () => [["Proxy", "select"]],
+      escapeHtml: (value) => String(value),
+      renderPolicyLabel: (value) => value
+    };
+    const context = createContext(sandbox);
+    const functions = [
+      "clashPolicyCandidates",
+      "configuredSurgeTailscalePolicies",
+      "renderRuleSetPolicyOptions"
+    ].map((name) => extractFunctionSource(app, name)).join("\n");
+
+    new Script(`${functions}
+      globalThis.result = renderRuleSetPolicyOptions("Tailnet Exit");
+    `).runInContext(context);
+
+    expect(sandbox.result).toContain('<option value="Tailnet Exit" selected>Tailnet Exit</option>');
+    expect(sandbox.result).not.toContain("Disabled Tailnet");
+    expect(sandbox.result).not.toContain("Missing Key");
+  });
+
+  it("supports IP-ASN in the Surge rule editor and its no-resolve validation", () => {
+    const app = readPublicFile("app.js");
+    const constantsStart = app.indexOf("const SURGE_RULE_TYPES");
+    const constantsEnd = app.indexOf("function isBuiltInGroupName", constantsStart);
+    expect(constantsStart).toBeGreaterThan(-1);
+    expect(constantsEnd).toBeGreaterThan(constantsStart);
+
+    const sandbox: { result?: unknown } = {};
+    const context = createContext(sandbox);
+    new Script(`${app.slice(constantsStart, constantsEnd)}
+      ${extractFunctionSource(app, "allowedSurgeRuleOptions")}
+      globalThis.result = {
+        selectable: SURGE_RULE_TYPES.includes("IP-ASN"),
+        valueRule: SURGE_VALUE_RULE_TYPES.has("IP-ASN"),
+        options: [...allowedSurgeRuleOptions("single", "", "IP-ASN")],
+        unrelatedOptions: [...allowedSurgeRuleOptions("single", "", "PROCESS-NAME")]
+      };
+    `).runInContext(context);
+
+    expect(sandbox.result).toEqual({
+      selectable: true,
+      valueRule: true,
+      options: ["no-resolve"],
+      unrelatedOptions: []
+    });
+  });
+
+  it("keeps quoted commas, logical expressions, and target-specific policies intact", () => {
+    const app = readPublicFile("app.js");
+    const constantsStart = app.indexOf("const CLASH_BUILT_IN_POLICIES");
+    const constantsEnd = app.indexOf("function parseClashRulesYaml", constantsStart);
+    const sandbox: { lines: string[]; result?: unknown } = {
+      lines: [
+        'DOMAIN-REGEX,"^foo,bar$",Proxy',
+        "DOMAIN-REGEX,'^foo,bar$',Proxy",
+        'DOMAIN-REGEX,"^foo,""bar""$",Proxy',
+        String.raw`DOMAIN-REGEX,"^foo\",bar$",Proxy`,
+        "AND,((DOMAIN,a.example),(DOMAIN,b.example)),Proxy"
+      ]
+    };
+    const context = createContext(sandbox);
+
+    new Script(`
+      ${app.slice(constantsStart, constantsEnd)}
+      ${extractFunctionSource(app, "splitSurgeRuleLine")}
+      const normalizeClashRulePolicy = (value) => String(value || "").trim();
+      ${extractFunctionSource(app, "parseClashRuleLine")}
+      globalThis.result = {
+        parts: globalThis.lines.map(splitSurgeRuleLine),
+        logical: parseClashRuleLine(globalThis.lines[4]),
+        clashPolicies: CLASH_BUILT_IN_POLICIES,
+        stashPolicies: STASH_BUILT_IN_POLICIES,
+        logicalTypes: ["AND", "OR", "NOT", "PROCESS-NAME-REGEX", "NETWORK", "DSCP", "IN-PORT", "SRC-IP-ASN"]
+          .every((type) => CLASH_RULE_TYPES.includes(type))
+      };
+    `).runInContext(context);
+
+    expect(sandbox.result).toEqual({
+      parts: [
+        ["DOMAIN-REGEX", '"^foo,bar$"', "Proxy"],
+        ["DOMAIN-REGEX", "'^foo,bar$'", "Proxy"],
+        ["DOMAIN-REGEX", '"^foo,""bar""$"', "Proxy"],
+        ["DOMAIN-REGEX", String.raw`"^foo\",bar$"`, "Proxy"],
+        ["AND", "((DOMAIN,a.example),(DOMAIN,b.example))", "Proxy"]
+      ],
+      logical: {
+        kind: "single",
+        ruleType: "AND",
+        value: "((DOMAIN,a.example),(DOMAIN,b.example))",
+        policy: "Proxy",
+        options: ""
+      },
+      clashPolicies: ["Proxy", "DIRECT", "REJECT", "REJECT-DROP", "PASS", "PASS-RULE", "COMPATIBLE", "GLOBAL"],
+      stashPolicies: ["Proxy", "DIRECT", "REJECT", "REJECT-DROP", "PASS", "GLOBAL"],
+      logicalTypes: true
+    });
+  });
+
+  it("rejects reserved managed paths and invalid group policy names before save", () => {
+    const app = readPublicFile("app.js");
+    const reservedPaths = app.match(/const RESERVED_MANAGED_BASE_PATHS = new Set\(\[[\s\S]*?\]\);/)?.[0];
+    if (!reservedPaths) throw new Error("RESERVED_MANAGED_BASE_PATHS not found");
+    const sandbox: { result?: unknown; URL: typeof URL } = { URL };
+    const context = createContext(sandbox);
+
+    new Script(`
+      ${reservedPaths}
+      const SUBNET_BUILT_IN_POLICIES = ["Proxy", "DIRECT", "CELLULAR", "CELLULAR-ONLY", "HYBRID", "NO-HYBRID", "REJECT", "REJECT-DROP", "REJECT-NO-DROP", "REJECT-TINYGIF"];
+      const CLASH_BUILT_IN_POLICIES = ["Proxy", "DIRECT", "REJECT", "REJECT-DROP", "PASS", "PASS-RULE", "COMPATIBLE", "GLOBAL"];
+      const STASH_BUILT_IN_POLICIES = ["Proxy", "DIRECT", "REJECT", "REJECT-DROP", "PASS", "GLOBAL"];
+      ${extractFunctionSource(app, "managedBaseUrlValidationKey")}
+      ${extractFunctionSource(app, "isReservedClientPolicyName")}
+      ${extractFunctionSource(app, "groupNameValidationKey")}
+      globalThis.result = {
+        managed: {
+          valid: managedBaseUrlValidationKey("https://subpilot.example.com/sync/"),
+          missing: managedBaseUrlValidationKey(""),
+          invalid: managedBaseUrlValidationKey("ftp://subpilot.example.com/sync"),
+          root: managedBaseUrlValidationKey("https://subpilot.example.com/"),
+          api: managedBaseUrlValidationKey("https://subpilot.example.com/api/config"),
+          vendor: managedBaseUrlValidationKey("https://subpilot.example.com/vendor/codemirror"),
+          asset: managedBaseUrlValidationKey("https://subpilot.example.com/app.js/")
+        },
+        groups: {
+          proxy: groupNameValidationKey("Proxy"),
+          normal: groupNameValidationKey("Streaming"),
+          reserved: groupNameValidationKey("global"),
+          comma: groupNameValidationKey("Bad,Group"),
+          whitespace: groupNameValidationKey(" Padded ")
+        }
+      };
+    `).runInContext(context);
+
+    expect(sandbox.result).toEqual({
+      managed: {
+        valid: "",
+        missing: "managedBaseUrlRequired",
+        invalid: "managedBaseUrlInvalid",
+        root: "managedBaseUrlRoot",
+        api: "managedBaseUrlReserved",
+        vendor: "managedBaseUrlReserved",
+        asset: "managedBaseUrlReserved"
+      },
+      groups: {
+        proxy: "",
+        normal: "",
+        reserved: "groupNameReserved",
+        comma: "groupNameInvalid",
+        whitespace: "groupNameInvalid"
+      }
+    });
+  });
+
+  it("requires one cross-target-compatible compiled fallback", () => {
+    const app = readPublicFile("app.js");
+    const sandbox: { result?: unknown } = {};
+    const context = createContext(sandbox);
+
+    new Script(`
+      const SUBNET_BUILT_IN_POLICIES = ["Proxy", "DIRECT", "CELLULAR", "CELLULAR-ONLY", "HYBRID", "NO-HYBRID", "REJECT", "REJECT-DROP", "REJECT-NO-DROP", "REJECT-TINYGIF"];
+      const CLASH_BUILT_IN_POLICIES = ["Proxy", "DIRECT", "REJECT", "REJECT-DROP", "PASS", "PASS-RULE", "COMPATIBLE", "GLOBAL"];
+      const STASH_BUILT_IN_POLICIES = ["Proxy", "DIRECT", "REJECT", "REJECT-DROP", "PASS", "GLOBAL"];
+      ${extractFunctionSource(app, "normalizeRuleSetMode")}
+      ${extractFunctionSource(app, "splitSurgeRuleLine")}
+      ${extractFunctionSource(app, "compiledRuleSetFallbackError")}
+      const config = (directRules, mode = "compiled") => ({ mode, directRules });
+      const fallback = (policy, rule = "FINAL,Proxy", enabled = true) => ({ policy, rule, enabled });
+      globalThis.result = {
+        manual: compiledRuleSetFallbackError(config([], "manual"), []),
+        missing: compiledRuleSetFallbackError(config([]), []),
+        duplicate: compiledRuleSetFallbackError(config([fallback("Proxy"), fallback("Proxy", "MATCH,Proxy")]), []),
+        tailscale: compiledRuleSetFallbackError(config([fallback("Tailnet Exit")]), ["Tailnet Exit"]),
+        surgeOnly: compiledRuleSetFallbackError(config([fallback("REJECT-NO-DROP")]), []),
+        clashOnly: compiledRuleSetFallbackError(config([fallback("GLOBAL")]), []),
+        device: compiledRuleSetFallbackError(config([fallback("DEVICE:Mac")]), []),
+        direct: compiledRuleSetFallbackError(config([fallback("DIRECT")]), []),
+        rejectDrop: compiledRuleSetFallbackError(config([fallback("REJECT-DROP")]), []),
+        custom: compiledRuleSetFallbackError(config([fallback("Streaming")]), [])
+      };
+    `).runInContext(context);
+
+    expect(sandbox.result).toEqual({
+      manual: null,
+      missing: { key: "compiledFallbackMissing", policy: "" },
+      duplicate: { key: "compiledFallbackDuplicate", policy: "" },
+      tailscale: { key: "compiledFallbackTargetInvalid", policy: "Tailnet Exit" },
+      surgeOnly: { key: "compiledFallbackTargetInvalid", policy: "REJECT-NO-DROP" },
+      clashOnly: { key: "compiledFallbackTargetInvalid", policy: "GLOBAL" },
+      device: { key: "compiledFallbackTargetInvalid", policy: "DEVICE:Mac" },
+      direct: null,
+      rejectDrop: null,
+      custom: null
+    });
+  });
+
+  it("mirrors Tailscale test URL and underlying-policy validation", () => {
+    const app = readPublicFile("app.js");
+    const groupSpecs = readPublicFile("app-policy-group-spec.js");
+    const sandbox: { result?: unknown; URL: typeof URL } = { URL };
+    const context = createContext(sandbox);
+    const functions = [
+      "isValidSurgeTailscaleTestUrl",
+      "hasSurgeTailscaleUnderlyingCycle",
+      "potentialSurgeGroupHasMemberDraft",
+      "resolvePotentialSurgePoliciesDraft",
+      "surgeProxyNodeDraftProtocol",
+      "validateSurgeTailscaleNodeList"
+    ].map((name) => extractFunctionSource(app, name)).join("\n");
+    const groupFunctions = groupSpecs.replaceAll("export ", "");
+
+    new Script(`
+      const SUBNET_BUILT_IN_POLICIES = ["Proxy", "DIRECT", "CELLULAR", "CELLULAR-ONLY", "HYBRID", "NO-HYBRID", "REJECT", "REJECT-DROP", "REJECT-NO-DROP", "REJECT-TINYGIF"];
+      ${groupFunctions}
+      ${functions}
+      const node = (name, underlyingProxy = "") => ({
+        name,
+        sectionName: name.toLowerCase().replace(/\\s+/g, "-"),
+        authKey: "tskey-auth-test",
+        enabled: true,
+        mtu: 1280,
+        testTimeout: 5,
+        testUrl: "http://example.com/generate_204",
+        underlyingProxy
+      });
+      const options = {
+        groupNames: ["Proxy", "Disabled", "Empty", "Via Manual", "Via Vless"],
+        activeGroupNames: ["Proxy", "Empty", "Via Manual", "Via Vless"],
+        proxyNames: ["Manual Exit"],
+        configuredProxyNames: ["Manual Exit", "VLESS Exit"],
+        groupSpecs: {
+          Proxy: "select, {all}",
+          Disabled: "select, DIRECT",
+          Empty: "select",
+          "Via Manual": "select, Manual Exit",
+          "Via Vless": "select, VLESS Exit"
+        },
+        builtInPolicies: SUBNET_BUILT_IN_POLICIES,
+        reservedPolicies: [...SUBNET_BUILT_IN_POLICIES, "PASS", "PASS-RULE", "COMPATIBLE", "GLOBAL"]
+      };
+      const invalidHttps = node("HTTPS Test", "Proxy");
+      invalidHttps.testUrl = "https://example.com/generate_204";
+      const disabled = node("Disabled Tailnet");
+      disabled.enabled = false;
+      disabled.authKey = "";
+      globalThis.result = {
+        validGroup: validateSurgeTailscaleNodeList([node("Tail A", "Proxy")], options).valid,
+        validProxy: validateSurgeTailscaleNodeList([node("Tail A", "Manual Exit")], options).valid,
+        validDirect: validateSurgeTailscaleNodeList([node("Tail A", "DIRECT")], options).valid,
+        validDisabled: validateSurgeTailscaleNodeList([disabled], options).valid,
+        invalidHttps: validateSurgeTailscaleNodeList([invalidHttps], options).valid,
+        missingUnderlying: validateSurgeTailscaleNodeList([node("Tail A", "Missing")], options).valid,
+        selfReference: validateSurgeTailscaleNodeList([node("Tail A", "Tail A")], options).valid,
+        cycle: validateSurgeTailscaleNodeList([node("Tail A", "Tail B"), node("Tail B", "Tail A")], options).valid,
+        validDependency: validateSurgeTailscaleNodeList([node("Tail A", "Tail B"), node("Tail B")], options).valid,
+        disabledGroup: validateSurgeTailscaleNodeList([node("Tail A", "Disabled")], options).valid,
+        emptyGroup: validateSurgeTailscaleNodeList([node("Tail A", "Empty")], options).valid,
+        supportedProxyGroup: validateSurgeTailscaleNodeList([node("Tail A", "Via Manual")], options).valid,
+        unsupportedProxyGroup: validateSurgeTailscaleNodeList([node("Tail A", "Via Vless")], options).valid,
+        protocols: {
+          surgeVless: surgeProxyNodeDraftProtocol("VLESS = vless, example.com, 443"),
+          surgeSs: surgeProxyNodeDraftProtocol("SS = ss://cipher@example.com:443"),
+          clashVless: surgeProxyNodeDraftProtocol("- name: VLESS Exit\\n  type: vless\\n  server: example.com\\n  port: 443")
+        },
+        nameCollision: validateSurgeTailscaleNodeList([node("GLOBAL")], options).valid
+      };
+    `).runInContext(context);
+
+    expect(sandbox.result).toEqual({
+      validGroup: true,
+      validProxy: true,
+      validDirect: true,
+      validDisabled: true,
+      invalidHttps: false,
+      missingUnderlying: false,
+      selfReference: false,
+      cycle: false,
+      validDependency: true,
+      disabledGroup: false,
+      emptyGroup: false,
+      supportedProxyGroup: true,
+      unsupportedProxyGroup: false,
+      protocols: { surgeVless: "vless", surgeSs: "ss", clashVless: "vless" },
+      nameCollision: false
+    });
+  });
+
+  it("restores drafts from other pages after a page-scoped save and warns before unload", () => {
+    const app = readPublicFile("app.js");
+    const sandbox: { result?: unknown } = {};
+    const context = createContext(sandbox);
+    const functions = [
+      "applyPageDraftToState",
+      "syncPageDraft",
+      "applyStoredPageDrafts",
+      "restoreStateForPage",
+      "handleBeforeUnload"
+    ].map((name) => extractFunctionSource(app, name)).join("\n");
+
+    new Script(`
+      const cloneConfig = (value) => JSON.parse(JSON.stringify(value));
+      const normalizeRuleSetMode = (mode) => mode === "compiled" ? "compiled" : "manual";
+      const EDITABLE_PAGES = new Set(["settings", "sources"]);
+      const renderedPages = new Set(["settings", "sources"]);
+      const pageDrafts = new Map();
+      let state = {
+        settings: { managedBaseUrl: "https://old.example/sync" },
+        ruleSets: { mode: "manual" },
+        sources: [{ name: "Old source" }]
+      };
+      let lastSavedState = cloneConfig(state);
+      const settingsDraft = {
+        settings: { managedBaseUrl: "https://draft.example/sync" },
+        ruleSets: { mode: "compiled" }
+      };
+      const pageDraft = (page) => page === "settings" ? settingsDraft : { sources: cloneConfig(state.sources) };
+      const pageBaseline = (page) => page === "settings"
+        ? { settings: lastSavedState.settings, ruleSets: { mode: lastSavedState.ruleSets.mode } }
+        : { sources: lastSavedState.sources };
+      let unloadDirty = true;
+      const hasAnyUnsavedChanges = () => unloadDirty;
+      ${functions}
+
+      const captured = syncPageDraft("settings");
+      state = {
+        settings: { managedBaseUrl: "https://old.example/sync" },
+        ruleSets: { mode: "manual" },
+        sources: [{ name: "Saved source" }]
+      };
+      lastSavedState = cloneConfig(state);
+      restoreStateForPage("sources");
+      const savedPageState = cloneConfig(state);
+      restoreStateForPage("settings");
+
+      const dirtyEvent = { prevented: false, returnValue: null, preventDefault() { this.prevented = true; } };
+      handleBeforeUnload(dirtyEvent);
+      unloadDirty = false;
+      const cleanEvent = { prevented: false, returnValue: null, preventDefault() { this.prevented = true; } };
+      handleBeforeUnload(cleanEvent);
+      globalThis.result = {
+        captured,
+        draftCount: pageDrafts.size,
+        savedPageState,
+        state,
+        dirtyEvent,
+        cleanEvent
+      };
+    `).runInContext(context);
+
+    expect(sandbox.result).toEqual({
+      captured: true,
+      draftCount: 1,
+      savedPageState: {
+        settings: { managedBaseUrl: "https://old.example/sync" },
+        ruleSets: { mode: "compiled" },
+        sources: [{ name: "Saved source" }]
+      },
+      state: {
+        settings: { managedBaseUrl: "https://draft.example/sync" },
+        ruleSets: { mode: "compiled" },
+        sources: [{ name: "Saved source" }]
+      },
+      dirtyEvent: { prevented: true, returnValue: "", preventDefault: expect.any(Function) },
+      cleanEvent: { prevented: false, returnValue: null, preventDefault: expect.any(Function) }
+    });
+  });
+
+  it("rebases overlapping page drafts onto the latest saved fields", () => {
+    const app = readPublicFile("app.js");
+    const sandbox: { result?: unknown } = {};
+    const context = createContext(sandbox);
+
+    new Script(`
+      const cloneConfig = (value) => JSON.parse(JSON.stringify(value));
+      ${extractFunctionSource(app, "rebaseDraftValue")}
+      const oldUnified = {
+        ruleSets: { mode: "manual", outputs: [{ name: "Old" }] },
+        common: { ipv6: [true, true, true], basicDnsServers: [["1.1.1.1"], ["1.1.1.1"], ["1.1.1.1"]] }
+      };
+      const unifiedDraft = cloneConfig(oldUnified);
+      unifiedDraft.common.ipv6 = [false, false, false];
+      const newUnified = {
+        ruleSets: { mode: "compiled", outputs: [{ name: "Server" }] },
+        common: { ipv6: [true, true, true], basicDnsServers: [["9.9.9.9"], ["9.9.9.9"], ["9.9.9.9"]] }
+      };
+      globalThis.result = {
+        unified: rebaseDraftValue(oldUnified, unifiedDraft, newUnified),
+        target: rebaseDraftValue(
+          { surge: { ipv6: true, proxyTestUrl: "https://old.example/test" } },
+          { surge: { ipv6: true, proxyTestUrl: "https://draft.example/test" } },
+          { surge: { ipv6: false, proxyTestUrl: "https://old.example/test" } }
+        )
+      };
+    `).runInContext(context);
+
+    expect(sandbox.result).toEqual({
+      unified: {
+        ruleSets: { mode: "compiled", outputs: [{ name: "Server" }] },
+        common: {
+          ipv6: [false, false, false],
+          basicDnsServers: [["9.9.9.9"], ["9.9.9.9"], ["9.9.9.9"]]
+        }
+      },
+      target: {
+        surge: { ipv6: false, proxyTestUrl: "https://draft.example/test" }
+      }
+    });
+  });
+
+  it("preserves edits made on the saved page while its request is in flight", async () => {
+    const app = readPublicFile("app.js");
+    const sandbox: { done?: Promise<void>; result?: unknown } = {};
+    const context = createContext(sandbox);
+    const saveActivePage = `async ${extractFunctionSource(app, "saveActivePage")}`;
+
+    new Script(`
+      const cloneConfig = (value) => JSON.parse(JSON.stringify(value));
+      let state = { sources: [{ name: "Submitted" }] };
+      let lastSavedState = { sources: [{ name: "Saved" }] };
+      const pageDrafts = new Map();
+      const pendingPageSaveDrafts = new Map();
+      let activePage = "sources";
+      let unifiedCommonDraft = null;
+      let saveStatusResetTimer = 0;
+      let clientSessionVersion = 0;
+      let configSaveInFlight = false;
+      let logoutInFlight = false;
+      let resolveRequest;
+      const refs = {
+        saveBtn: {
+          dataset: { state: "idle" },
+          textContent: "",
+          disabled: false,
+          setAttribute() {}
+        }
+      };
+      const window = {
+        alert() {},
+        clearTimeout() {},
+        setTimeout() { return 0; }
+      };
+      const t = (key) => key;
+      const isSaveButtonDisabled = (_button, status) => status === "saving" || status === "saved";
+      const syncLogoutButtonState = () => {};
+      const updateSaveAvailability = () => {};
+      ${extractFunctionSource(app, "setSaveStatus")}
+      const pageDraft = () => cloneConfig({ sources: state.sources });
+      ${extractFunctionSource(app, "pageBaseline")}
+      ${extractFunctionSource(app, "hasUnsavedChanges")}
+      ${extractFunctionSource(app, "baselineForPageFromState")}
+      ${extractFunctionSource(app, "rebaseDraftValue")}
+      ${extractFunctionSource(app, "rebaseStoredPageDrafts")}
+      const syncPageDraft = () => {};
+      const applyStoredPageDrafts = (page) => {
+        const draft = pageDrafts.get(page);
+        if (draft) state.sources = cloneConfig(draft.sources);
+      };
+      const normalizeRuleSetMode = (mode) => mode === "compiled" ? "compiled" : "manual";
+      ${extractFunctionSource(app, "restoreStateForPage")}
+      const render = () => {};
+      const requests = [];
+      const request = (_url, options) => new Promise((resolve) => {
+        const body = JSON.parse(options.body);
+        requests.push(body);
+        resolveRequest = () => resolve(body);
+      });
+      const requestConfigSave = (patch) => request("/api/config", { method: "PATCH", body: JSON.stringify(patch) });
+      ${saveActivePage}
+
+      globalThis.done = (async () => {
+        const saving = saveActivePage("sources");
+        await Promise.resolve();
+        await saveActivePage("sources");
+        const concurrentRequestCount = requests.length;
+        state.sources[0].name = "Edited after submit";
+        resolveRequest();
+        await saving;
+        const afterFirstSave = {
+          state: cloneConfig(state),
+          baseline: cloneConfig(lastSavedState),
+          draft: cloneConfig(pageDrafts.get("sources")),
+          dirty: hasUnsavedChanges("sources"),
+          pendingCount: pendingPageSaveDrafts.size
+        };
+        const secondSave = saveActivePage("sources");
+        await Promise.resolve();
+        resolveRequest();
+        await secondSave;
+        globalThis.result = {
+          afterFirstSave,
+          concurrentRequestCount,
+          requests,
+          finalState: cloneConfig(state),
+          finalBaseline: cloneConfig(lastSavedState),
+          finalDraftCount: pageDrafts.size
+        };
+      })();
+    `).runInContext(context);
+
+    await sandbox.done;
+    expect(sandbox.result).toEqual({
+      afterFirstSave: {
+        state: { sources: [{ name: "Edited after submit" }] },
+        baseline: { sources: [{ name: "Submitted" }] },
+        draft: { sources: [{ name: "Edited after submit" }] },
+        dirty: true,
+        pendingCount: 0
+      },
+      concurrentRequestCount: 1,
+      requests: [
+        { sources: [{ name: "Submitted" }] },
+        { sources: [{ name: "Edited after submit" }] }
+      ],
+      finalState: { sources: [{ name: "Edited after submit" }] },
+      finalBaseline: { sources: [{ name: "Edited after submit" }] },
+      finalDraftCount: 0
+    });
+  });
+
+  it("serializes config saves and retries one transient 429 using Retry-After", async () => {
+    const app = readPublicFile("app.js");
+    const sandbox: { done?: Promise<void>; result?: unknown } = {};
+    const context = createContext(sandbox);
+
+    new Script(`
+      let clientSessionVersion = 3;
+      let requestCount = 0;
+      const delays = [];
+      const bodies = [];
+      const window = {
+        setTimeout(resolve, delay) {
+          delays.push(delay);
+          resolve();
+          return 1;
+        }
+      };
+      const request = async (_path, options) => {
+        requestCount += 1;
+        bodies.push(options.body);
+        if (requestCount === 1) {
+          const error = new Error("busy");
+          error.status = 429;
+          error.retryAfter = "2";
+          throw error;
+        }
+        return { sources: [{ name: "Saved" }] };
+      };
+      ${extractFunctionSource(app, "configSaveRetryDelayMilliseconds")}
+      ${`async ${extractFunctionSource(app, "requestConfigSave")}`}
+
+      globalThis.done = (async () => {
+        const result = await requestConfigSave({ sources: [{ name: "Saved" }] });
+        globalThis.result = { requestCount, delays, bodies, result };
+      })();
+    `).runInContext(context);
+
+    await sandbox.done;
+    expect(sandbox.result).toEqual({
+      requestCount: 2,
+      delays: [2000],
+      bodies: [
+        JSON.stringify({ sources: [{ name: "Saved" }] }),
+        JSON.stringify({ sources: [{ name: "Saved" }] })
+      ],
+      result: { sources: [{ name: "Saved" }] }
+    });
+  });
+
+  it("clears Telegram binding state when the bot token changes", () => {
+    const app = readPublicFile("app.js");
+    const sandbox: { result?: unknown } = {};
+    const context = createContext(sandbox);
+
+    new Script(`
+      const refs = { notificationTelegramBotToken: { value: "new-token" } };
+      const state = { settings: {
+        notificationTelegramBotToken: "saved-token",
+        notificationTelegramChatId: "12345",
+        notificationTelegramWebhookSecret: "saved-secret"
+      } };
+      const lastSavedState = { settings: {
+        notificationTelegramBotToken: "saved-token",
+        notificationTelegramChatId: "12345",
+        notificationTelegramWebhookSecret: "saved-secret"
+      } };
+      let stopped = 0;
+      let rendered = 0;
+      let updated = 0;
+      const stopTelegramBindPolling = () => { stopped += 1; };
+      const renderTelegramBindStatus = () => { rendered += 1; };
+      const updateSaveAvailability = () => { updated += 1; };
+      ${extractFunctionSource(app, "isTelegramChatBound")}
+      ${extractFunctionSource(app, "handleTelegramBotTokenInput")}
+
+      handleTelegramBotTokenInput();
+      const changed = {
+        chatId: state.settings.notificationTelegramChatId,
+        webhookSecret: state.settings.notificationTelegramWebhookSecret,
+        bound: isTelegramChatBound()
+      };
+      refs.notificationTelegramBotToken.value = "saved-token";
+      handleTelegramBotTokenInput();
+      globalThis.result = {
+        changed,
+        restored: {
+          chatId: state.settings.notificationTelegramChatId,
+          webhookSecret: state.settings.notificationTelegramWebhookSecret,
+          bound: isTelegramChatBound()
+        },
+        stopped,
+        rendered,
+        updated
+      };
+    `).runInContext(context);
+
+    expect(sandbox.result).toEqual({
+      changed: { chatId: "", webhookSecret: "", bound: false },
+      restored: { chatId: "12345", webhookSecret: "saved-secret", bound: true },
+      stopped: 2,
+      rendered: 2,
+      updated: 2
+    });
+  });
+
+  it("invalidates in-flight Telegram binding work when polling stops or the token changes", async () => {
+    const app = readPublicFile("app.js");
+    const sandbox: { done?: Promise<void>; result?: unknown } = {};
+    const context = createContext(sandbox);
+
+    new Script(`
+      let clientSessionVersion = 0;
+      let telegramBindPollTimer = 0;
+      let telegramBindPollVersion = 0;
+      let state = { settings: { notificationTelegramBotToken: "old-token" } };
+      let lastSavedState = { settings: { notificationTelegramBotToken: "old-token" } };
+      let nextTimerId = 0;
+      let resolvePollRequest;
+      let resolveBindRequest;
+      let syncCount = 0;
+      let renderCount = 0;
+      let updateCount = 0;
+      let bindRequestPending = false;
+      const scheduled = [];
+      const refs = {
+        notificationTelegramBotToken: { value: "old-token" },
+        telegramBindCodeBtn: { disabled: false, textContent: "" }
+      };
+      const window = {
+        alert() {},
+        clearTimeout() {},
+        setTimeout(callback, delay) {
+          scheduled.push({ callback, delay });
+          return ++nextTimerId;
+        }
+      };
+      const t = (key) => key;
+      const request = (path) => new Promise((resolve) => {
+        if (path === "/api/config") resolvePollRequest = resolve;
+        else {
+          bindRequestPending = true;
+          resolveBindRequest = resolve;
+        }
+      });
+      const syncTelegramSettingsFromConfig = () => { syncCount += 1; return false; };
+      const renderTelegramBindStatus = () => { renderCount += 1; };
+      const renderTelegramBindCommand = () => { renderCount += 1; };
+      const updateSaveAvailability = () => { updateCount += 1; };
+      const syncTelegramBindActionButton = () => {};
+      ${extractFunctionSource(app, "stopTelegramBindPolling")}
+      ${extractFunctionSource(app, "startTelegramBindPolling")}
+      ${`async ${extractFunctionSource(app, "generateTelegramBindCode")}`}
+
+      globalThis.done = (async () => {
+        startTelegramBindPolling(new Date(Date.now() + 60_000).toISOString());
+        const firstPoll = scheduled.shift().callback();
+        await Promise.resolve();
+        stopTelegramBindPolling();
+        resolvePollRequest({ settings: { notificationTelegramChatId: "12345" } });
+        await firstPoll;
+        const afterStoppedPoll = {
+          syncCount,
+          scheduledCount: scheduled.length,
+          pollVersion: telegramBindPollVersion
+        };
+
+        const binding = generateTelegramBindCode();
+        await Promise.resolve();
+        refs.notificationTelegramBotToken.value = "new-token";
+        stopTelegramBindPolling();
+        resolveBindRequest({
+          config: { settings: { notificationTelegramBotToken: "old-token", notificationTelegramChatId: "12345" } },
+          command: "/bind stale",
+          expiresAt: new Date(Date.now() + 60_000).toISOString()
+        });
+        await binding;
+        globalThis.result = {
+          afterStoppedPoll,
+          bindRequestPending,
+          token: refs.notificationTelegramBotToken.value,
+          stateToken: state.settings.notificationTelegramBotToken,
+          renderCount,
+          updateCount,
+          scheduledCount: scheduled.length
+        };
+      })();
+    `).runInContext(context);
+
+    await sandbox.done;
+    expect(sandbox.result).toEqual({
+      afterStoppedPoll: { syncCount: 0, scheduledCount: 0, pollVersion: 2 },
+      bindRequestPending: true,
+      token: "new-token",
+      stateToken: "old-token",
+      renderCount: 0,
+      updateCount: 0,
+      scheduledCount: 0
+    });
+  });
+
+  it("keeps target tabs roving-focus keyboard accessible", () => {
+    const app = readPublicFile("app.js");
+    const sandbox: { result?: unknown } = {};
+    const context = createContext(sandbox);
+
+    new Script(`
+      const makeClassList = () => {
+        const values = new Set();
+        return {
+          toggle(name, force) { force ? values.add(name) : values.delete(name); },
+          contains(name) { return values.has(name); }
+        };
+      };
+      const tablist = { querySelectorAll: () => tabs };
+      const tabs = ["general", "dns", "rules"].map((name) => ({
+        name,
+        tabIndex: -1,
+        attrs: {},
+        focused: false,
+        classList: makeClassList(),
+        getAttribute(attribute) { return attribute === "data-clash-tab" ? this.name : null; },
+        setAttribute(attribute, value) { this.attrs[attribute] = value; },
+        closest() { return tablist; },
+        focus() { this.focused = true; }
+      }));
+      const panels = ["general", "dns", "rules"].map((name) => ({
+        name,
+        attrs: {},
+        classList: makeClassList(),
+        getAttribute(attribute) { return attribute === "data-clash-panel" ? this.name : null; },
+        setAttribute(attribute, value) { this.attrs[attribute] = value; }
+      }));
+      const document = {
+        querySelectorAll(selector) { return selector.includes("-tab]") ? tabs : panels; }
+      };
+      ${extractFunctionSource(app, "syncSectionTabs")}
+      const showSurgeTab = (name) => syncSectionTabs("surge", name);
+      const showClashTab = (name) => syncSectionTabs("clash", name);
+      const showStashTab = (name) => syncSectionTabs("stash", name);
+      ${extractFunctionSource(app, "handleSectionTabKeydown")}
+
+      syncSectionTabs("clash", "general");
+      const event = {
+        key: "ArrowRight",
+        currentTarget: tabs[0],
+        prevented: false,
+        preventDefault() { this.prevented = true; }
+      };
+      handleSectionTabKeydown(event, "clash");
+      globalThis.result = {
+        prevented: event.prevented,
+        tabs: tabs.map((tab) => ({ selected: tab.attrs["aria-selected"], tabIndex: tab.tabIndex, focused: tab.focused })),
+        panels: panels.map((panel) => ({ hidden: panel.classList.contains("hidden"), ariaHidden: panel.attrs["aria-hidden"] }))
+      };
+    `).runInContext(context);
+
+    expect(sandbox.result).toEqual({
+      prevented: true,
+      tabs: [
+        { selected: "false", tabIndex: -1, focused: false },
+        { selected: "true", tabIndex: 0, focused: true },
+        { selected: "false", tabIndex: -1, focused: false }
+      ],
+      panels: [
+        { hidden: true, ariaHidden: "true" },
+        { hidden: false, ariaHidden: "false" },
+        { hidden: true, ariaHidden: "true" }
+      ]
+    });
+  });
+
+  it("only links trusted HTTPS GitHub releases", () => {
+    const app = readPublicFile("app.js");
+    const sandbox: { result?: unknown; URL: typeof URL } = { URL };
+    const context = createContext(sandbox);
+
+    new Script(`
+      ${extractFunctionSource(app, "trustedGithubReleaseUrl")}
+      globalThis.result = {
+        trusted: trustedGithubReleaseUrl("https://github.com/example/subpilot/releases/tag/v1.2.3"),
+        insecure: trustedGithubReleaseUrl("http://github.com/example/subpilot/releases/tag/v1.2.3"),
+        subdomain: trustedGithubReleaseUrl("https://github.com.evil.example/release"),
+        differentHost: trustedGithubReleaseUrl("https://example.com/release"),
+        invalid: trustedGithubReleaseUrl("not a URL")
+      };
+    `).runInContext(context);
+
+    expect(sandbox.result).toEqual({
+      trusted: "https://github.com/example/subpilot/releases/tag/v1.2.3",
+      insecure: "",
+      subdomain: "",
+      differentHost: "",
+      invalid: ""
+    });
+  });
+
+  it("confirms and interlocks read-token rotation while surfacing failures", async () => {
+    const app = readPublicFile("app.js");
+    const sandbox: { done?: Promise<void>; result?: unknown } = {};
+    const context = createContext(sandbox);
+    const rotateToken = `async ${extractFunctionSource(app, "rotateToken")}`;
+
+    new Script(`
+      const makeClassList = () => {
+        const values = new Set();
+        return {
+          toggle(name, force) { force ? values.add(name) : values.delete(name); },
+          contains(name) { return values.has(name); }
+        };
+      };
+      const refs = {
+        rotateTokenBtn: {
+          disabled: false,
+          textContent: "",
+          attrs: {},
+          setAttribute(name, value) { this.attrs[name] = value; }
+        },
+        tokenRotationStatus: {
+          textContent: "",
+          attrs: {},
+          classList: makeClassList(),
+          setAttribute(name, value) { this.attrs[name] = value; }
+        }
+      };
+      let rotateTokenInFlight = false;
+      let configSaveInFlight = false;
+      let logoutInFlight = false;
+      let clientSessionVersion = 0;
+      let state = { settings: { managedBaseUrl: "https://example.com/sync" } };
+      let currentReadToken = "old-token";
+      let confirmAllowed = false;
+      let confirmCount = 0;
+      let requestCount = 0;
+      let renderLinksCount = 0;
+      let shouldFail = false;
+      const window = { confirm() { confirmCount += 1; return confirmAllowed; } };
+      const t = (key) => key;
+      const syncLogoutButtonState = () => {};
+      const renderLinks = () => { renderLinksCount += 1; };
+      const request = async () => {
+        requestCount += 1;
+        await Promise.resolve();
+        if (shouldFail) throw new Error("boom");
+        return { token: "new-token" };
+      };
+      ${extractFunctionSource(app, "renderTokenRotationStatus")}
+      ${rotateToken}
+
+      globalThis.done = (async () => {
+        await rotateToken();
+        const canceledRequestCount = requestCount;
+        confirmAllowed = true;
+        const first = rotateToken();
+        const second = rotateToken();
+        await Promise.all([first, second]);
+        const success = {
+          requestCount,
+          token: currentReadToken,
+          renderLinksCount,
+          status: refs.tokenRotationStatus.textContent,
+          buttonDisabled: refs.rotateTokenBtn.disabled,
+          buttonBusy: refs.rotateTokenBtn.attrs["aria-busy"]
+        };
+        shouldFail = true;
+        await rotateToken();
+        globalThis.result = {
+          canceledRequestCount,
+          confirmCount,
+          success,
+          failure: {
+            requestCount,
+            status: refs.tokenRotationStatus.textContent,
+            role: refs.tokenRotationStatus.attrs.role,
+            buttonDisabled: refs.rotateTokenBtn.disabled,
+            buttonBusy: refs.rotateTokenBtn.attrs["aria-busy"]
+          }
+        };
+      })();
+    `).runInContext(context);
+    await sandbox.done;
+
+    expect(sandbox.result).toEqual({
+      canceledRequestCount: 0,
+      confirmCount: 3,
+      success: {
+        requestCount: 1,
+        token: "new-token",
+        renderLinksCount: 1,
+        status: "rotateReadTokenSuccess",
+        buttonDisabled: false,
+        buttonBusy: "false"
+      },
+      failure: {
+        requestCount: 2,
+        status: "rotateReadTokenFailedboom",
+        role: "alert",
+        buttonDisabled: false,
+        buttonBusy: "false"
+      }
     });
   });
 

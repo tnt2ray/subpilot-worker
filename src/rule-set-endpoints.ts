@@ -12,8 +12,12 @@ import {
 import { ruleSetPathName, type RuleSetSyncPath } from "./managed-url";
 import { planRuleSetArtifacts } from "./rule-set-artifacts";
 import { effectiveRuleSetOutputs } from "./rule-set-outputs";
+import type { RuleSetOutputTarget } from "./rule-set-types";
 import type { AppConfig } from "./types";
 import { badRequest, jsonResponse, notFound } from "./util";
+
+const WAIT_UNTIL_CACHE_WARM_DEADLINE_MS = 20_000;
+const MANUAL_RULE_SET_REFRESH_DEADLINE_MS = 20_000;
 
 export async function handleRuleSetApi(request: Request, env: Env, ctx: ExecutionContext, config: AppConfig): Promise<Response | null> {
   const url = new URL(request.url);
@@ -24,7 +28,9 @@ export async function handleRuleSetApi(request: Request, env: Env, ctx: Executio
     });
   }
   if (url.pathname === "/api/rule-sets/refresh" && request.method === "POST") {
-    const result = await refreshRuleSetCaches(env, config);
+    const result = await refreshRuleSetCaches(env, config, undefined, {
+      deadline: Date.now() + MANUAL_RULE_SET_REFRESH_DEADLINE_MS
+    });
     scheduleRuleSetWorkerCacheWarm(env, ctx, config, request.url);
     return jsonResponse({
       ...result,
@@ -36,7 +42,9 @@ export async function handleRuleSetApi(request: Request, env: Env, ctx: Executio
     const outputName = safeDecodePathSegment(refreshMatch[1]!);
     if (!outputName) return badRequest("Invalid rule set output name");
     try {
-      const result = await refreshRuleSetCaches(env, config, outputName);
+      const result = await refreshRuleSetCaches(env, config, outputName, {
+        deadline: Date.now() + MANUAL_RULE_SET_REFRESH_DEADLINE_MS
+      });
       scheduleRuleSetWorkerCacheWarm(env, ctx, config, request.url, [outputName]);
       return jsonResponse({
         ...result,
@@ -81,13 +89,13 @@ export async function handleRuleSetDownload(
   const cachedResponse = await matchCompiledRuleSetWorkerCache(request, manifest.updatedAt);
   if (cachedResponse) return cachedResponse;
 
-  let content = await readCompiledRuleSetBucket(env, output.name, bucket, target);
+  let content = await readCompiledRuleSetBucket(env, output.name, bucket, target, manifest);
   if (content === null) {
     try {
       manifest = await compileRuleSetOutput(env, config, output, { allowStaleFallback: true }).then((result) => result.manifest);
       if (!manifest) return notFound();
       if (!manifestSupportsDownload(manifest, bucket, target)) return notFound();
-      content = await readCompiledRuleSetBucket(env, output.name, bucket, target);
+      content = await readCompiledRuleSetBucket(env, output.name, bucket, target, manifest);
     } catch (error) {
       return badRequest(error instanceof Error ? error.message : String(error));
     }
@@ -101,7 +109,7 @@ export async function handleRuleSetDownload(
 function manifestSupportsDownload(
   manifest: NonNullable<Awaited<ReturnType<typeof readCompiledRuleSetManifest>>>,
   bucket: "domain" | "ipcidr" | "combined",
-  target: "surge" | "clash"
+  target: RuleSetOutputTarget
 ): boolean {
   if (bucket === "combined") {
     return planRuleSetArtifacts(manifest.buckets, target).some((artifact) => artifact.bucket === "combined");
@@ -112,16 +120,16 @@ function manifestSupportsDownload(
 function resolveRuleSetDownload(config: AppConfig, path: RuleSetSyncPath): {
   output: AppConfig["ruleSets"]["outputs"][number];
   bucket: "domain" | "ipcidr" | "combined";
-  target: "surge" | "clash";
+  target: RuleSetOutputTarget;
 } | null {
   const outputs = effectiveRuleSetOutputs(config.ruleSets);
   const exact = outputs.find((output) => ruleSetPathName(output.name) === path.artifactName);
-  if (exact) return { output: exact, bucket: "combined", target: path.target === "surge" ? "surge" : "clash" };
+  if (exact) return { output: exact, bucket: "combined", target: path.target };
   for (const [suffix, bucket] of [["-domain", "domain"], ["-ipcidr", "ipcidr"]] as const) {
     if (!path.artifactName.endsWith(suffix)) continue;
     const outputName = path.artifactName.slice(0, -suffix.length);
     const output = outputs.find((item) => ruleSetPathName(item.name) === outputName);
-    if (output) return { output, bucket, target: path.target === "surge" ? "surge" : "clash" };
+    if (output) return { output, bucket, target: path.target };
   }
   return null;
 }
@@ -141,12 +149,20 @@ function scheduleRuleSetWorkerCacheWarm(
   requestUrl: string,
   outputNames?: string[]
 ): void {
+  const deadline = Date.now() + WAIT_UNTIL_CACHE_WARM_DEADLINE_MS;
   ctx.waitUntil((async () => {
     const effectiveOutputs = effectiveRuleSetOutputs(config.ruleSets);
     const outputs = outputNames
       ? effectiveOutputs.filter((output) => outputNames.includes(output.name))
       : effectiveOutputs;
-    await warmCompiledRuleSetWorkerCache(env, config, requestUrl, await getOrCreateReadToken(env), outputs);
+    await warmCompiledRuleSetWorkerCache(
+      env,
+      config,
+      requestUrl,
+      await getOrCreateReadToken(env),
+      outputs,
+      { deadline }
+    );
   })().catch(logRuleSetWorkerCacheError));
 }
 

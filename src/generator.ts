@@ -3,7 +3,7 @@ import { collectClashRuleCoverageWarnings } from "./clash-rules";
 import { buildClash, buildStash } from "./clash-like-renderer";
 import { loadConfig } from "./config-store";
 import { parseHostEntries } from "./host-entries";
-import { applyTransforms, buildChainNodes, buildConfiguredProxyNodes, nodeTagsForMatching, parseFeatureTagRules } from "./node-transforms";
+import { applyTransforms, buildChainNodes, buildConfiguredProxyNodes, ensureUniqueProxyPolicyNames, nodeTagsForMatching, parseFeatureTagRules } from "./node-transforms";
 import { dedupeHostEntries } from "./output-render";
 import { parseSubscription } from "./parsers";
 import { buildCompiledRuleSetReferencePlan, type CompiledRuleSetReferencePlan } from "./rule-set-compiler";
@@ -12,12 +12,17 @@ import { fetchCachedSource, sourceUserAgent } from "./source-cache";
 import { buildSurge } from "./surge-renderer";
 import { collectSurgeRuleCoverageWarnings } from "./surge-rules";
 import type { AppConfig, GenerationResult, HostEntry, ProxyNode, Target } from "./types";
+import { mapWithConcurrency } from "./util";
 
 (globalThis as typeof globalThis & { Buffer?: typeof Buffer }).Buffer ??= Buffer;
 
 interface FetchedSources {
   nodes: ProxyNode[];
   hostEntries: HostEntry[];
+}
+
+interface FetchedSourceBatch extends FetchedSources {
+  warning?: string | undefined;
 }
 
 interface PreparedOutput {
@@ -31,6 +36,14 @@ interface PreparedOutput {
 interface GenerationOptions {
   includeRuleDiagnostics?: boolean;
 }
+
+const SOURCE_FETCH_CONCURRENCY = 2;
+const MAX_NODES_PER_SOURCE = 2_500;
+const MAX_HOST_ENTRIES_PER_SOURCE = 5_000;
+const MAX_TOTAL_SOURCE_NODES = 10_000;
+const MAX_TOTAL_HOST_ENTRIES = 20_000;
+const MAX_TOTAL_OUTPUT_NODES = 15_000;
+const MAX_RENDERED_CONFIG_CHARACTERS = 8 * 1024 * 1024;
 
 export function inferTarget(request: Request): Target | null {
   const ua = request.headers.get("user-agent")?.toLowerCase() ?? "";
@@ -65,6 +78,9 @@ export async function generateConfig(
     }
   }
   const content = buildTargetContent(config, renderTarget, prepared.nodes, prepared.hostEntries, requestUrl, prepared.warnings, options, prepared.ruleSetPlan);
+  if (content.length > MAX_RENDERED_CONFIG_CHARACTERS) {
+    throw new Error(`Generated configuration exceeds ${MAX_RENDERED_CONFIG_CHARACTERS} character limit`);
+  }
   return {
     target,
     content,
@@ -96,9 +112,14 @@ async function prepareOutput(env: Env, config: AppConfig, target: RuleSetOutputT
   const warnings: string[] = [];
   const fetched = await fetchAllSources(env, config, target, warnings);
   const configuredNodes = buildConfiguredProxyNodes(config);
-  const supported = await applyTransforms(env, [...fetched.nodes, ...configuredNodes], config, target, warnings);
+  const transformed = await applyTransforms(env, [...fetched.nodes, ...configuredNodes], config, target, warnings);
+  const supported = ensureUniqueProxyPolicyNames(transformed, config, warnings);
   const chainNodes = buildChainNodes(supported);
-  const nodes = chainNodes.length > 0 ? [...supported, ...chainNodes] : supported;
+  const uniqueChainNodes = ensureUniqueProxyPolicyNames(chainNodes, config, warnings, supported.map((node) => node.name));
+  const nodes = uniqueChainNodes.length > 0 ? [...supported, ...uniqueChainNodes] : supported;
+  if (nodes.length > MAX_TOTAL_OUTPUT_NODES) {
+    throw new Error(`Generated configuration contains ${nodes.length} proxy nodes; maximum is ${MAX_TOTAL_OUTPUT_NODES}`);
+  }
   const ruleSetPlan = config.ruleSets.mode === "compiled"
     ? await buildCompiledRuleSetReferencePlan(env, config, target, requestUrl)
     : undefined;
@@ -115,7 +136,10 @@ async function prepareOutput(env: Env, config: AppConfig, target: RuleSetOutputT
 async function fetchAllSources(env: Env, config: AppConfig, target: Target, warnings: string[]): Promise<FetchedSources> {
   const enabled = config.sources.filter((source) => source.enabled && source.url);
   const featureTagRules = parseFeatureTagRules(config.settings.featureTagRules);
-  const batches = await Promise.all(enabled.map(async (source) => {
+  const batches: FetchedSourceBatch[] = Array.from({ length: enabled.length }, () => ({ nodes: [], hostEntries: [] }));
+  let retainedNodes = 0;
+  let retainedHostEntries = 0;
+  await mapWithConcurrency(enabled.map((source, index) => ({ source, index })), SOURCE_FETCH_CONCURRENCY, async ({ source, index }) => {
     try {
       const content = await fetchCachedSource(env, source, sourceUserAgent(config, source));
       const hostEntries = parseHostEntries(content);
@@ -126,15 +150,33 @@ async function fetchAllSources(env: Env, config: AppConfig, target: Target, warn
         sourceName: source.name,
         ...nodeTagsForMatching(node.name, node.matchLabels, featureTagRules)
       }));
-      return {
+      if (nodes.length > MAX_NODES_PER_SOURCE) {
+        throw new Error(`Source contains ${nodes.length} nodes; maximum is ${MAX_NODES_PER_SOURCE}`);
+      }
+      if (hostEntries.length > MAX_HOST_ENTRIES_PER_SOURCE) {
+        throw new Error(`Source contains ${hostEntries.length} host entries; maximum is ${MAX_HOST_ENTRIES_PER_SOURCE}`);
+      }
+      if (retainedNodes + nodes.length > MAX_TOTAL_SOURCE_NODES) {
+        throw new Error(`All sources exceed the ${MAX_TOTAL_SOURCE_NODES} node request limit`);
+      }
+      if (retainedHostEntries + hostEntries.length > MAX_TOTAL_HOST_ENTRIES) {
+        throw new Error(`All sources exceed the ${MAX_TOTAL_HOST_ENTRIES} host-entry request limit`);
+      }
+      retainedNodes += nodes.length;
+      retainedHostEntries += hostEntries.length;
+      batches[index] = {
         nodes,
         hostEntries
       };
     } catch (error) {
-      warnings.push(`${source.name}: ${error instanceof Error ? error.message : String(error)}`);
-      return { nodes: [], hostEntries: [] };
+      batches[index] = {
+        nodes: [],
+        hostEntries: [],
+        warning: `${source.name}: ${error instanceof Error ? error.message : String(error)}`
+      };
     }
-  }));
+  });
+  warnings.push(...batches.flatMap((batch) => batch.warning ? [batch.warning] : []));
   return {
     nodes: batches.flatMap((batch) => batch.nodes),
     hostEntries: dedupeHostEntries(batches.flatMap((batch) => batch.hostEntries))

@@ -57,6 +57,9 @@ describe("CodeMirror 6 admin editor contract", () => {
       const configCodeEditors = new Map();
       const activePage = "proxy-nodes";
       let saveStatusResetTimer = 0;
+      let clientSessionVersion = 0;
+      let configSaveInFlight = false;
+      let logoutInFlight = false;
       let state = { proxyNodes: [${JSON.stringify(initialNode)}] };
       let lastSavedState = JSON.parse(JSON.stringify(state));
       const refs = {
@@ -76,6 +79,11 @@ describe("CodeMirror 6 admin editor contract", () => {
         requests.push({ url, method: options.method, body });
         return { ...state, ...body };
       };
+      const requestConfigSave = async (patch) => request("/api/config", {
+        method: "PATCH",
+        body: JSON.stringify(patch)
+      });
+      const syncLogoutButtonState = () => {};
       const textarea = {
         value: ${JSON.stringify(initialNode.config)},
         readOnly: false,

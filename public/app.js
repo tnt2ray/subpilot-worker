@@ -48,11 +48,33 @@ let telegramBindPollTimer = 0;
 let codeMirrorLoadPromise = null;
 let activeUnifiedConfigTab = "general";
 let unifiedCommonDraft = null;
+let clientSessionVersion = 0;
+let configSaveInFlight = false;
+let rotateTokenInFlight = false;
+let logoutInFlight = false;
+let telegramBindPollVersion = 0;
 
 const UNIFIED_CONFIG_TABS = ["general", "dns", "rules"];
+const RESERVED_MANAGED_BASE_PATHS = new Set([
+  "/api",
+  "/app-constants.js",
+  "/app-i18n.js",
+  "/app-policy-group-spec.js",
+  "/app-preview-warnings.js",
+  "/app-validation.js",
+  "/app-proxy-node-drafts.js",
+  "/app-yaml.js",
+  "/app.js",
+  "/index.html",
+  "/login.html",
+  "/mitm-ca.js",
+  "/styles.css"
+]);
 
 let activePage = getPageFromHash();
 const renderedPages = new Set();
+const pageDrafts = new Map();
+const pendingPageSaveDrafts = new Map();
 
 const $ = (id) => document.getElementById(id);
 const refs = {
@@ -60,6 +82,8 @@ const refs = {
   pageDescription: $("pageDescription"),
   pageHead: $("pageHead"),
   mainMenu: $("mainMenu"),
+  menuIndicator: $("menuIndicator"),
+  logoutBtn: $("logoutBtn"),
   loginPanel: $("loginPanel"),
   workspace: $("workspace"),
   adminToken: $("adminToken"),
@@ -93,6 +117,7 @@ const refs = {
   unifiedRealIpDomainsMixed: $("unifiedRealIpDomainsMixed"),
   unifiedRealIpDomainsInvalid: $("unifiedRealIpDomainsInvalid"),
   managedBaseUrl: $("managedBaseUrl"),
+  managedBaseUrlValidation: $("managedBaseUrlValidation"),
   userAgentSurge: $("userAgentSurge"),
   userAgentClash: $("userAgentClash"),
   userAgentStash: $("userAgentStash"),
@@ -128,6 +153,7 @@ const refs = {
   surgePonteDeviceNames: $("surgePonteDeviceNames"),
   addSurgeTailscaleNodeBtn: $("addSurgeTailscaleNodeBtn"),
   surgeTailscaleNodeRows: $("surgeTailscaleNodeRows"),
+  surgeTailscaleValidation: $("surgeTailscaleValidation"),
   surgeHostAdvancedMode: $("surgeHostAdvancedMode"),
   surgeHostStructuredEditor: $("surgeHostStructuredEditor"),
   addSurgeHostBtn: $("addSurgeHostBtn"),
@@ -248,6 +274,7 @@ const refs = {
   stashRules: $("stashRules"),
   stashRuleValidation: $("stashRuleValidation"),
   rotateTokenBtn: $("rotateTokenBtn"),
+  tokenRotationStatus: $("tokenRotationStatus"),
   links: $("links"),
   previewOutput: $("previewOutput"),
   previewSurgeBtn: $("previewSurgeBtn"),
@@ -309,7 +336,13 @@ const CONFIG_POLICY_HIGHLIGHT_BUILT_INS = [
   "REJECT-DROP",
   "REJECT-NO-DROP",
   "REJECT-TINYGIF",
+  "CELLULAR",
+  "CELLULAR-ONLY",
+  "HYBRID",
+  "NO-HYBRID",
   "PASS",
+  "PASS-RULE",
+  "COMPATIBLE",
   "GLOBAL"
 ];
 
@@ -549,6 +582,7 @@ function applyLanguage() {
   document.querySelectorAll("[data-i18n-aria-label]").forEach((element) => {
     element.setAttribute("aria-label", t(element.dataset.i18nAriaLabel));
   });
+  syncMainMenuDisclosure();
   setSaveStatus(refs.saveBtn.dataset.state || "idle");
   if (!currentPreviewContent) {
     setPreviewOutput(t("previewEmpty"), true);
@@ -562,6 +596,7 @@ function applyLanguage() {
 function setSaveStatus(status) {
   refs.saveBtn.dataset.state = status;
   refs.saveBtn.textContent = t(status);
+  refs.saveBtn.setAttribute?.("aria-busy", status === "saving" ? "true" : "false");
   refs.saveBtn.disabled = isSaveButtonDisabled(refs.saveBtn, status);
 }
 
@@ -602,8 +637,39 @@ function normalizedActivePage(page) {
   return isPageAvailable(page) ? page : "status";
 }
 
+function syncMainMenuDisclosure() {
+  const expanded = refs.mainMenu.classList.contains("expanded");
+  const compact = window.matchMedia?.("(max-width: 820px)")?.matches === true;
+  refs.menuIndicator.setAttribute("aria-expanded", expanded ? "true" : "false");
+  refs.menuIndicator.setAttribute("aria-label", t(expanded ? "collapseNavigation" : "expandNavigation"));
+  (refs.mainMenu.querySelectorAll?.('a[data-page], .menu-action') || []).forEach((control) => {
+    control.tabIndex = expanded || compact ? 0 : -1;
+  });
+}
+
+function setMainMenuExpanded(expanded) {
+  refs.mainMenu.classList.toggle("expanded", Boolean(expanded));
+  syncMainMenuDisclosure();
+}
+
+function toggleMainMenu() {
+  setMainMenuExpanded(!refs.mainMenu.classList.contains("expanded"));
+}
+
+function handleMainMenuKeydown(event) {
+  if (event.key !== "Escape" || !refs.mainMenu.classList.contains("expanded")) return;
+  event.preventDefault();
+  setMainMenuExpanded(false);
+  refs.menuIndicator.focus();
+}
+
 function showPage(page, pushHash = false) {
-  activePage = normalizedActivePage(page);
+  const nextPage = normalizedActivePage(page);
+  if (state && nextPage !== activePage) {
+    syncPageDraft(activePage);
+    restoreStateForPage(nextPage);
+  }
+  activePage = nextPage;
   syncConfigModeLayout();
   syncTargetRuleSectionsVisibility();
   renderCurrentPage();
@@ -611,15 +677,23 @@ function showPage(page, pushHash = false) {
     view.classList.toggle("hidden", view.dataset.page !== activePage);
   });
   document.querySelectorAll(".luci-menu a[data-page]").forEach((link) => {
-    link.classList.toggle("active", link.dataset.page === activePage);
+    const active = link.dataset.page === activePage;
+    link.classList.toggle("active", active);
+    if (active) {
+      link.setAttribute("aria-current", "page");
+    } else {
+      link.removeAttribute("aria-current");
+    }
   });
   scrollActiveNavIntoView();
   updatePageHeading();
+  if (pushHash) refs.pageTitle.focus();
   if (pushHash && location.hash !== `#${activePage}`) {
     history.pushState(null, "", `#${activePage}`);
   } else if (!pushHash && page !== activePage && location.hash === `#${page}`) {
     history.replaceState(null, "", `#${activePage}`);
   }
+  if (pushHash && window.matchMedia("(max-width: 820px)").matches) setMainMenuExpanded(false);
   ensureConfigCodeEditorsForPage(activePage);
   updateSaveAvailability();
   refreshStatusStatsIfVisible();
@@ -646,7 +720,9 @@ function syncUnifiedConfigTabs() {
   });
   document.querySelectorAll("[data-unified-config-panel]").forEach((panel) => {
     const available = panel.dataset.unifiedConfigPanel !== "rules" || compiled;
-    panel.classList.toggle("hidden", !available || panel.dataset.unifiedConfigPanel !== activeUnifiedConfigTab);
+    const active = available && panel.dataset.unifiedConfigPanel === activeUnifiedConfigTab;
+    panel.classList.toggle("hidden", !active);
+    panel.setAttribute("aria-hidden", active ? "false" : "true");
   });
 }
 
@@ -673,31 +749,52 @@ function handleUnifiedConfigTabKeydown(event) {
   nextTab.focus();
 }
 
+function syncSectionTabs(target, nextTab) {
+  const tabAttribute = `data-${target}-tab`;
+  const panelAttribute = `data-${target}-panel`;
+  document.querySelectorAll(`[${tabAttribute}]`).forEach((button) => {
+    const active = button.getAttribute(tabAttribute) === nextTab && !button.classList.contains("hidden");
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-selected", active ? "true" : "false");
+    button.tabIndex = active ? 0 : -1;
+  });
+  document.querySelectorAll(`[${panelAttribute}]`).forEach((panel) => {
+    const active = panel.getAttribute(panelAttribute) === nextTab;
+    panel.classList.toggle("hidden", !active);
+    panel.setAttribute("aria-hidden", active ? "false" : "true");
+  });
+}
+
+function handleSectionTabKeydown(event, target) {
+  if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+  const tabAttribute = `data-${target}-tab`;
+  const tabs = Array.from(event.currentTarget.closest('[role="tablist"]')?.querySelectorAll(`[${tabAttribute}]`) || [])
+    .filter((button) => !button.classList.contains("hidden"));
+  const currentIndex = tabs.indexOf(event.currentTarget);
+  if (currentIndex < 0 || tabs.length === 0) return;
+  let nextIndex = currentIndex;
+  if (event.key === "ArrowLeft") nextIndex = (currentIndex - 1 + tabs.length) % tabs.length;
+  if (event.key === "ArrowRight") nextIndex = (currentIndex + 1) % tabs.length;
+  if (event.key === "Home") nextIndex = 0;
+  if (event.key === "End") nextIndex = tabs.length - 1;
+  event.preventDefault();
+  const nextTab = tabs[nextIndex];
+  const show = { surge: showSurgeTab, clash: showClashTab, stash: showStashTab }[target];
+  show?.(nextTab.getAttribute(tabAttribute));
+  nextTab.focus();
+}
+
 function showSurgeTab(tab) {
   const requestedTab = ["general", "host", "urlRewrite", "mapLocal", "script", "mitm", "tailscale", "ponte", "rule"].includes(tab) ? tab : "general";
   const nextTab = isRuleSetModeEnabled() && requestedTab === "rule" ? "general" : requestedTab;
-  document.querySelectorAll("[data-surge-tab]").forEach((button) => {
-    const active = button.dataset.surgeTab === nextTab;
-    button.classList.toggle("active", active);
-    button.setAttribute("aria-selected", active ? "true" : "false");
-  });
-  document.querySelectorAll("[data-surge-panel]").forEach((panel) => {
-    panel.classList.toggle("hidden", panel.dataset.surgePanel !== nextTab);
-  });
+  syncSectionTabs("surge", nextTab);
   ensureConfigCodeEditorsForPage("surge");
 }
 
 function showClashTab(tab) {
   const requestedTab = ["general", "dns", "providers", "rules"].includes(tab) ? tab : "general";
   const nextTab = isRuleSetModeEnabled() && ["providers", "rules"].includes(requestedTab) ? "general" : requestedTab;
-  document.querySelectorAll("[data-clash-tab]").forEach((button) => {
-    const active = button.dataset.clashTab === nextTab;
-    button.classList.toggle("active", active);
-    button.setAttribute("aria-selected", active ? "true" : "false");
-  });
-  document.querySelectorAll("[data-clash-panel]").forEach((panel) => {
-    panel.classList.toggle("hidden", panel.dataset.clashPanel !== nextTab);
-  });
+  syncSectionTabs("clash", nextTab);
   if (state && nextTab === "rules") reconcileClashRulesWithProviders();
   ensureConfigCodeEditorsForPage("clash");
 }
@@ -705,14 +802,7 @@ function showClashTab(tab) {
 function showStashTab(tab) {
   const requestedTab = ["general", "host", "urlRewrite", "script", "mitm", "rule"].includes(tab) ? tab : "general";
   const nextTab = isRuleSetModeEnabled() && requestedTab === "rule" ? "general" : requestedTab;
-  document.querySelectorAll("[data-stash-tab]").forEach((button) => {
-    const active = button.dataset.stashTab === nextTab;
-    button.classList.toggle("active", active);
-    button.setAttribute("aria-selected", active ? "true" : "false");
-  });
-  document.querySelectorAll("[data-stash-panel]").forEach((panel) => {
-    panel.classList.toggle("hidden", panel.dataset.stashPanel !== nextTab);
-  });
+  syncSectionTabs("stash", nextTab);
   ensureConfigCodeEditorsForPage("stash");
 }
 
@@ -732,9 +822,40 @@ async function request(path, options = {}) {
   });
   if (!response.ok) {
     const body = await response.json().catch(() => ({}));
-    throw new Error(body.error || `HTTP ${response.status}`);
+    const error = new Error(body.error || `HTTP ${response.status}`);
+    error.status = response.status;
+    error.retryAfter = response.headers.get("retry-after") || "";
+    throw error;
   }
   return response.json();
+}
+
+function configSaveRetryDelayMilliseconds(error) {
+  const value = typeof error?.retryAfter === "string" ? error.retryAfter.trim() : "";
+  let delay = value && /^\d+(?:\.\d+)?$/.test(value) ? Number(value) * 1000 : Number.NaN;
+  if (!Number.isFinite(delay) && value) {
+    const retryAt = Date.parse(value);
+    if (Number.isFinite(retryAt)) delay = retryAt - Date.now();
+  }
+  if (!Number.isFinite(delay) || delay < 0) delay = 2000;
+  return Math.min(5000, Math.max(250, delay));
+}
+
+async function requestConfigSave(patch, sessionVersion = clientSessionVersion) {
+  const options = { method: "PATCH", body: JSON.stringify(patch) };
+  try {
+    return await request("/api/config", options);
+  } catch (error) {
+    if (error?.status !== 429 || sessionVersion !== clientSessionVersion) throw error;
+    await new Promise((resolve) => window.setTimeout(resolve, configSaveRetryDelayMilliseconds(error)));
+    if (sessionVersion !== clientSessionVersion) return null;
+    return request("/api/config", options);
+  }
+}
+
+function syncLogoutButtonState() {
+  refs.logoutBtn.disabled = logoutInFlight || configSaveInFlight || rotateTokenInFlight;
+  refs.logoutBtn.setAttribute("aria-busy", logoutInFlight ? "true" : "false");
 }
 
 async function boot() {
@@ -764,6 +885,84 @@ function showWorkspace() {
   showPage(activePage);
 }
 
+function clearClientSession() {
+  clientSessionVersion += 1;
+  stopTelegramBindPolling();
+  if (saveStatusResetTimer) window.clearTimeout(saveStatusResetTimer);
+  saveStatusResetTimer = 0;
+  statusStatsRefreshVersion += 1;
+  statusStatsRefreshPromise = null;
+  pageDrafts.clear();
+  pendingPageSaveDrafts.clear();
+  renderedPages.clear();
+  unifiedCommonDraft = null;
+  state = null;
+  lastSavedState = null;
+  fetchStats = null;
+  systemStatus = null;
+  ruleSetStatus = null;
+  currentReadToken = "";
+  currentPreviewContent = "";
+  previewLoadingTarget = "";
+  refs.adminToken.value = "";
+  [
+    refs.links,
+    refs.previewWarnings,
+    refs.tokenRotationStatus,
+    refs.telegramBindStatus,
+    refs.fetchRecordsTableBody,
+    refs.sourcesBody,
+    refs.proxyNodesBody,
+    refs.groupsBody,
+    refs.ruleSetRulesBody,
+    refs.surgeTailscaleNodeRows,
+    refs.surgeHostRows,
+    refs.surgeUrlRewriteRows,
+    refs.surgeMapLocalRows,
+    refs.surgeRuleRows,
+    refs.clashRuleProviderRows,
+    refs.clashRuleRows
+  ].forEach((container) => container?.replaceChildren());
+  refs.tokenRotationStatus.classList.add("hidden");
+  refs.summarySources.textContent = "-";
+  refs.summaryGroups.textContent = "-";
+  refs.summarySourceCache.textContent = "-";
+  refs.summaryRuleSetCache.textContent = "-";
+  refs.systemCurrentVersion.textContent = "-";
+  refs.systemUpdateStatus.textContent = "-";
+  refs.fetchRecordsPageInfo.textContent = "";
+  setPreviewOutput("", true);
+  for (const editor of configCodeEditors.values()) editor.destroy();
+  configCodeEditors.clear();
+  document.querySelectorAll("#workspace input, #workspace textarea").forEach((control) => {
+    if (control instanceof HTMLInputElement && ["checkbox", "radio", "file"].includes(control.type)) {
+      control.checked = false;
+      if (control.type === "file") control.value = "";
+    } else {
+      control.value = "";
+    }
+  });
+  setMainMenuExpanded(false);
+  showLogin();
+}
+
+async function logout() {
+  if (logoutInFlight || configSaveInFlight || rotateTokenInFlight) return;
+  if (hasAnyUnsavedChanges() && !window.confirm(t("logoutUnsavedConfirm"))) return;
+  logoutInFlight = true;
+  syncLogoutButtonState();
+  try {
+    await request("/api/logout", { method: "POST", body: "{}" });
+    clearClientSession();
+    window.location.assign("/");
+  } catch (error) {
+    window.alert(`${t("logoutFailed")}${error instanceof Error ? error.message : String(error)}`);
+  } finally {
+    logoutInFlight = false;
+    syncLogoutButtonState();
+  }
+}
+
 async function login() {
   await request("/api/login", {
     method: "POST",
@@ -784,6 +983,9 @@ async function loadConfig() {
   ]);
   state = config;
   lastSavedState = cloneConfig(config);
+  pageDrafts.clear();
+  pendingPageSaveDrafts.clear();
+  unifiedCommonDraft = null;
   fetchStats = stats;
   geoIpMmdbStatus = mmdbStatus;
   systemStatus = system;
@@ -956,6 +1158,7 @@ function renderUnifiedCommonConfig() {
   const realIpDomainsChanged = JSON.stringify(common.realIpDomains) !== JSON.stringify(baselineRealIpDomains);
   const invalidRealIpDomains = realIpDomainsChanged ? invalidUnifiedRealIpDomains(common.realIpDomains.flat()) : [];
   refs.unifiedRealIpDomains.setCustomValidity(invalidRealIpDomains.length > 0 ? t("unifiedRealIpDomainsInvalid") : "");
+  refs.unifiedRealIpDomains.setAttribute("aria-invalid", invalidRealIpDomains.length > 0 ? "true" : "false");
   refs.unifiedRealIpDomainsInvalid.classList.toggle("hidden", invalidRealIpDomains.length === 0);
   syncConfigCodeEditors();
 }
@@ -987,6 +1190,7 @@ function setUnifiedRealIpDomains(value) {
   refs.unifiedRealIpDomains.dataset.mixed = "false";
   refs.unifiedRealIpDomainsMixed.classList.add("hidden");
   refs.unifiedRealIpDomains.setCustomValidity(invalid.length > 0 ? t("unifiedRealIpDomainsInvalid") : "");
+  refs.unifiedRealIpDomains.setAttribute("aria-invalid", invalid.length > 0 ? "true" : "false");
   refs.unifiedRealIpDomainsInvalid.classList.toggle("hidden", invalid.length === 0);
   updateSaveAvailability();
 }
@@ -1025,12 +1229,10 @@ function syncConfigModeLayout() {
   const unifiedLink = refs.mainMenu.querySelector('a[data-page="unified-config"]');
   unifiedLink?.classList.remove("hidden");
   unifiedLink?.setAttribute("aria-hidden", "false");
-  if (unifiedLink) unifiedLink.tabIndex = 0;
   for (const target of ["surge", "clash", "stash"]) {
     const link = refs.mainMenu.querySelector(`a[data-page="${target}"]`);
     link?.classList.remove("hidden");
     link?.setAttribute("aria-hidden", "false");
-    if (link) link.tabIndex = 0;
   }
   document.querySelectorAll("[data-unified-common-target-control]").forEach((control) => {
     control.classList.add("hidden");
@@ -1038,11 +1240,39 @@ function syncConfigModeLayout() {
   document.querySelectorAll("[data-unified-common-target-group]").forEach((group) => {
     group.classList.add("unified-common-targets-hidden");
   });
+  syncMainMenuDisclosure();
   renderUnifiedCommonConfig();
+}
+
+function managedBaseUrlValidationKey(value) {
+  const normalized = String(value || "").trim();
+  if (!normalized) return "managedBaseUrlRequired";
+  try {
+    const url = new URL(normalized);
+    if (!url.hostname || (url.protocol !== "http:" && url.protocol !== "https:")) return "managedBaseUrlInvalid";
+    const path = url.pathname.replace(/\/+$/, "") || "/";
+    if (path === "/") return "managedBaseUrlRoot";
+    if (
+      path === "/api" || path.startsWith("/api/")
+      || path === "/vendor" || path.startsWith("/vendor/")
+      || RESERVED_MANAGED_BASE_PATHS.has(path)
+    ) return "managedBaseUrlReserved";
+    return "";
+  } catch {
+    return "managedBaseUrlInvalid";
+  }
+}
+
+function validateManagedBaseUrlInput() {
+  const errorKey = managedBaseUrlValidationKey(refs.managedBaseUrl.value);
+  const validation = { errors: errorKey ? [t(errorKey)] : [], warnings: [] };
+  renderValidationMessages(refs.managedBaseUrlValidation, validation);
+  return validation;
 }
 
 function renderSettings() {
   refs.managedBaseUrl.value = state.settings.managedBaseUrl;
+  validateManagedBaseUrlInput();
   renderRuleSetMode();
   refs.userAgentSurge.value = state.settings.userAgentSurge;
   refs.userAgentClash.value = state.settings.userAgentClash;
@@ -1253,13 +1483,13 @@ function parseClashRuleProvidersYaml(value) {
     if (!trimmed || trimmed.startsWith("#")) continue;
     const indent = yamlIndent(rawLine);
     if (indent <= baseIndent) {
-      errors.push(`第 ${index + 1} 行只能包含 rule-providers 配置块。`);
+      errors.push(formatMessage("yamlRuleProvidersOnly", { line: index + 1 }));
       current = null;
       continue;
     }
     const pair = parseYamlPair(trimmed);
     if (!pair || !pair.key) {
-      errors.push(`第 ${index + 1} 行不是有效的 YAML 键值。`);
+      errors.push(formatMessage("yamlInvalidKeyValue", { line: index + 1 }));
       continue;
     }
     const value = stripYamlComment(pair.value);
@@ -1270,7 +1500,7 @@ function parseClashRuleProvidersYaml(value) {
       continue;
     }
     if (!current || indent <= currentIndent) {
-      errors.push(`第 ${index + 1} 行规则集字段必须写在规则集名称下面。`);
+      errors.push(formatMessage("yamlRuleProviderFieldNested", { line: index + 1 }));
       continue;
     }
     if (["type", "behavior", "url", "path", "interval"].includes(pair.key)) {
@@ -1381,37 +1611,31 @@ function validateClashRuleProviderRows(providers, errors = []) {
   const names = new Set();
   providers.forEach((provider, index) => {
     const rowNumber = index + 1;
+    const providerLabel = provider.name || formatMessage("ruleProviderItem", { index: rowNumber });
     if (!provider.name) {
-      validation.errors.push(`第 ${rowNumber} 个规则集缺少名称。`);
+      validation.errors.push(formatMessage("ruleProviderMissingName", { index: rowNumber }));
     } else if (names.has(provider.name)) {
-      validation.errors.push(`规则集名称 ${provider.name} 重复。`);
+      validation.errors.push(formatMessage("ruleProviderDuplicateName", { name: provider.name }));
     }
     names.add(provider.name);
     if (!CLASH_RULE_PROVIDER_TYPES.includes(provider.type)) {
-      validation.errors.push(`${provider.name || `第 ${rowNumber} 个规则集`} 的 type 只能是 http 或 file。`);
+      validation.errors.push(formatMessage("ruleProviderInvalidType", { provider: providerLabel }));
     }
     if (!CLASH_RULE_PROVIDER_BEHAVIORS.includes(provider.behavior)) {
-      validation.errors.push(`${provider.name || `第 ${rowNumber} 个规则集`} 的 behavior 只能是 classical、domain 或 ipcidr。`);
+      validation.errors.push(formatMessage("ruleProviderInvalidBehavior", { provider: providerLabel }));
     }
     if (provider.type === "http" && !provider.url) {
-      validation.errors.push(`${provider.name || `第 ${rowNumber} 个规则集`} 的 http 类型必须填写 URL。`);
+      validation.errors.push(formatMessage("ruleProviderMissingHttpUrl", { provider: providerLabel }));
     }
     if (provider.interval && (!/^\d+$/.test(provider.interval) || Number(provider.interval) <= 0)) {
-      validation.errors.push(`${provider.name || `第 ${rowNumber} 个规则集`} 的更新间隔必须是正整数。`);
+      validation.errors.push(formatMessage("ruleProviderInvalidInterval", { provider: providerLabel }));
     }
   });
   return validation;
 }
 
 function renderClashRuleProviderValidation(validation) {
-  const messages = [
-    ...(validation?.errors || []).map((message) => ({ type: "error", message })),
-    ...(validation?.warnings || []).map((message) => ({ type: "warning", message }))
-  ];
-  refs.clashRuleProviderValidation.classList.toggle("hidden", messages.length === 0);
-  refs.clashRuleProviderValidation.innerHTML = messages
-    .map(({ type, message }) => `<div class="${type}">${escapeHtml(message)}</div>`)
-    .join("");
+  renderValidationMessages(refs.clashRuleProviderValidation, validation);
 }
 
 function validateCurrentClashRuleProviders() {
@@ -1504,7 +1728,8 @@ function handleClashRuleProviderListChange(event) {
   updateClashRuleProviderOutput();
 }
 
-const CLASH_BUILT_IN_POLICIES = ["Proxy", "DIRECT", "REJECT", "REJECT-DROP", "PASS", "GLOBAL"];
+const CLASH_BUILT_IN_POLICIES = ["Proxy", "DIRECT", "REJECT", "REJECT-DROP", "PASS", "PASS-RULE", "COMPATIBLE", "GLOBAL"];
+const STASH_BUILT_IN_POLICIES = ["Proxy", "DIRECT", "REJECT", "REJECT-DROP", "PASS", "GLOBAL"];
 const CLASH_RULE_TYPES = [
   "DOMAIN",
   "DOMAIN-SUFFIX",
@@ -1520,6 +1745,14 @@ const CLASH_RULE_TYPES = [
   "DST-PORT",
   "PROCESS-NAME",
   "PROCESS-PATH",
+  "PROCESS-NAME-REGEX",
+  "NETWORK",
+  "DSCP",
+  "IN-PORT",
+  "SRC-IP-ASN",
+  "AND",
+  "OR",
+  "NOT",
   "MATCH",
   "FINAL"
 ];
@@ -1541,14 +1774,14 @@ function parseClashRulesYaml(value) {
 
   const firstPair = parseYamlPair(lines[firstContentIndex].trim());
   if (firstPair?.key !== "rules") {
-    errors.push(`第 ${firstContentIndex + 1} 行必须以 rules: 开始。`);
+    errors.push(formatMessage("yamlRulesStart", { line: firstContentIndex + 1 }));
     return { rules, errors };
   }
 
   const baseIndent = yamlIndent(lines[firstContentIndex]);
   const inlineValue = stripYamlComment(firstPair.value);
   if (inlineValue && inlineValue !== "[]") {
-    errors.push(`第 ${firstContentIndex + 1} 行 rules 必须使用 YAML 列表形式。`);
+    errors.push(formatMessage("yamlRulesList", { line: firstContentIndex + 1 }));
   }
 
   for (let index = firstContentIndex + 1; index < lines.length; index += 1) {
@@ -1557,16 +1790,16 @@ function parseClashRulesYaml(value) {
     if (!trimmed || trimmed.startsWith("#")) continue;
     const indent = yamlIndent(rawLine);
     if (indent <= baseIndent) {
-      errors.push(`第 ${index + 1} 行只能包含 rules 配置块。`);
+      errors.push(formatMessage("yamlRulesOnly", { line: index + 1 }));
       continue;
     }
     if (!trimmed.startsWith("-")) {
-      errors.push(`第 ${index + 1} 行必须是 YAML 列表项。`);
+      errors.push(formatMessage("yamlRulesListItem", { line: index + 1 }));
       continue;
     }
     const item = trimmed.slice(1).trim();
     if (!item) {
-      errors.push(`第 ${index + 1} 行规则不能为空。`);
+      errors.push(formatMessage("yamlRuleEmpty", { line: index + 1 }));
       continue;
     }
     rules.push(unquoteYamlScalar(item));
@@ -1588,6 +1821,12 @@ function clashRuleProviderNames() {
 
 function clashPolicyCandidates() {
   return [...new Set([...groupEntries().map(([name]) => name), ...CLASH_BUILT_IN_POLICIES])];
+}
+
+function configuredSurgeTailscalePolicies() {
+  return (state?.surge?.tailscaleNodes || [])
+    .filter((node) => node.enabled !== false && node.name && node.authKey)
+    .map((node) => node.name);
 }
 
 function normalizeClashRulePolicy(policy) {
@@ -1642,11 +1881,11 @@ function normalizeRuleOptions(value, allowed, optionOrder) {
 function validateRuleOptions(options, allowed, optionOrder) {
   const values = (options || []).map((option) => option.trim().toLowerCase()).filter(Boolean);
   const uniqueValues = new Set(values);
-  if (uniqueValues.size !== values.length) return "附加参数不能重复";
+  if (uniqueValues.size !== values.length) return t("ruleOptionDuplicate");
   const invalid = values.filter((option) => !allowed.has(option) || !optionOrder.includes(option));
   if (invalid.length === 0) return "";
   const allowedText = [...allowed].join(", ") || t("surgeRuleOptionNone");
-  return `${t("surgeRuleOptionInvalid")} 可用参数：${allowedText}。`;
+  return `${t("surgeRuleOptionInvalid")} ${formatMessage("ruleOptionAvailable", { allowed: allowedText })}`;
 }
 
 function normalizeClashRuleOptions(value, kind, ruleType) {
@@ -1668,60 +1907,67 @@ function renderClashRuleOptionChoices(kind, ruleType, selected) {
     .join("");
 }
 
-function validateClashRuleLine(line, lineNumber) {
+function validateClashRuleLine(line, lineNumber, options = {}) {
   const trimmed = String(line || "").trim();
   const result = { errors: [], warnings: [] };
   if (!trimmed || trimmed.startsWith("#")) return result;
   const parts = splitSurgeRuleLine(trimmed);
   const type = (parts[0] || "").trim().toUpperCase();
   if (!type) {
-    result.errors.push(`第 ${lineNumber} 行缺少规则类型`);
+    result.errors.push(formatMessage("ruleLineMissingType", { line: lineNumber }));
     return result;
   }
   if (parts.some((part) => !part.trim())) {
-    result.errors.push(`第 ${lineNumber} 行存在空参数`);
+    result.errors.push(formatMessage("ruleLineEmptyPart", { line: lineNumber }));
     return result;
   }
 
   let policy = "";
   if (type === "RULE-SET") {
     if (parts.length < 3) {
-      result.errors.push(`第 ${lineNumber} 行规则集语法应为 RULE-SET,规则集名称,策略`);
+      result.errors.push(formatMessage("ruleLineRuleSetSyntax", { line: lineNumber, syntax: t("clashRuleSetSyntax") }));
       return result;
     }
     const providerName = parts[1] || "";
-    if (!clashRuleProviderNames().includes(providerName)) {
-      result.errors.push(`第 ${lineNumber} 行${t("clashRuleUnknownProvider")}`);
+    const providerNames = options.providerNames || new Set(clashRuleProviderNames());
+    if (!providerNames.has(providerName)) {
+      result.errors.push(formatMessage("ruleLineMessage", { line: lineNumber, message: t("clashRuleUnknownProvider") }));
     }
     policy = parts[2] || "";
     const optionError = validateClashRuleOptions(parts.slice(3), "rule-set", "RULE-SET");
-    if (optionError) result.errors.push(`第 ${lineNumber} 行${optionError}`);
+    if (optionError) result.errors.push(formatMessage("ruleLineMessage", { line: lineNumber, message: optionError }));
   } else if (CLASH_VALUELESS_RULE_TYPES.has(type)) {
     if (parts.length < 2) {
-      result.errors.push(`第 ${lineNumber} 行 ${type} 规则缺少策略出口`);
+      result.errors.push(formatMessage("ruleLineValuelessMissingPolicy", { line: lineNumber, type }));
       return result;
     }
     policy = parts[1] || "";
     const optionError = validateClashRuleOptions(parts.slice(2), "single", type);
-    if (optionError) result.errors.push(`第 ${lineNumber} 行${optionError}`);
+    if (optionError) result.errors.push(formatMessage("ruleLineMessage", { line: lineNumber, message: optionError }));
   } else {
     if (!CLASH_RULE_TYPES.includes(type)) {
-      result.errors.push(`第 ${lineNumber} 行规则类型 ${type} 不受支持`);
+      result.errors.push(formatMessage("ruleLineUnsupportedType", { line: lineNumber, type }));
       return result;
     }
     if (parts.length < 3) {
-      result.errors.push(`第 ${lineNumber} 行语法应为 类型,匹配值,策略`);
+      result.errors.push(formatMessage("ruleLineValueSyntax", { line: lineNumber }));
       return result;
     }
     policy = parts[2] || "";
     const optionError = validateClashRuleOptions(parts.slice(3), "single", type);
-    if (optionError) result.errors.push(`第 ${lineNumber} 行${optionError}`);
+    if (optionError) result.errors.push(formatMessage("ruleLineMessage", { line: lineNumber, message: optionError }));
   }
 
   if (!isValidClashPolicy(policy)) {
-    result.errors.push(`第 ${lineNumber} 行策略出口格式无效`);
-  } else if (!isKnownClashPolicy(policy)) {
-    result.errors.push(`第 ${lineNumber} 行${t("clashRuleUnknownPolicy")}`);
+    result.errors.push(formatMessage("ruleLineInvalidPolicy", { line: lineNumber }));
+  } else {
+    const policies = options.policies || new Set(clashPolicyCandidates());
+    if (!policies.has(policy)) {
+      result.errors.push(formatMessage("ruleLineMessage", {
+        line: lineNumber,
+        message: t(options.unknownPolicyKey || "clashRuleUnknownPolicy")
+      }));
+    }
   }
   return result;
 }
@@ -1757,14 +2003,7 @@ function validateClashRuleLines(lines, errors = []) {
 }
 
 function renderClashRuleValidation(validation) {
-  const messages = [
-    ...(validation?.errors || []).map((message) => ({ type: "error", message })),
-    ...(validation?.warnings || []).map((message) => ({ type: "warning", message }))
-  ];
-  refs.clashRuleValidation.classList.toggle("hidden", messages.length === 0);
-  refs.clashRuleValidation.innerHTML = messages
-    .map(({ type, message }) => `<div class="${type}">${escapeHtml(message)}</div>`)
-    .join("");
+  renderValidationMessages(refs.clashRuleValidation, validation);
 }
 
 function currentClashRuleLines() {
@@ -1790,6 +2029,19 @@ function renderValidationMessages(container, validation) {
   container.innerHTML = messages
     .map(({ type, message }) => `<div class="${type}">${escapeHtml(message)}</div>`)
     .join("");
+  const hasErrors = (validation?.errors || []).length > 0;
+  container.setAttribute("role", hasErrors ? "alert" : "status");
+  container.setAttribute("aria-live", hasErrors ? "assertive" : "polite");
+  container.setAttribute("aria-atomic", "true");
+  const field = container.closest(".field");
+  field?.querySelectorAll("input, select, textarea").forEach((control) => {
+    control.setAttribute("aria-invalid", hasErrors ? "true" : "false");
+    if (hasErrors && container.id) {
+      control.setAttribute("aria-errormessage", container.id);
+    } else {
+      control.removeAttribute("aria-errormessage");
+    }
+  });
 }
 
 function validateCurrentStashHosts() {
@@ -1827,28 +2079,16 @@ function validateCurrentStashRules() {
   const parsed = parseClashRulesYaml(refs.stashRules.value);
   const validation = { errors: [...parsed.errors], warnings: [] };
   const providerNames = new Set(stashRuleProviderNames());
-  const policies = new Set([...groupEntries().map(([name]) => name), ...CLASH_BUILT_IN_POLICIES]);
+  const policies = new Set([...groupEntries().map(([name]) => name), ...STASH_BUILT_IN_POLICIES]);
   const effectiveRules = effectiveClashRuleEntries(parsed.rules);
   parsed.rules.forEach((line, index) => {
-    const parts = splitSurgeRuleLine(line);
-    const type = (parts[0] || "").trim().toUpperCase();
-    if (!type || type.startsWith("#")) return;
-    if (type === "RULE-SET") {
-      const provider = (parts[1] || "").trim();
-      const policy = (parts[2] || "").trim();
-      if (!provider || !providerNames.has(provider)) {
-        validation.errors.push(`第 ${index + 1} 行${t("clashRuleUnknownProvider")}`);
-      }
-      if (!policy || !policies.has(policy)) {
-        validation.errors.push(`第 ${index + 1} 行${t("clashRuleUnknownPolicy")}`);
-      }
-      return;
-    }
-    const targetIndex = CLASH_VALUELESS_RULE_TYPES.has(type) ? 1 : 2;
-    const policy = (parts[targetIndex] || "").trim();
-    if (!policy || !policies.has(policy)) {
-      validation.errors.push(`第 ${index + 1} 行${t("clashRuleUnknownPolicy")}`);
-    }
+    const result = validateClashRuleLine(line, index + 1, {
+      providerNames,
+      policies,
+      unknownPolicyKey: "stashRuleUnknownPolicy"
+    });
+    validation.errors.push(...result.errors);
+    validation.warnings.push(...result.warnings);
   });
   const fallbackRules = effectiveRules.filter((rule) => CLASH_VALUELESS_RULE_TYPES.has(rule.type));
   if (fallbackRules.length === 0) {
@@ -2189,13 +2429,28 @@ const GROUP_OPTION_FIELDS = new Set(["url", "interval"]);
 const NAME_LOCKED_GROUP_NAMES = new Set(["Proxy"]);
 const SUBNET_PARAMETERS = ["SSID", "BSSID", "ROUTER", "TYPE"];
 const SUBNET_NETWORK_TYPES = ["WIFI", "WIRED", "CELLULAR"];
-const SUBNET_BUILT_IN_POLICIES = ["Proxy", "DIRECT", "REJECT", "REJECT-DROP", "REJECT-NO-DROP", "REJECT-TINYGIF"];
+const SUBNET_BUILT_IN_POLICIES = [
+  "Proxy",
+  "DIRECT",
+  "CELLULAR",
+  "CELLULAR-ONLY",
+  "HYBRID",
+  "NO-HYBRID",
+  "REJECT",
+  "REJECT-DROP",
+  "REJECT-NO-DROP",
+  "REJECT-TINYGIF"
+];
 const SURGE_BUILT_IN_POLICY_LABELS = {
-  DIRECT: "直连 (DIRECT)",
-  REJECT: "拒绝请求 (REJECT)",
-  "REJECT-DROP": "静默丢弃 (REJECT-DROP)",
-  "REJECT-NO-DROP": "拒绝但不自动静默丢弃 (REJECT-NO-DROP)",
-  "REJECT-TINYGIF": "返回 1px 透明图 (REJECT-TINYGIF)"
+  DIRECT: "policyDirect",
+  CELLULAR: "policyCellular",
+  "CELLULAR-ONLY": "policyCellularOnly",
+  HYBRID: "policyHybrid",
+  "NO-HYBRID": "policyNoHybrid",
+  REJECT: "policyReject",
+  "REJECT-DROP": "policyRejectDrop",
+  "REJECT-NO-DROP": "policyRejectNoDrop",
+  "REJECT-TINYGIF": "policyRejectTinyGif"
 };
 const SURGE_RULE_TYPES = [
   "DOMAIN",
@@ -2203,6 +2458,7 @@ const SURGE_RULE_TYPES = [
   "DOMAIN-KEYWORD",
   "IP-CIDR",
   "IP-CIDR6",
+  "IP-ASN",
   "GEOIP",
   "PROCESS-NAME",
   "USER-AGENT",
@@ -2214,7 +2470,7 @@ const SURGE_RULE_TYPES = [
   "NOT",
   "FINAL"
 ];
-const SURGE_VALUELESS_RULE_TYPES = new Set(["FINAL", "MATCH"]);
+const SURGE_VALUELESS_RULE_TYPES = new Set(["FINAL"]);
 const SURGE_RULE_SET_TYPES = new Set(["RULE-SET", "DOMAIN-SET"]);
 const SURGE_RULE_OPTION_ORDER = ["no-resolve", "extended-matching", "dns-failed"];
 const SURGE_RULE_SET_OPTIONS = new Set(["no-resolve", "extended-matching"]);
@@ -2228,6 +2484,7 @@ const SURGE_VALUE_RULE_TYPES = new Set([
   "DOMAIN-KEYWORD",
   "IP-CIDR",
   "IP-CIDR6",
+  "IP-ASN",
   "GEOIP",
   "PROCESS-NAME",
   "USER-AGENT",
@@ -2245,6 +2502,25 @@ const SURGE_VALUE_RULE_TYPES = new Set([
   "OR",
   "NOT"
 ]);
+
+function isReservedClientPolicyName(name) {
+  const normalized = String(name || "").trim().toUpperCase();
+  if (!normalized || normalized === "PROXY") return false;
+  return new Set([
+    ...SUBNET_BUILT_IN_POLICIES,
+    ...CLASH_BUILT_IN_POLICIES,
+    ...STASH_BUILT_IN_POLICIES
+  ].map((policy) => policy.toUpperCase())).has(normalized);
+}
+
+function groupNameValidationKey(name) {
+  const value = String(name || "");
+  if (!value.trim() || value !== value.trim() || value.length > 256 || /[=,\r\n[\]\u0000-\u001f\u007f]/.test(value)) {
+    return "groupNameInvalid";
+  }
+  return isReservedClientPolicyName(value) ? "groupNameReserved" : "";
+}
+
 function isBuiltInGroupName(name) {
   return NAME_LOCKED_GROUP_NAMES.has(String(name || "").trim());
 }
@@ -2274,14 +2550,7 @@ function setGroupDisabled(name, disabled) {
 }
 
 function renderSurgeHostValidation(validation) {
-  const messages = [
-    ...(validation?.errors || []).map((message) => ({ type: "error", message })),
-    ...(validation?.warnings || []).map((message) => ({ type: "warning", message }))
-  ];
-  refs.surgeHostValidation.classList.toggle("hidden", messages.length === 0);
-  refs.surgeHostValidation.innerHTML = messages
-    .map(({ type, message }) => `<div class="${type}">${escapeHtml(message)}</div>`)
-    .join("");
+  renderValidationMessages(refs.surgeHostValidation, validation);
 }
 
 function currentSurgeHostLines() {
@@ -2409,14 +2678,7 @@ function handleSurgeHostListClick(event) {
 }
 
 function renderSurgeUrlRewriteValidation(validation) {
-  const messages = [
-    ...(validation?.errors || []).map((message) => ({ type: "error", message })),
-    ...(validation?.warnings || []).map((message) => ({ type: "warning", message }))
-  ];
-  refs.surgeUrlRewriteValidation.classList.toggle("hidden", messages.length === 0);
-  refs.surgeUrlRewriteValidation.innerHTML = messages
-    .map(({ type, message }) => `<div class="${type}">${escapeHtml(message)}</div>`)
-    .join("");
+  renderValidationMessages(refs.surgeUrlRewriteValidation, validation);
 }
 
 function currentSurgeUrlRewriteLines() {
@@ -2580,14 +2842,7 @@ function handleSurgeUrlRewriteListChange(event) {
 }
 
 function renderSurgeMapLocalValidation(validation) {
-  const messages = [
-    ...(validation?.errors || []).map((message) => ({ type: "error", message })),
-    ...(validation?.warnings || []).map((message) => ({ type: "warning", message }))
-  ];
-  refs.surgeMapLocalValidation.classList.toggle("hidden", messages.length === 0);
-  refs.surgeMapLocalValidation.innerHTML = messages
-    .map(({ type, message }) => `<div class="${type}">${escapeHtml(message)}</div>`)
-    .join("");
+  renderValidationMessages(refs.surgeMapLocalValidation, validation);
 }
 
 function currentSurgeMapLocalLines() {
@@ -2779,7 +3034,38 @@ function splitSurgeRuleLine(line) {
   const parts = [];
   let current = "";
   let depth = 0;
-  for (const char of String(line || "")) {
+  let quote = "";
+  let escaped = false;
+  const value = String(line || "");
+  for (let index = 0; index < value.length; index += 1) {
+    const char = value[index];
+    if (escaped) {
+      current += char;
+      escaped = false;
+      continue;
+    }
+    if (char === "\\" && quote) {
+      current += char;
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      current += char;
+      if (char === quote) {
+        if (value[index + 1] === quote) {
+          current += value[index + 1];
+          index += 1;
+        } else {
+          quote = "";
+        }
+      }
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      quote = char;
+      current += char;
+      continue;
+    }
     if (char === "(") depth += 1;
     if (char === ")") depth = Math.max(0, depth - 1);
     if (char === "," && depth === 0) {
@@ -2824,7 +3110,8 @@ function isSurgeDevicePolicy(policy) {
 }
 
 function renderPolicyLabel(policy) {
-  return SURGE_BUILT_IN_POLICY_LABELS[policy] || policy;
+  const labelKey = SURGE_BUILT_IN_POLICY_LABELS[policy];
+  return labelKey ? t(labelKey) : policy;
 }
 
 function normalizePonteDeviceNames(value) {
@@ -2867,7 +3154,7 @@ function renderSurgeTailscaleNode(node) {
       <label class="surge-tailscale-wide"><span>${escapeHtml(t("surgeTailscaleControlUrl"))}</span><input data-tailscale-field="controlUrl" type="url" value="${escapeHtml(node.controlUrl || "")}" placeholder="https://controlplane.tailscale.com"></label>
       <label><span>${escapeHtml(t("surgeTailscaleHostname"))}</span><input data-tailscale-field="hostname" value="${escapeHtml(node.hostname || "")}"></label>
       <label><span>${escapeHtml(t("surgeTailscaleExitNode"))}</span><input data-tailscale-field="exitNode" value="${escapeHtml(node.exitNode || "none")}" placeholder="none / auto / node name"></label>
-      <label><span>${escapeHtml(t("surgeTailscaleUnderlyingProxy"))}</span><input data-tailscale-field="underlyingProxy" value="${escapeHtml(node.underlyingProxy || "")}" placeholder="DIRECT"></label>
+      <label><span>${escapeHtml(t("surgeTailscaleUnderlyingProxy"))}</span><input data-tailscale-field="underlyingProxy" value="${escapeHtml(node.underlyingProxy || "")}" placeholder="${escapeHtml(t("surgeTailscaleUnderlyingProxyPlaceholder"))}"></label>
       <label><span>${escapeHtml(t("surgeTailscaleDnsServer"))}</span><input data-tailscale-field="dnsServer" value="${escapeHtml((node.dnsServer || []).join(", "))}"></label>
       <label><span>${escapeHtml(t("surgeTailscaleIdleKeepalive"))}</span><input data-tailscale-field="idleKeepalive" type="number" min="-1" max="86400" value="${Number(node.idleKeepalive ?? 600)}"></label>
       <label><span>${escapeHtml(t("surgeTailscaleMtu"))}</span><input data-tailscale-field="mtu" type="number" min="576" max="1420" value="${Number(node.mtu || 1280)}"></label>
@@ -2885,6 +3172,7 @@ function renderSurgeTailscaleNodes(nodes) {
   refs.surgeTailscaleNodeRows.innerHTML = nodes.length
     ? nodes.map(renderSurgeTailscaleNode).join("")
     : `<div class="subnet-rule-empty">${escapeHtml(t("surgeTailscaleEmpty"))}</div>`;
+  validateSurgeTailscaleNodes();
 }
 
 function readSurgeTailscaleNodeRows() {
@@ -2903,7 +3191,9 @@ function readSurgeTailscaleNodeRows() {
       preferIpv6: field("preferIpv6").checked,
       dnsServer: field("dnsServer").value.split(",").map((item) => item.trim()).filter(Boolean),
       mtu: Number(field("mtu").value),
-      underlyingProxy: field("underlyingProxy").value.trim(),
+      underlyingProxy: field("underlyingProxy").value.trim().toUpperCase() === "DIRECT"
+        ? ""
+        : field("underlyingProxy").value.trim(),
       testUrl: field("testUrl").value.trim(),
       testTimeout: Number(field("testTimeout").value),
       enabled: field("enabled").checked
@@ -2911,23 +3201,219 @@ function readSurgeTailscaleNodeRows() {
   });
 }
 
-function validateSurgeTailscaleNodes() {
-  const nodes = readSurgeTailscaleNodeRows();
+function isValidSurgeTailscaleTestUrl(value) {
+  const normalized = String(value || "").trim();
+  if (!normalized) return true;
+  try {
+    const url = new URL(normalized);
+    return url.protocol === "http:" && Boolean(url.hostname);
+  } catch {
+    return false;
+  }
+}
+
+function hasSurgeTailscaleUnderlyingCycle(edges) {
+  const visiting = new Set();
+  const visited = new Set();
+  const visit = (name) => {
+    if (visiting.has(name)) return true;
+    if (visited.has(name)) return false;
+    visiting.add(name);
+    const next = edges.get(name);
+    if (next && visit(next)) return true;
+    visiting.delete(name);
+    visited.add(name);
+    return false;
+  };
+  return [...edges.keys()].some(visit);
+}
+
+function potentialSurgeGroupHasMemberDraft(
+  groupName,
+  spec,
+  activeProxyNames,
+  configuredProxyNames,
+  configuredGroupNames,
+  availableGroups,
+  availableTailscale,
+  hasPotentialUpstreamNodes,
+  builtInPolicies
+) {
+  const [type = "select", ...items] = splitPolicyGroupSpec(spec);
+  if (type === "subnet") return true;
+  for (const item of items) {
+    if (parseAllSelector(item)) {
+      if (activeProxyNames.size > 0 || hasPotentialUpstreamNodes) return true;
+      continue;
+    }
+    if (parseGroupOption(item) || item === groupName || item === "Proxy") continue;
+    if (
+      builtInPolicies.has(item)
+      || activeProxyNames.has(item)
+      || availableGroups.has(item)
+      || availableTailscale.has(item)
+    ) return true;
+    if (configuredProxyNames.has(item) || configuredGroupNames.has(item)) continue;
+    if (hasPotentialUpstreamNodes) return true;
+  }
+  return false;
+}
+
+function resolvePotentialSurgePoliciesDraft(nodes, options) {
+  const groupSpecs = options.groupSpecs || {};
+  const activeGroupNames = new Set(options.activeGroupNames || Object.keys(groupSpecs));
+  const groupEntries = Object.entries(groupSpecs).filter(([name]) => activeGroupNames.has(name));
+  const configuredGroupNames = new Set(Object.keys(groupSpecs));
+  const activeProxyNames = new Set(options.proxyNames || []);
+  const configuredProxyNames = new Set(options.configuredProxyNames || options.proxyNames || []);
+  const activeTailscaleNames = new Set(nodes
+    .filter((node) => node.enabled && node.authKey)
+    .map((node) => node.name));
+  const builtInPolicies = new Set(options.builtInPolicies || SUBNET_BUILT_IN_POLICIES);
+  const availableGroups = new Set();
+  const availableTailscale = new Set();
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const [name, spec] of groupEntries) {
+      if (availableGroups.has(name)) continue;
+      if (name === "Proxy" || potentialSurgeGroupHasMemberDraft(
+        name,
+        spec,
+        activeProxyNames,
+        configuredProxyNames,
+        configuredGroupNames,
+        availableGroups,
+        availableTailscale,
+        options.hasPotentialUpstreamNodes === true,
+        builtInPolicies
+      )) {
+        availableGroups.add(name);
+        changed = true;
+      }
+    }
+    for (const node of nodes) {
+      if (!activeTailscaleNames.has(node.name) || availableTailscale.has(node.name)) continue;
+      const underlying = String(node.underlyingProxy || "").trim();
+      if (
+        !underlying
+        || underlying.toUpperCase() === "DIRECT"
+        || builtInPolicies.has(underlying)
+        || activeProxyNames.has(underlying)
+        || availableGroups.has(underlying)
+        || availableTailscale.has(underlying)
+      ) {
+        availableTailscale.add(node.name);
+        changed = true;
+      }
+    }
+  }
+  return { groups: availableGroups, tailscale: availableTailscale };
+}
+
+function validateSurgeTailscaleNodeList(nodes, options) {
+  options ||= {};
+  const groupNames = new Set(options.groupNames || []);
+  const activeGroupNames = new Set(options.activeGroupNames || options.groupNames || []);
+  const proxyNames = new Set(options.proxyNames || []);
+  const configuredProxyNames = new Set(options.configuredProxyNames || options.proxyNames || []);
+  const builtInPolicies = new Set(options.builtInPolicies || SUBNET_BUILT_IN_POLICIES);
+  const reservedPolicies = new Set(options.reservedPolicies || builtInPolicies);
   const names = new Set();
   const sections = new Set();
-  const valid = nodes.every((node) => {
+  let valid = true;
+  for (const node of nodes) {
     const nodeValid = Boolean(node.name && node.sectionName && (!node.enabled || node.authKey))
       && !/[=,\r\n[\]]/.test(node.name)
       && !/[\s=,\r\n[\]]/.test(node.sectionName)
       && !names.has(node.name)
       && !sections.has(node.sectionName)
+      && !/^DEVICE:/i.test(node.name)
+      && !groupNames.has(node.name)
+      && !configuredProxyNames.has(node.name)
+      && !reservedPolicies.has(node.name.toUpperCase())
       && node.mtu >= 576 && node.mtu <= 1420
-      && node.testTimeout >= 1 && node.testTimeout <= 60;
+      && node.testTimeout >= 1 && node.testTimeout <= 60
+      && isValidSurgeTailscaleTestUrl(node.testUrl);
+    if (!nodeValid) valid = false;
     names.add(node.name);
     sections.add(node.sectionName);
-    return nodeValid;
-  });
+  }
+
+  const activeNames = new Set(nodes
+    .filter((node) => node.enabled && node.authKey)
+    .map((node) => node.name));
+  const availableUnderlying = new Set([
+    ...activeGroupNames,
+    ...proxyNames,
+    ...builtInPolicies,
+    ...activeNames
+  ]);
+  const edges = new Map();
+  for (const node of nodes.filter((item) => item.enabled && item.authKey)) {
+    const underlying = String(node.underlyingProxy || "").trim();
+    if (!underlying || underlying.toUpperCase() === "DIRECT") continue;
+    if (underlying === node.name || !availableUnderlying.has(underlying)) {
+      valid = false;
+      continue;
+    }
+    if (activeNames.has(underlying)) edges.set(node.name, underlying);
+  }
+  if (hasSurgeTailscaleUnderlyingCycle(edges)) valid = false;
+  if (options.groupSpecs) {
+    const resolved = resolvePotentialSurgePoliciesDraft(nodes, options);
+    if ([...activeNames].some((name) => !resolved.tailscale.has(name))) valid = false;
+  }
   return { valid, nodes };
+}
+
+function surgeProxyNodeDraftProtocol(config) {
+  const text = String(config || "");
+  const line = text.split(/\r?\n/)
+    .map((item) => item.trim())
+    .find((item) => item && !item.startsWith("#") && !item.startsWith(";") && !/^\[[^\]]+\]$/.test(item)) || "";
+  const [, detail = ""] = line.split(/=(.*)/s);
+  const normalizedDetail = detail.trim();
+  const uriProtocol = normalizedDetail.match(/^([a-z][\w+.-]*):\/\//i)?.[1];
+  if (uriProtocol) return uriProtocol.toLowerCase();
+  if (normalizedDetail) return String(normalizedDetail.split(",")[0] || "").trim().toLowerCase();
+  const yamlType = text.match(/(?:^|[\n{,])\s*-?\s*type\s*:\s*(?:"([^"]*)"|'([^']*)'|([^"',}\n#]+))/i);
+  return String(yamlType?.[1] || yamlType?.[2] || yamlType?.[3] || "").trim().toLowerCase();
+}
+
+function validateSurgeTailscaleNodes() {
+  const groupNames = Object.keys(state?.groups || {});
+  const disabledGroupNames = new Set(state?.disabledGroups || []);
+  const parsedProxyNodes = (state?.proxyNodes || [])
+    .flatMap((node) => {
+      const draft = parseProxyNodeConfigDraft(proxyNodeConfigText(node));
+      return draft.valid && draft.name
+        ? [{ node, name: draft.name, protocol: surgeProxyNodeDraftProtocol(proxyNodeConfigText(node)) }]
+        : [];
+    });
+  const surgeProtocols = new Set([...PROXY_NODE_PROTOCOLS, "hy2"]);
+  const configuredProxyNames = parsedProxyNodes.map(({ name }) => name);
+  const proxyNames = parsedProxyNodes
+    .filter(({ node, protocol }) => node.enabled !== false && surgeProtocols.has(protocol))
+    .map(({ name }) => name);
+  const validation = validateSurgeTailscaleNodeList(readSurgeTailscaleNodeRows(), {
+    groupNames,
+    activeGroupNames: groupNames.filter((name) => !disabledGroupNames.has(name)),
+    proxyNames,
+    configuredProxyNames,
+    groupSpecs: state?.groups || {},
+    hasPotentialUpstreamNodes: (state?.sources || []).some((source) => source.enabled !== false && Boolean(String(source.url || "").trim())),
+    builtInPolicies: SUBNET_BUILT_IN_POLICIES,
+    reservedPolicies: [...new Set([
+      ...SUBNET_BUILT_IN_POLICIES,
+      ...CLASH_BUILT_IN_POLICIES,
+      ...STASH_BUILT_IN_POLICIES
+    ])]
+  });
+  renderValidationMessages(refs.surgeTailscaleValidation, validation.valid
+    ? { errors: [], warnings: [] }
+    : { errors: [t("surgeTailscaleValidationError")], warnings: [] });
+  return validation;
 }
 
 function validateSurgeRuleLine(line, lineNumber) {
@@ -2935,56 +3421,59 @@ function validateSurgeRuleLine(line, lineNumber) {
   const result = { errors: [], warnings: [] };
   if (!trimmed || trimmed.startsWith("#")) return result;
   if (/^\[[^\]]+\]$/.test(trimmed)) {
-    result.errors.push(`第 ${lineNumber} 行不能包含配置段标题`);
+    result.errors.push(formatMessage("ruleLineSectionHeader", { line: lineNumber }));
     return result;
   }
 
   const parts = splitSurgeRuleLine(trimmed);
   const type = (parts[0] || "").trim().toUpperCase();
   if (!type) {
-    result.errors.push(`第 ${lineNumber} 行缺少规则类型`);
+    result.errors.push(formatMessage("ruleLineMissingType", { line: lineNumber }));
     return result;
   }
   if (parts.some((part) => !part.trim())) {
-    result.errors.push(`第 ${lineNumber} 行存在空参数`);
+    result.errors.push(formatMessage("ruleLineEmptyPart", { line: lineNumber }));
     return result;
   }
 
   let policy = "";
   if (SURGE_RULE_SET_TYPES.has(type)) {
     if (parts.length < 3) {
-      result.errors.push(`第 ${lineNumber} 行规则集语法应为 ${type},名称,策略`);
+      result.errors.push(formatMessage("ruleLineRuleSetSyntax", {
+        line: lineNumber,
+        syntax: formatMessage("surgeRuleSetSyntax", { type })
+      }));
       return result;
     }
     policy = parts[2] || "";
     const optionError = validateSurgeRuleOptions(parts.slice(3), "rule-set", type, "");
-    if (optionError) result.errors.push(`第 ${lineNumber} 行${optionError}`);
+    if (optionError) result.errors.push(formatMessage("ruleLineMessage", { line: lineNumber, message: optionError }));
   } else if (SURGE_VALUELESS_RULE_TYPES.has(type)) {
     if (parts.length < 2) {
-      result.errors.push(`第 ${lineNumber} 行 ${type} 规则缺少策略出口`);
+      result.errors.push(formatMessage("ruleLineValuelessMissingPolicy", { line: lineNumber, type }));
       return result;
     }
     policy = parts[1] || "";
     const optionError = validateSurgeRuleOptions(parts.slice(2), "single", "", type);
-    if (optionError) result.errors.push(`第 ${lineNumber} 行${optionError}`);
+    if (optionError) result.errors.push(formatMessage("ruleLineMessage", { line: lineNumber, message: optionError }));
   } else {
     if (!SURGE_VALUE_RULE_TYPES.has(type)) {
-      result.errors.push(`第 ${lineNumber} 行规则类型 ${type} 不受支持`);
+      result.errors.push(formatMessage("ruleLineUnsupportedType", { line: lineNumber, type }));
       return result;
     }
     if (parts.length < 3) {
-      result.errors.push(`第 ${lineNumber} 行语法应为 类型,匹配值,策略`);
+      result.errors.push(formatMessage("ruleLineValueSyntax", { line: lineNumber }));
       return result;
     }
     policy = parts[2] || "";
     const optionError = validateSurgeRuleOptions(parts.slice(3), "single", "", type);
-    if (optionError) result.errors.push(`第 ${lineNumber} 行${optionError}`);
+    if (optionError) result.errors.push(formatMessage("ruleLineMessage", { line: lineNumber, message: optionError }));
   }
 
   if (!isValidSurgePolicy(policy)) {
-    result.errors.push(`第 ${lineNumber} 行策略出口格式无效`);
+    result.errors.push(formatMessage("ruleLineInvalidPolicy", { line: lineNumber }));
   } else if (!isKnownSurgePolicy(policy)) {
-    result.errors.push(`第 ${lineNumber} 行${t("surgeRuleUnknownPolicy")}`);
+    result.errors.push(formatMessage("ruleLineMessage", { line: lineNumber, message: t("surgeRuleUnknownPolicy") }));
   }
   return result;
 }
@@ -3024,14 +3513,7 @@ function validateSurgeRuleLines(lines) {
 }
 
 function renderSurgeRuleValidation(validation) {
-  const messages = [
-    ...(validation?.errors || []).map((message) => ({ type: "error", message })),
-    ...(validation?.warnings || []).map((message) => ({ type: "warning", message }))
-  ];
-  refs.surgeRuleValidation.classList.toggle("hidden", messages.length === 0);
-  refs.surgeRuleValidation.innerHTML = messages
-    .map(({ type, message }) => `<div class="${type}">${escapeHtml(message)}</div>`)
-    .join("");
+  renderValidationMessages(refs.surgeRuleValidation, validation);
 }
 
 function currentSurgeRuleLines() {
@@ -3127,7 +3609,7 @@ function allowedSurgeRuleOptions(kind, setType, ruleType) {
     return setType === "DOMAIN-SET" ? SURGE_DOMAIN_SET_OPTIONS : SURGE_RULE_SET_OPTIONS;
   }
   const type = String(ruleType || "").trim().toUpperCase();
-  if (["IP-CIDR", "IP-CIDR6", "GEOIP"].includes(type)) return SURGE_IP_RULE_OPTIONS;
+  if (["IP-CIDR", "IP-CIDR6", "GEOIP", "IP-ASN"].includes(type)) return SURGE_IP_RULE_OPTIONS;
   if (SURGE_EXTENDED_MATCHING_RULE_TYPES.has(type)) return SURGE_DOMAIN_SET_OPTIONS;
   if (type === "FINAL") return SURGE_FINAL_RULE_OPTIONS;
   return new Set();
@@ -3944,7 +4426,7 @@ function updateGroupName(index, input) {
     input.value = previousName;
     return;
   }
-  if (isBuiltInGroupName(nextName)) {
+  if (isBuiltInGroupName(nextName) || groupNameValidationKey(input.value)) {
     input.value = previousName;
     return;
   }
@@ -4094,6 +4576,42 @@ function isRuleSetModeEnabled() {
   return ensureRuleSets().mode === "compiled";
 }
 
+function compiledRuleSetFallbackError(ruleSets, tailscaleNames) {
+  if (normalizeRuleSetMode(ruleSets?.mode) !== "compiled") return null;
+  const fallbackRules = (ruleSets?.directRules || []).filter((rule) => {
+    if (rule.enabled === false) return false;
+    const type = (splitSurgeRuleLine(rule.rule || "")[0] || "").trim().toUpperCase();
+    return type === "FINAL" || type === "MATCH";
+  });
+  if (fallbackRules.length === 0) return { key: "compiledFallbackMissing", policy: "" };
+  if (fallbackRules.length > 1) return { key: "compiledFallbackDuplicate", policy: "" };
+
+  const policy = String(fallbackRules[0].policy || "").trim();
+  const allBuiltInPolicies = new Set([
+    ...SUBNET_BUILT_IN_POLICIES,
+    ...CLASH_BUILT_IN_POLICIES,
+    ...STASH_BUILT_IN_POLICIES
+  ]);
+  const sharedBuiltInPolicies = new Set(["Proxy", "DIRECT", "REJECT", "REJECT-DROP"]);
+  if (
+    new Set(tailscaleNames || []).has(policy)
+    || /^DEVICE:/i.test(policy)
+    || (allBuiltInPolicies.has(policy.toUpperCase()) && !sharedBuiltInPolicies.has(policy.toUpperCase()))
+  ) return { key: "compiledFallbackTargetInvalid", policy };
+  return null;
+}
+
+function validateCompiledRuleSetFallback(ruleSets) {
+  const error = compiledRuleSetFallbackError(
+    ruleSets,
+    (state?.surge?.tailscaleNodes || []).map((node) => node.name).filter(Boolean)
+  );
+  return {
+    errors: error ? [formatMessage(error.key, { policy: error.policy })] : [],
+    warnings: []
+  };
+}
+
 function renderRuleSetMode() {
   const mode = ensureRuleSets().mode;
   refs.ruleSetModeManual.checked = mode !== "compiled";
@@ -4115,9 +4633,17 @@ function syncTargetRuleSectionsVisibility() {
   document.querySelectorAll("[data-manual-rule-tab]").forEach((tab) => {
     tab.classList.toggle("hidden", compiled);
     tab.setAttribute("aria-hidden", compiled ? "true" : "false");
-    tab.tabIndex = compiled ? -1 : 0;
+    if (compiled) tab.tabIndex = -1;
   });
-  if (!compiled) return;
+  if (!compiled) {
+    const activeSurgeTab = document.querySelector("[data-surge-tab].active")?.dataset.surgeTab || "general";
+    const activeClashTab = document.querySelector("[data-clash-tab].active")?.dataset.clashTab || "general";
+    const activeStashTab = document.querySelector("[data-stash-tab].active")?.dataset.stashTab || "general";
+    showSurgeTab(activeSurgeTab);
+    showClashTab(activeClashTab);
+    showStashTab(activeStashTab);
+    return;
+  }
   document.querySelectorAll("[data-manual-rule-panel]").forEach((panel) => panel.classList.add("hidden"));
   if (document.querySelector('[data-surge-tab="rule"].active')) showSurgeTab("general");
   if (document.querySelector('[data-clash-tab="providers"].active, [data-clash-tab="rules"].active')) showClashTab("general");
@@ -4308,7 +4834,7 @@ function renderRuleSetStatus() {
 
 function renderRuleSetPolicyOptions(selected) {
   const selectedPolicy = String(selected || "Proxy").trim() || "Proxy";
-  const candidates = clashPolicyCandidates();
+  const candidates = [...new Set([...clashPolicyCandidates(), ...configuredSurgeTailscalePolicies()])];
   if (!candidates.includes(selectedPolicy)) candidates.push(selectedPolicy);
   return candidates.map((policy) => `<option value="${escapeHtml(policy)}"${policy === selectedPolicy ? " selected" : ""}>${escapeHtml(renderPolicyLabel(policy))}</option>`).join("");
 }
@@ -4360,9 +4886,9 @@ function ruleSetSourceName(url) {
   try {
     const parsed = new URL(url);
     const filename = decodeURIComponent(parsed.pathname.split("/").filter(Boolean).at(-1) || "");
-    return filename || parsed.hostname || "规则来源";
+    return filename || parsed.hostname || t("ruleSourceFallback");
   } catch {
-    return "规则来源";
+    return t("ruleSourceFallback");
   }
 }
 
@@ -4688,19 +5214,22 @@ function validateProxyNodes() {
     const rowNumber = index + 1;
     const config = proxyNodeConfigText(node);
     if (!config) {
-      errors.push(`第 ${rowNumber} 个代理节点缺少配置文本。`);
+      errors.push(formatMessage("proxyNodeMissingConfig", { index: rowNumber }));
       return;
     }
     const draft = parseProxyNodeConfigDraft(config);
     if (!draft.valid) {
-      errors.push(`第 ${rowNumber} 个代理节点需要是完整 Surge 节点行或 Clash proxy YAML。`);
+      errors.push(formatMessage("proxyNodeInvalidConfig", { index: rowNumber }));
       return;
     }
     if (names.has(draft.name)) {
-      errors.push(`代理节点名称 ${draft.name} 重复。`);
+      errors.push(formatMessage("proxyNodeDuplicateName", { name: draft.name }));
     }
     if (groupNames.has(draft.name)) {
       errors.push(formatMessage("proxyNodeGroupNameConflict", { name: draft.name }));
+    }
+    if (isReservedClientPolicyName(draft.name)) {
+      errors.push(formatMessage("proxyNodeReservedName", { name: draft.name }));
     }
     names.add(draft.name);
   });
@@ -4720,6 +5249,10 @@ function validateGroups() {
   const errors = [];
   const proxyNodeNames = proxyNodeDraftNames();
   Object.keys(state.groups || {}).forEach((name) => {
+    const nameErrorKey = groupNameValidationKey(name);
+    if (nameErrorKey) {
+      errors.push(formatMessage(nameErrorKey, { name }));
+    }
     if (proxyNodeNames.has(name)) {
       errors.push(formatMessage("groupProxyNodeNameConflict", { name }));
     }
@@ -4729,6 +5262,8 @@ function validateGroups() {
 
 function readSettingsDraft() {
   const notificationTelegramBotToken = refs.notificationTelegramBotToken.value.trim();
+  const savedTelegramBotToken = String(lastSavedState?.settings?.notificationTelegramBotToken || "").trim();
+  const tokenChanged = notificationTelegramBotToken !== savedTelegramBotToken;
   return {
     settings: {
       ...state.settings,
@@ -4742,7 +5277,9 @@ function readSettingsDraft() {
       displayTimeZone: normalizeDisplayTimeZone(refs.displayTimeZone.value),
       updateCheckEnabled: refs.updateCheckEnabled.checked,
       notificationChannel: notificationTelegramBotToken ? "telegram" : "off",
-      notificationTelegramChatId: notificationTelegramBotToken ? state.settings.notificationTelegramChatId || "" : "",
+      notificationTelegramChatId: notificationTelegramBotToken && !tokenChanged
+        ? lastSavedState?.settings?.notificationTelegramChatId || state.settings.notificationTelegramChatId || ""
+        : "",
       notificationTelegramBotToken
     },
     ruleSets: {
@@ -4907,14 +5444,41 @@ function pageDraft(page) {
   if (page === "proxy-nodes") return { proxyNodes: cloneConfig(state.proxyNodes || []) };
   if (page === "groups") return readGroupsDraft();
   if (page === "unified-config") {
+    const ruleSets = cloneConfig(ensureRuleSets());
+    ruleSets.mode = normalizeRuleSetMode(lastSavedState?.ruleSets?.mode ?? ruleSets.mode);
     return {
-      ruleSets: cloneConfig(ensureRuleSets()),
+      ruleSets,
       common: cloneConfig(ensureUnifiedCommonDraft())
     };
   }
   if (page === "surge") return { surge: readSurgeDraft() };
   if (page === "clash") return { clash: readClashDraft() };
   if (page === "stash") return { stash: readStashDraft() };
+  return null;
+}
+
+function baselineForPageFromState(page, config) {
+  if (!config) return null;
+  if (page === "settings") {
+    return {
+      settings: config.settings,
+      ruleSets: {
+        mode: normalizeRuleSetMode(config.ruleSets?.mode)
+      }
+    };
+  }
+  if (page === "sources") return { sources: config.sources || [] };
+  if (page === "proxy-nodes") return { proxyNodes: config.proxyNodes || [] };
+  if (page === "groups") return { groups: config.groups, disabledGroups: config.disabledGroups };
+  if (page === "unified-config") {
+    return {
+      ruleSets: config.ruleSets || { mode: "manual", sources: [], outputs: [], directRules: [] },
+      common: unifiedCommonState(config)
+    };
+  }
+  if (page === "surge") return { surge: config.surge };
+  if (page === "clash") return { clash: config.clash };
+  if (page === "stash") return { stash: config.stash };
   return null;
 }
 
@@ -4947,6 +5511,123 @@ function hasUnsavedChanges(page) {
   const draft = pageDraft(page);
   const baseline = pageBaseline(page);
   return Boolean(draft && baseline && JSON.stringify(draft) !== JSON.stringify(baseline));
+}
+
+function applyPageDraftToState(page, draft) {
+  if (!state || !draft) return;
+  if (page === "settings") {
+    state.settings = cloneConfig(draft.settings);
+    state.ruleSets = { ...state.ruleSets, mode: draft.ruleSets.mode };
+  } else if (page === "sources") {
+    state.sources = cloneConfig(draft.sources);
+  } else if (page === "proxy-nodes") {
+    state.proxyNodes = cloneConfig(draft.proxyNodes);
+  } else if (page === "groups") {
+    state.groups = cloneConfig(draft.groups);
+    state.disabledGroups = cloneConfig(draft.disabledGroups);
+  } else if (page === "unified-config") {
+    const common = cloneConfig(draft.common);
+    const patch = buildUnifiedCommonPatch(common, cloneConfig(draft.ruleSets));
+    state.ruleSets = patch.ruleSets;
+    state.surge = { ...state.surge, ...patch.surge };
+    state.clash = { ...state.clash, ...patch.clash };
+    state.stash = {
+      ...state.stash,
+      ...patch.stash,
+      dns: { ...state.stash?.dns, ...patch.stash.dns }
+    };
+    unifiedCommonDraft = common;
+  } else if (page === "surge") {
+    state.surge = cloneConfig(draft.surge);
+  } else if (page === "clash") {
+    state.clash = cloneConfig(draft.clash);
+  } else if (page === "stash") {
+    state.stash = cloneConfig(draft.stash);
+  }
+}
+
+function syncPageDraft(page) {
+  if (!state || !lastSavedState || !EDITABLE_PAGES.has(page) || !renderedPages.has(page)) return false;
+  const draft = pageDraft(page);
+  const baseline = pageBaseline(page);
+  if (!draft || !baseline) return false;
+  applyPageDraftToState(page, draft);
+  const dirty = JSON.stringify(draft) !== JSON.stringify(baseline);
+  const submittedDraft = typeof pendingPageSaveDrafts === "undefined" ? null : pendingPageSaveDrafts.get(page);
+  const changedSinceSubmit = Boolean(submittedDraft && JSON.stringify(draft) !== JSON.stringify(submittedDraft));
+  if (dirty || changedSinceSubmit) {
+    pageDrafts.set(page, cloneConfig(draft));
+  } else {
+    pageDrafts.delete(page);
+    if (page === "unified-config") unifiedCommonDraft = null;
+  }
+  return dirty || changedSinceSubmit;
+}
+
+function applyStoredPageDrafts(page = activePage) {
+  applyPageDraftToState(page, pageDrafts.get(page));
+}
+
+function rebaseDraftValue(oldBaseline, draft, newBaseline) {
+  if (JSON.stringify(draft) === JSON.stringify(oldBaseline)) {
+    return newBaseline === undefined ? undefined : cloneConfig(newBaseline);
+  }
+  const oldIsObject = oldBaseline && typeof oldBaseline === "object" && !Array.isArray(oldBaseline);
+  const draftIsObject = draft && typeof draft === "object" && !Array.isArray(draft);
+  if (!oldIsObject || !draftIsObject) return draft === undefined ? undefined : cloneConfig(draft);
+
+  const rebased = newBaseline && typeof newBaseline === "object" && !Array.isArray(newBaseline)
+    ? cloneConfig(newBaseline)
+    : {};
+  for (const key of new Set([...Object.keys(oldBaseline), ...Object.keys(draft)])) {
+    const oldHasKey = Object.prototype.hasOwnProperty.call(oldBaseline, key);
+    const draftHasKey = Object.prototype.hasOwnProperty.call(draft, key);
+    if (!draftHasKey && oldHasKey) {
+      delete rebased[key];
+      continue;
+    }
+    if (!oldHasKey) {
+      rebased[key] = cloneConfig(draft[key]);
+      continue;
+    }
+    const value = rebaseDraftValue(oldBaseline[key], draft[key], newBaseline?.[key]);
+    if (value === undefined) delete rebased[key];
+    else rebased[key] = value;
+  }
+  return rebased;
+}
+
+function rebaseStoredPageDrafts(oldConfig, newConfig) {
+  for (const [page, draft] of [...pageDrafts]) {
+    const oldBaseline = baselineForPageFromState(page, oldConfig);
+    const newBaseline = baselineForPageFromState(page, newConfig);
+    if (!oldBaseline || !newBaseline) continue;
+    const rebased = rebaseDraftValue(oldBaseline, draft, newBaseline);
+    if (JSON.stringify(rebased) === JSON.stringify(newBaseline)) pageDrafts.delete(page);
+    else pageDrafts.set(page, rebased);
+  }
+}
+
+function restoreStateForPage(page) {
+  if (!lastSavedState) return;
+  state = cloneConfig(lastSavedState);
+  unifiedCommonDraft = null;
+  applyStoredPageDrafts(page);
+  const pendingRuleSetMode = pageDrafts.get("settings")?.ruleSets?.mode;
+  if (page !== "settings" && pendingRuleSetMode) {
+    state.ruleSets = { ...state.ruleSets, mode: normalizeRuleSetMode(pendingRuleSetMode) };
+  }
+}
+
+function hasAnyUnsavedChanges() {
+  syncPageDraft(activePage);
+  return pageDrafts.size > 0;
+}
+
+function handleBeforeUnload(event) {
+  if (!hasAnyUnsavedChanges()) return;
+  event.preventDefault();
+  event.returnValue = "";
 }
 
 function cloneConfig(value) {
@@ -5028,7 +5709,13 @@ function syncStashFakeIpVisibility() {
 }
 
 function isTelegramChatBound() {
-  return Boolean((state.settings.notificationTelegramChatId || "").trim());
+  const enteredToken = refs.notificationTelegramBotToken.value.trim();
+  const savedToken = String(lastSavedState?.settings?.notificationTelegramBotToken || "").trim();
+  return Boolean(
+    enteredToken
+    && enteredToken === savedToken
+    && String(state.settings.notificationTelegramChatId || "").trim()
+  );
 }
 
 function syncTelegramBindActionButton() {
@@ -5057,6 +5744,21 @@ function renderTelegramBindCommand(command, expiresAt) {
   ].join("");
 }
 
+function handleTelegramBotTokenInput() {
+  stopTelegramBindPolling();
+  const enteredToken = refs.notificationTelegramBotToken.value.trim();
+  const savedSettings = lastSavedState?.settings || {};
+  const matchesSavedToken = enteredToken === String(savedSettings.notificationTelegramBotToken || "").trim();
+  state.settings.notificationTelegramChatId = matchesSavedToken
+    ? savedSettings.notificationTelegramChatId || ""
+    : "";
+  state.settings.notificationTelegramWebhookSecret = matchesSavedToken
+    ? savedSettings.notificationTelegramWebhookSecret || ""
+    : "";
+  renderTelegramBindStatus();
+  updateSaveAvailability();
+}
+
 function syncTelegramSettingsFromConfig(config) {
   const savedSettings = config?.settings || {};
   const notificationTelegramBotToken = typeof savedSettings.notificationTelegramBotToken === "string"
@@ -5082,6 +5784,7 @@ function syncTelegramSettingsFromConfig(config) {
 }
 
 function stopTelegramBindPolling() {
+  telegramBindPollVersion += 1;
   if (!telegramBindPollTimer) return;
   window.clearTimeout(telegramBindPollTimer);
   telegramBindPollTimer = 0;
@@ -5089,13 +5792,16 @@ function stopTelegramBindPolling() {
 
 function startTelegramBindPolling(expiresAt) {
   stopTelegramBindPolling();
+  const pollVersion = telegramBindPollVersion;
+  const sessionVersion = clientSessionVersion;
   const deadline = Date.parse(expiresAt);
   if (!Number.isFinite(deadline)) return;
   const poll = async () => {
     telegramBindPollTimer = 0;
-    if (Date.now() >= deadline) return;
+    if (pollVersion !== telegramBindPollVersion || sessionVersion !== clientSessionVersion || !state || Date.now() >= deadline) return;
     try {
       const latestConfig = await request("/api/config");
+      if (pollVersion !== telegramBindPollVersion || sessionVersion !== clientSessionVersion || !state) return;
       if (syncTelegramSettingsFromConfig(latestConfig)) {
         renderTelegramBindStatus();
         updateSaveAvailability();
@@ -5104,7 +5810,7 @@ function startTelegramBindPolling(expiresAt) {
     } catch {
       // Keep the bind command visible; the bot confirmation is the source of truth.
     }
-    if (Date.now() < deadline) {
+    if (pollVersion === telegramBindPollVersion && sessionVersion === clientSessionVersion && state && Date.now() < deadline) {
       telegramBindPollTimer = window.setTimeout(poll, 3000);
     }
   };
@@ -5117,6 +5823,9 @@ async function generateTelegramBindCode() {
     window.alert(t("telegramBindMissingToken"));
     return;
   }
+  stopTelegramBindPolling();
+  const pollVersion = telegramBindPollVersion;
+  const sessionVersion = clientSessionVersion;
   refs.telegramBindCodeBtn.disabled = true;
   refs.telegramBindCodeBtn.textContent = t("telegramBindCodeLoading");
   try {
@@ -5124,12 +5833,18 @@ async function generateTelegramBindCode() {
       method: "POST",
       body: JSON.stringify({ token })
     });
+    if (
+      pollVersion !== telegramBindPollVersion
+      || sessionVersion !== clientSessionVersion
+      || !state
+      || refs.notificationTelegramBotToken.value.trim() !== token
+    ) return;
     const savedSettings = result.config?.settings || {};
     const syncedTelegramSettings = {
       notificationChannel: "telegram",
       notificationTelegramBotToken: savedSettings.notificationTelegramBotToken || token,
       notificationTelegramWebhookSecret: savedSettings.notificationTelegramWebhookSecret || "",
-      notificationTelegramChatId: savedSettings.notificationTelegramChatId || state.settings.notificationTelegramChatId || ""
+      notificationTelegramChatId: savedSettings.notificationTelegramChatId || ""
     };
     state.settings = { ...state.settings, ...syncedTelegramSettings };
     if (lastSavedState) {
@@ -5145,6 +5860,7 @@ async function generateTelegramBindCode() {
     startTelegramBindPolling(result.expiresAt);
     updateSaveAvailability();
   } catch (error) {
+    if (pollVersion !== telegramBindPollVersion || sessionVersion !== clientSessionVersion) return;
     window.alert(`${t("telegramBindFailed")}${error instanceof Error ? error.message : String(error)}`);
   } finally {
     refs.telegramBindCodeBtn.disabled = false;
@@ -5155,13 +5871,16 @@ async function generateTelegramBindCode() {
 async function unbindTelegramChat() {
   if (!window.confirm(t("telegramUnbindConfirm"))) return;
   stopTelegramBindPolling();
+  const sessionVersion = clientSessionVersion;
   refs.telegramBindCodeBtn.disabled = true;
   try {
     const savedConfig = await request("/api/telegram/unbind", { method: "POST" });
+    if (sessionVersion !== clientSessionVersion || !state) return;
     syncTelegramSettingsFromConfig(savedConfig);
     renderTelegramBindStatus();
     updateSaveAvailability();
   } catch (error) {
+    if (sessionVersion !== clientSessionVersion) return;
     window.alert(`${t("telegramUnbindFailed")}${error instanceof Error ? error.message : String(error)}`);
   } finally {
     refs.telegramBindCodeBtn.disabled = false;
@@ -5192,11 +5911,13 @@ function renderGeoIpMmdbStatus(type = "") {
 }
 
 async function requestGeoIpMmdbUpload(file) {
-  const body = new FormData();
-  body.append("file", file);
   const response = await fetch("/api/geoip/mmdb", {
     method: "POST",
-    body
+    headers: {
+      "content-type": "application/octet-stream",
+      "x-subpilot-file-name": encodeURIComponent(file.name || "GeoIP.mmdb")
+    },
+    body: file
   });
   if (!response.ok) {
     const errorBody = await response.json().catch(() => ({}));
@@ -5231,26 +5952,19 @@ function validateSurgeScriptLines(lines) {
     const trimmed = String(line || "").trim();
     if (!trimmed || trimmed.startsWith("#")) return;
     if (/^\[[^\]]+\]$/.test(trimmed)) {
-      validation.errors.push(`第 ${index + 1} 行不能包含配置段标题`);
+      validation.errors.push(formatMessage("surgeScriptSectionHeader", { line: index + 1 }));
       return;
     }
     const separatorIndex = trimmed.indexOf("=");
     if (separatorIndex <= 0 || !trimmed.slice(separatorIndex + 1).trim()) {
-      validation.errors.push(`第 ${index + 1} 行脚本语法应为 名称 = 参数`);
+      validation.errors.push(formatMessage("surgeScriptSyntax", { line: index + 1 }));
     }
   });
   return validation;
 }
 
 function renderSurgeScriptValidation(validation) {
-  const messages = [
-    ...(validation?.errors || []).map((message) => ({ type: "error", message })),
-    ...(validation?.warnings || []).map((message) => ({ type: "warning", message }))
-  ];
-  refs.surgeScriptValidation.classList.toggle("hidden", messages.length === 0);
-  refs.surgeScriptValidation.innerHTML = messages
-    .map(({ type, message }) => `<div class="${type}">${escapeHtml(message)}</div>`)
-    .join("");
+  renderValidationMessages(refs.surgeScriptValidation, validation);
 }
 
 function validateCurrentSurgeScripts() {
@@ -5275,6 +5989,8 @@ function generateSurgeMitmCaPassphrase() {
 
 function renderSurgeMitmCaGenerationStatus(type, message) {
   refs.surgeMitmCaGenerationStatus.classList.remove("hidden");
+  refs.surgeMitmCaGenerationStatus.setAttribute("role", type === "error" ? "alert" : "status");
+  refs.surgeMitmCaGenerationStatus.setAttribute("aria-live", type === "error" ? "assertive" : "polite");
   refs.surgeMitmCaGenerationStatus.innerHTML = `<div class="${type}">${escapeHtml(message)}</div>`;
 }
 
@@ -5350,15 +6066,32 @@ async function save() {
 }
 
 async function saveActivePage(page = activePage) {
+  if (configSaveInFlight || logoutInFlight) return;
   if (!hasUnsavedChanges(page)) {
     setSaveStatus("idle");
     return;
   }
+  const sessionVersion = clientSessionVersion;
+  configSaveInFlight = true;
+  syncLogoutButtonState();
   setSaveStatus("saving");
+  let submittedDraft = null;
   try {
     let patch = null;
     if (page === "settings") {
+      const managedBaseUrlValidation = validateManagedBaseUrlInput();
+      if (managedBaseUrlValidation.errors.length > 0) {
+        setSaveStatus("idle");
+        window.alert(managedBaseUrlValidation.errors[0]);
+        return;
+      }
       collectSettings();
+      const fallbackValidation = validateCompiledRuleSetFallback(ensureRuleSets());
+      if (fallbackValidation.errors.length > 0) {
+        setSaveStatus("idle");
+        window.alert(fallbackValidation.errors[0]);
+        return;
+      }
       patch = { settings: state.settings, ruleSets: { mode: ensureRuleSets().mode } };
     } else if (page === "sources") {
       patch = { sources: state.sources || [] };
@@ -5381,6 +6114,14 @@ async function saveActivePage(page = activePage) {
       patch = { groups: state.groups, disabledGroups: state.disabledGroups };
     } else if (page === "unified-config") {
       const common = ensureUnifiedCommonDraft();
+      const ruleSetsForSave = pageDraft("unified-config").ruleSets;
+      const fallbackValidation = validateCompiledRuleSetFallback(ensureRuleSets());
+      if (fallbackValidation.errors.length > 0) {
+        setSaveStatus("idle");
+        renderValidationMessages(refs.ruleSetStatusSummary, fallbackValidation);
+        window.alert(fallbackValidation.errors[0]);
+        return;
+      }
       const baselineDomains = unifiedCommonState(lastSavedState).realIpDomains;
       if (JSON.stringify(common.realIpDomains) !== JSON.stringify(baselineDomains)) {
         const invalid = invalidUnifiedRealIpDomains(common.realIpDomains.flat());
@@ -5390,10 +6131,11 @@ async function saveActivePage(page = activePage) {
           return;
         }
       }
-      patch = buildUnifiedCommonPatch(common, ensureRuleSets());
+      patch = buildUnifiedCommonPatch(common, ruleSetsForSave);
     } else if (page === "surge") {
       const tailscaleValidation = validateSurgeTailscaleNodes();
       if (!tailscaleValidation.valid) {
+        setSaveStatus("idle");
         window.alert(t("surgeTailscaleValidationError"));
         return;
       }
@@ -5485,24 +6227,86 @@ async function saveActivePage(page = activePage) {
       patch = { stash: state.stash };
     }
     if (patch) {
-      state = await request("/api/config", { method: "PATCH", body: JSON.stringify(patch) });
-      lastSavedState = cloneConfig(state);
+      submittedDraft = cloneConfig(pageDraft(page));
+      if (typeof pendingPageSaveDrafts !== "undefined") pendingPageSaveDrafts.set(page, cloneConfig(submittedDraft));
+      const savedState = await requestConfigSave(patch, sessionVersion);
+      if (!savedState || sessionVersion !== clientSessionVersion || !state) return;
+      if (typeof pageDrafts === "undefined") {
+        state = savedState;
+        lastSavedState = cloneConfig(savedState);
+      } else {
+        if (activePage !== page) syncPageDraft(activePage);
+        const latestPageDraft = activePage === page
+          ? pageDraft(page)
+          : pageDrafts.get(page) || submittedDraft;
+        const changedSinceSubmit = JSON.stringify(latestPageDraft) !== JSON.stringify(submittedDraft);
+        const previousBaseline = lastSavedState;
+        state = savedState;
+        lastSavedState = cloneConfig(savedState);
+        pageDrafts.delete(page);
+        rebaseStoredPageDrafts(previousBaseline, lastSavedState);
+        if (changedSinceSubmit) {
+          const newBaseline = baselineForPageFromState(page, lastSavedState);
+          const rebasedDraft = rebaseDraftValue(submittedDraft, latestPageDraft, newBaseline);
+          if (JSON.stringify(rebasedDraft) !== JSON.stringify(newBaseline)) {
+            pageDrafts.set(page, rebasedDraft);
+          }
+        }
+        unifiedCommonDraft = null;
+        restoreStateForPage(activePage);
+      }
     }
     if (saveStatusResetTimer) window.clearTimeout(saveStatusResetTimer);
     setSaveStatus("saved");
     saveStatusResetTimer = window.setTimeout(() => { setSaveStatus("idle"); }, 1600);
     render({ preserveUnifiedCommonDraft: page !== "unified-config" });
   } catch (error) {
+    if (sessionVersion !== clientSessionVersion) return;
     if (saveStatusResetTimer) window.clearTimeout(saveStatusResetTimer);
     setSaveStatus("idle");
     window.alert(`${t("saveFailed")}${error instanceof Error ? error.message : String(error)}`);
+  } finally {
+    if (submittedDraft && typeof pendingPageSaveDrafts !== "undefined") pendingPageSaveDrafts.delete(page);
+    configSaveInFlight = false;
+    syncLogoutButtonState();
+    updateSaveAvailability();
   }
 }
 
+function renderTokenRotationStatus(type, message) {
+  refs.tokenRotationStatus.classList.toggle("hidden", !message);
+  refs.tokenRotationStatus.classList.toggle("error", type === "error");
+  refs.tokenRotationStatus.classList.toggle("success", type === "success");
+  refs.tokenRotationStatus.textContent = message;
+  refs.tokenRotationStatus.setAttribute("role", type === "error" ? "alert" : "status");
+  refs.tokenRotationStatus.setAttribute("aria-live", type === "error" ? "assertive" : "polite");
+}
+
 async function rotateToken() {
-  const result = await request("/api/read-token/rotate", { method: "POST", body: "{}" });
-  currentReadToken = result.token;
-  renderLinks();
+  if (rotateTokenInFlight || logoutInFlight || configSaveInFlight || !window.confirm(t("rotateReadTokenConfirm"))) return;
+  const sessionVersion = clientSessionVersion;
+  rotateTokenInFlight = true;
+  syncLogoutButtonState();
+  refs.rotateTokenBtn.disabled = true;
+  refs.rotateTokenBtn.setAttribute("aria-busy", "true");
+  refs.rotateTokenBtn.textContent = t("rotatingReadToken");
+  renderTokenRotationStatus("status", t("rotatingReadToken"));
+  try {
+    const result = await request("/api/read-token/rotate", { method: "POST", body: "{}" });
+    if (sessionVersion !== clientSessionVersion || !state) return;
+    currentReadToken = result.token;
+    renderLinks();
+    renderTokenRotationStatus("success", t("rotateReadTokenSuccess"));
+  } catch (error) {
+    if (sessionVersion !== clientSessionVersion) return;
+    renderTokenRotationStatus("error", `${t("rotateReadTokenFailed")}${error instanceof Error ? error.message : String(error)}`);
+  } finally {
+    rotateTokenInFlight = false;
+    refs.rotateTokenBtn.disabled = false;
+    refs.rotateTokenBtn.setAttribute("aria-busy", "false");
+    refs.rotateTokenBtn.textContent = t("rotateReadToken");
+    syncLogoutButtonState();
+  }
 }
 
 function renderLinks() {
@@ -5580,13 +6384,24 @@ function formatUpdateStatus(update) {
   const label = update.updateAvailable
     ? t("updateAvailable").replace("{version}", latest)
     : t("updateCurrent");
-  const link = update.releaseUrl
-    ? `<a class="update-status-link" href="${escapeHtml(update.releaseUrl)}" target="_blank" rel="noreferrer">${escapeHtml(label)}</a>`
+  const releaseUrl = trustedGithubReleaseUrl(update.releaseUrl);
+  const link = releaseUrl
+    ? `<a class="update-status-link" href="${escapeHtml(releaseUrl)}" target="_blank" rel="noreferrer">${escapeHtml(label)}</a>`
     : escapeHtml(label);
   return [
     `<div class="update-status-message ${update.updateAvailable ? "warning" : "ready"}">${link}</div>`,
     `<div class="update-status-time">${escapeHtml(formatTimestamp(update.checkedAt))}</div>`
   ].join("");
+}
+
+function trustedGithubReleaseUrl(value) {
+  if (typeof value !== "string" || !value.trim()) return "";
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && url.hostname.toLowerCase() === "github.com" ? url.toString() : "";
+  } catch {
+    return "";
+  }
 }
 
 function formatSourceCacheStatus(sourceCache) {
@@ -5626,7 +6441,7 @@ function formatSourceCacheProtocolCounts(totalNodes, protocolCounts, includeTota
   const parts = counts
     .map((item) => `${item.protocol || "unknown"} ${Number(item.count) || 0}`)
     .filter((item) => !item.endsWith(" 0"));
-  if (includeTotal) parts.push(`总计 ${totalNodes}`);
+  if (includeTotal) parts.push(formatMessage("nodeSummaryTotal", { count: totalNodes }));
   return parts.length > 0 ? parts.join("，") : t("sourceCacheNoNodes");
 }
 
@@ -5952,7 +6767,7 @@ function renderPreviewWarningGroup(group) {
   if (!group.details.length) return `<div class="warning">${escapeHtml(simplifyPreviewRuleSetNames(group.summary))}</div>`;
   return [
     `<details class="diagnostic-group warning">`,
-    `<summary><span class="diagnostic-summary">${escapeHtml(simplifyPreviewRuleSetNames(group.summary))}</span><span class="diagnostic-toggle">查看详情</span></summary>`,
+    `<summary><span class="diagnostic-summary">${escapeHtml(simplifyPreviewRuleSetNames(group.summary))}</span><span class="diagnostic-toggle">${escapeHtml(t("previewDetails"))}</span></summary>`,
     `<ul class="diagnostic-detail-list">`,
     ...group.details.map((message) => `<li>${escapeHtml(simplifyPreviewRuleSetNames(message))}</li>`),
     `</ul>`,
@@ -6006,6 +6821,10 @@ function syncInputTitle(event) {
 
 refs.loginBtn.addEventListener("click", login);
 refs.saveBtn.addEventListener("click", save);
+refs.managedBaseUrl.addEventListener("input", validateManagedBaseUrlInput);
+refs.menuIndicator.addEventListener("click", toggleMainMenu);
+refs.mainMenu.addEventListener("keydown", handleMainMenuKeydown);
+refs.logoutBtn.addEventListener("click", () => { void logout(); });
 refs.addGroupBtn.addEventListener("click", addGroup);
 refs.addSourceBtn.addEventListener("click", addSource);
 refs.addProxyNodeBtn.addEventListener("click", addProxyNode);
@@ -6041,11 +6860,7 @@ refs.previewSurgeBtn.addEventListener("click", () => preview("surge"));
 refs.previewClashBtn.addEventListener("click", () => preview("clash"));
 refs.previewStashBtn.addEventListener("click", () => preview("stash"));
 refs.uploadGeoIpMmdbBtn.addEventListener("click", uploadGeoIpMmdb);
-refs.notificationTelegramBotToken.addEventListener("input", () => {
-  stopTelegramBindPolling();
-  renderTelegramBindStatus();
-  updateSaveAvailability();
-});
+refs.notificationTelegramBotToken.addEventListener("input", handleTelegramBotTokenInput);
 refs.updateCheckEnabled.addEventListener("change", updateSaveAvailability);
 refs.telegramBindCodeBtn.addEventListener("click", handleTelegramBindAction);
 refs.surgeIpv6.addEventListener("change", syncSurgeIpv6VifVisibility);
@@ -6107,10 +6922,17 @@ refs.surgeTailscaleNodeRows.addEventListener("click", (event) => {
   if (!button) return;
   button.closest("[data-surge-tailscale-node]")?.remove();
   if (readSurgeTailscaleNodeRows().length === 0) renderSurgeTailscaleNodes([]);
+  else validateSurgeTailscaleNodes();
   updateSaveAvailability();
 });
-refs.surgeTailscaleNodeRows.addEventListener("input", updateSaveAvailability);
-refs.surgeTailscaleNodeRows.addEventListener("change", updateSaveAvailability);
+refs.surgeTailscaleNodeRows.addEventListener("input", () => {
+  validateSurgeTailscaleNodes();
+  updateSaveAvailability();
+});
+refs.surgeTailscaleNodeRows.addEventListener("change", () => {
+  validateSurgeTailscaleNodes();
+  updateSaveAvailability();
+});
 refs.stashHosts.addEventListener("input", validateCurrentStashHosts);
 refs.stashUrlRewrite.addEventListener("input", validateCurrentStashUrlRewrite);
 refs.stashScripts.addEventListener("input", validateCurrentStashScripts);
@@ -6125,12 +6947,15 @@ document.addEventListener("click", () => queueMicrotask(updateSaveAvailability))
 document.addEventListener("input", syncInputTitle);
 document.querySelectorAll("[data-surge-tab]").forEach((button) => {
   button.addEventListener("click", () => showSurgeTab(button.dataset.surgeTab));
+  button.addEventListener("keydown", (event) => handleSectionTabKeydown(event, "surge"));
 });
 document.querySelectorAll("[data-clash-tab]").forEach((button) => {
   button.addEventListener("click", () => showClashTab(button.dataset.clashTab));
+  button.addEventListener("keydown", (event) => handleSectionTabKeydown(event, "clash"));
 });
 document.querySelectorAll("[data-stash-tab]").forEach((button) => {
   button.addEventListener("click", () => showStashTab(button.dataset.stashTab));
+  button.addEventListener("keydown", (event) => handleSectionTabKeydown(event, "stash"));
 });
 document.querySelectorAll("[data-unified-config-tab]").forEach((button) => {
   button.addEventListener("click", () => showUnifiedConfigTab(button.dataset.unifiedConfigTab));
@@ -6145,6 +6970,8 @@ document.querySelectorAll(".luci-menu a").forEach((link) => {
 window.addEventListener("hashchange", () => {
   showPage(getPageFromHash());
 });
+window.addEventListener("beforeunload", handleBeforeUnload);
+window.addEventListener("resize", syncMainMenuDisclosure);
 
 applyLanguage();
 showPage(activePage);

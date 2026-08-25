@@ -378,8 +378,9 @@ describe("target inference", () => {
     }, "surge", "https://subpilot.example.com/sync/read-token/");
 
     expect(result.content).toContain(
-      "Office Tailnet = tailscale, section-name=office, underlying-proxy=DIRECT, test-url=http://health.office.example.ts.net/, test-timeout=8"
+      "Office Tailnet = tailscale, section-name=office, test-url=http://health.office.example.ts.net/, test-timeout=8"
     );
+    expect(result.content).not.toContain("underlying-proxy=DIRECT");
     expect(result.content).toContain([
       "[Tailscale office]",
       "auth-key = tskey-auth-test",

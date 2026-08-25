@@ -1,4 +1,4 @@
-import { readStoredReadToken, readStoredReadTokenHash, storeReadToken } from "./config-store";
+import { deterministicInitialReadToken, readStoredReadToken, readStoredReadTokenHash, rotateStoredReadToken, storeInitialReadToken } from "./config-store";
 import { getSecret } from "./secrets";
 import { base64Url, parseCookie, randomToken, sha256Hex, timingSafeEqualString } from "./util";
 
@@ -38,13 +38,19 @@ export function sessionCookie(token: string, secure: boolean): string {
   return `${SESSION_COOKIE}=${encodeURIComponent(token)}; Path=/; HttpOnly${secureFlag}; SameSite=Strict; Max-Age=${SESSION_TTL_SECONDS}`;
 }
 
-export function clearSessionCookie(): string {
-  return `${SESSION_COOKIE}=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0`;
+export function clearSessionCookie(secure = true): string {
+  const secureFlag = secure ? "; Secure" : "";
+  return `${SESSION_COOKIE}=; Path=/; HttpOnly${secureFlag}; SameSite=Strict; Max-Age=0`;
 }
 
 export async function validateReadToken(env: Env, token: string | null): Promise<boolean> {
   if (!token) return false;
-  const storedHash = await readStoredReadTokenHash(env);
+  let storedHash: string | null;
+  try {
+    storedHash = await readStoredReadTokenHash(env);
+  } catch {
+    return false;
+  }
   if (storedHash && await timingSafeEqualString(await sha256Hex(token), storedHash)) return true;
   return false;
 }
@@ -52,16 +58,11 @@ export async function validateReadToken(env: Env, token: string | null): Promise
 export async function getOrCreateReadToken(env: Env): Promise<string> {
   const storedToken = await readStoredReadToken(env);
   if (storedToken) return storedToken;
-
-  const token = randomToken(32);
-  await storeReadToken(env, token);
-  return token;
+  return storeInitialReadToken(env, await deterministicInitialReadToken(env));
 }
 
 export async function rotateReadToken(env: Env): Promise<string> {
-  const token = randomToken(32);
-  await storeReadToken(env, token);
-  return token;
+  return rotateStoredReadToken(env);
 }
 
 async function signSessionPayload(env: Env, payload: string): Promise<string> {

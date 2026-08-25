@@ -3,6 +3,7 @@ import worker from "../src/index";
 import { createSession, sessionCookie } from "../src/auth";
 import { CONFIG_SCHEMA_VERSION_KEY } from "../src/config-schema";
 import { saveConfig } from "../src/config-store";
+import { decryptText } from "../src/crypto-store";
 import { DEFAULT_CONFIG } from "../src/default-config";
 import { recordConfigFetch } from "../src/fetch-stats";
 import type { AppConfig } from "../src/types";
@@ -11,6 +12,17 @@ import { restoreMocksAfterEach } from "./helpers/fetch";
 import { ctx, makeEnv, makeExecutionContext } from "./helpers/worker";
 
 restoreMocksAfterEach();
+
+async function expectEncryptedSourceCache(
+  kv: Map<string, string>,
+  key: string,
+  expectedContent: string
+): Promise<void> {
+  const stored = kv.get(key);
+  const prefix = "\u001fsubpilot-encrypted-cache:";
+  expect(stored?.startsWith(prefix)).toBe(true);
+  await expect(decryptText("config-secret", String(stored).slice(prefix.length))).resolves.toBe(expectedContent);
+}
 
 describe("asset access control", () => {
   it("rejects oversized login bodies from declared length and bounded streaming reads", async () => {
@@ -219,6 +231,44 @@ describe("asset access control", () => {
     expect(response.status).toBe(400);
     expect(body.error).toContain("Stash Script");
     expect(body.error).toContain("script-path");
+  });
+
+  it("returns a bounded client error when malformed nested patches reach sanitization", async () => {
+    const env = makeEnv();
+    const session = await createSession(env);
+    const response = await worker.fetch(new Request("https://subpilot.example.com/api/config", {
+      method: "PATCH",
+      headers: {
+        cookie: sessionCookie(session, true),
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({
+        groups: { Proxy: "select, {all}" },
+        surge: { tailscaleNodes: null }
+      })
+    }), env, ctx);
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({ error: "Invalid config patch" });
+  });
+
+  it("rejects top-level config arrays for PUT and PATCH", async () => {
+    const env = makeEnv();
+    const session = await createSession(env);
+    const headers = {
+      cookie: sessionCookie(session, true),
+      "content-type": "application/json"
+    };
+
+    for (const method of ["PUT", "PATCH"] as const) {
+      const response = await worker.fetch(new Request("https://subpilot.example.com/api/config", {
+        method,
+        headers,
+        body: "[]"
+      }), env, ctx);
+
+      expect(response.status).toBe(400);
+    }
   });
 
   it("ignores removed Shadowrocket config patches", async () => {
@@ -1130,8 +1180,6 @@ describe("asset access control", () => {
 
     const fetchMock = vi.spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(new Response("upstream error", { status: 500 }))
-      .mockRejectedValueOnce(new Error("network error"))
-      .mockResolvedValueOnce(new Response("temporary unavailable", { status: 503 }))
       .mockResolvedValueOnce(new Response("Proxy = trojan, proxy.example.com, 443, password=p"));
     const refreshResponse = await worker.fetch(new Request("https://subpilot.example.com/api/cache/source/refresh", {
       method: "POST",
@@ -1170,10 +1218,10 @@ describe("asset access control", () => {
       protocolCounts: [{ protocol: "trojan", count: 1 }]
     });
     expect(refreshed.sourceCache.sources[0]?.fetchedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
-    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(fetchMock).toHaveBeenCalledWith("https://example.com/sub", expect.objectContaining({ headers: { "user-agent": "Surge iOS/3727" } }));
     expect(fetchMock.mock.calls[0]?.[1]?.signal).toBeInstanceOf(AbortSignal);
-    expect(kv.get(sourceKey)).toBe("Proxy = trojan, proxy.example.com, 443, password=p");
+    await expectEncryptedSourceCache(kv, sourceKey, "Proxy = trojan, proxy.example.com, 443, password=p");
     expect(kv.has("cache:source:stale")).toBe(false);
     expect(kv.has("cache:sourceMeta:stale")).toBe(false);
   });
@@ -1228,6 +1276,7 @@ describe("asset access control", () => {
       return new Response("unexpected source", { status: 500 });
     });
 
+    const execution = makeExecutionContext();
     const response = await worker.fetch(new Request("https://subpilot.example.com/api/config", {
       method: "PATCH",
       headers,
@@ -1256,17 +1305,18 @@ describe("asset access control", () => {
           }
         ]
       })
-    }), env, ctx);
+    }), env, execution.ctx);
+    await Promise.all(execution.waitUntil);
 
     expect(response.status).toBe(200);
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(fetchMock).toHaveBeenCalledWith("https://example.com/new", expect.objectContaining({ headers: { "user-agent": "Surge iOS/3727" } }));
     expect(fetchMock).toHaveBeenCalledWith("https://example.com/added", expect.objectContaining({ headers: { "user-agent": "Surge iOS/3727" } }));
     expect(fetchMock.mock.calls.some(([url]) => String(url) === "https://example.com/stable")).toBe(false);
-    expect(kv.get(stableKey)).toBe("Stable = trojan, stable.example.com, 443, password=p");
+    await expectEncryptedSourceCache(kv, stableKey, "Stable = trojan, stable.example.com, 443, password=p");
     expect(kv.has(oldChangedKey)).toBe(false);
-    expect(kv.get(changedKey)).toBe("Changed = trojan, changed.example.com, 443, password=p");
-    expect(kv.get(addedKey)).toBe("Added = trojan, added.example.com, 443, password=p");
+    await expectEncryptedSourceCache(kv, changedKey, "Changed = trojan, changed.example.com, 443, password=p");
+    await expectEncryptedSourceCache(kv, addedKey, "Added = trojan, added.example.com, 443, password=p");
   });
 
   it("keeps the previous source cache when all retry attempts fail", async () => {
@@ -1322,8 +1372,8 @@ describe("asset access control", () => {
       reason: "HTTP 500",
       usedCachedContent: true
     }]);
-    expect(fetchMock).toHaveBeenCalledTimes(4);
-    expect(kv.get(sourceKey)).toBe("previous-content");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    await expectEncryptedSourceCache(kv, sourceKey, "previous-content");
   });
 
   it("keeps the previous source cache and notifies when refreshed content has no nodes", async () => {
@@ -1366,8 +1416,6 @@ describe("asset access control", () => {
     const fetchMock = vi.spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(new Response("subscription temporarily unavailable"))
       .mockResolvedValueOnce(new Response("subscription temporarily unavailable"))
-      .mockResolvedValueOnce(new Response("subscription temporarily unavailable"))
-      .mockResolvedValueOnce(new Response("subscription temporarily unavailable"))
       .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true })));
 
     const refreshResponse = await worker.fetch(new Request("https://subpilot.example.com/api/cache/source/refresh", {
@@ -1398,9 +1446,9 @@ describe("asset access control", () => {
       protocolCounts: [{ protocol: "trojan", count: 1 }]
     });
     expect(refreshed.notification).toMatchObject({ telegram: "sent", warnings: [] });
-    expect(fetchMock).toHaveBeenCalledTimes(5);
-    expect(kv.get(sourceKey)).toBe(previousContent);
-    const telegramBody = JSON.parse(String(fetchMock.mock.calls[4]?.[1]?.body ?? "{}")) as { text?: string };
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    await expectEncryptedSourceCache(kv, sourceKey, previousContent);
+    const telegramBody = JSON.parse(String(fetchMock.mock.calls[2]?.[1]?.body ?? "{}")) as { text?: string };
     expect(telegramBody.text).toContain("No proxy nodes found in upstream subscription");
     expect(telegramBody.text).toContain("处理：已沿用旧缓存");
     expect(telegramBody.text).toContain("协议节点：trojan 1，总计 1");
@@ -1447,7 +1495,7 @@ describe("asset access control", () => {
     } as ScheduledController, env, ctx);
 
     const sourceKey = `cache:source:${await sha256Hex("https://example.com/sub|Surge iOS/3727")}`;
-    expect(kv.get(sourceKey)).toBe("Proxy = trojan, proxy.example.com, 443, password=p");
+    await expectEncryptedSourceCache(kv, sourceKey, "Proxy = trojan, proxy.example.com, 443, password=p");
   });
 
   it("refreshes compiled rule sets only from the daily scheduled handler", async () => {
@@ -1494,7 +1542,7 @@ describe("asset access control", () => {
     } as ScheduledController, env, ctx);
 
     expect(fetchMock).toHaveBeenCalledWith("https://rules.example/daily.list", expect.objectContaining({ signal: expect.any(AbortSignal) }));
-    expect(kv.has("cache:compiledRuleSetMeta:Daily")).toBe(true);
+    expect([...kv.keys()].some((key) => key.startsWith("cache:compiledRuleSetMeta:Daily:v:"))).toBe(true);
   });
 
   it("keeps Static-IP out of default groups and rules", async () => {
@@ -1546,15 +1594,21 @@ describe("asset access control", () => {
         groups: { Proxy: "select, {all}" },
         surge: {
           rules: [
-            "URL-REGEX,^https://example.com/(a,b),Removed",
+            "AND,((DOMAIN,example.com),(DOMAIN-SUFFIX,example.net)),Removed",
             "FINAL,Proxy"
           ]
         },
         clash: {
-          rules: ["URL-REGEX,^https://example.com/(a,b),Removed"]
+          rules: [
+            "AND,((DOMAIN,example.com),(DOMAIN-SUFFIX,example.net)),Removed",
+            "MATCH,Proxy"
+          ]
         },
         stash: {
-          rules: ["URL-REGEX,^https://example.com/(a,b),Removed"]
+          rules: [
+            "AND,((DOMAIN,example.com),(DOMAIN-SUFFIX,example.net)),Removed",
+            "MATCH,Proxy"
+          ]
         }
       })
     }), env, ctx);
@@ -1565,8 +1619,72 @@ describe("asset access control", () => {
     }>();
 
     expect(response.status).toBe(200);
-    expect(body.surge.rules).toContain("URL-REGEX,^https://example.com/(a,b),Proxy");
-    expect(body.clash.rules).toContain("URL-REGEX,^https://example.com/(a,b),Proxy");
-    expect(body.stash.rules).toContain("URL-REGEX,^https://example.com/(a,b),Proxy");
+    expect(body.surge.rules).toContain("AND,((DOMAIN,example.com),(DOMAIN-SUFFIX,example.net)),Proxy");
+    expect(body.clash.rules).toContain("AND,((DOMAIN,example.com),(DOMAIN-SUFFIX,example.net)),Proxy");
+    expect(body.stash.rules).toContain("AND,((DOMAIN,example.com),(DOMAIN-SUFFIX,example.net)),Proxy");
+  });
+
+  it("preserves configured Tailscale targets when policy groups are saved", async () => {
+    const kv = new Map<string, string>();
+    const env = makeEnv(kv);
+    const session = await createSession(env);
+
+    const response = await worker.fetch(new Request("https://subpilot.example.com/api/config", {
+      method: "PATCH",
+      headers: {
+        cookie: sessionCookie(session, true),
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({
+        groups: { Proxy: "select, {all}" },
+        surge: {
+          tailscaleNodes: [{
+            name: "Tailnet Exit",
+            sectionName: "tailnet-exit",
+            authKey: "tskey-auth-test",
+            enabled: true
+          }],
+          rules: [
+            "DOMAIN-SUFFIX,tailnet.example,Tailnet Exit",
+            "FINAL,Proxy"
+          ]
+        },
+        clash: {
+          rules: [
+            "DOMAIN-SUFFIX,tailnet.example,Tailnet Exit",
+            "MATCH,Proxy"
+          ]
+        },
+        stash: {
+          rules: [
+            "DOMAIN-SUFFIX,tailnet.example,Tailnet Exit",
+            "MATCH,Proxy"
+          ]
+        },
+        ruleSets: {
+          outputs: [{
+            name: "Tailnet Rules",
+            enabled: true,
+            policy: "Tailnet Exit",
+            sourceIds: [],
+            inlineRules: [],
+            order: 0,
+            surgeOptions: []
+          }]
+        }
+      })
+    }), env, ctx);
+    const body = await response.json<{
+      ruleSets: { outputs: Array<{ policy: string }> };
+      surge: { rules: string[] };
+      clash: { rules: string[] };
+      stash: { rules: string[] };
+    }>();
+
+    expect(response.status).toBe(200);
+    expect(body.ruleSets.outputs[0]?.policy).toBe("Tailnet Exit");
+    expect(body.surge.rules).toContain("DOMAIN-SUFFIX,tailnet.example,Tailnet Exit");
+    expect(body.clash.rules).toContain("DOMAIN-SUFFIX,tailnet.example,Proxy");
+    expect(body.stash.rules).toContain("DOMAIN-SUFFIX,tailnet.example,Proxy");
   });
 });

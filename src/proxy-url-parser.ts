@@ -8,6 +8,7 @@ const URI_PROTOCOLS = ["trojan:", "vless:", "vmess:", "ss:", "hysteria2:", "hy2:
 export function parseProxyUrl(value: string): ProxyNode | null {
   if (!URI_PROTOCOLS.some((protocol) => value.startsWith(protocol))) return null;
   if (value.startsWith("vmess://")) return parseVmess(value);
+  if (value.startsWith("ss://")) return parseShadowsocks(value);
   try {
     const parsed = new URL(value);
     const name = decodeURIComponent(parsed.hash.replace(/^#/, "")) || `${parsed.protocol.replace(":", "")}-${parsed.hostname}`;
@@ -55,6 +56,113 @@ export function parseProxyUrl(value: string): ProxyNode | null {
     return node.server && isSafeConfigText(node) ? node : null;
   } catch {
     return null;
+  }
+}
+
+function parseShadowsocks(value: string): ProxyNode | null {
+  try {
+    const payload = value.slice("ss://".length);
+    const hashIndex = payload.indexOf("#");
+    const withoutHash = hashIndex >= 0 ? payload.slice(0, hashIndex) : payload;
+    const rawName = hashIndex >= 0 ? payload.slice(hashIndex + 1) : "";
+    const queryIndex = withoutHash.indexOf("?");
+    const authority = queryIndex >= 0 ? withoutHash.slice(0, queryIndex) : withoutHash;
+    const query = queryIndex >= 0 ? withoutHash.slice(queryIndex + 1) : "";
+    const modernSeparator = authority.lastIndexOf("@");
+    let credentials: string;
+    let serverAuthority: string;
+
+    if (modernSeparator >= 0) {
+      const encodedCredentials = safeDecodeURIComponent(authority.slice(0, modernSeparator));
+      credentials = encodedCredentials.includes(":")
+        ? encodedCredentials
+        : decodeBase64Url(encodedCredentials) ?? "";
+      serverAuthority = authority.slice(modernSeparator + 1).replace(/\/$/, "");
+    } else {
+      // Legacy SIP002 links may include the URI path separator after the
+      // Base64 payload. Strip it before decoding; `/` is itself a valid Base64
+      // character, so trying the unstripped value first can silently decode a
+      // different payload instead of failing.
+      const legacyPayload = authority.endsWith("/") ? authority.slice(0, -1) : authority;
+      const decoded = decodeBase64Url(legacyPayload);
+      const separator = decoded?.lastIndexOf("@") ?? -1;
+      if (!decoded || separator < 0) return null;
+      credentials = decoded.slice(0, separator);
+      serverAuthority = decoded.slice(separator + 1);
+    }
+
+    const credentialSeparator = credentials.indexOf(":");
+    if (credentialSeparator <= 0) return null;
+    const cipher = credentials.slice(0, credentialSeparator);
+    const password = credentials.slice(credentialSeparator + 1);
+    if (!cipher || !password) return null;
+
+    const serverUrl = new URL(`http://${serverAuthority}`);
+    const port = toPort(serverUrl.port);
+    if (!serverUrl.hostname || port === undefined) return null;
+
+    const params: ProxyNode["params"] = {};
+    const searchParams = new URLSearchParams(query);
+    searchParams.forEach((item, key) => {
+      if (key !== "plugin") params[key] = item;
+    });
+    const plugin = searchParams.get("plugin");
+    if (plugin) applySip002Plugin(params, plugin);
+    normalizeUriParams(params);
+    const paramsNormalized = normalizeProxyParams(params);
+    const node: ProxyNode = {
+      name: safeDecodeURIComponent(rawName) || `ss-${serverUrl.hostname}`,
+      type: "ss",
+      server: serverUrl.hostname,
+      port,
+      cipher,
+      password,
+      params,
+      paramsNormalized: paramsNormalized || undefined
+    };
+    return isSafeConfigText(node) ? node : null;
+  } catch {
+    return null;
+  }
+}
+
+function applySip002Plugin(params: ProxyNode["params"], value: string): void {
+  const [rawName = "", ...rawOptions] = value.split(";");
+  const plugin = rawName === "obfs-local" ? "obfs" : rawName;
+  if (!plugin) return;
+  params.plugin = plugin;
+  const options: Record<string, string | boolean> = {};
+  for (const rawOption of rawOptions) {
+    if (!rawOption) continue;
+    const separator = rawOption.indexOf("=");
+    const key = separator < 0 ? rawOption : rawOption.slice(0, separator);
+    const item = separator < 0 ? true : rawOption.slice(separator + 1);
+    if (!key) continue;
+    if (key === "obfs") options.mode = item;
+    else if (key === "obfs-host") options.host = item;
+    else if (key === "obfs-uri") options.path = item;
+    else options[key] = item;
+  }
+  if (Object.keys(options).length > 0) params["plugin-opts"] = options;
+}
+
+function decodeBase64Url(value: string): string | null {
+  const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
+  if (!normalized || normalized.length % 4 === 1 || !/^[A-Za-z0-9+/]*={0,2}$/.test(normalized)) return null;
+  const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
+  try {
+    const decoded = atob(padded);
+    return new TextDecoder().decode(Uint8Array.from(decoded, (char) => char.charCodeAt(0)));
+  } catch {
+    return null;
+  }
+}
+
+function safeDecodeURIComponent(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
   }
 }
 

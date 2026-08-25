@@ -1,4 +1,6 @@
+import { decryptText, encryptText } from "./crypto-store";
 import { listKvKeys, readKvJson } from "./kv-helpers";
+import { requireSecret } from "./secrets";
 import {
   normalizeSourceCacheNodeCount,
   normalizeSourceCacheProtocolCounts,
@@ -13,11 +15,13 @@ import { fetchWithTimeout, waitForRetry } from "./upstream-fetch";
 export const SOURCE_CACHE_PREFIX = "cache:source:";
 export const SOURCE_CACHE_META_PREFIX = "cache:sourceMeta:";
 export const SOURCE_CACHE_META_INDEX_KEY = "cache:sourceMeta:index";
-const MAX_SOURCE_CONTENT_BYTES = 10 * 1024 * 1024;
-const MAX_SOURCE_FETCH_RETRIES = 3;
+const MAX_SOURCE_CONTENT_BYTES = 4 * 1024 * 1024;
+const MAX_SOURCE_FETCH_RETRIES = 1;
 const SOURCE_FETCH_ATTEMPT_TIMEOUT_MS = 8_000;
 const SOURCE_FETCH_TOTAL_TIMEOUT_MS = 25_000;
 const SOURCE_FETCH_RETRY_BASE_DELAY_MS = 100;
+const ENCRYPTED_SOURCE_CACHE_PREFIX = "\u001fsubpilot-encrypted-cache:";
+const MAX_SOURCE_CACHE_MIGRATIONS_PER_PRUNE = 100;
 
 export { sourceCacheContentStats } from "./source-cache-stats";
 export type { SourceCacheProtocolCount } from "./source-cache-stats";
@@ -70,6 +74,10 @@ export interface SourceCacheRefreshResult {
   sourceCache: SourceCacheStatus;
 }
 
+export interface SourceCacheRefreshOptions {
+  deadline?: number;
+}
+
 export function sourceUserAgent(config: AppConfig, source: SourceConfig): string {
   return fetchUserAgentValue(config, source.fetchUserAgent);
 }
@@ -77,7 +85,15 @@ export function sourceUserAgent(config: AppConfig, source: SourceConfig): string
 export async function fetchCachedSource(env: Env, source: SourceConfig, userAgent: string): Promise<string> {
   const key = await sourceCacheKeyFor(source.url, userAgent);
   const cached = await env.SUBPILOT_CONFIG.get(key);
-  if (cached !== null) return cached;
+  if (cached !== null) {
+    try {
+      return await readSourceCacheContent(env, key, cached);
+    } catch {
+      // Keep the corrupt value until a successful fetch can replace it with a
+      // single put. Deleting and then immediately putting the same key violates
+      // Workers KV's one-write-per-second limit and prevents self-healing.
+    }
+  }
   const content = await fetchSourceContent(source.url, userAgent, source.id);
   await writeSourceCacheEntry(env, {
     key,
@@ -85,30 +101,48 @@ export async function fetchCachedSource(env: Env, source: SourceConfig, userAgen
     fetchedAt: new Date().toISOString(),
     sourceId: source.id,
     sourceName: source.name
-  });
+  }, { updateIndex: false }).catch((error) => logSourceCacheWriteFailure(source.id, error));
   return content;
 }
 
-export async function refreshSourceCache(env: Env, config: AppConfig): Promise<SourceCacheRefreshResult> {
+function logSourceCacheWriteFailure(sourceId: string, error: unknown): void {
+  console.warn(JSON.stringify({
+    level: "warn",
+    message: `Source cache write failed for ${sourceId}: ${error instanceof Error ? error.message : String(error)}`
+  }));
+}
+
+export async function refreshSourceCache(
+  env: Env,
+  config: AppConfig,
+  options: SourceCacheRefreshOptions = {}
+): Promise<SourceCacheRefreshResult> {
   const enabled = config.sources.filter((source) => source.enabled && source.url);
-  return refreshSourceCacheForSources(env, config, enabled, { pruneUnexpected: true });
+  return refreshSourceCacheForSources(env, config, enabled, {
+    pruneUnexpected: true,
+    ...(Number.isFinite(options.deadline) ? { deadline: options.deadline } : {})
+  });
 }
 
 export async function refreshChangedSourceCache(
   env: Env,
   previousConfig: AppConfig,
-  config: AppConfig
+  config: AppConfig,
+  options: SourceCacheRefreshOptions = {}
 ): Promise<SourceCacheRefreshResult | null> {
   const changed = changedEnabledSources(previousConfig, config);
   if (changed.length === 0) return null;
-  return refreshSourceCacheForSources(env, config, changed, { pruneUnexpected: false });
+  return refreshSourceCacheForSources(env, config, changed, {
+    pruneUnexpected: false,
+    ...(Number.isFinite(options.deadline) ? { deadline: options.deadline } : {})
+  });
 }
 
 async function refreshSourceCacheForSources(
   env: Env,
   config: AppConfig,
   sourcesToRefresh: SourceConfig[],
-  options: { pruneUnexpected: boolean }
+  options: { pruneUnexpected: boolean; deadline?: number }
 ): Promise<SourceCacheRefreshResult> {
   const existing = await readSourceCacheEntries(env);
   const existingByKey = new Map(existing.map((entry) => [entry.key, entry]));
@@ -126,8 +160,28 @@ async function refreshSourceCacheForSources(
     const userAgent = sourceUserAgent(config, source);
     const key = await sourceCacheKeyFor(source.url, userAgent);
     const now = new Date().toISOString();
+    if (options.deadline !== undefined && Date.now() >= options.deadline) {
+      const existingEntry = existingByKey.get(key);
+      if (existingEntry) {
+        nextEntries.set(key, {
+          ...existingEntry,
+          sourceId: source.id,
+          sourceName: source.name
+        });
+        cached += 1;
+      }
+      const reason = "Source cache refresh deadline exceeded";
+      failures.push({
+        sourceId: source.id,
+        sourceName: source.name,
+        reason,
+        usedCachedContent: Boolean(existingEntry)
+      });
+      warnings.push(`${source.name}: ${reason}`);
+      continue;
+    }
     try {
-      const content = await fetchSourceContent(source.url, userAgent, source.id);
+      const content = await fetchSourceContent(source.url, userAgent, source.id, options.deadline);
       const entry = await writeSourceCacheEntry(env, {
         key,
         content,
@@ -195,11 +249,21 @@ export async function pruneSourceCache(env: Env, config: AppConfig): Promise<num
   const existing = await readSourceCacheEntries(env);
   const expectedKeys = await sourceCacheKeysForEnabledSources(config);
   const deleted = await pruneUnexpectedSourceCacheEntries(env, existing, expectedKeys);
+  await migrateRetainedSourceCacheContents(env, expectedKeys);
   const entries = existing
     .filter((entry) => expectedKeys.has(entry.key))
     .sort((a, b) => b.fetchedAt.localeCompare(a.fetchedAt));
   await env.SUBPILOT_CONFIG.put(SOURCE_CACHE_META_INDEX_KEY, JSON.stringify(entries));
   return deleted;
+}
+
+async function migrateRetainedSourceCacheContents(env: Env, expectedKeys: Set<string>): Promise<void> {
+  const keys = [...expectedKeys].slice(0, MAX_SOURCE_CACHE_MIGRATIONS_PER_PRUNE);
+  for (const key of keys) {
+    const stored = await env.SUBPILOT_CONFIG.get(key);
+    if (stored === null || stored.startsWith(ENCRYPTED_SOURCE_CACHE_PREFIX)) continue;
+    await readSourceCacheContent(env, key, stored);
+  }
 }
 
 export async function readSourceCacheStatus(env: Env, config?: AppConfig): Promise<SourceCacheStatus> {
@@ -301,9 +365,10 @@ async function writeSourceCacheEntry(
     contentAvailable: true,
     ...sourceCacheContentStats(content, entry.sourceId)
   };
+  const encryptedContent = await encryptSourceCacheContent(env, content);
   const updateIndex = options.updateIndex !== false;
   const writes: Promise<unknown>[] = [
-    env.SUBPILOT_CONFIG.put(entry.key, content),
+    env.SUBPILOT_CONFIG.put(entry.key, encryptedContent),
     env.SUBPILOT_CONFIG.put(sourceCacheMetaKey(entry.key), JSON.stringify(meta))
   ];
   if (updateIndex) {
@@ -317,12 +382,41 @@ async function writeSourceCacheEntry(
   return meta;
 }
 
-async function fetchSourceContent(url: string, userAgent: string, sourceId: string): Promise<string> {
+async function readSourceCacheContent(env: Env, key: string, stored: string): Promise<string> {
+  if (stored.startsWith(ENCRYPTED_SOURCE_CACHE_PREFIX)) {
+    return decryptText(
+      requireSecret(env, "CONFIG_ENCRYPTION_KEY"),
+      stored.slice(ENCRYPTED_SOURCE_CACHE_PREFIX.length)
+    );
+  }
+
+  const encrypted = await encryptSourceCacheContent(env, stored);
+  await env.SUBPILOT_CONFIG.put(key, encrypted).catch(() => undefined);
+  return stored;
+}
+
+async function encryptSourceCacheContent(env: Env, content: string): Promise<string> {
+  const encrypted = await encryptText(requireSecret(env, "CONFIG_ENCRYPTION_KEY"), content);
+  return `${ENCRYPTED_SOURCE_CACHE_PREFIX}${encrypted}`;
+}
+
+async function fetchSourceContent(
+  url: string,
+  userAgent: string,
+  sourceId: string,
+  overallDeadline?: number
+): Promise<string> {
   let lastError: unknown;
-  const deadline = Date.now() + SOURCE_FETCH_TOTAL_TIMEOUT_MS;
+  const sourceDeadline = Date.now() + SOURCE_FETCH_TOTAL_TIMEOUT_MS;
+  const deadline = overallDeadline === undefined ? sourceDeadline : Math.min(sourceDeadline, overallDeadline);
   for (let attempt = 0; attempt <= MAX_SOURCE_FETCH_RETRIES; attempt += 1) {
     const remaining = deadline - Date.now();
-    if (remaining <= 0) break;
+    if (remaining <= 0) {
+      if (overallDeadline !== undefined && deadline === overallDeadline) {
+        lastError = new Error("Source cache refresh deadline exceeded");
+      }
+      break;
+    }
     try {
       const content = await fetchWithTimeout(
         globalThis.fetch,
@@ -346,7 +440,7 @@ async function fetchSourceContent(url: string, userAgent: string, sourceId: stri
       }
     }
   }
-  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+  throw lastError instanceof Error ? lastError : new Error("Source fetch deadline exceeded");
 }
 
 function assertSourceContentHasNodes(content: string, sourceId: string): void {

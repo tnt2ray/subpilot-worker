@@ -1,9 +1,84 @@
 import { describe, expect, it, vi } from "vitest";
 import { DEFAULT_CONFIG } from "../src/default-config";
-import { collectSurgeRuleCoverageWarnings } from "../src/surge-rules";
+import { collectSurgeRuleCoverageWarnings, validateSurgeRules } from "../src/surge-rules";
 import { restoreMocksAfterEach } from "./helpers/fetch";
 
 restoreMocksAfterEach();
+
+describe("Surge rule validation", () => {
+  it("accepts IP-ASN rules with the IP-only no-resolve option", () => {
+    expect(validateSurgeRules({
+      ...DEFAULT_CONFIG,
+      surge: {
+        ...DEFAULT_CONFIG.surge,
+        rules: [
+          "IP-ASN,13335,Proxy",
+          "IP-ASN,15169,DIRECT,no-resolve",
+          "FINAL,Proxy"
+        ]
+      }
+    })).toBeNull();
+  });
+
+  it("rejects unsupported IP-ASN options without relaxing other rule types", () => {
+    expect(validateSurgeRules({
+      ...DEFAULT_CONFIG,
+      surge: {
+        ...DEFAULT_CONFIG.surge,
+        rules: [
+          "IP-ASN,13335,Proxy,extended-matching",
+          "FINAL,Proxy"
+        ]
+      }
+    })).toContain("附加参数 extended-matching 不适用于 IP-ASN");
+
+    expect(validateSurgeRules({
+      ...DEFAULT_CONFIG,
+      surge: {
+        ...DEFAULT_CONFIG.surge,
+        rules: [
+          "PROCESS-NAME,Example,Proxy,no-resolve",
+          "FINAL,Proxy"
+        ]
+      }
+    })).toContain("附加参数 no-resolve 不适用于 PROCESS-NAME");
+  });
+
+  it("accepts strict nested logical rules and quoted commas or parentheses", () => {
+    expect(validateSurgeRules({
+      ...DEFAULT_CONFIG,
+      surge: {
+        ...DEFAULT_CONFIG.surge,
+        rules: [
+          'AND,((URL-REGEX,"^https://example\\.com/(foo,bar)$"),(NOT,((IP-CIDR,192.0.2.0/24,no-resolve)))),Proxy',
+          "OR,((DOMAIN,a.example),(DOMAIN,b.example)),DIRECT",
+          "FINAL,Proxy"
+        ]
+      }
+    })).toBeNull();
+  });
+
+  it.each([
+    "AND,((DOMAIN,a.example)),Proxy",
+    "OR,((DOMAIN,a.example)),Proxy",
+    "NOT,((DOMAIN,a.example),(DOMAIN,b.example)),Proxy",
+    "AND,((DOMAIN,a.example,Proxy),(DOMAIN,b.example)),Proxy",
+    "AND,((DOMAIN,a.example),,(DOMAIN,b.example)),Proxy",
+    "AND,((DOMAIN,a.example),(DOMAIN,b.example))),Proxy",
+    "AND,((DOMAIN,a.example),(DOMAIN,b.example))tail,Proxy",
+    "AND,((BOGUS,value),(DOMAIN,b.example)),Proxy",
+    "AND,((DOMAIN),(DOMAIN,b.example)),Proxy",
+    'AND,((URL-REGEX,"unterminated),(DOMAIN,b.example)),Proxy'
+  ])("rejects malformed logical rule %s", (rule) => {
+    expect(validateSurgeRules({
+      ...DEFAULT_CONFIG,
+      surge: {
+        ...DEFAULT_CONFIG.surge,
+        rules: [rule, "FINAL,Proxy"]
+      }
+    })).not.toBeNull();
+  });
+});
 
 describe("Surge rule coverage diagnostics", () => {
   it("reports later domain and IP rules covered by earlier broader rules", async () => {
@@ -56,7 +131,7 @@ describe("Surge rule coverage diagnostics", () => {
 
   it("expands DOMAIN-SET host entries as exact and suffix domain rules", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response([
-      ".example.com",
+      "+.example.com",
       "static.example.net"
     ].join("\n")));
 

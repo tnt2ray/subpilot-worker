@@ -1,5 +1,6 @@
 import type { AppConfig } from "./types";
 import { splitRuleLine as splitSurgeRuleLine } from "./rule-line";
+import { validateLogicalRuleExpression } from "./logical-rules";
 import {
   collectCoverageWarnings,
   CoverageWarningCollection,
@@ -10,20 +11,25 @@ import {
 } from "./rule-coverage-core";
 import { mapWithConcurrency, readResponseTextWithLimit } from "./util";
 import { fetchWithTimeout } from "./upstream-fetch";
+import { SURGE_BUILT_IN_RULE_POLICIES } from "./rule-targets";
+import { validateRuleMatchValue } from "./rule-value-validation";
 
-const VALUELESS_RULE_TYPES = new Set(["FINAL", "MATCH"]);
+const VALUELESS_RULE_TYPES = new Set(["FINAL"]);
 const RULE_SET_TYPES = new Set(["RULE-SET", "DOMAIN-SET"]);
 const RULE_OPTION_ORDER = ["no-resolve", "extended-matching", "dns-failed"];
 const RULE_SET_OPTIONS = new Set(["no-resolve", "extended-matching"]);
 const DOMAIN_SET_OPTIONS = new Set(["extended-matching"]);
 const IP_RULE_OPTIONS = new Set(["no-resolve"]);
+const IP_RULE_TYPES = new Set(["IP-CIDR", "IP-CIDR6", "GEOIP", "IP-ASN"]);
 const EXTENDED_MATCHING_RULE_TYPES = new Set(["DOMAIN", "DOMAIN-SUFFIX", "DOMAIN-KEYWORD", "URL-REGEX"]);
 const FINAL_RULE_OPTIONS = new Set(["dns-failed"]);
 const MAX_RULE_SET_CONTENT_BYTES = 2 * 1024 * 1024;
 const DEFAULT_MAX_COVERAGE_WARNINGS = 80;
-const RULE_SET_FETCH_CONCURRENCY = 6;
-const MAX_EXTERNAL_RULE_SET_FETCHES = 80;
+const RULE_SET_FETCH_CONCURRENCY = 3;
+const MAX_EXTERNAL_RULE_SET_FETCHES = 24;
 const EXTERNAL_RULE_SET_FETCH_TIMEOUT_MS = 2_500;
+const MAX_COVERAGE_SOURCE_CHARACTERS = 8 * 1024 * 1024;
+const MAX_COVERAGE_RULES = 5_000;
 const VALUE_RULE_TYPES = new Set([
   "DOMAIN",
   "DOMAIN-SUFFIX",
@@ -31,6 +37,7 @@ const VALUE_RULE_TYPES = new Set([
   "IP-CIDR",
   "IP-CIDR6",
   "GEOIP",
+  "IP-ASN",
   "PROCESS-NAME",
   "USER-AGENT",
   "URL-REGEX",
@@ -47,10 +54,7 @@ const VALUE_RULE_TYPES = new Set([
   "OR",
   "NOT"
 ]);
-const COVERAGE_VALUE_RULE_TYPES = new Set([
-  ...VALUE_RULE_TYPES,
-  "IP-ASN"
-]);
+const COVERAGE_VALUE_RULE_TYPES = new Set(VALUE_RULE_TYPES);
 const EXACT_MATCH_RULE_TYPES = new Set([
   "GEOIP",
   "IP-ASN",
@@ -83,14 +87,6 @@ const INTERNAL_RULE_SETS = new Map<string, string[]>([
 ]);
 const UNRESOLVED_INTERNAL_RULE_SETS = new Set(["SYSTEM"]);
 
-export const SURGE_BUILT_IN_POLICIES = [
-  "DIRECT",
-  "REJECT",
-  "REJECT-DROP",
-  "REJECT-NO-DROP",
-  "REJECT-TINYGIF"
-] as const;
-
 type SurgeRuleFetch = typeof fetch;
 
 export interface SurgeRuleCoverageOptions {
@@ -108,10 +104,13 @@ interface TopLevelRuleSetReference {
   lineNumber: number;
 }
 
-export function validateSurgeRules(config: Partial<Pick<AppConfig, "groups" | "surge">>): string | null {
+export function validateSurgeRules(config: Partial<Pick<AppConfig, "disabledGroups" | "groups" | "surge">>): string | null {
   const knownPolicies = new Set([
-    ...Object.keys(config.groups || {}),
-    ...SURGE_BUILT_IN_POLICIES
+    ...Object.keys(config.groups || {}).filter((name) => !config.disabledGroups?.includes(name)),
+    ...SURGE_BUILT_IN_RULE_POLICIES,
+    ...(config.surge?.tailscaleNodes || [])
+      .filter((node) => node.enabled && typeof node.authKey === "string" && Boolean(node.authKey.trim()))
+      .map((node) => node.name)
   ]);
   const rules = Array.isArray(config.surge?.rules) ? config.surge.rules : [];
   for (const [index, rule] of rules.entries()) {
@@ -131,7 +130,10 @@ export async function collectSurgeRuleCoverageWarnings(
   const maxWarnings = Math.max(1, options.maxWarnings ?? DEFAULT_MAX_COVERAGE_WARNINGS);
   const collection = new CoverageWarningCollection(maxWarnings, "Surge");
   const entries = await flattenSurgeRulesForCoverage(config, rules, options, collection);
-  collectCoverageWarnings(entries, collection, {
+  if (entries.length > MAX_COVERAGE_RULES) {
+    collection.push(`Surge Rule 覆盖诊断仅检查前 ${MAX_COVERAGE_RULES} 条规则。`);
+  }
+  collectCoverageWarnings(entries.slice(0, MAX_COVERAGE_RULES), collection, {
     targetName: "Surge",
     valuelessRuleTypes: VALUELESS_RULE_TYPES,
     exactMatchRuleTypes: EXACT_MATCH_RULE_TYPES,
@@ -197,6 +199,8 @@ async function resolveRuleSetReferences(
 
   const fetcher = options.fetcher ?? globalThis.fetch.bind(globalThis);
   const userAgent = options.userAgent ?? config.settings?.userAgentSurge ?? "Surge";
+  let retainedCharacters = 0;
+  let retainedRules = 0;
   await mapWithConcurrency(toFetch, RULE_SET_FETCH_CONCURRENCY, async (reference) => {
     const key = ruleSetReferenceKey(reference);
     if (!isHttpUrl(reference.name)) {
@@ -206,8 +210,26 @@ async function resolveRuleSetReferences(
     }
 
     try {
+      if (retainedCharacters >= MAX_COVERAGE_SOURCE_CHARACTERS || retainedRules >= MAX_COVERAGE_RULES) {
+        warnings.push(`${lineNumberLabel(reference.lineNumber)}规则集 ${shortRuleSetName(reference.name)} 因覆盖诊断总量上限而跳过。`);
+        resolved.set(key, []);
+        return;
+      }
       const content = await fetchRuleSetContent(reference.name, userAgent, fetcher);
-      resolved.set(key, parseRuleSetContentForCoverage(reference, content));
+      if (retainedCharacters + content.length > MAX_COVERAGE_SOURCE_CHARACTERS) {
+        warnings.push(`${lineNumberLabel(reference.lineNumber)}规则集 ${shortRuleSetName(reference.name)} 超出覆盖诊断 ${MAX_COVERAGE_SOURCE_CHARACTERS} 字符总量上限。`);
+        resolved.set(key, []);
+        return;
+      }
+      const parsed = parseRuleSetContentForCoverage(reference, content);
+      if (retainedRules + parsed.length > MAX_COVERAGE_RULES) {
+        warnings.push(`${lineNumberLabel(reference.lineNumber)}规则集 ${shortRuleSetName(reference.name)} 超出覆盖诊断 ${MAX_COVERAGE_RULES} 条规则总量上限。`);
+        resolved.set(key, []);
+        return;
+      }
+      retainedCharacters += content.length;
+      retainedRules += parsed.length;
+      resolved.set(key, parsed);
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       warnings.push(`${lineNumberLabel(reference.lineNumber)}规则集 ${shortRuleSetName(reference.name)} 内容未参与覆盖检查：${reason}`);
@@ -262,8 +284,9 @@ function parseDomainSetLinesForCoverage(reference: TopLevelRuleSetReference, lin
   return lines.flatMap((line, index) => {
     const value = String(line || "").trim();
     if (!value || isCommentLine(value) || value.includes(",")) return [];
-    const normalized = value.startsWith(".") || value.startsWith("*.") ? value.replace(/^\*\./, "").replace(/^\./, "") : value;
-    const type = value.startsWith(".") || value.startsWith("*.") ? "DOMAIN-SUFFIX" : "DOMAIN";
+    const suffix = value.startsWith("+.") || value.startsWith(".") || value.startsWith("*.");
+    const normalized = suffix ? value.replace(/^\+\./, "").replace(/^\*\./, "").replace(/^\./, "") : value;
+    const type = suffix ? "DOMAIN-SUFFIX" : "DOMAIN";
     if (!normalized || normalized.includes("://")) return [];
     return [{
       kind: "rule" as const,
@@ -363,6 +386,8 @@ function validateSurgeRuleLine(rule: string, lineNumber: number, knownPolicies: 
   const type = (parts[0] || "").trim().toUpperCase();
   if (!type) return `Surge Rule 第 ${lineNumber} 行缺少规则类型`;
   if (parts.some((part) => !part.trim())) return `Surge Rule 第 ${lineNumber} 行存在空参数`;
+  const valueError = validateRuleMatchValue(type, parts[1] || "");
+  if (valueError) return `Surge Rule 第 ${lineNumber} 行${valueError}`;
 
   if (RULE_SET_TYPES.has(type)) {
     if (parts.length < 3) return `Surge Rule 第 ${lineNumber} 行规则集语法应为 ${type},名称,策略`;
@@ -384,11 +409,27 @@ function validateSurgeRuleLine(rule: string, lineNumber: number, knownPolicies: 
 
   if (!VALUE_RULE_TYPES.has(type)) return `Surge Rule 第 ${lineNumber} 行规则类型 ${type} 不受支持`;
   if (parts.length < 3) return `Surge Rule 第 ${lineNumber} 行语法应为 类型,匹配值,策略`;
+  if (type === "AND" || type === "OR" || type === "NOT") {
+    const logicalError = validateLogicalRuleExpression(type, parts[1] || "", validateSurgeLogicalLeaf);
+    if (logicalError) return `Surge Rule 第 ${lineNumber} 行${logicalError}`;
+  }
   const policyError = validatePolicy(parts[2] || "", knownPolicies);
   if (policyError) return `Surge Rule 第 ${lineNumber} 行${policyError}`;
   const optionError = validateRuleOptions(parts.slice(3), type);
   if (optionError) return `Surge Rule 第 ${lineNumber} 行${optionError}`;
   return null;
+}
+
+function validateSurgeLogicalLeaf(parts: string[]): string | null {
+  const type = (parts[0] || "").trim().toUpperCase();
+  if (!VALUE_RULE_TYPES.has(type) || type === "AND" || type === "OR" || type === "NOT") {
+    return `逻辑子规则类型 ${type || "(空)"} 不受支持`;
+  }
+  if (!(parts[1] || "").trim()) return "逻辑子规则缺少匹配值";
+  const valueError = validateRuleMatchValue(type, parts[1]!);
+  if (valueError) return `逻辑子规则${valueError}`;
+  const optionError = validateRuleOptions(parts.slice(2), type);
+  return optionError ? `逻辑子规则${optionError}` : null;
 }
 
 function validateRuleOptions(options: string[], type: string): string | null {
@@ -408,7 +449,7 @@ function allowedRuleOptions(type: string): Set<string> {
   if (type === "RULE-SET") return RULE_SET_OPTIONS;
   if (type === "DOMAIN-SET") return DOMAIN_SET_OPTIONS;
   if (type === "FINAL") return FINAL_RULE_OPTIONS;
-  if (["IP-CIDR", "IP-CIDR6", "GEOIP"].includes(type)) return IP_RULE_OPTIONS;
+  if (IP_RULE_TYPES.has(type)) return IP_RULE_OPTIONS;
   if (EXTENDED_MATCHING_RULE_TYPES.has(type)) return DOMAIN_SET_OPTIONS;
   return new Set();
 }
@@ -416,7 +457,7 @@ function allowedRuleOptions(type: string): Set<string> {
 function validatePolicy(policy: string, knownPolicies: Set<string>): string | null {
   const trimmed = policy.trim();
   if (!trimmed || /[\r\n,[\]]/.test(trimmed)) return "策略出口格式无效";
-  if (!knownPolicies.has(trimmed) && !isSurgeDevicePolicy(trimmed)) return "策略出口必须是已配置策略组或 Surge 内置策略";
+  if (!knownPolicies.has(trimmed) && !isSurgeDevicePolicy(trimmed)) return "策略出口必须是已配置策略组、Tailscale 节点或 Surge 内置策略";
   return null;
 }
 

@@ -13,7 +13,10 @@ const TEMPLATE_PATH = "wrangler.example.jsonc";
 const PLACEHOLDER_KV_ID = "00000000000000000000000000000000";
 const DEFAULT_SOURCE_REFRESH_HOURS = 12;
 const RULE_SET_REFRESH_CRON = "0 16 * * *";
+const MIN_ADMIN_TOKEN_LENGTH = 24;
+const LOGIN_RATE_LIMIT_BINDING_NAME = "LOGIN_RATE_LIMITER";
 const args = new Set(process.argv.slice(2));
+const existingConfigOnly = args.has("--existing-config-only");
 
 function stripAnsi(value) {
   return value.replace(/\u001b\[[0-9;]*m/g, "");
@@ -49,7 +52,86 @@ function writeConfig(content) {
 }
 
 function readJsonConfig() {
-  return JSON.parse(readConfig());
+  return JSON.parse(normalizeJsonc(readConfig()));
+}
+
+function normalizeJsonc(content) {
+  let withoutComments = "";
+  let inString = false;
+  let escaped = false;
+  let lineComment = false;
+  let blockComment = false;
+
+  for (let index = 0; index < content.length; index += 1) {
+    const character = content[index];
+    const next = content[index + 1];
+    if (lineComment) {
+      if (character === "\n" || character === "\r") {
+        lineComment = false;
+        withoutComments += character;
+      } else {
+        withoutComments += " ";
+      }
+      continue;
+    }
+    if (blockComment) {
+      if (character === "*" && next === "/") {
+        withoutComments += "  ";
+        blockComment = false;
+        index += 1;
+      } else {
+        withoutComments += character === "\n" || character === "\r" ? character : " ";
+      }
+      continue;
+    }
+    if (inString) {
+      withoutComments += character;
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === '"') inString = false;
+      continue;
+    }
+    if (character === '"') {
+      inString = true;
+      withoutComments += character;
+    } else if (character === "/" && next === "/") {
+      lineComment = true;
+      withoutComments += "  ";
+      index += 1;
+    } else if (character === "/" && next === "*") {
+      blockComment = true;
+      withoutComments += "  ";
+      index += 1;
+    } else {
+      withoutComments += character;
+    }
+  }
+
+  let normalized = "";
+  inString = false;
+  escaped = false;
+  for (let index = 0; index < withoutComments.length; index += 1) {
+    const character = withoutComments[index];
+    if (inString) {
+      normalized += character;
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === '"') inString = false;
+      continue;
+    }
+    if (character === '"') {
+      inString = true;
+      normalized += character;
+      continue;
+    }
+    if (character === ",") {
+      let nextIndex = index + 1;
+      while (/\s/.test(withoutComments[nextIndex] ?? "")) nextIndex += 1;
+      if (withoutComments[nextIndex] === "}" || withoutComments[nextIndex] === "]") continue;
+    }
+    normalized += character;
+  }
+  return normalized;
 }
 
 function writeJsonConfig(config) {
@@ -57,9 +139,11 @@ function writeJsonConfig(config) {
 }
 
 function replaceWorkerName(name) {
-  if (!name) return;
-  const content = readConfig();
-  writeConfig(content.replace(/"name"\s*:\s*"[^"]+"/, `"name": "${name}"`));
+  const workerName = typeof name === "string" ? name.trim() : "";
+  if (!workerName) return;
+  const config = readJsonConfig();
+  config.name = workerName;
+  writeJsonConfig(config);
 }
 
 function replaceKvNamespaceId(id) {
@@ -105,6 +189,43 @@ async function configureSourceRefreshSchedule(createdConfig) {
   config.triggers = { ...(config.triggers ?? {}), crons: [refreshCronForHours(hours), RULE_SET_REFRESH_CRON] };
   writeJsonConfig(config);
   process.stdout.write(`Configured upstream auto-refresh: every ${hours} hour${hours === 1 ? "" : "s"}.\n`);
+}
+
+function ensureLoginRateLimitBinding(createdConfig) {
+  const config = readJsonConfig();
+  const rateLimits = Array.isArray(config.ratelimits) ? config.ratelimits : [];
+  const namespaceId = loginRateLimitNamespaceId(config);
+  const existingIndex = rateLimits.findIndex((binding) => binding?.name === LOGIN_RATE_LIMIT_BINDING_NAME);
+  if (existingIndex >= 0) {
+    const existing = rateLimits[existingIndex];
+    const explicitlyConfigured = Boolean(process.env.SUBPILOT_LOGIN_RATE_LIMIT_NAMESPACE_ID);
+    if (!createdConfig && !explicitlyConfigured && existing?.namespace_id !== "1001") return;
+    rateLimits[existingIndex] = { ...existing, namespace_id: namespaceId };
+    config.ratelimits = rateLimits;
+  } else {
+    config.ratelimits = [...rateLimits, {
+      name: LOGIN_RATE_LIMIT_BINDING_NAME,
+      namespace_id: namespaceId,
+      simple: { limit: 10, period: 60 }
+    }];
+  }
+  writeJsonConfig(config);
+  process.stdout.write("Configured LOGIN_RATE_LIMITER: 10 attempts per minute per Cloudflare location.\n");
+}
+
+function loginRateLimitNamespaceId(config) {
+  const override = String(process.env.SUBPILOT_LOGIN_RATE_LIMIT_NAMESPACE_ID ?? "").trim();
+  if (override) {
+    const parsed = Number(override);
+    if (!/^\d+$/.test(override) || !Number.isSafeInteger(parsed) || parsed < 1 || parsed > 4_294_967_295) {
+      process.stderr.write("SUBPILOT_LOGIN_RATE_LIMIT_NAMESPACE_ID must be an integer from 1 to 4294967295.\n");
+      process.exit(1);
+    }
+    return override;
+  }
+  const workerName = typeof config.name === "string" && config.name.trim() ? config.name.trim() : "subpilot-worker";
+  const value = createHash("sha256").update(`subpilot:${workerName}:login-rate-limit`).digest().readUInt32BE(0);
+  return String(value || 1);
 }
 
 function extractNamespaceId(outputText) {
@@ -156,7 +277,7 @@ function randomSecret() {
 
 async function readAdminToken() {
   const envToken = process.env.SUBPILOT_ADMIN_TOKEN?.trim();
-  if (envToken) return envToken;
+  if (envToken) return validateAdminToken(envToken);
 
   if (!input.isTTY) {
     process.stderr.write("SUBPILOT_ADMIN_TOKEN is required when setup writes secrets in a non-interactive shell.\n");
@@ -166,6 +287,14 @@ async function readAdminToken() {
   const token = await prompt("Enter admin login token: ");
   if (!token) {
     process.stderr.write("Admin login token is required.\n");
+    process.exit(1);
+  }
+  return validateAdminToken(token);
+}
+
+function validateAdminToken(token) {
+  if (token.length < MIN_ADMIN_TOKEN_LENGTH) {
+    process.stderr.write(`Admin login token must contain at least ${MIN_ADMIN_TOKEN_LENGTH} characters.\n`);
     process.exit(1);
   }
   return token;
@@ -195,16 +324,21 @@ function putSecrets(adminToken, encryptionKey) {
 }
 
 capture("wrangler", ["--version"], { includeStderr: true });
+if (existingConfigOnly && !existsSync(CONFIG_PATH)) {
+  process.stderr.write(`${CONFIG_PATH} is required for --existing-config-only. Run npm run setup first.\n`);
+  process.exit(1);
+}
 const createdConfig = ensureConfigFile();
 replaceWorkerName(process.env.SUBPILOT_WORKER_NAME);
-await ensureKvNamespace();
+if (!existingConfigOnly) await ensureKvNamespace();
+ensureLoginRateLimitBinding(createdConfig);
 await configureSourceRefreshSchedule(createdConfig);
 
 const shouldWriteSecrets = !args.has("--no-secrets") && (createdConfig || args.has("--force-secrets"));
 const adminToken = shouldWriteSecrets ? await readAdminToken() : "";
 const encryptionKey = shouldWriteSecrets ? (process.env.SUBPILOT_CONFIG_ENCRYPTION_KEY || randomSecret()) : "";
 
-if (!args.has("--no-deploy")) deployWorker();
+if (!args.has("--no-deploy") && !existingConfigOnly) deployWorker();
 if (shouldWriteSecrets) {
   putSecrets(adminToken, encryptionKey);
 } else if (!args.has("--no-secrets")) {

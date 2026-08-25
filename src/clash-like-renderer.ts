@@ -5,7 +5,13 @@ import { managedSubscriptionUrlForRequest } from "./managed-url";
 import { beijingTimestamp } from "./output-render";
 import { toClashProxy } from "./parsers";
 import { buildClashGroups } from "./policy-groups";
-import { addMissingClashRuleProviderRules, filterClashRules, rewriteUnavailableGroupRuleTargets } from "./rule-targets";
+import {
+  addMissingClashRuleProviderRules,
+  configuredTailscalePolicyNames,
+  filterClashRules,
+  omitRulesTargetingPolicies,
+  rewriteUnavailableGroupRuleTargets
+} from "./rule-targets";
 import type { CompiledRuleSetReferencePlan } from "./rule-set-compiler";
 import { parseStashScriptLine } from "./stash-scripts";
 import type { AppConfig, HostEntry, HostEntryValue, ProxyNode } from "./types";
@@ -48,6 +54,7 @@ interface ClashLikeBaseConfig {
 }
 
 interface ClashLikeConfigDataOptions {
+  target: "clash" | "stash";
   baseConfig: ClashLikeBaseConfig;
   hosts: Record<string, HostEntryValue>;
   ruleProvidersYaml: string;
@@ -68,6 +75,7 @@ export function buildClash(
   ruleSetPlan?: CompiledRuleSetReferencePlan
 ): string {
   const data = buildClashLikeConfigData(config, nodes, {
+    target: "clash",
     baseConfig: clashBaseConfig(config.clash),
     hosts: hostEntriesToClashHosts(sourceHostEntries),
     ruleProvidersYaml: config.clash.ruleProviders,
@@ -87,6 +95,7 @@ export function buildStash(
 ): string {
   const http = buildStashHttp(config, warnings);
   const data = buildClashLikeConfigData(config, nodes, {
+    target: "stash",
     baseConfig: stashBaseConfig(config.stash),
     hosts: hostEntriesToStashHosts(config.stash.hosts, sourceHostEntries),
     ruleProvidersYaml: config.stash.ruleProviders,
@@ -238,14 +247,18 @@ function buildClashLikeConfigData(
     data["rule-providers"] = ruleProviders;
   }
   data.proxies = nodes.map(toClashProxy);
-  const proxyGroups = buildClashGroups(config, nodes);
+  const proxyGroups = buildClashGroups(config, nodes, options.target);
   data["proxy-groups"] = proxyGroups;
   data.rules = addMissingClashRuleProviderRules(
     rewriteUnavailableGroupRuleTargets(
       config,
-      filterClashRules(config.ruleSets.mode === "compiled" && options.ruleSetPlan ? options.ruleSetPlan.clashRules : options.rules),
+      omitRulesTargetingPolicies(
+        filterClashRules(config.ruleSets.mode === "compiled" && options.ruleSetPlan ? options.ruleSetPlan.clashRules : options.rules),
+        configuredTailscalePolicyNames(config)
+      ),
       nodes,
-      new Set(proxyGroups.map((group) => String(group.name)))
+      new Set(proxyGroups.map((group) => String(group.name))),
+      options.target
     ),
     Object.keys(ruleProviders)
   );
