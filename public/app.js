@@ -148,7 +148,6 @@ const refs = {
   surgeEncryptedDnsServer: $("surgeEncryptedDnsServer"),
   surgeWifiAssist: $("surgeWifiAssist"),
   surgeExcludeSimpleHostnames: $("surgeExcludeSimpleHostnames"),
-  surgeEncryptedDnsFollowOutboundModeRow: $("surgeEncryptedDnsFollowOutboundModeRow"),
   surgeEncryptedDnsFollowOutboundMode: $("surgeEncryptedDnsFollowOutboundMode"),
   surgePonteDeviceNames: $("surgePonteDeviceNames"),
   addSurgeTailscaleNodeBtn: $("addSurgeTailscaleNodeBtn"),
@@ -1308,7 +1307,6 @@ function renderSurge() {
   refs.surgeWifiAssist.checked = state.surge.wifiAssist;
   refs.surgeExcludeSimpleHostnames.checked = state.surge.excludeSimpleHostnames;
   refs.surgeEncryptedDnsFollowOutboundMode.checked = state.surge.encryptedDnsFollowOutboundMode;
-  syncSurgeEncryptedDnsFollowOutboundModeVisibility();
   refs.surgePonteDeviceNames.value = normalizePonteDeviceNames(state.surge.ponteDeviceNames || []).join(", ");
   renderSurgeTailscaleNodes(state.surge.tailscaleNodes || []);
   renderSurgeHostRows(state.surge.hosts || []);
@@ -3156,7 +3154,7 @@ function renderSurgeTailscaleNode(node) {
       <label><span>${escapeHtml(t("surgeTailscaleExitNode"))}</span><input data-tailscale-field="exitNode" value="${escapeHtml(node.exitNode || "none")}" placeholder="none / auto / node name"></label>
       <label><span>${escapeHtml(t("surgeTailscaleUnderlyingProxy"))}</span><input data-tailscale-field="underlyingProxy" value="${escapeHtml(node.underlyingProxy || "")}" placeholder="${escapeHtml(t("surgeTailscaleUnderlyingProxyPlaceholder"))}"></label>
       <label><span>${escapeHtml(t("surgeTailscaleDnsServer"))}</span><input data-tailscale-field="dnsServer" value="${escapeHtml((node.dnsServer || []).join(", "))}"></label>
-      <label><span>${escapeHtml(t("surgeTailscaleIdleKeepalive"))}</span><input data-tailscale-field="idleKeepalive" type="number" min="-1" max="86400" value="${Number(node.idleKeepalive ?? 600)}"></label>
+      <label><span>${escapeHtml(t("surgeTailscaleIdleKeepalive"))}</span><input data-tailscale-field="idleKeepalive" type="number" min="-1" max="86400" step="1" value="${Number(node.idleKeepalive ?? 600)}" required></label>
       <label><span>${escapeHtml(t("surgeTailscaleMtu"))}</span><input data-tailscale-field="mtu" type="number" min="576" max="1420" value="${Number(node.mtu || 1280)}"></label>
       <label><span>${escapeHtml(t("surgeTailscaleTestUrl"))}</span><input data-tailscale-field="testUrl" type="url" value="${escapeHtml(node.testUrl || "")}"></label>
       <label><span>${escapeHtml(t("surgeTailscaleTestTimeout"))}</span><input data-tailscale-field="testTimeout" type="number" min="1" max="60" value="${Number(node.testTimeout || 5)}"></label>
@@ -3179,6 +3177,7 @@ function readSurgeTailscaleNodeRows() {
   if (!refs.surgeTailscaleNodeRows) return [];
   return [...refs.surgeTailscaleNodeRows.querySelectorAll("[data-surge-tailscale-node]")].map((row) => {
     const field = (name) => row.querySelector(`[data-tailscale-field="${name}"]`);
+    const idleKeepaliveValue = field("idleKeepalive").value.trim();
     return {
       name: field("name").value.trim(),
       sectionName: field("sectionName").value.trim(),
@@ -3187,7 +3186,7 @@ function readSurgeTailscaleNodeRows() {
       hostname: field("hostname").value.trim(),
       derpOnly: field("derpOnly").checked,
       exitNode: field("exitNode").value.trim() || "none",
-      idleKeepalive: Number(field("idleKeepalive").value),
+      idleKeepalive: idleKeepaliveValue === "" ? Number.NaN : Number(idleKeepaliveValue),
       preferIpv6: field("preferIpv6").checked,
       dnsServer: field("dnsServer").value.split(",").map((item) => item.trim()).filter(Boolean),
       mtu: Number(field("mtu").value),
@@ -3332,6 +3331,8 @@ function validateSurgeTailscaleNodeList(nodes, options) {
       && !groupNames.has(node.name)
       && !configuredProxyNames.has(node.name)
       && !reservedPolicies.has(node.name.toUpperCase())
+      && Number.isInteger(node.idleKeepalive)
+      && node.idleKeepalive >= -1 && node.idleKeepalive <= 86400
       && node.mtu >= 576 && node.mtu <= 1420
       && node.testTimeout >= 1 && node.testTimeout <= 60
       && isValidSurgeTailscaleTestUrl(node.testUrl);
@@ -5098,6 +5099,7 @@ function legacyProxyNodeConfigText(node) {
   const port = Number(node.port);
   if (!server || !Number.isFinite(port) || port < 1 || port > 65535) return "";
   const protocol = PROXY_NODE_PROTOCOLS.includes(node.protocol) ? node.protocol : "socks5";
+  const outputProtocol = protocol === "tuic" ? "tuic-v5" : protocol;
   const name = String(node.name || t("newProxyNode")).trim() || t("newProxyNode");
   const username = String(node.username || "").trim();
   const password = String(node.password || "").trim();
@@ -5108,16 +5110,16 @@ function legacyProxyNodeConfigText(node) {
   } else if (protocol === "snell") {
     if (password) parts.push(`psk=${password}`);
     parts.push("version=4");
-  } else if (protocol === "tuic") {
-    if (username) parts.push(`username=${username}`);
+  } else if (outputProtocol === "tuic-v5") {
+    if (username) parts.push(`uuid=${username}`);
     if (password) parts.push(`password=${password}`);
-  } else if (["trojan", "hysteria2", "anytls"].includes(protocol)) {
+  } else if (["trojan", "hysteria2", "anytls"].includes(outputProtocol)) {
     if (password) parts.push(`password=${password}`);
   } else {
     if (username) parts.push(`username=${username}`);
     if (password) parts.push(`password=${password}`);
   }
-  return `${name} = ${protocol}, ${parts.join(", ")}`;
+  return `${name} = ${outputProtocol}, ${parts.join(", ")}`;
 }
 
 function renderProxyNodes() {
@@ -5313,7 +5315,7 @@ function readSurgeDraft() {
     encryptedDnsServer,
     wifiAssist: refs.surgeWifiAssist.checked,
     excludeSimpleHostnames: refs.surgeExcludeSimpleHostnames.checked,
-    encryptedDnsFollowOutboundMode: encryptedDnsServer.length > 0 && refs.surgeEncryptedDnsFollowOutboundMode.checked,
+    encryptedDnsFollowOutboundMode: refs.surgeEncryptedDnsFollowOutboundMode.checked,
     ponteDeviceNames: normalizePonteDeviceNames(refs.surgePonteDeviceNames.value),
     tailscaleNodes: readSurgeTailscaleNodeRows(),
     hosts: isModeTogglePressed(refs.surgeHostAdvancedMode)
@@ -5655,13 +5657,6 @@ function collectStash() {
 function syncSurgeIpv6VifVisibility() {
   refs.surgeIpv6VifRow.classList.toggle("hidden", !refs.surgeIpv6.checked);
   refs.surgeIpv6Vif.disabled = !refs.surgeIpv6.checked;
-}
-
-function syncSurgeEncryptedDnsFollowOutboundModeVisibility() {
-  const hasEncryptedDnsServer = refs.surgeEncryptedDnsServer.value.split(",").some((item) => item.trim());
-  refs.surgeEncryptedDnsFollowOutboundModeRow.classList.toggle("hidden", !hasEncryptedDnsServer);
-  refs.surgeEncryptedDnsFollowOutboundMode.disabled = !hasEncryptedDnsServer;
-  if (!hasEncryptedDnsServer) refs.surgeEncryptedDnsFollowOutboundMode.checked = false;
 }
 
 function syncClashTunVisibility() {
@@ -6864,7 +6859,6 @@ refs.notificationTelegramBotToken.addEventListener("input", handleTelegramBotTok
 refs.updateCheckEnabled.addEventListener("change", updateSaveAvailability);
 refs.telegramBindCodeBtn.addEventListener("click", handleTelegramBindAction);
 refs.surgeIpv6.addEventListener("change", syncSurgeIpv6VifVisibility);
-refs.surgeEncryptedDnsServer.addEventListener("input", syncSurgeEncryptedDnsFollowOutboundModeVisibility);
 refs.clashTunEnable.addEventListener("change", syncClashTunVisibility);
 refs.clashDnsEnhancedMode.addEventListener("change", syncClashFakeIpVisibility);
 refs.stashTunEnable.addEventListener("change", syncStashTunVisibility);

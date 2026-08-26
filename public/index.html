@@ -551,11 +551,11 @@
                       <small data-i18n="excludeSimpleHostnamesHelp">启用后，不带点号的简单主机名不会交给远端 DNS，适合保留局域网主机名解析。</small>
                     </div>
                   </div>
-                  <div id="surgeEncryptedDnsFollowOutboundModeRow" class="cbi-row">
-                    <label for="surgeEncryptedDnsFollowOutboundMode" data-i18n="encryptedDnsFollowOutboundMode">加密 DNS 跟随出站模式</label>
+                  <div class="cbi-row">
+                    <label for="surgeEncryptedDnsFollowOutboundMode" data-i18n="encryptedDnsFollowOutboundMode">DNS 跟随出站规则</label>
                     <div class="field checks">
                       <label class="check"><input id="surgeEncryptedDnsFollowOutboundMode" type="checkbox"> <span data-i18n="enabled">已启用</span></label>
-                      <small data-i18n="encryptedDnsFollowOutboundModeHelp">启用后，仅 Surge 自己发出的加密 DNS 查询会跟随当前出站模式，避免这部分 DNS 流量绕过当前策略。</small>
+                      <small data-i18n="encryptedDnsFollowOutboundModeHelp">启用后，Surge 发出的 DoH、DoH3、DoQ、DoT 与 tcp:// DNS 查询会进入正常规则系统；关闭时这些查询固定使用 DIRECT。</small>
                     </div>
                   </div>
                 </div>
@@ -677,7 +677,7 @@
                       </div>
                       <div id="surgeTailscaleNodeRows" class="surge-tailscale-list"></div>
                       <div id="surgeTailscaleValidation" class="validation-messages hidden"></div>
-                      <small data-i18n="surgeTailscaleHelp">每个节点会生成一条 tailscale 策略和对应的 [Tailscale &lt;section-name&gt;] 配置段；需要 Surge iOS 5.20.0+ 或 Surge Mac 6.7.0+。</small>
+                      <small data-i18n="surgeTailscaleHelp">每个节点会生成一条 tailscale 策略和对应的 [Tailscale &lt;section-name&gt;] 配置段，并显式保留空闲保活设置；需要 Surge iOS 5.21.0+ 或 Surge Mac 6.8.0+。</small>
                     </div>
                   </div>
                 </div>

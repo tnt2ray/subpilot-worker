@@ -256,9 +256,10 @@ function normalizeLegacyExitProxy(value: Record<string, unknown> | null, chainFi
   const port = legacyPort(value.port);
   if (!server || !port) return null;
   const protocol = legacyProtocol(value.protocol);
+  const outputProtocol = protocol === "tuic" ? "tuic-v5" : protocol;
   return {
     id: "legacy-chain-exit",
-    config: `${CHAIN_EXIT_PROXY_NAME} = ${protocol}, ${legacyProxyNodeParams({ ...value, protocol, server, port })}`,
+    config: `${CHAIN_EXIT_PROXY_NAME} = ${outputProtocol}, ${legacyProxyNodeParams({ ...value, protocol: outputProtocol, server, port })}`,
     chainFilter,
     enabled: true,
     chainExit: true,
@@ -309,10 +310,13 @@ function migrateProxyNodeChainFilter(value: Record<string, unknown> | null, lega
 }
 
 function legacyProxyNodeConfig(value: Record<string, unknown>, protocol: ChainExitProtocol, index: number): string {
-  const params = legacyProxyNodeParams({ ...value, protocol });
+  // The removed structured editor used the ambiguous `tuic` label with
+  // UUID/password fields. Preserve that v5 intent in the free-form model.
+  const outputProtocol = protocol === "tuic" ? "tuic-v5" : protocol;
+  const params = legacyProxyNodeParams({ ...value, protocol: outputProtocol });
   if (!params) return "";
   const name = typeof value.name === "string" && value.name.trim() ? value.name.trim() : `Proxy Node ${index + 1}`;
-  return `${name} = ${protocol}, ${params}`;
+  return `${name} = ${outputProtocol}, ${params}`;
 }
 
 function legacyProxyNodeParams(value: Record<string, unknown>): string {
@@ -329,9 +333,11 @@ function legacyProxyNodeParams(value: Record<string, unknown>): string {
   } else if (protocol === "snell") {
     if (password) parts.push(`psk=${password}`);
     parts.push("version=4");
-  } else if (protocol === "tuic") {
-    if (username) parts.push(`username=${username}`);
+  } else if (protocol === "tuic-v5") {
+    if (username) parts.push(`uuid=${username}`);
     if (password) parts.push(`password=${password}`);
+  } else if (protocol === "tuic") {
+    if (password) parts.push(`token=${password}`);
   } else if (["trojan", "hysteria2", "anytls"].includes(protocol)) {
     if (password) parts.push(`password=${password}`);
   } else {

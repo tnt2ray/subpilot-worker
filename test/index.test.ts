@@ -1642,6 +1642,7 @@ describe("asset access control", () => {
             name: "Tailnet Exit",
             sectionName: "tailnet-exit",
             authKey: "tskey-auth-test",
+            idleKeepalive: 600,
             enabled: true
           }],
           rules: [

@@ -1,6 +1,6 @@
 import type { AppConfig } from "./types";
 
-const ENCRYPTED_DNS_PROTOCOLS = new Set(["https:", "h3:", "quic:", "tls:"]);
+const SURGE_DNS_PROTOCOLS = new Set(["https:", "h3:", "quic:", "tls:", "tcp:"]);
 
 export function validateSurgeHosts(config: Partial<Pick<AppConfig, "surge">>): string | null {
   const hosts = Array.isArray(config.surge?.hosts) ? config.surge.hosts : [];
@@ -54,7 +54,7 @@ function isValidHostValue(value: string): boolean {
 
   if (/^[a-z][a-z0-9+.-]*:\/\//i.test(server)) {
     try {
-      return ENCRYPTED_DNS_PROTOCOLS.has(new URL(server).protocol);
+      return SURGE_DNS_PROTOCOLS.has(new URL(server).protocol);
     } catch {
       return false;
     }

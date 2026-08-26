@@ -1,4 +1,4 @@
-const ENCRYPTED_DNS_PROTOCOLS = new Set(["https:", "h3:", "quic:", "tls:"]);
+const SURGE_DNS_PROTOCOLS = new Set(["https:", "h3:", "quic:", "tls:", "tcp:"]);
 const URL_REWRITE_TYPES = new Set(["header", "302", "reject"]);
 const MAP_LOCAL_DATA_TYPES = new Set(["file", "text", "tiny-gif", "base64"]);
 const STASH_SCRIPT_TYPES = new Set(["http-request", "http-response"]);
@@ -45,7 +45,7 @@ function isValidSurgeHostValue(value) {
 
   if (/^[a-z][a-z0-9+.-]*:\/\//i.test(server)) {
     try {
-      return ENCRYPTED_DNS_PROTOCOLS.has(new URL(server).protocol);
+      return SURGE_DNS_PROTOCOLS.has(new URL(server).protocol);
     } catch {
       return false;
     }

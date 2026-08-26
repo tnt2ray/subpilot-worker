@@ -351,6 +351,34 @@ describe("target inference", () => {
     expect(stash.content).not.toContain("/stash-sync//read-token");
   });
 
+  it.each([-1, 0, 600, 601])("renders Tailscale idle-keepalive=%i explicitly", async (idleKeepalive) => {
+    const result = await generateConfig(makeEnv(), {
+      ...DEFAULT_CONFIG,
+      surge: {
+        ...DEFAULT_CONFIG.surge,
+        tailscaleNodes: [{
+          name: "Home Tailnet",
+          sectionName: "home",
+          authKey: "tskey-auth-test",
+          controlUrl: "",
+          hostname: "",
+          derpOnly: false,
+          exitNode: "none",
+          idleKeepalive,
+          preferIpv6: false,
+          dnsServer: [],
+          mtu: 1280,
+          underlyingProxy: "",
+          testUrl: "",
+          testTimeout: 5,
+          enabled: true
+        }]
+      }
+    }, "surge", "https://subpilot.example.com/sync/read-token/");
+
+    expect(result.content).toContain(`idle-keepalive = ${idleKeepalive}`);
+  });
+
   it("renders configured Tailscale policies and keeps them as valid rule targets", async () => {
     const result = await generateConfig(makeEnv(), {
       ...DEFAULT_CONFIG,

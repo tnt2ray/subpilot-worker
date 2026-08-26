@@ -270,11 +270,13 @@ FINAL,Proxy
 
 统一规则会按目标客户端的能力做映射和过滤：合法的 `IP-ASN` 会保留；`no-resolve` 只在目标支持时输出；`src` 只为 Clash 保留，并让对应 IP 规则使用 classical 规则集，Surge 与 Stash 会移除该参数。目标不支持的规则类型、附加参数和内置策略不会泄漏到对应配置；例如 Surge 专属的 `CELLULAR`、`CELLULAR-ONLY`、`HYBRID`、`NO-HYBRID`，以及 Clash 专属的 `PASS-RULE`、`COMPATIBLE`，只会在对应目标中保留。Surge 独立规则必须且只能以一个 `FINAL` 兜底；Clash / Stash 独立规则必须且只能以一个 `MATCH` 或 `FINAL` 兜底，兜底项都必须位于最后。
 
-规则行解析会保留引号或复合逻辑表达式内部的逗号，避免把 `AND`、`OR`、`NOT` 子规则或带引号的值错误拆列。保存手工逻辑规则时，系统会递归校验括号和引号是否平衡、`AND` / `OR` 是否至少包含两个子规则、`NOT` 是否恰好包含一个子规则，以及每个叶子规则的类型、匹配值和附加参数是否合法；逻辑子规则不能携带策略出口。代理订阅解析同时兼容 SIP002 URL。
+规则行解析会保留引号或复合逻辑表达式内部的逗号，避免把 `AND`、`OR`、`NOT` 子规则或带引号的值错误拆列。保存手工逻辑规则时，系统会递归校验括号和引号是否平衡、`AND` / `OR` 是否至少包含两个子规则、`NOT` 是否恰好包含一个子规则，以及每个叶子规则的类型、匹配值和附加参数是否合法；逻辑子规则不能携带策略出口。代理订阅解析同时兼容 SIP002 URL。TUIC 会保留明确的协议版本：Surge `tuic` 按 v4 的 `token` 认证处理，`tuic-v5` 按 v5 的 `uuid` 与 `password` 处理；Clash / Stash 的 `type: tuic` 和 `tuic://` URL 按 v5 处理。Surge v4 节点不会转换成不兼容的 Clash / Stash 节点。
 
 Surge 的 `SUBNET`、`AND`、`OR`、`NOT` 等复合规则类型可以在结构化编辑器中选择，也可以在文本模式中直接编辑。Ponte 设备名会生成 `DEVICE:<name>` 策略出口，保存后可在规则中选择。
 
-Surge 页面中的 `Tailscale` 标签可维护多个 Tailscale 出站节点。每个已启用节点会在 `[Proxy]` 中生成 `tailscale` 策略，并生成对应的 `[Tailscale <section-name>]` 配置段；保存后可在 Surge 规则和统一配置的分流规则中直接选择该策略名称。统一规则选择 Tailscale 策略时，仅 Surge 输出相关规则；Clash 和 Stash 配置会跳过这些规则及对应的规则集引用。底层策略留空时使用 Surge 默认的直连传输；仅在需要链式代理时填写另一个已配置的策略名称，`DIRECT` 会按留空处理且不会显式写入。生成时只下发底层策略可由实际保留的节点、策略组或其它可用 Tailscale 节点解析出的依赖闭包，悬空或循环依赖不会进入配置；测试 URL 必须使用 `http://`。该功能要求 Surge iOS 5.20.0+ 或 Surge Mac 6.7.0+。`Auth Key` 在 KV 配置快照中加密保存，但仍会以客户端所需格式进入生成的 Surge 配置，请优先使用短期、预授权、权限受限的密钥，并保护管理令牌与订阅链接。
+Surge 页面中的 `Tailscale` 标签可维护多个 Tailscale 出站节点。每个已启用节点会在 `[Proxy]` 中生成 `tailscale` 策略，并生成对应的 `[Tailscale <section-name>]` 配置段；保存后可在 Surge 规则和统一配置的分流规则中直接选择该策略名称。统一规则选择 Tailscale 策略时，仅 Surge 输出相关规则；Clash 和 Stash 配置会跳过这些规则及对应的规则集引用。底层策略留空时使用 Surge 默认的直连传输；仅在需要链式代理时填写另一个已配置的策略名称，`DIRECT` 会按留空处理且不会显式写入。生成时只下发底层策略可由实际保留的节点、策略组或其它可用 Tailscale 节点解析出的依赖闭包，悬空或循环依赖不会进入配置；测试 URL 必须使用 `http://`。`idle-keepalive` 会始终显式写入：`0` 或 `-1` 表示常驻，正整数表示空闲多少秒后关闭会话，默认 `600`，从而避免客户端升级后因省略字段而把 600 秒静默变成常驻。生成的 Tailscale 配置要求 Surge iOS 5.21.0+ 或 Surge Mac 6.8.0+。`Auth Key` 在 KV 配置快照中加密保存，但仍会以客户端所需格式进入生成的 Surge 配置，请优先使用短期、预授权、权限受限的密钥，并保护管理令牌与订阅链接。
+
+Surge 页面的“DNS 跟随出站规则”会独立保存，并始终输出 `encrypted-dns-follow-outbound-mode`。启用后，Surge 自己发出的 DoH、DoH3、DoQ、DoT 和 `tcp://` DNS 查询会进入正常规则系统，可用 `PROTOCOL` 规则选择出口；关闭时这些查询固定使用 `DIRECT`。`dns-server` 和 `[Host]` 的 `server:` 值都支持 `tcp://`，该 DNS-over-TCP 语法要求 Surge iOS 5.21.0+ 或 Surge Mac 6.8.0+。
 
 Surge 页面中的 `Map Local` 标签可用结构化编辑器配置 API Mock，也可切换到文本模式直接编辑 `[Map Local]` 内容。支持 `file`、`text`、`tiny-gif` 和 `base64` 四种响应类型，以及可选的 HTTP 状态码和响应头。匹配 HTTPS 请求时，需要同时在 MITM 页启用对应主机名。
 

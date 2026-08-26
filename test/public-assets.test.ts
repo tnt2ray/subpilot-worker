@@ -39,6 +39,11 @@ describe("admin static assets", () => {
     expect(generalPanel).toContain('min="300" max="604800" step="60"');
     expect(generalPanel).toContain("主配置更新间隔");
     expect(app).toContain('managedConfigIntervalHelp: "写入 #!MANAGED-CONFIG 的 interval，单位秒；默认 43200（12 小时）。"');
+    expect(app).toContain('data-tailscale-field="idleKeepalive" type="number" min="-1" max="86400" step="1"');
+    expect(app).toContain('idleKeepalive: idleKeepaliveValue === "" ? Number.NaN : Number(idleKeepaliveValue)');
+    expect(app).not.toContain("syncSurgeEncryptedDnsFollowOutboundModeVisibility");
+    expect(app).toContain('encryptedDnsFollowOutboundMode: refs.surgeEncryptedDnsFollowOutboundMode.checked');
+    expect(app).toContain("DoH、DoH3、DoQ、DoT 与 tcp:// DNS 查询");
 
     expect(html).toContain('id="fetchRecordsTableBody"');
     expect(html).toContain('id="fetchRecordsPagination"');
@@ -775,6 +780,7 @@ describe("admin static assets", () => {
         sectionName: name.toLowerCase().replace(/\\s+/g, "-"),
         authKey: "tskey-auth-test",
         enabled: true,
+        idleKeepalive: 600,
         mtu: 1280,
         testTimeout: 5,
         testUrl: "http://example.com/generate_204",
@@ -800,12 +806,18 @@ describe("admin static assets", () => {
       const disabled = node("Disabled Tailnet");
       disabled.enabled = false;
       disabled.authKey = "";
+      const invalidIdleKeepalive = node("Invalid Idle");
+      invalidIdleKeepalive.idleKeepalive = 1.5;
+      const missingIdleKeepalive = node("Missing Idle");
+      missingIdleKeepalive.idleKeepalive = Number.NaN;
       globalThis.result = {
         validGroup: validateSurgeTailscaleNodeList([node("Tail A", "Proxy")], options).valid,
         validProxy: validateSurgeTailscaleNodeList([node("Tail A", "Manual Exit")], options).valid,
         validDirect: validateSurgeTailscaleNodeList([node("Tail A", "DIRECT")], options).valid,
         validDisabled: validateSurgeTailscaleNodeList([disabled], options).valid,
         invalidHttps: validateSurgeTailscaleNodeList([invalidHttps], options).valid,
+        invalidIdleKeepalive: validateSurgeTailscaleNodeList([invalidIdleKeepalive], options).valid,
+        missingIdleKeepalive: validateSurgeTailscaleNodeList([missingIdleKeepalive], options).valid,
         missingUnderlying: validateSurgeTailscaleNodeList([node("Tail A", "Missing")], options).valid,
         selfReference: validateSurgeTailscaleNodeList([node("Tail A", "Tail A")], options).valid,
         cycle: validateSurgeTailscaleNodeList([node("Tail A", "Tail B"), node("Tail B", "Tail A")], options).valid,
@@ -829,6 +841,8 @@ describe("admin static assets", () => {
       validDirect: true,
       validDisabled: true,
       invalidHttps: false,
+      invalidIdleKeepalive: false,
+      missingIdleKeepalive: false,
       missingUnderlying: false,
       selfReference: false,
       cycle: false,
@@ -1499,6 +1513,35 @@ describe("admin static assets", () => {
       parsed: { ruleType: "IP-CIDR", value: "10.0.0.0/8", options: "no-resolve" },
       rebuilt: "IP-CIDR,10.0.0.0/8,Proxy,no-resolve",
       final: "FINAL,Proxy,dns-failed"
+    });
+  });
+
+  it("accepts tcp:// resolvers in Surge Host validation", () => {
+    const validation = readPublicFile("app-validation.js");
+    const sandbox: { result?: unknown; URL: typeof URL } = { URL };
+    const context = createContext(sandbox);
+    const functions = [
+      "emptyValidation",
+      "validateLines",
+      "splitSurgeHostLine",
+      "isValidSurgeHostName",
+      "isValidSurgeHostValue",
+      "validateSurgeHostLine",
+      "validateSurgeHostLines"
+    ].map((name) => extractFunctionSource(validation, name)).join("\n");
+
+    new Script(`
+      const SURGE_DNS_PROTOCOLS = new Set(["https:", "h3:", "quic:", "tls:", "tcp:"]);
+      ${functions}
+      globalThis.result = {
+        tcp: validateSurgeHostLines(["example.com = server:tcp://dns.example.com"]),
+        ftp: validateSurgeHostLines(["example.com = server:ftp://dns.example.com"])
+      };
+    `).runInContext(context);
+
+    expect(sandbox.result).toEqual({
+      tcp: { errors: [], warnings: [] },
+      ftp: { errors: ["第 1 行解析值格式无效：server:ftp://dns.example.com"], warnings: [] }
     });
   });
 

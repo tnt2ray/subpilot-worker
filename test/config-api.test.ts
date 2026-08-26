@@ -173,6 +173,17 @@ describe("config API correctness", () => {
     };
     uppercaseSubnet.surge.tailscaleNodes = [tailscaleNode("Tail A", "Network")];
     expect(validateConfigForSave(uppercaseSubnet)).toBeNull();
+
+    for (const idleKeepalive of [-1, 0, 600, 86_400]) {
+      const validIdleKeepalive = validConfig();
+      validIdleKeepalive.surge.tailscaleNodes = [{ ...tailscaleNode("Tail A"), idleKeepalive }];
+      expect(validateConfigForSave(validIdleKeepalive)).toBeNull();
+    }
+    for (const idleKeepalive of [-2, 86_401, 1.5, Number.NaN]) {
+      const invalidIdleKeepalive = validConfig();
+      invalidIdleKeepalive.surge.tailscaleNodes = [{ ...tailscaleNode("Tail A"), idleKeepalive }];
+      expect(validateConfigForSave(invalidIdleKeepalive)).toContain("idle-keepalive 必须是 -1 到 86400 的整数");
+    }
   });
 
   it("rejects unsafe policy-group specifications and malformed entities", () => {

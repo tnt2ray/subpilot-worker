@@ -62,7 +62,9 @@ function legacyProxyNodeConfig(node: {
     if (node.password) parts.push(`psk=${node.password}`);
     parts.push("version=4");
   } else if (node.protocol === "tuic") {
-    if (node.username) parts.push(`username=${node.username}`);
+    if (node.password) parts.push(`token=${node.password}`);
+  } else if (node.protocol === "tuic-v5") {
+    if (node.username) parts.push(`uuid=${node.username}`);
     if (node.password) parts.push(`password=${node.password}`);
   } else if (["trojan", "hysteria2", "anytls"].includes(node.protocol)) {
     if (node.password) parts.push(`password=${node.password}`);
@@ -1362,9 +1364,10 @@ describe("generation", () => {
     const surge = await generateConfig(env, config, "surge", "https://subpilot.example.com/sync/token/");
 
     expect(surge.content).not.toMatch(/y6x0v4mutx\.yn33dfs2\.sbs = server:/);
+    expect(surge.content).toContain("encrypted-dns-follow-outbound-mode = false");
   });
 
-  it("omits Surge encrypted DNS follow outbound mode when no encrypted DNS server is configured", async () => {
+  it("preserves Surge DNS follow outbound mode without a global encrypted DNS server", async () => {
     mockSubscription("HK 1 = trojan, hk.example.test, 443, password=p");
     const env = makeEnv();
     const config = {
@@ -1385,8 +1388,10 @@ describe("generation", () => {
       }],
       surge: {
         ...DEFAULT_CONFIG.surge,
+        dnsServer: ["tcp://dns.example.test"],
         encryptedDnsServer: [],
         encryptedDnsFollowOutboundMode: true,
+        hosts: ["host-dns.example.test = server:tcp://dns.example.test"],
         rules: ["FINAL,Proxy"]
       }
     };
@@ -1394,7 +1399,9 @@ describe("generation", () => {
     const surge = await generateConfig(env, config, "surge", "https://subpilot.example.com/sync/token/");
 
     expect(surge.content).not.toContain("encrypted-dns-server =");
-    expect(surge.content).not.toContain("encrypted-dns-follow-outbound-mode =");
+    expect(surge.content).toContain("dns-server = tcp://dns.example.test");
+    expect(surge.content).toContain("encrypted-dns-follow-outbound-mode = true");
+    expect(surge.content).toContain("host-dns.example.test = server:tcp://dns.example.test");
   });
 
   it("preserves the QUIC encrypted DNS syntax in Surge proxy server DNS mappings", async () => {
@@ -2133,7 +2140,7 @@ describe("generation", () => {
     expect(surge.content).not.toContain("[FP] TW 02");
   });
 
-  it("generates and maps the chain exit node for every shared Surge and Clash protocol", async () => {
+  it("generates chain exits with target-specific TUIC v4 and v5 compatibility", async () => {
     const env = makeEnv();
     const clashExpectations = new Map<ChainExitProtocol, Record<string, unknown>>([
       ["https", { type: "http", tls: true, username: "user-id", password: "secret" }],
@@ -2141,7 +2148,7 @@ describe("generation", () => {
       ["ss", { type: "ss", cipher: "chacha20-ietf-poly1305", password: "secret" }],
       ["snell", { type: "snell", psk: "secret", version: 4 }],
       ["vmess", { type: "vmess", uuid: "user-id", cipher: "auto" }],
-      ["tuic", { type: "tuic", uuid: "user-id", password: "secret" }],
+      ["tuic-v5", { type: "tuic", uuid: "user-id", password: "secret" }],
       ["trojan", { type: "trojan", password: "secret" }],
       ["hysteria2", { type: "hysteria2", password: "secret" }],
       ["anytls", { type: "anytls", password: "secret" }],
@@ -2153,14 +2160,78 @@ describe("generation", () => {
       const config = configWithExitProtocol(protocol);
       const surge = await generateConfig(env, config, "surge", "https://subpilot.example.com/sync/token/");
       const clash = await generateConfig(env, config, "clash", "https://subpilot.example.com/sync/token/");
-      const clashProxy = (YAML.parse(clash.content) as { proxies: Record<string, unknown>[] }).proxies[0]!;
 
       expect(surge.content).toContain(`${CHAIN_EXIT_PROXY_NAME} = ${protocol}, 1.2.3.4, 443`);
+      if (protocol === "tuic") {
+        expect(surge.content).toContain("token=secret");
+        expect((YAML.parse(clash.content) as { proxies?: Record<string, unknown>[] }).proxies ?? []).toEqual([]);
+        continue;
+      }
+
+      const clashProxy = (YAML.parse(clash.content) as { proxies: Record<string, unknown>[] }).proxies[0]!;
       expect(clashProxy.server).toBe("1.2.3.4");
       expect(clashProxy.port).toBe(443);
       const expected = clashExpectations.get(protocol);
       if (expected) expect(clashProxy).toMatchObject(expected);
-      if (protocol === "tuic") expect(clashProxy).not.toHaveProperty("token");
+      if (protocol === "tuic-v5") expect(clashProxy).not.toHaveProperty("token");
     }
+
+    const stash = await generateConfig(
+      env,
+      configWithExitProtocol("tuic-v5"),
+      "stash",
+      "https://subpilot.example.com/sync/token/"
+    );
+    const stashProxy = (YAML.parse(stash.content) as { proxies: Record<string, unknown>[] }).proxies[0]!;
+    expect(stashProxy).toMatchObject({ type: "tuic", uuid: "user-id", password: "secret" });
+    expect(stashProxy).not.toHaveProperty("token");
+  });
+
+  it("removes explicit policy-group references to TUIC v4 from Clash and Stash", async () => {
+    const env = makeEnv();
+    const config = {
+      ...DEFAULT_CONFIG,
+      settings: {
+        ...DEFAULT_CONFIG.settings,
+        geoipRenameEnabled: false
+      },
+      groups: {
+        Proxy: "select, TUIC v4, TUIC v5"
+      },
+      proxyNodes: [
+        {
+          id: "tuic-v4",
+          config: "TUIC v4 = tuic, tuic-v4.example.com, 443, token=secret",
+          chainFilter: [],
+          enabled: true,
+          chainExit: false,
+          includeInGroups: true
+        },
+        {
+          id: "tuic-v5",
+          config: "TUIC v5 = tuic-v5, tuic-v5.example.com, 443, uuid=user-id, password=secret",
+          chainFilter: [],
+          enabled: true,
+          chainExit: false,
+          includeInGroups: true
+        }
+      ]
+    };
+
+    const surge = await generateConfig(env, config, "surge", "https://subpilot.example.com/sync/token/");
+    const clash = YAML.parse((await generateConfig(env, config, "clash", "https://subpilot.example.com/sync/token/")).content) as {
+      proxies: Array<{ name: string }>;
+      "proxy-groups": Array<{ name: string; proxies: string[] }>;
+    };
+    const stash = YAML.parse((await generateConfig(env, config, "stash", "https://subpilot.example.com/sync/token/")).content) as {
+      proxies: Array<{ name: string }>;
+      "proxy-groups": Array<{ name: string; proxies: string[] }>;
+    };
+
+    expect(surge.content).toContain("Proxy = select, TUIC v4, TUIC v5");
+    expect(clash.proxies.map((node) => node.name)).toEqual(["TUIC v5"]);
+    expect(clash["proxy-groups"].find((group) => group.name === "Proxy")?.proxies).toEqual(["TUIC v5"]);
+    expect(stash.proxies.map((node) => node.name)).toEqual(["TUIC v5"]);
+    expect(stash["proxy-groups"].find((group) => group.name === "Proxy")?.proxies).toEqual(["TUIC v5"]);
   });
 });

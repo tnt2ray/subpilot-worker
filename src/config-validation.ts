@@ -278,6 +278,9 @@ export function validateTailscalePolicies(config: AppConfig): string | null {
     if (node.dnsServer?.some((value) => /[,\r\n]/.test(value))) return `Tailscale ${node.name} dns-server 不能包含逗号或换行`;
     const authKey = typeof node.authKey === "string" ? node.authKey.trim() : "";
     if (node.enabled && !authKey) return `Tailscale ${node.name} 启用时 auth-key 不能为空`;
+    if (!Number.isInteger(node.idleKeepalive) || node.idleKeepalive < -1 || node.idleKeepalive > 86_400) {
+      return `Tailscale ${node.name} idle-keepalive 必须是 -1 到 86400 的整数`;
+    }
     if (node.underlyingProxy) {
       const underlyingError = validatePolicyName(node.underlyingProxy, `Tailscale ${node.name} underlying-proxy`);
       if (underlyingError) return underlyingError;

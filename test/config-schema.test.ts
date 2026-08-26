@@ -121,9 +121,27 @@ describe("KV schema migrations", () => {
     expect(proxyNodeKv.has("config:chain:exitProxy")).toBe(false);
     expect(proxyNodeKv.has("config:chain:filter")).toBe(false);
 
+    const { env: tuicExitEnv, kv: tuicExitKv } = makeTestEnv(new Map([
+      [CONFIG_SCHEMA_VERSION_KEY, "3"],
+      ["config:chain:exitProxy", JSON.stringify({
+        protocol: "tuic",
+        server: "tuic.example.com",
+        port: 443,
+        username: "user-id",
+        password: "secret"
+      })]
+    ]));
+
+    await runKvMigrations(tuicExitEnv);
+
+    expect(JSON.parse(String(tuicExitKv.get("config:proxyNodes:legacy-chain-exit") ?? "{}"))).toMatchObject({
+      config: "Chain Exit = tuic-v5, tuic.example.com, 443, uuid=user-id, password=secret",
+      chainExit: true
+    });
+
     const { env: v4ProxyNodeEnv, kv: v4ProxyNodeKv } = makeTestEnv(new Map([
       [CONFIG_SCHEMA_VERSION_KEY, "4"],
-      ["config:proxyNodes:index", JSON.stringify(["snell"])],
+      ["config:proxyNodes:index", JSON.stringify(["snell", "tuic"])],
       ["config:proxyNodes:snell", JSON.stringify({
         id: "snell",
         name: "Snell",
@@ -133,6 +151,17 @@ describe("KV schema migrations", () => {
         password: "psk",
         enabled: true,
         chainExit: false
+      })],
+      ["config:proxyNodes:tuic", JSON.stringify({
+        id: "tuic",
+        name: "TUIC",
+        protocol: "tuic",
+        server: "tuic.example.com",
+        port: 443,
+        username: "user-id",
+        password: "secret",
+        enabled: true,
+        chainExit: true
       })]
     ]));
 
@@ -145,6 +174,14 @@ describe("KV schema migrations", () => {
       enabled: true,
       chainExit: false,
       includeInGroups: true
+    });
+    expect(JSON.parse(String(v4ProxyNodeKv.get("config:proxyNodes:tuic") ?? "{}"))).toEqual({
+      id: "tuic",
+      config: "TUIC = tuic-v5, tuic.example.com, 443, uuid=user-id, password=secret",
+      chainFilter: ["JP", "KR", "TW"],
+      enabled: true,
+      chainExit: true,
+      includeInGroups: false
     });
 
     const { env: v5ProxyNodeEnv, kv: v5ProxyNodeKv } = makeTestEnv(new Map([

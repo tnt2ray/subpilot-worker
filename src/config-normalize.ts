@@ -342,10 +342,11 @@ function normalizeProxyNodeConfig(record: Record<string, unknown>, index: number
   const config = typeof record.config === "string" ? record.config.trim() : "";
   if (config) return config;
   const protocol = chainExitProtocol(record.protocol, "socks5");
+  const outputProtocol = protocol === "tuic" ? "tuic-v5" : protocol;
   const rawName = typeof record.name === "string" ? record.name.trim() : "";
   const name = uniqueProxyNodeName(rawName || `Proxy Node ${index + 1}`, seenNames);
-  const legacy = legacyProxyNodeParams(record);
-  return legacy ? `${name} = ${protocol}, ${legacy}` : "";
+  const legacy = legacyProxyNodeParams({ ...record, protocol: outputProtocol });
+  return legacy ? `${name} = ${outputProtocol}, ${legacy}` : "";
 }
 
 function legacyProxyNodeParams(record: Record<string, unknown>): string {
@@ -362,9 +363,11 @@ function legacyProxyNodeParams(record: Record<string, unknown>): string {
   } else if (protocol === "snell") {
     if (password) parts.push(`psk=${password}`);
     parts.push("version=4");
-  } else if (protocol === "tuic") {
-    if (username) parts.push(`username=${username}`);
+  } else if (protocol === "tuic-v5") {
+    if (username) parts.push(`uuid=${username}`);
     if (password) parts.push(`password=${password}`);
+  } else if (protocol === "tuic") {
+    if (password) parts.push(`token=${password}`);
   } else if (["trojan", "hysteria2", "anytls"].includes(protocol)) {
     if (password) parts.push(`password=${password}`);
   } else {
@@ -412,7 +415,7 @@ export function normalizeSurge(input: Partial<AppConfig["surge"]> | undefined): 
     encryptedDnsServer,
     wifiAssist: surge.wifiAssist === true,
     excludeSimpleHostnames: surge.excludeSimpleHostnames !== false,
-    encryptedDnsFollowOutboundMode: encryptedDnsServer.length > 0 && surge.encryptedDnsFollowOutboundMode !== false,
+    encryptedDnsFollowOutboundMode: surge.encryptedDnsFollowOutboundMode !== false,
     ponteDeviceNames: normalizePonteDeviceNames(surge.ponteDeviceNames),
     tailscaleNodes: normalizeSurgeTailscaleNodes(surge.tailscaleNodes),
     hosts: stringArray(surge.hosts, DEFAULT_CONFIG.surge.hosts),

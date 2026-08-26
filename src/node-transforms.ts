@@ -7,8 +7,9 @@ import {
 } from "./rule-targets";
 import { CHAIN_EXIT_PROXY_NAME, type AppConfig, type ProxyNode, type Target } from "./types";
 
-const SURGE_PROTOCOLS = new Set(["http", "https", "socks5", "socks5-tls", "ss", "snell", "trojan", "vmess", "hysteria2", "hy2", "tuic", "anytls", "trust-tunnel", "ssh"]);
-const CLASH_PROTOCOLS = new Set([...SURGE_PROTOCOLS, "vless"]);
+const SHARED_PROTOCOLS = ["http", "https", "socks5", "socks5-tls", "ss", "snell", "trojan", "vmess", "hysteria2", "hy2", "tuic-v5", "anytls", "trust-tunnel", "ssh"];
+const SURGE_PROTOCOLS = new Set([...SHARED_PROTOCOLS, "tuic"]);
+const CLASH_PROTOCOLS = new Set([...SHARED_PROTOCOLS, "vless"]);
 const UNKNOWN_REGION_NAME = "ZZ";
 const MAX_GEOIP_LOOKUPS_PER_GENERATION = 100;
 const CITY_COUNTRY_ALIASES = new Map<string, string>([

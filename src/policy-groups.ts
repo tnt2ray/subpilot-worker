@@ -1,4 +1,5 @@
 import { nodeMatchesFilter } from "./node-transforms";
+import { parseConfiguredProxyNode } from "./parsers";
 import { parseAllPolicySelector, parseGroupOption, splitGroupSpec } from "./policy-group-spec";
 import { isRulePolicyCompatibleWithTarget } from "./rule-targets";
 import type { RuleSetOutputTarget } from "./rule-set-types";
@@ -26,6 +27,7 @@ export function buildSurgeGroups(
   buildOptions: SurgeGroupBuildOptions = {}
 ): SurgeGroupOutput[] {
   const disabledGroups = new Set(config.disabledGroups);
+  const unavailableConfiguredProxyNames = configuredProxyNamesUnavailableIn(nodes, config);
   const groups = activeGroupEntries(config, "surge").map(([name, spec]) => {
     const [type, ...rawItems] = splitGroupSpec(spec);
     const groupType = (type || "select").trim().toLowerCase();
@@ -38,7 +40,8 @@ export function buildSurgeGroups(
         && !disabledGroups.has(item)
         && isRulePolicyCompatibleWithTarget(item, "surge")
       ));
-    const available = filterUnavailableTailscalePolicies(groupType, resolved, buildOptions);
+    const targetAvailable = filterUnavailableConfiguredPolicies(groupType, resolved, unavailableConfiguredProxyNames);
+    const available = filterUnavailableTailscalePolicies(groupType, targetAvailable, buildOptions);
     const items = groupType === "subnet" ? available : available.filter((item) => !parseGroupOption(item));
     const groupOptions = groupType === "subnet" || groupType === "url-test"
       ? []
@@ -77,6 +80,8 @@ export function buildClashGroups(
   target: Extract<RuleSetOutputTarget, "clash" | "stash"> = "clash"
 ): Record<string, unknown>[] {
   const disabledGroups = new Set(config.disabledGroups);
+  const unavailableConfiguredPolicies = configuredProxyNamesUnavailableIn(nodes, config);
+  for (const node of config.surge.tailscaleNodes) unavailableConfiguredPolicies.add(node.name);
   const groups = activeGroupEntries(config, "clash").map(([name, spec]) => {
     const [type, ...items] = splitGroupSpec(spec);
     const groupType = (type || "select").trim().toLowerCase();
@@ -85,6 +90,7 @@ export function buildClashGroups(
       && isAllowedGroupItem(item)
       && !disabledGroups.has(item)
       && isRulePolicyCompatibleWithTarget(item, target)
+      && !unavailableConfiguredPolicies.has(item)
     ));
     const options = Object.fromEntries(items
       .filter((item) => !parseAllPolicySelector(item) && !isSurgeHiddenOption(item) && item.includes("="))
@@ -104,6 +110,24 @@ export function buildClashGroups(
       proxies,
       ...options
     }];
+  });
+}
+
+function configuredProxyNamesUnavailableIn(nodes: ProxyNode[], config: AppConfig): Set<string> {
+  const available = new Set(nodes.filter((node) => node.manual).map((node) => node.name));
+  const unavailable = new Set<string>();
+  for (const proxyNode of config.proxyNodes) {
+    const name = parseConfiguredProxyNode(proxyNode)?.name.trim();
+    if (name && !available.has(name)) unavailable.add(name);
+  }
+  return unavailable;
+}
+
+function filterUnavailableConfiguredPolicies(groupType: string, items: string[], unavailable: ReadonlySet<string>): string[] {
+  if (unavailable.size === 0) return items;
+  return items.filter((item) => {
+    const policy = groupType === "subnet" ? parseGroupOption(item, { requireValue: true })?.value : item;
+    return !policy || !unavailable.has(policy);
   });
 }
 

@@ -20,7 +20,11 @@ export function parseProxyUrl(value: string): ProxyNode | null {
     const paramsNormalized = normalizeProxyParams(params);
     const auth = decodeURIComponent(parsed.username || "");
     const secret = decodeURIComponent(parsed.password || "");
-    const type = parsed.protocol.replace(":", "");
+    const uriType = parsed.protocol.replace(":", "");
+    // TUIC URIs use the v5 UUID/password authentication scheme. Surge uses
+    // the bare `tuic` keyword for the incompatible v4 token scheme, so keep
+    // the protocol version explicit internally before rendering either target.
+    const type = uriType === "tuic" ? "tuic-v5" : uriType;
     const node: ProxyNode = {
       name,
       type,
@@ -38,7 +42,7 @@ export function parseProxyUrl(value: string): ProxyNode | null {
       node.password = password;
     } else if (type === "vless") {
       node.uuid = auth;
-    } else if (type === "tuic") {
+    } else if (type === "tuic-v5") {
       if (auth.includes(":") && !secret) {
         const [uuid, password] = auth.split(/:(.*)/s);
         node.uuid = uuid;

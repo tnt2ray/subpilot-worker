@@ -166,7 +166,7 @@ function parseYamlProxies(content: string, sourceId: string): ProxyNode[] {
       const record = proxy as Record<string, unknown>;
       if (!isSafeConfigText(record)) return [];
       const name = asString(record.name);
-      const type = asString(record.type);
+      const type = normalizeClashInputType(asString(record.type));
       const server = asString(record.server);
       const port = toPort(record.port);
       if (!name || !type || !server || port === undefined) return [];
@@ -215,12 +215,16 @@ export function parseSurgeLine(line: string): ProxyNode | null {
   if (!name || !detail) return null;
   const urlNode = parseProxyUrl(detail);
   if (urlNode) {
-    const node = { ...urlNode, name, surgeDetail: urlNode.paramsNormalized ? undefined : detail };
+    const node = {
+      ...urlNode,
+      name,
+      surgeDetail: urlNode.paramsNormalized || urlNode.type === "tuic-v5" ? undefined : detail
+    };
     return isSafeConfigText(node) ? node : null;
   }
   const parts = detail.split(",").map((item) => item.trim()).filter(Boolean);
   if (parts.length < 3) return null;
-  const type = parts[0]!;
+  const sourceType = parts[0]!;
   const server = parts[1]!;
   const port = toPort(parts[2]);
   if (port === undefined) return null;
@@ -229,6 +233,7 @@ export function parseSurgeLine(line: string): ProxyNode | null {
     const [key, ...rest] = part.split("=");
     if (key && rest.length > 0) params[key.trim()] = rest.join("=").trim();
   }
+  const type = normalizeSurgeInputType(sourceType, params);
   const paramsNormalized = normalizeProxyParams(params);
   const node: ProxyNode = {
     name,
@@ -239,7 +244,7 @@ export function parseSurgeLine(line: string): ProxyNode | null {
     uuid: asString(params.username) || asString(params.uuid),
     cipher: asString(params["encrypt-method"]),
     params,
-    surgeDetail: paramsNormalized ? undefined : detail,
+    surgeDetail: paramsNormalized || type !== sourceType ? undefined : detail,
     paramsNormalized: paramsNormalized || undefined
   };
   return isSafeConfigText(node) ? node : null;
@@ -252,7 +257,22 @@ function normalizeTypeForSurge(type: string): string {
 function normalizeTypeForClash(type: string): string {
   if (type === "https") return "http";
   if (type === "socks5-tls") return "socks5";
+  if (type === "tuic-v5") return "tuic";
   return type === "hy2" ? "hysteria2" : type;
+}
+
+function normalizeClashInputType(type: string): string {
+  return type.toLowerCase() === "tuic" ? "tuic-v5" : type;
+}
+
+function normalizeSurgeInputType(type: string, params: ProxyNode["params"]): string {
+  const normalizedType = type.toLowerCase();
+  if (normalizedType === "tuic-v5") return "tuic-v5";
+  if (normalizedType !== "tuic") return type;
+  const hasV5Credentials = (params.uuid !== undefined || params.username !== undefined)
+    && params.password !== undefined
+    && params.token === undefined;
+  return hasV5Credentials ? "tuic-v5" : "tuic";
 }
 
 function clashUsesUsername(type: string): boolean {
@@ -421,8 +441,15 @@ function buildSurgeParams(node: ProxyNode): [string, string][] {
     entries.push([key, formatted]);
   };
 
-  if (node.password) add(node.type === "tuic" ? "token" : "password", node.password);
-  if (node.uuid) add("username", node.uuid);
+  if (node.type === "tuic") {
+    if (node.password) add("token", node.password);
+  } else if (node.type === "tuic-v5") {
+    if (node.uuid) add("uuid", node.uuid);
+    if (node.password) add("password", node.password);
+  } else {
+    if (node.password) add("password", node.password);
+    if (node.uuid) add("username", node.uuid);
+  }
   if (node.cipher) add("encrypt-method", node.cipher);
 
   const plugin = typeof node.params.plugin === "string" ? node.params.plugin : "";
@@ -430,7 +457,10 @@ function buildSurgeParams(node: ProxyNode): [string, string][] {
     if (["name", "type", "server", "port", "password", "uuid", "cipher"].includes(key)) continue;
     switch (key) {
       case "uuid":
-        add("username", value);
+        add(node.type === "tuic-v5" ? "uuid" : "username", value);
+        break;
+      case "username":
+        add(node.type === "tuic-v5" ? "uuid" : "username", value);
         break;
       case "cipher":
         add("encrypt-method", value);

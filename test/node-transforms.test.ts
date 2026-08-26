@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildChainNodes, ensureUniqueProxyPolicyNames } from "../src/node-transforms";
+import { buildChainNodes, ensureUniqueProxyPolicyNames, isProxyNodeSupportedForTarget } from "../src/node-transforms";
 import { DEFAULT_CONFIG } from "../src/default-config";
 import type { ProxyNode } from "../src/types";
 
@@ -15,6 +15,15 @@ function proxy(name: string, overrides: Partial<ProxyNode> = {}): ProxyNode {
 }
 
 describe("proxy policy name allocation", () => {
+  it("keeps TUIC v4 Surge-only and maps TUIC v5 across Surge and Clash-like targets", () => {
+    expect(isProxyNodeSupportedForTarget({ type: "tuic" }, "surge")).toBe(true);
+    expect(isProxyNodeSupportedForTarget({ type: "tuic" }, "clash")).toBe(false);
+    expect(isProxyNodeSupportedForTarget({ type: "tuic" }, "stash")).toBe(false);
+    expect(isProxyNodeSupportedForTarget({ type: "tuic-v5" }, "surge")).toBe(true);
+    expect(isProxyNodeSupportedForTarget({ type: "tuic-v5" }, "clash")).toBe(true);
+    expect(isProxyNodeSupportedForTarget({ type: "tuic-v5" }, "stash")).toBe(true);
+  });
+
   it("keeps manual names stable and renames upstream collisions deterministically", () => {
     const config = {
       ...DEFAULT_CONFIG,

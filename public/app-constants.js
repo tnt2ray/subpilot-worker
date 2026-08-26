@@ -1,9 +1,9 @@
 export const PAGES = ["status", "settings", "sources", "proxy-nodes", "groups", "unified-config", "surge", "clash", "stash", "tokens"];
 export const EDITABLE_PAGES = new Set(["settings", "sources", "proxy-nodes", "groups", "unified-config", "surge", "clash", "stash"]);
 export const CODE_EDITOR_PAGES = new Set(["proxy-nodes", "unified-config", "surge", "clash", "stash", "tokens"]);
-export const PROXY_NODE_PROTOCOLS = ["http", "https", "socks5", "socks5-tls", "ss", "snell", "trojan", "vmess", "hysteria2", "tuic", "anytls", "trust-tunnel", "ssh"];
+export const PROXY_NODE_PROTOCOLS = ["http", "https", "socks5", "socks5-tls", "ss", "snell", "trojan", "vmess", "hysteria2", "tuic", "tuic-v5", "anytls", "trust-tunnel", "ssh"];
 export const PROXY_NODE_URI_PATTERN = /^(?:trojan|vless|vmess|ss|hysteria2|hy2|tuic|anytls):\/\//i;
-export const CONFIG_PROXY_PROTOCOL_PATTERN = /(?:socks5-tls|trust-tunnel|hysteria2|hysteria|anytls|socks5|trojan|vmess|vless|snell|https|http|tuic|hy2|ss|ssh)(?=\s*(?:,|#|;|\]|\)|$))/i;
+export const CONFIG_PROXY_PROTOCOL_PATTERN = /(?:socks5-tls|trust-tunnel|hysteria2|hysteria|tuic-v5|anytls|socks5|trojan|vmess|vless|snell|https|http|tuic|hy2|ss|ssh)(?=\s*(?:,|#|;|\]|\)|$))/i;
 export const CONFIG_PROXY_PARAM_KEY_PATTERN = /(?:allow-insecure|alterId|alpn|client-fingerprint|cipher|down|encrypt-method|fast-open|fingerprint|flow|grpc-opts|h2-opts|headers|host|http-opts|ip-version|network|obfs|obfs-host|obfs-password|obfs-opts|obfs-uri|passwd|password|path|plugin|plugin-opts|psk|reality-opts|salamander-password|security|server-cert-fingerprint-sha256|servername|skip-cert-verify|skip-server-cert-verify|sni|spx|tls|token|tfo|udp|udp-relay|up|uuid|username|version|ws|ws-headers|ws-opts|ws-path)(?=\s*[:=])/i;
 export const CONFIG_IPV4_CIDR_PATTERN = /\d{1,3}(?:\.\d{1,3}){3}\/\d{1,2}(?=\s*(?:,|#|;|\]|\)|$))/;
 export const CONFIG_IPV4_PATTERN = /\d{1,3}(?:\.\d{1,3}){3}(?=\s*(?:,|#|;|\]|\)|$))/;

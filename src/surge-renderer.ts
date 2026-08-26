@@ -86,7 +86,7 @@ function renderTailscaleSection(node: AppConfig["surge"]["tailscaleNodes"][numbe
   if (node.hostname) lines.push(`hostname = ${node.hostname}`);
   if (node.derpOnly) lines.push("derp-only = true");
   if (node.exitNode && node.exitNode !== "none") lines.push(`exit-node = ${node.exitNode}`);
-  if (node.idleKeepalive !== 600) lines.push(`idle-keepalive = ${node.idleKeepalive}`);
+  lines.push(`idle-keepalive = ${node.idleKeepalive}`);
   if (node.preferIpv6) lines.push("prefer-ipv6 = true");
   if (node.dnsServer.length > 0) lines.push(`dns-server = ${node.dnsServer.join(", ")}`);
   if (node.mtu !== 1280) lines.push(`mtu = ${node.mtu}`);
@@ -117,11 +117,9 @@ function renderSurgeBaseSections(config: AppConfig): string[] {
   }
   generalLines.push(
     `wifi-assist = ${config.surge.wifiAssist ? "true" : "false"}`,
-    `exclude-simple-hostnames = ${config.surge.excludeSimpleHostnames ? "true" : "false"}`
+    `exclude-simple-hostnames = ${config.surge.excludeSimpleHostnames ? "true" : "false"}`,
+    `encrypted-dns-follow-outbound-mode = ${config.surge.encryptedDnsFollowOutboundMode ? "true" : "false"}`
   );
-  if (config.surge.encryptedDnsServer.length > 0) {
-    generalLines.push(`encrypted-dns-follow-outbound-mode = ${config.surge.encryptedDnsFollowOutboundMode ? "true" : "false"}`);
-  }
   sections.push(renderSection("General", generalLines));
   return sections;
 }

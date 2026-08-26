@@ -17,6 +17,7 @@ export const CHAIN_EXIT_PROTOCOLS = [
   "vmess",
   "hysteria2",
   "tuic",
+  "tuic-v5",
   "anytls",
   "trust-tunnel",
   "ssh"

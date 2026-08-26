@@ -286,17 +286,30 @@ describe("proxy parsing", () => {
     expect(hy2RawProxy).not.toHaveProperty("plugin");
     expect(hy2RawProxy).not.toHaveProperty("plugin-opts");
 
-    const [tuicNode] = parseManualSurge("[Proxy]\nTUIC = tuic,tuic.example.com,443,token=tok,alpn=h3");
-    const tuicProxy = toClashProxy(tuicNode!);
-    expect(tuicProxy).toMatchObject({
-      name: "TUIC",
+    const [tuicV4Node] = parseManualSurge("[Proxy]\nTUIC v4 = tuic,tuic.example.com,443,token=tok,alpn=h3");
+    expect(tuicV4Node?.type).toBe("tuic");
+    expect(toSurgeLine(tuicV4Node!)).toBe("TUIC v4 = tuic,tuic.example.com,443,token=tok,alpn=h3");
+
+    const [tuicV5Node] = parseManualSurge("[Proxy]\nTUIC v5 = tuic-v5,tuic.example.com,443,uuid=user-id,password=secret,alpn=h3");
+    const tuicV5Proxy = toClashProxy(tuicV5Node!);
+    expect(tuicV5Node?.type).toBe("tuic-v5");
+    expect(toSurgeLine(tuicV5Node!)).toBe("TUIC v5 = tuic-v5,tuic.example.com,443,uuid=user-id,password=secret,alpn=h3");
+    expect(tuicV5Proxy).toMatchObject({
+      name: "TUIC v5",
       type: "tuic",
       server: "tuic.example.com",
       port: 443,
-      token: "tok",
+      uuid: "user-id",
+      password: "secret",
       alpn: ["h3"]
     });
-    expect(tuicProxy).not.toHaveProperty("password");
+    expect(tuicV5Proxy).not.toHaveProperty("token");
+
+    const [legacyTuicV5Node] = parseManualSurge("[Proxy]\nLegacy TUIC = tuic,tuic.example.com,443,username=user-id,password=secret");
+    expect(legacyTuicV5Node?.type).toBe("tuic-v5");
+    expect(toSurgeLine(legacyTuicV5Node!)).toBe(
+      "Legacy TUIC = tuic-v5, tuic.example.com, 443, uuid=user-id, password=secret"
+    );
 
     const [snellNode] = parseManualSurge("[Proxy]\nSnell = snell,snell.example.com,44046,psk=secret,version=4,obfs=http,obfs-host=bing.com,obfs-uri=/");
     const snellProxy = toClashProxy(snellNode!);
@@ -466,6 +479,35 @@ describe("proxy parsing", () => {
     expect(trojanProxy).toMatchObject({ type: "trojan", password: "pass" });
     expect(trojanProxy).not.toHaveProperty("uuid");
     expect(toSurgeLine({ ...trojan!, name: "TR" })).toBe("TR = trojan, tr.example.com, 443, password=pass");
+
+    const [tuicYaml] = parseSubscription([
+      "proxies:",
+      "  - name: TUIC YAML",
+      "    type: tuic",
+      "    server: tuic.example.com",
+      "    port: 443",
+      "    uuid: user-id",
+      "    password: secret"
+    ].join("\n"), "src");
+    expect(tuicYaml?.type).toBe("tuic-v5");
+    expect(toSurgeLine(tuicYaml!)).toBe(
+      "TUIC YAML = tuic-v5, tuic.example.com, 443, uuid=user-id, password=secret"
+    );
+    expect(toClashProxy(tuicYaml!)).toMatchObject({ type: "tuic", uuid: "user-id", password: "secret" });
+
+    const [tuicUri] = parseSubscription("tuic://user-id:secret@tuic.example.com:443#TUIC%20URI", "src");
+    expect(tuicUri?.type).toBe("tuic-v5");
+    expect(toSurgeLine(tuicUri!)).toBe(
+      "TUIC URI = tuic-v5, tuic.example.com, 443, uuid=user-id, password=secret"
+    );
+    expect(toClashProxy(tuicUri!)).toMatchObject({ type: "tuic", uuid: "user-id", password: "secret" });
+
+    const [embeddedTuicUri] = parseManualSurge(
+      "[Proxy]\nEmbedded TUIC = tuic://user-id:secret@tuic.example.com:443#Ignored"
+    );
+    expect(toSurgeLine(embeddedTuicUri!)).toBe(
+      "Embedded TUIC = tuic-v5, tuic.example.com, 443, uuid=user-id, password=secret"
+    );
 
     const [vless] = parseSubscription("vless://00000000-0000-0000-0000-000000000002@vl.example.com:443?security=reality&type=grpc&serviceName=TunService&fp=chrome&pbk=pubkey&sid=sid#VL", "src");
     const vlessProxy = toClashProxy(vless!);

@@ -140,7 +140,7 @@ describe("KV config storage", () => {
       }
     });
     expect(noEncryptedDns.surge.encryptedDnsServer).toEqual([]);
-    expect(noEncryptedDns.surge.encryptedDnsFollowOutboundMode).toBe(false);
+    expect(noEncryptedDns.surge.encryptedDnsFollowOutboundMode).toBe(true);
 
     const subnet = normalizeConfig({
       ...DEFAULT_CONFIG,
@@ -156,6 +156,27 @@ describe("KV config storage", () => {
     expect("chainEnabled" in chainSwitches.surge).toBe(false);
     expect("chainEnabled" in chainSwitches.clash).toBe(false);
 
+    const legacyTuic = normalizeConfig({
+      ...DEFAULT_CONFIG,
+      proxyNodes: [{
+        id: "legacy-tuic",
+        config: "",
+        name: "Legacy TUIC",
+        protocol: "tuic",
+        server: "tuic.example.com",
+        port: 443,
+        username: "user-id",
+        password: "secret",
+        chainFilter: [],
+        enabled: true,
+        chainExit: false,
+        includeInGroups: true
+      }]
+    });
+    expect(legacyTuic.proxyNodes[0]?.config).toBe(
+      "Legacy TUIC = tuic-v5, tuic.example.com, 443, uuid=user-id, password=secret"
+    );
+
     const directTailscaleUnderlyingProxy = normalizeConfig({
       ...DEFAULT_CONFIG,
       surge: {
@@ -168,7 +189,7 @@ describe("KV config storage", () => {
           hostname: "",
           derpOnly: false,
           exitNode: "none",
-          idleKeepalive: 600,
+          idleKeepalive: undefined as unknown as number,
           preferIpv6: false,
           dnsServer: [],
           mtu: 1280,
@@ -180,6 +201,7 @@ describe("KV config storage", () => {
       }
     });
     expect(directTailscaleUnderlyingProxy.surge.tailscaleNodes[0]?.underlyingProxy).toBe("");
+    expect(directTailscaleUnderlyingProxy.surge.tailscaleNodes[0]?.idleKeepalive).toBe(600);
 
     const unsupportedDnsMode = normalizeConfig({
       ...DEFAULT_CONFIG,
@@ -1112,7 +1134,8 @@ describe("KV config storage", () => {
           "foo.com = bar.com",
           "bar.com = server:8.8.8.8",
           "Macbook = server:system",
-          "example.com = server:https://cloudflare-dns.com/dns-query"
+          "example.com = server:https://cloudflare-dns.com/dns-query",
+          "tcp.example.com = server:tcp://dns.example.com"
         ]
       }
     })).toBeNull();
