@@ -40,7 +40,6 @@ const MAX_COUNTS = {
   proxyNodes: 500,
   groups: 100,
   tailscaleNodes: 100,
-  ruleSetSources: 20,
   ruleSetOutputs: 40,
   directRules: 2_000,
   targetRules: 10_000
@@ -103,7 +102,6 @@ export function validateConfigEntityLimits(config: AppConfig): string | null {
     ["静态节点", config.proxyNodes.length, MAX_COUNTS.proxyNodes],
     ["策略组", Object.keys(config.groups).length, MAX_COUNTS.groups],
     ["Tailscale 节点", config.surge.tailscaleNodes.length, MAX_COUNTS.tailscaleNodes],
-    ["规则来源", config.ruleSets.sources.length, MAX_COUNTS.ruleSetSources],
     ["规则输出", config.ruleSets.outputs.length, MAX_COUNTS.ruleSetOutputs],
     ["主配置单条规则", config.ruleSets.directRules.length, MAX_COUNTS.directRules],
     ["Surge 规则", config.surge.rules.length, MAX_COUNTS.targetRules],
@@ -172,7 +170,7 @@ export function validateConfigEntityLimits(config: AppConfig): string | null {
     if (nameError) return nameError;
     const policyError = validatePolicyName(output?.policy, `规则输出 ${output.name} 策略`);
     if (policyError) return policyError;
-    const sourceIdsError = validateStringList(output?.sourceIds, `规则输出 ${output.name} sourceIds`, MAX_COUNTS.ruleSetSources, MAX_ID_LENGTH);
+    const sourceIdsError = validateStringList(output?.sourceIds, `规则输出 ${output.name} sourceIds`, null, MAX_ID_LENGTH);
     if (sourceIdsError) return sourceIdsError;
     const inlineCountError = validateArrayLimit(output?.inlineRules, `规则输出 ${output.name} 内联规则`, MAX_INLINE_RULES_PER_OUTPUT);
     if (inlineCountError) return inlineCountError;
@@ -752,9 +750,9 @@ function validateArrayLimit(value: unknown, label: string, limit: number): strin
   return value.length > limit ? `${label}数量不能超过 ${limit}` : null;
 }
 
-function validateStringList(value: unknown, label: string, itemLimit: number, stringLimit: number): string | null {
-  const countError = validateArrayLimit(value, label, itemLimit);
-  if (countError) return countError;
+function validateStringList(value: unknown, label: string, itemLimit: number | null, stringLimit: number): string | null {
+  if (!Array.isArray(value)) return `${label}格式无效`;
+  if (itemLimit !== null && value.length > itemLimit) return `${label}数量不能超过 ${itemLimit}`;
   for (const [index, item] of (value as unknown[]).entries()) {
     const error = validateSizedString(item, stringLimit, `${label}第 ${index + 1} 项`, true);
     if (error) return error;

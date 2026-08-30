@@ -199,7 +199,7 @@ The following primary limits keep saves and generation within Cloudflare Workers
 
 | Scope | Limit |
 | --- | --- |
-| Configuration entities | 20 subscription sources, 20 rule sources, and 40 rule outputs |
+| Configuration entities | 20 subscription sources and 40 rule outputs; rule sources have no separate count limit |
 | Individual remote input | 4 MiB per subscription source; 2 MiB per rule source |
 | Nodes and hosts | 10,000 source nodes and 20,000 host entries in aggregate; 15,000 nodes in the final output |
 | Compilation of one rule output | 8 MiB of rule-source content, counted as characters, and 50,000 rules |
