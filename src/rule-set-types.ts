@@ -1,7 +1,7 @@
 import type { Target } from "./types";
 
 export const RULE_SET_BUCKETS = ["domain", "ipcidr", "classical"] as const;
-export const RULE_SET_TARGETS = ["surge", "clash", "stash"] as const;
+export const RULE_SET_TARGETS = ["surge", "clash", "sing-box"] as const;
 export const RULE_SET_SOURCE_FORMATS = [
   "auto",
   "surge-rule-set",
@@ -14,7 +14,7 @@ export const RULE_SET_SOURCE_FORMATS = [
 
 export type RuleSetBucket = typeof RULE_SET_BUCKETS[number];
 export type RuleSetDownloadBucket = RuleSetBucket | "combined";
-export type RuleSetOutputTarget = Extract<Target, "surge" | "clash" | "stash">;
+export type RuleSetOutputTarget = Target | "stash";
 export type RuleSetMode = "manual" | "compiled";
 export type RuleSetSourceFormat = typeof RULE_SET_SOURCE_FORMATS[number];
 

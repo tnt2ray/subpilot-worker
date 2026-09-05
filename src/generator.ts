@@ -1,6 +1,19 @@
+import { validateSingboxOutput } from "./singbox-validation";
+import { surgeClientProfile, projectSurgeConfig, filterSurgeNodes, type SurgeClientProfile, type SurgeProfileTag } from "./surge-capabilities";
+import { validateSurgeRules } from "./surge-rules";
+import { validateClashLikeRules } from "./clash-rules";
+import { validateTailscalePolicies } from "./config-validation";
+import { validateSurgeHosts } from "./surge-hosts";
+import { validateSurgeMapLocal } from "./surge-map-local";
+import { validateSurgeUrlRewrite } from "./surge-url-rewrite";
+import { configDocument, renderConfig } from "./config-document";
+import { ruleSetEnv } from "./rule-set-scope";
+import { buildSingbox } from "./singbox-renderer";
+import { collectOutputDiagnostics } from "./output-diagnostics";
+import type { ConfigDiagnostic } from "./types";
 import { Buffer } from "node:buffer";
 import { collectClashRuleCoverageWarnings } from "./clash-rules";
-import { buildClash, buildStash } from "./clash-like-renderer";
+import { buildClash } from "./clash-like-renderer";
 import { loadConfig } from "./config-store";
 import { parseHostEntries } from "./host-entries";
 import { applyTransforms, buildChainNodes, buildConfiguredProxyNodes, ensureUniqueProxyPolicyNames, nodeTagsForMatching, parseFeatureTagRules } from "./node-transforms";
@@ -11,7 +24,7 @@ import type { RuleSetOutputTarget } from "./rule-set-types";
 import { fetchCachedSource, sourceUserAgent } from "./source-cache";
 import { buildSurge } from "./surge-renderer";
 import { collectSurgeRuleCoverageWarnings } from "./surge-rules";
-import type { AppConfig, GenerationResult, HostEntry, ProxyNode, Target } from "./types";
+import type { RenderConfig, GenerationResult, HostEntry, ProxyNode, Target } from "./types";
 import { mapWithConcurrency } from "./util";
 
 (globalThis as typeof globalThis & { Buffer?: typeof Buffer }).Buffer ??= Buffer;
@@ -35,6 +48,7 @@ interface PreparedOutput {
 
 interface GenerationOptions {
   includeRuleDiagnostics?: boolean;
+  surgeProfile?: SurgeProfileTag;
 }
 
 const SOURCE_FETCH_CONCURRENCY = 2;
@@ -45,82 +59,117 @@ const MAX_TOTAL_HOST_ENTRIES = 20_000;
 const MAX_TOTAL_OUTPUT_NODES = 15_000;
 const MAX_RENDERED_CONFIG_CHARACTERS = 8 * 1024 * 1024;
 
-export function inferTarget(request: Request): Target | null {
-  const ua = request.headers.get("user-agent")?.toLowerCase() ?? "";
-  if (ua.includes("shadowrocket")) return "shadowrocket";
-  if (ua.includes("stash")) return "stash";
-  if (ua.includes("surge")) return "surge";
-  if (ua.includes("clash") || ua.includes("mihomo") || ua.includes("clash.meta")) return "clash";
-  return null;
-}
-
-export async function generateForRequest(env: Env, request: Request, forcedTarget?: Target, options: GenerationOptions = {}): Promise<GenerationResult> {
+export async function generateForRequest(env: Env, request: Request, target: Target, options: GenerationOptions = {}): Promise<GenerationResult> {
   const config = await loadConfig(env);
-  const target = forcedTarget ?? inferTarget(request);
-  if (!target) throw new Error("Unable to infer target from request");
   return generateConfig(env, config, target, request.url, options);
 }
 
 export async function generateConfig(
   env: Env,
-  config: AppConfig,
+  config: RenderConfig,
   target: Target,
   requestUrl: string,
   options: GenerationOptions = {}
 ): Promise<GenerationResult> {
-  const renderTarget: RuleSetOutputTarget = target === "shadowrocket" ? "clash" : target;
-  const prepared = await prepareOutput(env, config, renderTarget, requestUrl);
+  config = renderConfig(configDocument(config), target);
+  env = ruleSetEnv(env, target);
+  const renderTarget = target;
+  const diagnostics: ConfigDiagnostic[] = [];
+  const surgeClient = target === "surge" ? surgeClientProfile(options.surgeProfile) : undefined;
+  if (surgeClient) config = projectSurgeConfig(config, surgeClient, diagnostics);
+  let prepared: PreparedOutput;
+  try { prepared = await prepareOutput(env, config, target, requestUrl, surgeClient, diagnostics); }
+  catch { return { target, content: "", contentType: "text/plain; charset=utf-8", proxyCount: 0, fetchedSources: 0, warnings: [], canDownload: false,
+    ...(surgeClient ? { surgeClient } : {}),
+    diagnostics: [...diagnostics, { target, severity: "error", code: "preparation-failed", path: "ruleSets", message: "生成准备失败，请检查规则来源和配置引用。" }] }; }
   if (options.includeRuleDiagnostics && config.ruleSets.mode !== "compiled") {
     if (renderTarget === "surge") {
       prepared.warnings.push(...await collectSurgeRuleCoverageWarnings(config));
-    } else if (renderTarget === "clash" || renderTarget === "stash") {
+    } else if (renderTarget === "clash") {
       prepared.warnings.push(...await collectClashRuleCoverageWarnings(config, renderTarget));
     }
   }
-  const content = buildTargetContent(config, renderTarget, prepared.nodes, prepared.hostEntries, requestUrl, prepared.warnings, options, prepared.ruleSetPlan);
+  diagnostics.push(...(prepared.ruleSetPlan?.errors ?? []).map((message): ConfigDiagnostic => ({ target, severity: "error", code: "rule-set-incompatible", path: "ruleSets", message })));
+  let content = "";
+  let proxyCount = prepared.nodes.length;
+  try {
+    content = target === "sing-box"
+      ? await buildSingbox(env, config, prepared.nodes, prepared.hostEntries, requestUrl, diagnostics)
+      : buildTargetContent(config, target, prepared.nodes, prepared.hostEntries, requestUrl, prepared.warnings, options, prepared.ruleSetPlan, surgeClient);
+    diagnostics.push(...collectOutputDiagnostics(config, target, content));
+    if (target === "sing-box") {
+      const output = JSON.parse(content);
+      proxyCount = output.outbounds.filter((item: { type: string }) => !["direct", "selector", "urltest"].includes(item.type)).length;
+      diagnostics.push(...validateSingboxOutput(output));
+    }
+    else if (config.ruleSets.mode !== "compiled") {
+      const nodePolicies = prepared.nodes.map((node) => node.name);
+      const message = target === "surge" ? validateSurgeRules(config, nodePolicies) : validateClashLikeRules(config, "clash", nodePolicies);
+      if (message) diagnostics.push({ target, severity: "error", code: "rule-validation", path: "rules", message });
+    }
+    if (target === "surge") {
+      const message = validateTailscalePolicies(config) || validateSurgeHosts(config) || validateSurgeMapLocal(config) || validateSurgeUrlRewrite(config);
+      if (message) diagnostics.push({ target, severity: "error", code: "surge-validation", path: "clients.surge", message });
+    }
+  } catch {
+    diagnostics.push({ target, severity: "error", code: "render-failed", path: "clients", message: "配置无法生成，请检查节点、策略组和规则格式。" });
+  }
+  const canDownload = !diagnostics.some((item) => item.severity === "error");
   if (content.length > MAX_RENDERED_CONFIG_CHARACTERS) {
     throw new Error(`Generated configuration exceeds ${MAX_RENDERED_CONFIG_CHARACTERS} character limit`);
   }
   return {
     target,
-    content,
+    content: canDownload ? content : "",
+    canDownload, diagnostics,
+    ...(surgeClient ? { surgeClient } : {}),
     contentType: target === "surge"
       ? "text/plain; charset=utf-8"
-      : "text/yaml; charset=utf-8",
-    proxyCount: prepared.nodes.length,
+      : target === "sing-box" ? "application/json; charset=utf-8" : "text/yaml; charset=utf-8",
+    proxyCount,
     fetchedSources: prepared.fetchedSources,
     warnings: prepared.warnings
   };
 }
 
 function buildTargetContent(
-  config: AppConfig,
+  config: RenderConfig,
   target: Target,
   nodes: ProxyNode[],
   hostEntries: HostEntry[],
   requestUrl: string,
   warnings: string[],
   options: GenerationOptions,
-  ruleSetPlan?: CompiledRuleSetReferencePlan
+  ruleSetPlan?: CompiledRuleSetReferencePlan,
+  surgeClient?: SurgeClientProfile
 ): string {
-  if (target === "surge") return buildSurge(config, nodes, hostEntries, requestUrl, ruleSetPlan);
-  if (target === "stash") return buildStash(config, nodes, hostEntries, requestUrl, warnings, ruleSetPlan);
+  if (target === "surge") return buildSurge(config, nodes, hostEntries, requestUrl, ruleSetPlan, surgeClient);
   return buildClash(config, nodes, hostEntries, ruleSetPlan);
 }
 
-async function prepareOutput(env: Env, config: AppConfig, target: RuleSetOutputTarget, requestUrl: string): Promise<PreparedOutput> {
+async function prepareOutput(env: Env, config: RenderConfig, target: Target, requestUrl: string, surgeClient?: SurgeClientProfile, diagnostics: ConfigDiagnostic[] = []): Promise<PreparedOutput> {
   const warnings: string[] = [];
   const fetched = await fetchAllSources(env, config, target, warnings);
   const configuredNodes = buildConfiguredProxyNodes(config);
   const transformed = await applyTransforms(env, [...fetched.nodes, ...configuredNodes], config, target, warnings);
-  const supported = ensureUniqueProxyPolicyNames(transformed, config, warnings);
+  const eligible = surgeClient ? filterSurgeNodes(transformed, surgeClient, diagnostics) : transformed;
+  const supported = ensureUniqueProxyPolicyNames(eligible, config, warnings);
+  const renamed = new Map(supported.map((node) => [`${node.sourceId ?? "manual"}\0${node.originalName ?? node.name}`, node.name]));
+  for (const node of supported) {
+    for (const key of ["dialer-proxy", "underlying-proxy"]) {
+      const original = node.params[key];
+      if (typeof original !== "string") continue;
+      const mapped = renamed.get(`${node.sourceId ?? "manual"}\0${original}`);
+      if (mapped) { node.params = { ...node.params, [key]: mapped }; node.surgeDetail = undefined; }
+    }
+  }
   const chainNodes = buildChainNodes(supported);
   const uniqueChainNodes = ensureUniqueProxyPolicyNames(chainNodes, config, warnings, supported.map((node) => node.name));
   const nodes = uniqueChainNodes.length > 0 ? [...supported, ...uniqueChainNodes] : supported;
   if (nodes.length > MAX_TOTAL_OUTPUT_NODES) {
     throw new Error(`Generated configuration contains ${nodes.length} proxy nodes; maximum is ${MAX_TOTAL_OUTPUT_NODES}`);
   }
-  const ruleSetPlan = config.ruleSets.mode === "compiled"
+  const ruleSetPlan = target !== "sing-box" && config.ruleSets.mode === "compiled"
     ? await buildCompiledRuleSetReferencePlan(env, config, target, requestUrl)
     : undefined;
   if (ruleSetPlan) warnings.push(...ruleSetPlan.warnings);
@@ -133,7 +182,7 @@ async function prepareOutput(env: Env, config: AppConfig, target: RuleSetOutputT
   };
 }
 
-async function fetchAllSources(env: Env, config: AppConfig, target: Target, warnings: string[]): Promise<FetchedSources> {
+async function fetchAllSources(env: Env, config: RenderConfig, target: Target, warnings: string[]): Promise<FetchedSources> {
   const enabled = config.sources.filter((source) => source.enabled && source.url);
   const featureTagRules = parseFeatureTagRules(config.settings.featureTagRules);
   const batches: FetchedSourceBatch[] = Array.from({ length: enabled.length }, () => ({ nodes: [], hostEntries: [] }));

@@ -139,4 +139,4 @@ if (!args.has("--no-install")) run(npmCommand, ["install", "--omit=dev"]);
 run(npmCommand, ["run", "setup", "--", "--no-deploy", "--no-secrets", "--existing-config-only"]);
 if (!args.has("--no-deploy")) run(wranglerCommand, ["deploy"]);
 
-process.stdout.write("\nSubPilot update complete. KV schema updates run automatically when the Worker handles requests.\n");
+process.stdout.write("\nSubPilot update complete. Open the admin UI to export the old configuration and confirm the v2 migration before editing settings.\n");

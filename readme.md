@@ -2,7 +2,7 @@
 
 语言：中文 | [英文版](./README.en.md)
 
-SubPilot Worker 是运行在 Cloudflare Workers 上的订阅配置生成器。它从上游订阅源读取节点，按管理页中的规则生成 Surge、Clash/mihomo、Stash 配置；Shadowrocket 客户端会收到兼容的 Clash YAML，用 Workers KV 保存运行配置。
+SubPilot Worker 是运行在 Cloudflare Workers 上的订阅配置生成器，使用 Workers KV 保存加密配置。2.0 提供 Surge、mihomo 与 sing-box 三个独立客户端配置，共享订阅源、代理节点、策略组和规则来源。
 
 本仓库可以公开使用：仓库不会保存生产 KV namespace、生产域名、管理员 token、订阅源 URL、链式出口密码、MITM CA 或其他个人运行数据。自己的生产部署信息应保存在本地未跟踪的 `wrangler.jsonc`、Cloudflare Worker Secrets 和 Workers KV 中。
 
@@ -14,30 +14,24 @@ SubPilot Worker 项目代码以 [GNU Affero General Public License v3.0 or later
 
 ## 功能概览
 
-- 管理上游订阅源地址、启用状态、抓取 User-Agent 和节点名前缀；每个源可选择 Surge、Clash、Stash 或 Shadowrocket User-Agent。
-- 生成 Surge、Clash/mihomo、Stash 目标配置；Shadowrocket 通过 User-Agent 识别后下发 Clash YAML。
-- 支持客户端 User-Agent 自动选择输出目标。
-- 用独立字段维护 Surge、Clash 和 Stash 功能配置，不需要编辑整段模板；Surge 页面可直接配置 Tailscale 出站节点。
-- 管理策略组、策略规则、规则集、DNS、TUN、MITM、URL Rewrite 和 Surge Map Local。
-- 可切换到统一规则模式，集中编译、去重和缓存 Surge、Clash 与 Stash 共用的分流规则集。
-- 提供 Surge / Clash / Stash 规则结构化编辑器，同时保留文本模式用于直接编辑生成内容。
-- 管理端预览可提示被前面规则覆盖、实际不会生效的规则，支持检查 Surge 规则集和 Clash / Stash rule-providers 内容。
-- Clash rule-providers 与 rules 联动：未引用的规则集会自动补入 rules，删除规则集时会同步移除对应规则。
-- 管理自维护代理节点，可标记多个链式出口并自动生成对应链式代理节点。
-- 自维护代理节点使用 Snell 6 时，Surge 输出保留 `version=6`，Clash/mihomo 与 Stash YAML 自动降级输出 `version: 5` 以维持客户端兼容性。
-- 轮换订阅读取 token，生成带稳定文件名的订阅链接。
-- 缓存上游订阅，记录最近订阅拉取时间、User-Agent 和 IP 地理位置。
-- 可配置后台和 Telegram 通知的显示时区；系统内部时间仍按 UTC 保存。
+- 三端网络、DNS、路由规则和高级功能独立保存，切换客户端不会覆盖另一端设置。
+- 共用订阅源、手动代理节点、链式出口、策略组和规则来源；每个源可填写自己的抓取 User-Agent。
+- sing-box 以 **1.14.0** 为适配基线，生成完整 JSON；支持从 JSON `outbounds`、节点数组或单个节点对象读取代理节点。输入中的 DNS、路由和策略组不会作为整份配置导入。
+- 根据目标输出协议和策略组，跳过不支持的节点或普通附加功能并报告原因。缺失策略、循环依赖、关键规则不可转换、被引用的空组会阻止当前端下载。
+- 每端独立选择原生规则或共享来源编排；来源正文缓存共享，编译产物按输出端隔离。
+- 灰白与蓝色管理界面，提供网络与 TUN、DNS、路由规则、高级设置分栏，结构化编辑、原生文本/JSON、草稿预览与适配详情。
+- 三端使用独立订阅链接；支持读取 token 轮换、缓存刷新、GeoIP 重命名和 Telegram 通知。
+- 旧配置先导出、确认后迁移；Surge 与 mihomo 保留配置，sing-box 从 Surge 一次性转换。Stash 与 Shadowrocket 不再提供输出。
+
+架构和消融取舍见 [架构说明](./docs/architecture.md)，界面规范见 [UI 设计](./docs/ui-design.md)。
 
 ## 安全模型
 
 - 管理员登录 token 不写入代码，不以明文保存到 KV。
 - 生产登录校验只读取 Worker Secret `ADMIN_TOKEN_HASH`，值是管理员 token 的 SHA-256 hex。
 - `CONFIG_ENCRYPTION_KEY` 必须作为 Worker Secret 保存，用于加密完整配置快照、订阅源与规则源缓存正文、编译规则正文和可恢复订阅读取 token。
-- 旧版 KV 中的明文配置与缓存会在读取或维护时惰性迁移为加密格式；迁移期间不要轮换或删除原有 `CONFIG_ENCRYPTION_KEY`。
+- 旧配置在管理员导出并确认前保持原样；新快照写入并读回校验后才开始延迟清理旧配置。缓存仍按需加密迁移。不要轮换或删除原有 `CONFIG_ENCRYPTION_KEY`。
 - 管理员会话是 HttpOnly 签名 Cookie，不创建 `session:*` KV 键。
-- Stash CA 应在客户端本地生成和保存；SubPilot 不保存也不会下发 Stash CA 私钥、`ca-p12` 或 `ca-passphrase`。
-- Stash 配置输出尚未完成真实客户端实机测试，可能存在兼容性问题；发布版中请先按测试功能使用，导入前建议核对规则、MITM、脚本和 rule-providers 是否符合预期。
 - `wrangler.jsonc` 被 `.gitignore` 排除，用于保存个人 Worker 名称、KV namespace ID 和自定义域名。
 
 ## 快速部署
@@ -147,34 +141,40 @@ wrangler secret put CONFIG_ENCRYPTION_KEY
 wrangler deploy
 ```
 
-默认 `wrangler.example.jsonc` 会配置每 12 小时获取上游订阅，并每天刷新一次统一规则集。需要调整上游订阅间隔时，可以修改 `wrangler.jsonc` 中对应的 `triggers.crons` 项后重新部署。保留 `0 16 * * *` 作为统一规则集每日任务，其余 cron 项用于刷新上游订阅。
+默认 `wrangler.example.jsonc` 会配置每 12 小时获取上游订阅，并每天刷新一次编译规则集。需要调整上游订阅间隔时，可以修改 `wrangler.jsonc` 中对应的 `triggers.crons` 项后重新部署。保留 `0 16 * * *` 作为编译规则集每日任务，其余 cron 项用于刷新上游订阅。
 
 如需自定义域名，在 Cloudflare 中把域名接到 Worker，或在本地 `wrangler.jsonc` 中添加自己的 `routes` 配置。不要把包含真实域名和 namespace ID 的 `wrangler.jsonc` 提交到公开仓库。
 
 ## 使用方式
 
-打开 Wrangler 部署输出中的 Workers.dev 地址或自己的自定义域名，使用管理员 token 登录。
+打开部署地址，使用管理员 token 登录。
 
-首次配置建议顺序：
+1. 在“系统设置”确认 Managed Base URL（通常为 `https://<your-domain>/sync`）和显示时区。
+2. 在“订阅源”添加上游地址、名称和抓取 User-Agent；在“代理节点”添加自维护节点或链式出口。
+3. 在“策略组”设置成员、筛选条件和适用客户端。
+4. 在“客户端配置”选择 Surge、mihomo 或 sing-box，独立配置网络、DNS、路由与高级功能。
+5. 使用共享来源编排时，先在“规则来源”添加来源，再到当前客户端的路由页选择来源、策略与顺序。
+6. 预览当前草稿，在“适配详情”处理阻断项，保存后从“配置链接”复制订阅地址。
 
-1. 在 `Configuration` 中设置 `Managed Base URL`，通常是 `https://<your-domain>/sync`。
-2. 在 `Sources` 中添加上游订阅源；URL 会加密保存到 KV，拉取 User-Agent 可按上游要求选择 Surge、Clash、Stash 或 Shadowrocket。
-3. 在 `Policy Groups` 中调整策略组。
-4. 在 `Configuration` 中选择客户端独立规则或统一规则模式；使用统一规则时，在 `Unified Configuration` 中维护规则来源和分流规则。
-5. 在 `Surge`、`Clash`、`Stash` 页面中调整各目标的专属配置。
-6. 如需链式代理，在 `Proxy Nodes` 中添加自维护代理节点，勾选可作为链式出口的节点，并在该节点上配置链式过滤器。
-7. 按需要在 `Configuration` 中调整显示时区；默认是 `Asia/Shanghai`，只影响后台和通知中的时间展示。
-8. 在 `Tokens` 页面轮换订阅读取 token，并复制订阅链接。
+编辑中的草稿只在当前页面内存中保留；切换页面或客户端可继续编辑，刷新或关闭页面会丢失未保存内容。保存整个配置文档，但三端字段独立；预览可直接检查尚未保存的草稿。复制和下载按钮仅在当前预览没有阻断项时启用。
 
-订阅链接基于管理页配置的 `Managed Base URL` 生成，通常是 `https://<your-domain>/sync`。`Managed Base URL` 必须包含非根路径，不能使用 `/api`、`/vendor`、`/app.js`、`/styles.css`、`/mitm-ca.js`、`/login.html` 或 `/index.html` 等系统已占用路径；`/vendor` 的所有子路径也为静态资源保留。拼接链接时会去掉 `Managed Base URL` 末尾多余的 `/`。
+订阅地址：
 
 ```text
-https://<your-domain>/sync/<read_token>/
+https://<your-domain>/sync/<read_token>/surge/
+https://<your-domain>/sync/<read_token>/surge/stable/
+https://<your-domain>/sync/<read_token>/surge/tf/
+https://<your-domain>/sync/<read_token>/clash/
+https://<your-domain>/sync/<read_token>/sing-box/
 ```
 
-`https://<your-domain>/sync/<read_token>/` 会根据客户端 User-Agent 自动选择 Surge、Clash/mihomo、Stash 或 Shadowrocket。Shadowrocket 通过这个通用入口接收完整 Clash YAML，不提供专用文件名路径。订阅接口不接受额外查询参数，也不接受 `/surge`、`/clash`、`/stash`、`/shadowrocket` 等显式目标路径；如果 User-Agent 无法识别，服务端会返回 401，不下发配置。客户端文件名通过响应头 `Content-Disposition` 提供。
+Surge、mihomo 与 sing-box 分别使用自己的独立地址，输出格式完全由路径决定。通用地址 `/sync/<read_token>/` 及旧文件名入口已移除，不再按 User-Agent 自动识别；使用旧地址的客户端需要重新导入对应链接。响应文件名仍分别为 `SubPilot.conf`、`SubPilot.yaml`、`SubPilot.json`，它们仅用于文件下载命名。订阅与规则文件不接受查询参数；Stash、Shadowrocket 不再提供输出。目标配置存在阻断项时返回 422，可登录后台查看原因。
 
-服务端只接受当前 `Managed Base URL` path 下的订阅入口；如果把 `Managed Base URL` 改成 `https://<your-domain>/sywwqnc`，则 `/sywwqnc/<read_token>/` 生效，默认 `/sync/<read_token>/` 不再作为订阅入口。
+Managed Base URL 必须包含非根路径，不能占用 `/api`、`/vendor` 或管理页资源路径。只有当前配置的基础路径有效；修改它后，旧订阅地址也需更新。
+
+Surge 使用路径末尾的 `stable` / `tf` Tag 选择兼容档位，UA 不参与版本或渠道判断。`/surge/` 默认使用 `stable`。未知 Tag 拒绝访问。管理页提供两个链接及对应预览选项；Surge 下载配置内的自动更新地址保留所选 Tag。mihomo 统一使用 `/clash/`，客户端应保存此订阅地址用于后续更新；旧 `/mihomo/` 地址不再提供输出。预览 API 必须显式指定 `target`。
+
+截至 2026-09-05，`stable` 基线为 iOS **5.22.0** / macOS **6.9.0**；`tf` 采用已核实的 iOS build **3823** / macOS build **12250** 能力快照。Tag 不探测设备实际版本，旧客户端需先升级。目前已接入的新功能都已进入正式版，因此两个档位可能输出相同功能。后续 TF 专属功能只有在明确支持的档位才会输出。版本依据、能力表和维护方式见 [Surge 兼容档位](docs/surge-compatibility.md)。
 
 ## 上游订阅自动获取
 
@@ -188,9 +188,9 @@ SUBPILOT_SOURCE_REFRESH_HOURS=6 npm run setup
 
 取值范围是 1 到 24 小时。已经部署后如需修改间隔，编辑 `wrangler.jsonc` 中的 `triggers.crons` 并重新运行 `wrangler deploy`。
 
-后台状态页会显示上游缓存与统一规则集缓存的覆盖情况、最近更新时间和各缓存项状态，并可分别强制刷新。后台和 Telegram 通知中的时间会按 `Configuration` 中的显示时区转换，格式为 `yyyy-mm-dd hh:mm:ss`；KV 中保存的系统时间仍是 UTC。Telegram bot 的 `/status` 会显示缓存概览，`/recent` 会显示最近 5 条配置拉取记录，`/refresh` 会强制获取上游订阅源，并在后台异步刷新统一规则集，完成后分别发送结果。启用 Telegram 通知后，定时获取出现失败时会发送提醒。
+后台状态页会显示上游缓存与编译规则集缓存的覆盖情况、最近更新时间和各缓存项状态，并可分别强制刷新。后台和 Telegram 通知中的时间会按 “系统设置”中的显示时区转换，格式为 `yyyy-mm-dd hh:mm:ss`；KV 中保存的系统时间仍是 UTC。Telegram bot 的 `/status` 会显示缓存概览，`/recent` 会显示最近 5 条配置拉取记录，`/refresh` 会强制获取上游订阅源，并在后台异步刷新编译规则集，完成后分别发送结果。启用 Telegram 通知后，定时获取出现失败时会发送提醒。
 
-上游与统一规则集刷新都有执行截止时间。一次刷新可以部分成功：已成功的源和规则输出会保留，失败项会在状态、预览或通知中单独报告；到达截止时间后不会再启动新的远程获取或编译任务，并尽量继续使用已有缓存。
+上游与编译规则集刷新都有执行截止时间。一次刷新可以部分成功：已成功的源和规则输出会保留，失败项会在状态、预览或通知中单独报告；到达截止时间后不会再启动新的远程获取或编译任务，并尽量继续使用已有缓存。
 
 ## 运行边界与 KV 一致性
 
@@ -208,7 +208,7 @@ SUBPILOT_SOURCE_REFRESH_HOURS=6 npm run setup
 
 完整配置快照、读取 token 记录和编译规则产物均采用版本化、追加式 KV 数据：先写完整的新版本，再让读取端选择最新的有效版本；不完整或损坏的新版本会回退到上一份有效数据。旧版本、失败写入留下的孤儿产物和迁移遗留键会延迟、分批清理，以兼容 Workers KV 的 eventual consistency；因此短时间内看到旧键仍存在属于正常现象，不应由外部脚本按固定键名直接修改或删除运行数据。涉及 Telegram webhook 的配置会在远端操作成功后才提交新快照；若提交确认失败，系统会保留旧配置并尝试恢复旧 webhook。管理页仍会串行提交保存请求。
 
-如果 Workers KV 拒绝写入或触发写入限流，API 会返回 HTTP 429。管理页会串行提交保存操作，并对短暂的 429 自动重试；若仍失败，请保留页面草稿，稍后再次保存，避免同时打开多个管理页面反复写入。
+如果 Workers KV 拒绝写入或触发写入限流，API 会返回 HTTP 429。管理页会串行提交保存操作；遇到 429 时，请保留页面草稿，稍后再次保存，避免同时打开多个管理页面反复写入。
 
 ## 更新
 
@@ -220,7 +220,7 @@ npm run update
 
 如果当前目录是 Git 克隆，命令会拉取当前分支最新代码；如果当前目录来自 GitHub Releases 的 `subpilot-worker-vX.Y.Z.tar.gz` 发布包，命令会优先下载最新 Release 中同名发布包并覆盖程序文件。两种方式都会保留本地 `wrangler.jsonc`，只安装运行部署所需依赖，然后部署到对应 Worker。
 
-从旧版本升级到 1.2.0 时，本地 `wrangler.jsonc` 会被保留，因此需要确认 `triggers.crons` 同时包含上游订阅和统一规则集两个任务：
+升级时会保留本地 `wrangler.jsonc`，请确认 `triggers.crons` 同时包含上游订阅和编译规则集两个任务：
 
 ```json
 "triggers": {
@@ -228,9 +228,19 @@ npm run update
 }
 ```
 
-第一项可以继续使用你原有的上游订阅刷新周期；第二项固定用于每天刷新统一规则集。缺少第二项时，统一规则集仍可在状态页手动刷新或在使用时生成，但不会执行每日后台刷新。修改后运行 `wrangler deploy` 使计划任务生效。全新安装会由 `npm run setup` 自动写入这两个任务。
+第一项可以继续使用你原有的上游订阅刷新周期；第二项固定用于每天刷新编译规则集。缺少第二项时，编译规则集仍可在状态页手动刷新或在使用时生成，但不会执行每日后台刷新。修改后运行 `wrangler deploy` 使计划任务生效。全新安装会由 `npm run setup` 自动写入这两个任务。
 
-部署后首次打开后台、拉取订阅或执行定时任务时，SubPilot 会自动补齐 KV 数据结构，不需要单独执行迁移命令。即使跳过多个版本后再更新，也会按顺序处理缺失的迁移。明文数据加密迁移和旧键清理会惰性、分批完成，不需要等待所有旧键删除后再使用服务。
+**升级到 2.0 需要确认配置迁移。** 首次打开后台会显示迁移提示：
+
+1. 点击“下载旧配置”，妥善保存含旧客户端配置的完整 JSON 备份。
+2. 查看 Surge → sing-box 转换诊断，确认后迁移到文档版本 2、KV schema 12。
+3. 原 Surge/mihomo 配置和共享资源继续保留；规则计划各复制一份。sing-box 转换后不再跟随 Surge 设置变化。
+4. 无法等价转换的 DNS、路由等关键设置会保留待处理标记。迁移可完成，但必须手动修复或明确确认放弃该行为后才能下载 sing-box 配置。
+5. 新加密快照写入并读回验证后，旧 Stash/Shadowrocket 数据进入至少 5 分钟宽限期，随后分批清理。新文档提交后不会再回退读取旧版快照；回退程序版本需使用导出的旧配置备份。
+
+迁移前浏览配置、导出和预览不会删除旧配置。重复确认可重试；旧配置变更后需重新导出备份。全新安装直接使用版本 2。
+
+也可使用 `npm run migrate -- --url <deployment-url> --backup <private-backup-path>` 先导出，再使用同一命令加 `--apply` 确认；管理员 token 通过 `SUBPILOT_ADMIN_TOKEN` 环境变量提供。脚本不会覆盖已有备份文件，第二次执行请指定新的备份路径。
 
 更新时不要删除本地 `wrangler.jsonc`，也不要重新运行会轮换 Secrets 的命令。尤其不要无意替换 `CONFIG_ENCRYPTION_KEY`，否则 KV 中已加密的配置快照、订阅与规则源缓存、编译规则、Telegram Bot Token 和订阅读取 token 将无法解密。只有在你明确要重置整个部署或轮换密钥时，才使用 `npm run setup -- --force-secrets`。
 
@@ -238,56 +248,34 @@ npm run update
 
 ## 规则与策略组
 
-策略组是 Surge、Clash 和 Stash 输出共同使用的出口选择基础。内置 `Proxy` 策略组名称固定，不可删除；其他策略组可在 `Policy Groups` 页面新增、改名、禁用或调整顺序。规则中的策略出口必须引用已配置的策略组，或引用目标客户端支持的内置策略，例如 `DIRECT`、`REJECT`、`REJECT-DROP`。
+共享资源只保存一份；三个客户端的网络、DNS、规则选择、规则顺序、默认策略与高级设置互不覆盖。
 
-生成配置时，筛选后没有可用成员的非根策略组会被省略，并从父组引用中一并移除；根 `Proxy` 若最终没有可用成员，则回退到 `DIRECT`，避免生成空策略组或悬空引用。
+| 功能 | Surge | mihomo | sing-box 1.14.0 |
+| --- | --- | --- | --- |
+| 节点与策略组 | 按协议和组类型适配 | 按协议和组类型适配 | `selector` / `urltest` |
+| 手工路由 | Surge 规则文本 | mihomo rules + rule-providers | 原生 JSON route |
+| 编译规则文件 | `.list` | `.yaml` | JSON source `.json` |
+| DNS 与 TUN | Surge 独立字段 | mihomo 独立字段 | 原生 DNS 与 inbounds |
+| URL Rewrite / Map Local / MITM / 脚本 | 保留 Surge 功能 | 不输出 | 不输出 |
+| Ponte / Surge Tailscale | Surge 专属 | 不输出 | 不自动转换 |
 
-基础系统配置可以在客户端独立规则和统一规则模式之间切换。统一规则模式集中维护规则来源、规则集输出与单条分流规则，SubPilot 会拉取并编译规则来源，去重后按规则类型生成 Surge、Clash 和 Stash 所需的远程规则文件。规则集缓存每天自动刷新，也可以从状态页立即刷新。
+策略组可选择适用端。`select` 和 `url-test` 在三端具有对应实现；`fallback`、`load-balance` 适用于 Surge/mihomo，`subnet` 和 `smart` 仅适用于 Surge。类型不会静默替换。组中可使用 `{all}`、筛选条件或显式策略成员；Proxy 必须保留。没有可用节点且被引用的组、策略或链式依赖缺失以及循环引用会阻断输出，不会自动切换到直连。改名、禁用或删除资源后，原引用保留以便诊断定位。sing-box 必须显式指定默认出站，或以无条件的路由/拒绝规则兜底。
 
-统一配置的分流规则可以启用“按策略组合并”。启用后，命中同一策略组的规则集会合并为一个输出，输出名称使用策略组名称，生成配置中的注释会列出包含的原规则集。合并组按该策略组首次出现的位置排序，组内保持原规则集顺序并去重。
+Surge 的组级 `url` 在当前客户端中无效，应使用 Surge 的代理测速 URL；预览会提示该差异。[Surge 官方说明](https://manual.nssurge.com/policy-groups/url-test.html)
 
-Surge、Clash 和 Stash 的规则页默认使用结构化编辑器。结构化模式会按页面中的行顺序生成配置文本，并在下方显示生成结果；切换到文本模式后，可以直接编辑对应配置内容。保存前系统会校验规则类型、规则集引用、策略出口和兜底规则位置；手工规则中的 `DOMAIN` / `DOMAIN-SUFFIX` 域名、IPv4 / IPv6 CIDR 与 `IP-ASN` / `SRC-IP-ASN` 也会做语义校验，避免写入明显无效的规则配置。
+每端路由可选择原生规则或共享来源编排。编译模式独立保存来源选择、策略、顺序、内联规则及单条规则；规则源正文共用加密缓存，同名产物按客户端隔离。可选择按策略合并规则集，合并项放在该策略首次出现的位置；这可能改变跨策略规则的匹配优先级，请在预览前确认。启用的普通规则按顺序执行，兜底规则必须在最后；Surge/mihomo 编译计划需要一个 FINAL/MATCH，sing-box 也可使用显式 `route.final`。
 
-在管理端生成 Surge、Clash 或 Stash 配置预览时，SubPilot 会按规则从上到下的匹配顺序做覆盖诊断。如果某条规则或规则集内的部分规则已经被前面的规则覆盖，预览区会显示诊断提示；第一层汇总是哪一段规则受到影响，展开“查看详情”后可以看到具体规则。诊断会尽量展开 Surge 的 `RULE-SET` / `DOMAIN-SET`，以及 Clash / Stash 的 `rule-providers`；远程规则集名称在提示中会简化为最后的文件名，便于阅读。
+规则源中不能等价表达的匹配条件会阻断对应端输出，不会静默删除或扩大匹配范围。例如 sing-box 不直接使用旧 GEOIP 数据规则、Surge `IN-PORT` 或 `no-resolve` 规则；需在该客户端中改写原生路由或关联可用的规则集。未知字段会由固定版本的官方 sing-box JSON Schema 拦截。远程规则集使用 1.14 的 `http_client`，JSON source 格式为版本 4。[sing-box 规则集](https://sing-box.sagernet.org/configuration/rule-set/)
 
-Surge 规则集和单条规则使用不同语法。规则集行通常形如：
+mihomo 原生 rule-providers 只提供规则数据，必须显式添加 rules 中的 RULE-SET 引用及策略；不会自动插入 Proxy 规则或删除现有引用。Surge/mihomo 原生规则预览保留规则覆盖诊断。
 
-```text
-RULE-SET,https://example.com/rules.list,Proxy
-DOMAIN-SET,https://example.com/domain-set.list,DIRECT
-```
+sing-box 节点输入保留原生字段。跨格式转换无法保留 TLS、传输或认证参数时会跳过该节点并说明原因，避免生成连接参数不完整的节点。Snell 6 不会降级成 mihomo 的 Snell 5；sing-box 自动转换支持 Snell 4/6，其他版本需核对原生节点参数。[mihomo Snell 支持范围](https://wiki.metacubex.one/en/config/proxies/snell/)
 
-单条规则通常形如：
-
-```text
-DOMAIN-SUFFIX,example.com,Proxy
-IP-CIDR,192.168.0.0/16,DIRECT,no-resolve
-FINAL,Proxy
-```
-
-编译域名型规则源时，不带前缀的 `example.com` 始终按精确 `DOMAIN` 处理。前缀语义取决于来源格式：在 Surge `DOMAIN-SET` 中，`.example.com` 的前导点表示 `DOMAIN-SUFFIX`，匹配根域及其子域；在 Clash / mihomo domain provider（以及兼容的 Stash 输出）中，`+.example.com` 匹配根域和任意层级子域，`.example.com` 只匹配子域而不匹配根域，`*.example.com` 只匹配一级子域。Clash / Stash 输出会保留这些模式；无法在 Surge 中等价表达的 `.example.com` 与 `*.example.com` provider 模式会从 Surge 产物中过滤并产生诊断，而不会扩大成 `DOMAIN-SUFFIX`。
-
-统一规则会按目标客户端的能力做映射和过滤：合法的 `IP-ASN` 会保留；`no-resolve` 只在目标支持时输出；`src` 始终保持源地址匹配语义：Clash 在 classical 规则集中保留该参数，CIDR 规则为 Surge 转换成 `SRC-IP`、为 Stash 转换成 `SRC-IP-CIDR`；没有等价表达的源地址 GEOIP/ASN 规则会从 Surge/Stash 输出中省略并给出兼容性提示。目标不支持的规则类型、附加参数和内置策略不会泄漏到对应配置；例如 Surge 专属的 `CELLULAR`、`CELLULAR-ONLY`、`HYBRID`、`NO-HYBRID`，以及 Clash 专属的 `PASS-RULE`、`COMPATIBLE`，只会在对应目标中保留。Surge 独立规则必须且只能以一个 `FINAL` 兜底；Clash / Stash 独立规则必须且只能以一个 `MATCH` 或 `FINAL` 兜底，兜底项都必须位于最后。
-
-规则行解析会保留引号或复合逻辑表达式内部的逗号，避免把 `AND`、`OR`、`NOT` 子规则或带引号的值错误拆列。保存手工逻辑规则时，系统会递归校验括号和引号是否平衡、`AND` / `OR` 是否至少包含两个子规则、`NOT` 是否恰好包含一个子规则，以及每个叶子规则的类型、匹配值和附加参数是否合法；逻辑子规则不能携带策略出口。代理订阅解析同时兼容 SIP002 URL。TUIC 会保留明确的协议版本：Surge `tuic` 按 v4 的 `token` 认证处理，`tuic-v5` 按 v5 的 `uuid` 与 `password` 处理；Clash / Stash 的 `type: tuic` 和 `tuic://` URL 按 v5 处理。Surge v4 节点不会转换成不兼容的 Clash / Stash 节点。
-
-Surge 的 `SUBNET`、`AND`、`OR`、`NOT` 等复合规则类型可以在结构化编辑器中选择，也可以在文本模式中直接编辑。Ponte 设备名会生成 `DEVICE:<name>` 策略出口，保存后可在规则中选择。
-
-Surge 页面中的 `Tailscale` 标签可维护多个 Tailscale 出站节点。每个已启用节点会在 `[Proxy]` 中生成 `tailscale` 策略，并生成对应的 `[Tailscale <section-name>]` 配置段；保存后可在 Surge 规则和统一配置的分流规则中直接选择该策略名称。统一规则选择 Tailscale 策略时，仅 Surge 输出相关规则；Clash 和 Stash 配置会跳过这些规则及对应的规则集引用。底层策略留空时使用 Surge 默认的直连传输；仅在需要链式代理时填写另一个已配置的策略名称，`DIRECT` 会按留空处理且不会显式写入。生成时只下发底层策略可由实际保留的节点、策略组或其它可用 Tailscale 节点解析出的依赖闭包，悬空或循环依赖不会进入配置；测试 URL 必须使用 `http://`。`idle-keepalive` 会始终显式写入：`0` 或 `-1` 表示常驻，正整数表示空闲多少秒后关闭会话，默认 `600`，从而避免客户端升级后因省略字段而把 600 秒静默变成常驻。生成的 Tailscale 配置要求 Surge iOS 5.21.0+ 或 Surge Mac 6.8.0+。`Auth Key` 在 KV 配置快照中加密保存，但仍会以客户端所需格式进入生成的 Surge 配置，请优先使用短期、预授权、权限受限的密钥，并保护管理令牌与订阅链接。
-
-Surge 页面的“DNS 跟随出站规则”会独立保存，并始终输出 `encrypted-dns-follow-outbound-mode`。启用后，Surge 自己发出的 DoH、DoH3、DoQ、DoT 和 `tcp://` DNS 查询会进入正常规则系统，可用 `PROTOCOL` 规则选择出口；关闭时这些查询固定使用 `DIRECT`。`dns-server` 和 `[Host]` 的 `server:` 值都支持 `tcp://`，该 DNS-over-TCP 语法要求 Surge iOS 5.21.0+ 或 Surge Mac 6.8.0+。
-
-Surge 页面中的 `Map Local` 标签可用结构化编辑器配置 API Mock，也可切换到文本模式直接编辑 `[Map Local]` 内容。支持 `file`、`text`、`tiny-gif` 和 `base64` 四种响应类型，以及可选的 HTTP 状态码和响应头。匹配 HTTPS 请求时，需要同时在 MITM 页启用对应主机名。
-
-Clash / mihomo 和 Stash 的 rule-providers 是规则集来源；rules 中的 `RULE-SET` 行是实际匹配入口。SubPilot 会把 rule-providers 中尚未出现在 rules 里的规则集自动补入 rules，并默认使用 `Proxy` 作为策略出口。删除 rule-providers 中的某个规则集时，对应的 `RULE-SET` 规则会一并移除；如果在 rules 中删除某个规则集规则，系统会提示确认，并同步删除同名 rule-provider。后续再次添加 rule-provider 时，rules 会重新自动补齐。
-
-统一规则生成的远程产物按客户端使用不同 URL 后缀：Surge 为 `.list`，Clash / mihomo 为 `.yaml`，Stash 为 `.stash.yaml`。Clash 与 Stash 的 URL 不可互换，避免 Stash 请求被误识别为 Clash 产物。
-
-Shadowrocket 现在可以直接使用通用订阅链接获取 Clash YAML 配置，包含节点、策略组和规则等内容。由于 Shadowrocket 的节点订阅和配置导入是分离入口，如果需要完整配置，请在节点订阅和配置两个入口分别导入同一个订阅链接。SubPilot 不提供 Shadowrocket 专用配置页或专用文件名路径。
+Surge 的 Tailscale、Ponte、Hosts、DNS 跟随出站、Map Local、MITM 与脚本在其高级/DNS设置中维护。简单 IP Hosts 可转换给 sing-box；带别名、通配或指定解析器的 Hosts 需手动处理。sing-box 高级设置可编辑完整客户端 JSON，包括额外顶层设置；`outbounds` 由共享节点和策略组生成。不同平台的权限、文件路径、证书与实际网络连通性仍需在目标设备上确认。
 
 ## Telegram 通知配置
 
-SubPilot 只支持两种通知状态：关闭通知，或启用 Telegram 通知。Telegram 通知用于上游订阅与统一规则集刷新失败提醒，也提供一组 bot 命令用于查看状态和手动刷新。
+SubPilot 只支持两种通知状态：关闭通知，或启用 Telegram 通知。Telegram 通知用于上游订阅与编译规则集刷新失败提醒，也提供一组 bot 命令用于查看状态和手动刷新。
 
 ### 申请 Telegram Bot
 
@@ -318,7 +306,7 @@ BotFather 的 `/setprivacy` 建议保持默认启用。SubPilot 只需要接收 
 status - 查看订阅与缓存概览
 sources - 查看订阅源启用状态
 recent - 查看最近配置拉取记录
-refresh - 强制刷新订阅源并异步刷新统一规则集
+refresh - 强制刷新订阅源并异步刷新编译规则集
 help - 查看命令列表
 ```
 
@@ -327,7 +315,7 @@ help - 查看命令列表
 ### 在 SubPilot 后台绑定
 
 1. 确认 Worker 已部署，并且管理页可以通过 Workers.dev 域名或自定义域名访问。
-2. 登录 SubPilot 管理页，进入 `Configuration`。
+2. 登录 SubPilot 管理页，进入“系统设置”。
 3. 在 `Telegram 配置` 中粘贴 Bot Token。填写 Bot Token 即视为启用 Telegram 通知；清空 Bot Token 即关闭通知。
 4. 点击 `生成绑定命令`。SubPilot 会自动调用 Telegram API 注册 webhook，webhook 地址为当前 Worker 域名下的 `/api/telegram/webhook`。
 5. 把后台显示的 `/bind <code>` 复制到目标 Telegram 会话中发送给 bot。目标会话可以是个人私聊、私有群组或已正确授权的频道。
@@ -338,10 +326,10 @@ help - 查看命令列表
 ### 可用 bot 命令
 
 ```text
-/status  查看订阅源数量、缓存数量和最近 Surge/Clash/Stash/Shadowrocket Clash YAML 拉取时间
+/status  查看订阅源数量、缓存数量和最近 Surge/clash/sing-box 拉取时间
 /sources 查看订阅源启用状态
 /recent  查看最近配置拉取记录、目标类型、客户端位置和 User-Agent
-/refresh 强制重新拉取上游订阅源，并异步刷新统一规则集；两项任务完成后分别回复结果
+/refresh 强制重新拉取上游订阅源，并异步刷新编译规则集；两项任务完成后分别回复结果
 /help    查看命令列表
 ```
 
@@ -383,10 +371,8 @@ help - 查看命令列表
 
 ## 配置保留与本地验证
 
-策略组固定成员可以选择内置策略、手动节点、Tailscale 节点及其它策略组，订阅节点仍通过全部节点选择器加入。保存无关设置时，会保留这些成员以及 Clash/Stash 原有的独立引导 DNS 与上游 DNS 列表；明确编辑统一 DNS 时才应用共享 DNS 值。VMess 链接保留 TCP、WebSocket（包括 Host 头）和 gRPC 传输类型，SIP002 链接支持显式使用 80 端口。
+版本 2 配置文档包含共享资源和 `clients.surge`、`clients.mihomo`、`clients.singbox`，不再写入 Stash/Shadowrocket 输出设置。API 保存和预览使用该文档；`target=mihomo`（兼容 `clash`）选择 mihomo。旧备份只能通过迁移流程转换；不要向 KV 直接写入客户端 JSON。
 
-每次轮换订阅读取 token 都会生成新的随机值，包括同一 30 秒内的连续操作。已有 token 在轮换前仍可读取；跨节点失效时间仍受 Workers KV 传播延迟影响。
+`npm run verify` 执行 Worker 类型生成、TypeScript 检查和公开文件扫描；`npm audit` 检查依赖漏洞。本地使用全局 Wrangler 执行 `wrangler deploy --dry-run --config wrangler.example.jsonc --outdir /tmp/subpilot-dry-run` 可检查构建而不部署。项目不允许 AI 创建或修改测试代码。
 
-编译缓存的有效性包含来源 URL、格式和启用状态。此次更新后的首次使用会重新编译旧产物，无需手工迁移 KV 数据结构。兼容索引写入失败不会阻断规则编译，预览请求的超时覆盖响应头和正文读取。
-
-运行 `npm run verify` 执行 Worker 类型生成、TypeScript 检查和公开文件安全扫描，再运行 `npm audit` 检查依赖漏洞。验证不会生成或运行测试代码。本地构建可使用全局 Wrangler 执行 `wrangler deploy --dry-run --config wrangler.example.jsonc --outdir /tmp/subpilot-dry-run`，不会部署 Worker。
+下载 sing-box 输出后可用 `sing-box check -c SubPilot.json` 检查；编译规则源可用 `sing-box rule-set compile rules.json -o rules.srs` 验证。Schema/内核检查不代替手机和桌面客户端的导入、VPN 权限与实际连通验证。

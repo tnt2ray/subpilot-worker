@@ -1,8 +1,8 @@
-import type { AppConfig } from "./types";
+import type { RenderConfig } from "./types";
 
 const URL_REWRITE_TYPES = new Set(["header", "302", "reject"]);
 
-export function validateSurgeUrlRewrite(config: Partial<Pick<AppConfig, "surge">>): string | null {
+export function validateSurgeUrlRewrite(config: Partial<Pick<RenderConfig, "surge">>): string | null {
   const lines = Array.isArray(config.surge?.urlRewrite) ? config.surge.urlRewrite : [];
   return validateUrlRewriteLines(lines, "Surge URL Rewrite");
 }

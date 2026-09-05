@@ -1,4 +1,5 @@
 import { managedSubscriptionUrlForRequest } from "./managed-url";
+import { surgeClientProfile, supportsSurgeFeature, type SurgeClientProfile } from "./surge-capabilities";
 import { isIPv4, isIPv6 } from "./node-transforms";
 import { beijingTimestamp, renderHostEntryLine, renderSection } from "./output-render";
 import { toSurgeLine } from "./parsers";
@@ -6,26 +7,28 @@ import { buildSurgeGroups, type SurgeGroupOutput } from "./policy-groups";
 import { rewriteUnavailableGroupRuleTargets, SURGE_BUILT_IN_RULE_POLICIES } from "./rule-targets";
 import { parseHostEntries } from "./host-entries";
 import type { CompiledRuleSetReferencePlan } from "./rule-set-compiler";
-import type { AppConfig, HostEntry, ProxyNode } from "./types";
+import type { RenderConfig, HostEntry, ProxyNode } from "./types";
 
 const DEFAULT_SURGE_LOGLEVEL = "notify";
 
 export function buildSurge(
-  config: AppConfig,
+  config: RenderConfig,
   nodes: ProxyNode[],
   sourceHostEntries: HostEntry[],
   requestUrl: string,
-  ruleSetPlan?: CompiledRuleSetReferencePlan
+  ruleSetPlan?: CompiledRuleSetReferencePlan,
+  client: SurgeClientProfile = surgeClientProfile()
 ): string {
-  return buildSurgeInline(config, nodes, sourceHostEntries, requestUrl, ruleSetPlan);
+  return buildSurgeInline(config, nodes, sourceHostEntries, requestUrl, ruleSetPlan, client);
 }
 
 function buildSurgeInline(
-  config: AppConfig,
+  config: RenderConfig,
   nodes: ProxyNode[],
   sourceHostEntries: HostEntry[],
   requestUrl: string,
-  ruleSetPlan?: CompiledRuleSetReferencePlan
+  ruleSetPlan: CompiledRuleSetReferencePlan | undefined,
+  client: SurgeClientProfile
 ): string {
   const proxyLines = nodes.map(toSurgeLine);
   const resolvedPolicies = resolveRuntimeTailscalePolicies(config, nodes);
@@ -36,20 +39,23 @@ function buildSurgeInline(
     proxyLines,
     resolvedPolicies.groupOutputs,
     resolvedPolicies.tailscaleNodes,
-    ruleSetPlan
+    ruleSetPlan,
+    client
   );
-  const managedUrl = managedSubscriptionUrlForRequest(config, requestUrl);
-  return `#!MANAGED-CONFIG ${managedUrl} interval=${config.surge.managedConfigIntervalSeconds} strict=true\n# Last Updated: ${beijingTimestamp()} (UTC+8)\n${variant}`;
+  const managedUrl = managedSubscriptionUrlForRequest(config, requestUrl, "surge", client.tag);
+  const baseline = client.tag === "stable" ? `iOS ${client.ios.version}+ / Mac ${client.mac.version}+` : `iOS build ${client.ios.build}+ / Mac build ${client.mac.build}+`;
+  return `#!MANAGED-CONFIG ${managedUrl} interval=${config.surge.managedConfigIntervalSeconds} strict=true\n# Surge profile: ${client.tag} (${baseline})\n# Last Updated: ${beijingTimestamp()} (UTC+8)\n${variant}`;
 }
 
 function renderSurgeInlineProfile(
-  config: AppConfig,
+  config: RenderConfig,
   nodes: ProxyNode[],
   sourceHostEntries: HostEntry[],
   proxyLines: string[],
   groupOutputs: SurgeGroupOutput[],
-  tailscaleNodes: AppConfig["surge"]["tailscaleNodes"],
-  ruleSetPlan?: CompiledRuleSetReferencePlan
+  tailscaleNodes: RenderConfig["surge"]["tailscaleNodes"],
+  ruleSetPlan: CompiledRuleSetReferencePlan | undefined,
+  client: SurgeClientProfile
 ): string {
   const sections = renderSurgeBaseSections(config);
   const configuredHostEntries = parseHostEntries(`[Host]\n${config.surge.hosts.join("\n")}`);
@@ -63,14 +69,14 @@ function renderSurgeInlineProfile(
     ...proxyLines,
     ...tailscaleNodes.map(renderTailscaleProxyLine)
   ]));
-  sections.push(...tailscaleNodes.map(renderTailscaleSection));
+  sections.push(...tailscaleNodes.map((node) => renderTailscaleSection(node, client)));
   sections.push(renderSection("Proxy Group", groupOutputs.map((group) => group.line)));
   appendSurgeStableTailSections(sections, config);
   appendSurgeRuleSection(sections, config, nodes, groupOutputs, new Set(tailscaleNodes.map((node) => node.name)), ruleSetPlan);
   return `${sections.join("\n\n")}\n`;
 }
 
-function renderTailscaleProxyLine(node: AppConfig["surge"]["tailscaleNodes"][number]): string {
+function renderTailscaleProxyLine(node: RenderConfig["surge"]["tailscaleNodes"][number]): string {
   const options = [`section-name=${node.sectionName}`];
   if (node.underlyingProxy && node.underlyingProxy.toUpperCase() !== "DIRECT") {
     options.push(`underlying-proxy=${node.underlyingProxy}`);
@@ -80,20 +86,20 @@ function renderTailscaleProxyLine(node: AppConfig["surge"]["tailscaleNodes"][num
   return `${node.name} = tailscale, ${options.join(", ")}`;
 }
 
-function renderTailscaleSection(node: AppConfig["surge"]["tailscaleNodes"][number]): string {
+function renderTailscaleSection(node: RenderConfig["surge"]["tailscaleNodes"][number], client: SurgeClientProfile): string {
   const lines = [`auth-key = ${node.authKey}`];
   if (node.controlUrl) lines.push(`control-url = ${node.controlUrl}`);
   if (node.hostname) lines.push(`hostname = ${node.hostname}`);
   if (node.derpOnly) lines.push("derp-only = true");
   if (node.exitNode && node.exitNode !== "none") lines.push(`exit-node = ${node.exitNode}`);
-  lines.push(`idle-keepalive = ${node.idleKeepalive}`);
+  if (supportsSurgeFeature(client, "tailscaleSession")) lines.push(`idle-keepalive = ${node.idleKeepalive}`);
   if (node.preferIpv6) lines.push("prefer-ipv6 = true");
   if (node.dnsServer.length > 0) lines.push(`dns-server = ${node.dnsServer.join(", ")}`);
   if (node.mtu !== 1280) lines.push(`mtu = ${node.mtu}`);
   return renderSection(`Tailscale ${node.sectionName}`, lines);
 }
 
-function renderSurgeBaseSections(config: AppConfig): string[] {
+function renderSurgeBaseSections(config: RenderConfig): string[] {
   const sections: string[] = [];
   const generalLines = [
     `loglevel = ${DEFAULT_SURGE_LOGLEVEL}`,
@@ -124,7 +130,7 @@ function renderSurgeBaseSections(config: AppConfig): string[] {
   return sections;
 }
 
-function appendSurgeStableTailSections(sections: string[], config: AppConfig): void {
+function appendSurgeStableTailSections(sections: string[], config: RenderConfig): void {
   if (config.surge.urlRewrite.length > 0) {
     sections.push(renderSection("URL Rewrite", config.surge.urlRewrite));
   }
@@ -145,7 +151,7 @@ function appendSurgeStableTailSections(sections: string[], config: AppConfig): v
 
 function appendSurgeRuleSection(
   sections: string[],
-  config: AppConfig,
+  config: RenderConfig,
   nodes: ProxyNode[],
   groupOutputs: SurgeGroupOutput[],
   tailscalePolicies: Set<string>,
@@ -163,9 +169,9 @@ function appendSurgeRuleSection(
 }
 
 function resolveRuntimeTailscalePolicies(
-  config: AppConfig,
+  config: RenderConfig,
   nodes: ProxyNode[]
-): { groupOutputs: SurgeGroupOutput[]; tailscaleNodes: AppConfig["surge"]["tailscaleNodes"] } {
+): { groupOutputs: SurgeGroupOutput[]; tailscaleNodes: RenderConfig["surge"]["tailscaleNodes"] } {
   const configuredTailscalePolicies = new Set(config.surge.tailscaleNodes.map((node) => node.name));
   const candidates = config.surge.tailscaleNodes.filter((node) => node.enabled && node.authKey.trim());
   const availableTailscalePolicies = new Set<string>();
@@ -205,7 +211,7 @@ function resolveRuntimeTailscalePolicies(
   };
 }
 
-function proxyServerHostEntries(config: AppConfig, nodes: ProxyNode[], existingEntries: HostEntry[]): HostEntry[] {
+function proxyServerHostEntries(config: RenderConfig, nodes: ProxyNode[], existingEntries: HostEntry[]): HostEntry[] {
   if (!config.surge.encryptedDnsFollowOutboundMode || config.surge.encryptedDnsServer.length === 0) return [];
   const dnsServer = firstSurgeEncryptedDnsServer(config);
   if (!dnsServer) return [];
@@ -219,7 +225,7 @@ function proxyServerHostEntries(config: AppConfig, nodes: ProxyNode[], existingE
   });
 }
 
-function firstSurgeEncryptedDnsServer(config: AppConfig): string {
+function firstSurgeEncryptedDnsServer(config: RenderConfig): string {
   return config.surge.encryptedDnsServer.map((server) => String(server).trim()).find(Boolean) || "";
 }
 

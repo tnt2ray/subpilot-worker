@@ -1,4 +1,6 @@
-import type { AppConfig, ProxyNode } from "./types";
+import { convertRule } from "./singbox-config";
+import { isValidSingboxHeadlessRule } from "./singbox-validation";
+import type { RenderConfig, ProxyNode } from "./types";
 import { splitRuleLine } from "./rule-line";
 import { RULE_SET_TARGETS, type RuleSetDirectRule, type RuleSetOutputTarget } from "./rule-set-types";
 
@@ -82,7 +84,7 @@ const TARGET_IP_RULE_TYPES = new Set(["IP-CIDR", "IP-CIDR6", "GEOIP", "IP-ASN"])
 const SURGE_EXTENDED_MATCHING_RULE_TYPES = new Set(["DOMAIN", "DOMAIN-SUFFIX", "DOMAIN-KEYWORD", "URL-REGEX"]);
 
 export function rewriteUnavailableGroupRuleTargets(
-  config: AppConfig,
+  config: RenderConfig,
   rules: string[],
   nodes: ProxyNode[],
   groupNames: Set<string>,
@@ -97,12 +99,12 @@ export function rewriteUnavailableGroupRuleTargets(
     if (targetIndex === null) return rule;
     const target = parts[targetIndex]?.trim() ?? "";
     if (!target || extraPolicies.has(target) || isAvailableRuleTarget(target, groupNames, disabledGroups, proxyNames, outputTarget)) return rule;
-    parts[targetIndex] = "Proxy";
+    // Keep the original reference; generation diagnostics decide whether output is usable.
     return parts.join(",");
   });
 }
 
-export function configuredTailscalePolicyNames(config: AppConfig): Set<string> {
+export function configuredTailscalePolicyNames(config: RenderConfig): Set<string> {
   return new Set(config.surge.tailscaleNodes
     .map((node) => node.name.trim())
     .filter(Boolean));
@@ -164,6 +166,7 @@ export function renderDirectRuleForTarget(rule: RuleSetDirectRule, target: RuleS
   if (!type) return null;
   if (FINAL_RULE_TYPES.has(type)) {
     const options = filterDirectRuleOptions(type, parts.slice(2), target);
+    if (options.length !== parts.slice(2).filter(Boolean).length) return null;
     return target === "surge"
       ? ["FINAL", rule.policy, ...options].join(",")
       : `MATCH,${rule.policy}`;
@@ -178,6 +181,9 @@ export function renderDirectRuleForTarget(rule: RuleSetDirectRule, target: RuleS
 }
 
 export function renderRuleSetRuleForTarget(rule: string, target: RuleSetOutputTarget): string | null {
+  if (target === "sing-box") {
+    try { const converted = convertRule(rule, true).rule; return converted && isValidSingboxHeadlessRule(converted) ? rule : null; } catch { return null; }
+  }
   return translateRuleLineForTarget(rule, target, false);
 }
 
@@ -191,6 +197,7 @@ export function isRulePolicyCompatibleWithTarget(policy: string, target: RuleSet
 }
 
 export function builtInPoliciesForTarget(target: RuleSetOutputTarget): ReadonlySet<string> {
+  if (target === "sing-box") return new Set(["DIRECT", "REJECT", "REJECT-DROP"]);
   if (target === "surge") return SURGE_BUILT_IN_RULE_POLICIES;
   if (target === "stash") return STASH_BUILT_IN_RULE_POLICIES;
   return CLASH_BUILT_IN_RULE_POLICIES;
@@ -213,7 +220,11 @@ function translateRuleLineForTarget(rule: string, target: RuleSetOutputTarget, m
     if (expression === null) return null;
     parts[1] = expression;
   }
-  return translateSourceMatchOptions(parts, target, mainRule)?.join(",") ?? null;
+  const translated = translateSourceMatchOptions(parts, target, mainRule);
+  if (!translated) return null;
+  const options = mainRule ? directRuleOptions(translated) : translated.slice(2);
+  if (filterDirectRuleOptions(translated[0]!, options, target).length !== options.length) return null;
+  return translated.join(",");
 }
 
 function translateLogicalExpression(expression: string, target: RuleSetOutputTarget): string | null {
@@ -366,6 +377,7 @@ function translateSourceMatchOptions(parts: string[], target: RuleSetOutputTarge
   // matching. Only CIDRs have an equivalent on both other targets.
   if (type !== "IP-CIDR" && type !== "IP-CIDR6") return null;
   const sourceType = translateRuleType("SRC-IP-CIDR", target);
+  if (parts.slice(optionStart).some((part) => !["src"].includes(part.trim().toLowerCase()))) return null;
   return sourceType ? [sourceType, ...parts.slice(1, optionStart)] : null;
 }
 
@@ -401,7 +413,7 @@ function directRuleOptions(parts: string[]): string[] {
   const normalized = parts.map((part) => part.trim()).filter(Boolean);
   if (normalized.length <= 2) return [];
   const third = (normalized[2] || "").toLowerCase();
-  if (third === "no-resolve" || third === "src") return normalized.slice(2);
+  if (["no-resolve", "src", "extended-matching"].includes(third)) return normalized.slice(2);
   return normalized.slice(3);
 }
 

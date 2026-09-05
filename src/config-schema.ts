@@ -10,7 +10,7 @@ import {
 import { CHAIN_EXIT_PROTOCOLS, CHAIN_EXIT_PROXY_NAME, type ChainExitProtocol, type StaticProxyNodeConfig } from "./types";
 import { DEFAULT_DISPLAY_TIME_ZONE } from "./util";
 
-export const CURRENT_KV_SCHEMA_VERSION = 11;
+export const CURRENT_KV_SCHEMA_VERSION = 12;
 export const CONFIG_SCHEMA_VERSION_KEY = "config:schemaVersion";
 const LEGACY_DEFAULT_CHAIN_FILTER = ["JP", "KR", "TW"];
 
@@ -193,7 +193,7 @@ export async function runKvMigrations(env: Env): Promise<KvSchemaStatus> {
     changed = true;
   }
 
-  while (stored < CURRENT_KV_SCHEMA_VERSION) {
+  while (stored < Math.min(CURRENT_KV_SCHEMA_VERSION, 11)) {
     const next = stored + 1;
     const migration = MIGRATIONS.find((item) => item.from === stored && item.to === next);
     if (!migration) {

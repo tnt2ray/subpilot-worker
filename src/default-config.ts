@@ -1,7 +1,7 @@
-import { STATIC_EXIT_GROUP_NAME, type AppConfig } from "./types";
+import { STATIC_EXIT_GROUP_NAME, type RenderConfig } from "./types";
 import { DEFAULT_DISPLAY_TIME_ZONE } from "./util";
 
-export const DEFAULT_CONFIG: AppConfig = {
+export const DEFAULT_CONFIG: RenderConfig = {
   version: 1,
   settings: {
     managedBaseUrl: "",

@@ -10,7 +10,7 @@ import {
   type CoverageEntry,
   type CoverageRule
 } from "./rule-coverage-core";
-import type { AppConfig, Target } from "./types";
+import type { RenderConfig, Target } from "./types";
 import { mapWithConcurrency, readResponseTextWithLimit } from "./util";
 import { CLASH_BUILT_IN_RULE_POLICIES, STASH_BUILT_IN_RULE_POLICIES } from "./rule-targets";
 import { validateRuleMatchValue } from "./rule-value-validation";
@@ -53,7 +53,7 @@ const PROVIDER_VALUE_RULE_TYPES = new Set([
 const NO_RESOLVE_RULE_TYPES = new Set(["RULE-SET", "GEOIP", "IP-CIDR", "IP-CIDR6", "IP-ASN"]);
 
 type Fetcher = typeof fetch;
-type ClashDiagnosticsTarget = Extract<Target, "clash" | "stash">;
+type ClashDiagnosticsTarget = "clash" | "stash";
 
 export interface ClashRuleCoverageOptions {
   fetcher?: Fetcher;
@@ -75,7 +75,7 @@ interface RuleSetReference {
   label: string;
 }
 
-export function validateClashLikeRules(config: AppConfig, target: ClashDiagnosticsTarget): string | null {
+export function validateClashLikeRules(config: RenderConfig, target: ClashDiagnosticsTarget, nodePolicies: Iterable<string> = []): string | null {
   const targetName = target === "stash" ? "Stash" : "Clash";
   const targetConfig = target === "stash" ? config.stash : config.clash;
   const providerError = validateClashRuleProvidersYaml(targetConfig.ruleProviders, targetName);
@@ -83,6 +83,7 @@ export function validateClashLikeRules(config: AppConfig, target: ClashDiagnosti
   const providers = new Set(Object.keys(parseClashRuleProvidersYaml(targetConfig.ruleProviders)));
   const disabledGroups = new Set(config.disabledGroups);
   const policies = new Set([
+    ...nodePolicies,
     ...Object.keys(config.groups).filter((name) => !disabledGroups.has(name)),
     ...(target === "stash" ? STASH_BUILT_IN_RULE_POLICIES : CLASH_BUILT_IN_RULE_POLICIES)
   ]);
@@ -163,7 +164,7 @@ function validateClashLogicalLeaf(parts: string[], providers: Set<string>): stri
 }
 
 export async function collectClashRuleCoverageWarnings(
-  config: Pick<AppConfig, "settings" | "clash" | "stash">,
+  config: Pick<RenderConfig, "settings" | "clash" | "stash">,
   target: ClashDiagnosticsTarget,
   options: ClashRuleCoverageOptions = {}
 ): Promise<string[]> {
@@ -190,7 +191,7 @@ export async function collectClashRuleCoverageWarnings(
 async function flattenRulesForCoverage(
   lines: string[],
   providers: Map<string, RuleProviderInfo>,
-  config: Pick<AppConfig, "settings">,
+  config: Pick<RenderConfig, "settings">,
   target: ClashDiagnosticsTarget,
   options: ClashRuleCoverageOptions,
   warnings: CoverageWarningCollection
@@ -234,7 +235,7 @@ function parseTopLevelRule(line: string, lineNumber: number): Array<CoverageEntr
 async function resolveProviderReferences(
   references: RuleSetReference[],
   providers: Map<string, RuleProviderInfo>,
-  config: Pick<AppConfig, "settings">,
+  config: Pick<RenderConfig, "settings">,
   target: ClashDiagnosticsTarget,
   options: ClashRuleCoverageOptions,
   warnings: CoverageWarningCollection

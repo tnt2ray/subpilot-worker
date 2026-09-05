@@ -7,7 +7,7 @@ import type { RuleSetBucket, RuleSetDownloadBucket, RuleSetOutputTarget, RuleSet
 import { RULE_SET_BUCKETS, RULE_SET_TARGETS } from "./rule-set-types";
 import { planRuleSetArtifacts } from "./rule-set-artifacts";
 import { requireSecret } from "./secrets";
-import type { AppConfig } from "./types";
+import type { RenderConfig } from "./types";
 import { randomToken, readResponseTextWithLimit, sha256Hex } from "./util";
 import { fetchWithTimeout, waitForRetry } from "./upstream-fetch";
 
@@ -161,7 +161,7 @@ export async function fetchCachedRuleSetSource(
 
 export async function refreshRuleSetSourceCaches(
   env: Env,
-  config: AppConfig,
+  config: RenderConfig,
   sourcesToRefresh: RuleSetSource[],
   options: { pruneUnexpected: boolean; deadline?: number }
 ): Promise<RuleSetSourceCacheRefreshResult> {
@@ -306,7 +306,7 @@ export async function refreshRuleSetSourceCaches(
   };
 }
 
-export async function pruneRuleSetCaches(env: Env, config: AppConfig): Promise<number> {
+export async function pruneRuleSetCaches(env: Env, config: RenderConfig): Promise<number> {
   const sourceEntries = await readRuleSetSourceCacheEntries(env);
   const expectedKeys = await ruleSetSourceCacheKeysForEnabledSources(config);
   const sourceDeleted = await pruneUnexpectedRuleSetSourceCacheEntries(env, sourceEntries, expectedKeys);
@@ -316,7 +316,7 @@ export async function pruneRuleSetCaches(env: Env, config: AppConfig): Promise<n
   return sourceDeleted + compiledDeleted;
 }
 
-export async function pruneCompiledRuleSetCaches(env: Env, config: AppConfig): Promise<number> {
+export async function pruneCompiledRuleSetCaches(env: Env, config: RenderConfig): Promise<number> {
   const outputNames = effectiveRuleSetOutputs(config.ruleSets).map((output) => output.name);
   const deleted = await pruneUnexpectedCompiledRuleSets(env, new Set(outputNames));
   for (const outputName of compiledOutputsForGarbageCollection(outputNames, Date.now())) {
@@ -804,7 +804,7 @@ async function readRuleSetSourceCacheEntries(env: Env): Promise<RuleSetSourceCac
   ]);
 }
 
-async function ruleSetSourceCacheKeysForEnabledSources(config: AppConfig): Promise<Set<string>> {
+async function ruleSetSourceCacheKeysForEnabledSources(config: RenderConfig): Promise<Set<string>> {
   const expectedKeys = new Set<string>();
   for (const source of config.ruleSets.sources) {
     if (!source.enabled || !source.url) continue;
@@ -928,7 +928,7 @@ function normalizeBucketMeta(value: unknown): CompiledRuleSetBucketMeta[] {
     bucket: record.bucket,
     count: typeof record.count === "number" ? record.count : 0,
     targets: Array.isArray(record.targets)
-      ? record.targets.filter((item): item is RuleSetOutputTarget => RULE_SET_TARGETS.includes(item as RuleSetOutputTarget))
+      ? record.targets.filter((item): item is RuleSetOutputTarget => RULE_SET_TARGETS.some((target) => target === item))
       : [],
     ...(record.targetCounts && typeof record.targetCounts === "object"
       ? {

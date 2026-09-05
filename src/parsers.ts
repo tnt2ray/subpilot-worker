@@ -1,3 +1,4 @@
+import { parseSingboxNodes } from "./singbox-nodes";
 import YAML from "yaml";
 import { assertSafeConfigText, isSafeConfigText } from "./config-text-safety";
 import {
@@ -19,6 +20,8 @@ export { maybeDecodeBase64 } from "./subscription-text";
 
 export function parseSubscription(content: string, sourceId: string): ProxyNode[] {
   const decoded = maybeDecodeBase64(content);
+  const native = parseSingboxNodes(decoded, sourceId);
+  if (native.length) return native;
   return [
     ...parseYamlProxies(decoded, sourceId),
     ...parseTextProxies(decoded, sourceId)
@@ -51,6 +54,8 @@ export function parseManualSurge(content: string): ProxyNode[] {
 export function parseConfiguredProxyNode(proxyNode: StaticProxyNodeConfig): ProxyNode | null {
   const config = String(proxyNode.config || "").trim();
   if (!config) return null;
+  const native = parseSingboxNodes(config, "manual");
+  if (native.length) return native[0]!;
   return parseManualSurge(`[Proxy]\n${config}`)[0] ?? parseConfiguredClashNode(config);
 }
 
@@ -310,7 +315,7 @@ function mapSurgeParamToClash(key: string, type: string): string {
 function normalizeClashParamValue(key: string, type: string, value: ProxyParamValue): ProxyParamValue {
   if (isSnellType(type) && key === "version") {
     const version = typeof value === "string" && /^\d+$/.test(value) ? Number(value) : value;
-    return version === 6 ? 5 : version;
+    return version;
   }
   if (isHysteria2Type(type) && key === "ports" && typeof value === "string") {
     return value.split(";").map((item) => item.trim()).filter(Boolean).join(",");
@@ -441,7 +446,9 @@ function buildSurgeParams(node: ProxyNode): [string, string][] {
     entries.push([key, formatted]);
   };
 
-  if (node.type === "tuic") {
+  if (node.type === "snell") {
+    add("psk", node.params.psk ?? node.password);
+  } else if (node.type === "tuic") {
     if (node.password) add("token", node.password);
   } else if (node.type === "tuic-v5") {
     if (node.uuid) add("uuid", node.uuid);

@@ -8,6 +8,9 @@ import {
 } from "./config-store";
 import { readConfigFetchStats } from "./fetch-stats";
 import { refreshRuleSetCaches, type RuleSetRefreshResult } from "./rule-set-compiler";
+import { refreshRuleSetSourceCaches } from "./rule-set-cache";
+import { configDocument, renderConfig, OUTPUT_TARGETS } from "./config-document";
+import { ruleSetEnv } from "./rule-set-scope";
 import { refreshSourceCache } from "./source-cache";
 import { formatSourceCacheStatusLines } from "./source-cache-format";
 import { fetchWithTimeout } from "./upstream-fetch";
@@ -247,7 +250,7 @@ async function handleTelegramCommand(
       return;
     case "refresh": {
       const deadline = Date.now() + WAIT_UNTIL_REFRESH_DEADLINE_MS;
-      const startMessage = sendTelegramBotMessage(token, chat.id, config.ruleSets.mode === "compiled"
+      const startMessage = sendTelegramBotMessage(token, chat.id, OUTPUT_TARGETS.some((target) => renderConfig(configDocument(config), target).ruleSets.mode === "compiled")
         ? "开始强制重新拉取上游订阅源；规则集将在后台异步刷新，完成后分别发送结果。"
         : "开始强制重新拉取上游订阅源。完成后会发送结果。").catch(logTelegramCommandFailure);
       scheduleTelegramRuleSetRefresh(env, ctx, config, chat.id, deadline);
@@ -267,13 +270,18 @@ function scheduleTelegramRuleSetRefresh(
   chatId: string,
   deadline: number
 ): void {
-  if (config.ruleSets.mode !== "compiled") return;
+  const document = configDocument(config);
+  const targets = OUTPUT_TARGETS.filter((target) => renderConfig(document, target).ruleSets.mode === "compiled");
+  if (!targets.length) return;
   const token = config.settings.notificationTelegramBotToken.trim();
   if (!token) return;
   ctx.waitUntil((async () => {
     try {
-      const result = await refreshRuleSetCaches(env, config, undefined, { deadline });
-      await sendTelegramBotMessage(token, chatId, formatTelegramRuleSetRefreshResultMessage(result, config.settings.displayTimeZone));
+      const sourceRefresh = await refreshRuleSetSourceCaches(env, config, config.ruleSets.sources.filter((source) => source.enabled && source.url), { deadline, pruneUnexpected: true });
+      for (const target of targets) {
+        const result = await refreshRuleSetCaches(ruleSetEnv(env, target), renderConfig(document, target), undefined, { deadline, sourceRefresh });
+        await sendTelegramBotMessage(token, chatId, `${target === "clash" ? "mihomo" : target}\n${formatTelegramRuleSetRefreshResultMessage(result, config.settings.displayTimeZone)}`);
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       await sendTelegramBotMessage(token, chatId, `规则集异步刷新失败：${message}`).catch(logTelegramCommandFailure);
@@ -319,9 +327,8 @@ function formatTelegramStatusMessage(
       protocolLinePosition: "afterTimestamp"
     }),
     `最近 Surge 配置获取：${formatTelegramTimestamp(stats.lastFetched.surge, config.settings.displayTimeZone)}`,
-    `最近 Clash 配置获取：${formatTelegramTimestamp(stats.lastFetched.clash, config.settings.displayTimeZone)}`,
-    `最近 Stash 配置获取：${formatTelegramTimestamp(stats.lastFetched.stash, config.settings.displayTimeZone)}`,
-    `最近 Shadowrocket Clash YAML 获取：${formatTelegramTimestamp(stats.lastFetched.shadowrocket, config.settings.displayTimeZone)}`
+    `最近 mihomo 配置获取：${formatTelegramTimestamp(stats.lastFetched.clash, config.settings.displayTimeZone)}`,
+    `最近 sing-box 配置获取：${formatTelegramTimestamp(stats.lastFetched["sing-box"], config.settings.displayTimeZone)}`
   ].join("\n");
 }
 

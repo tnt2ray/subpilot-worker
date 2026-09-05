@@ -7,7 +7,7 @@ import {
 import { RULE_SET_TARGETS, type RuleSetOutput, type RuleSetOutputTarget } from "./rule-set-types";
 import { effectiveRuleSetOutputs } from "./rule-set-outputs";
 import { planRuleSetArtifacts } from "./rule-set-artifacts";
-import type { AppConfig } from "./types";
+import type { RenderConfig } from "./types";
 import { sha256Hex } from "./util";
 
 const RULE_SET_WORKER_CACHE_TTL_SECONDS = 12 * 60 * 60;
@@ -62,7 +62,7 @@ export function clientRuleSetResponse(request: Request, response: Response): Res
 
 export async function warmCompiledRuleSetWorkerCache(
   env: Env,
-  config: AppConfig,
+  config: RenderConfig,
   requestUrl: string,
   token: string,
   outputs?: RuleSetOutput[],
@@ -92,14 +92,14 @@ export async function warmCompiledRuleSetWorkerCache(
 
 async function warmCompiledRuleSetCacheForOutput(
   env: Env,
-  config: AppConfig,
+  config: RenderConfig,
   requestUrl: string,
   token: string,
   manifest: CompiledRuleSetManifest,
   deadline?: number
 ): Promise<number> {
   let cached = 0;
-  for (const target of RULE_SET_TARGETS) {
+  for (const target of config.renderTarget ? [config.renderTarget] : RULE_SET_TARGETS) {
     for (const artifact of planRuleSetArtifacts(manifest.buckets, target)) {
       if (workerCacheWarmDeadlineExceeded(deadline)) return cached;
       const content = await readCompiledRuleSetBucket(env, manifest.outputName, artifact.bucket, target, manifest);
@@ -107,7 +107,7 @@ async function warmCompiledRuleSetCacheForOutput(
       const url = managedRuleSetUrl(config, requestUrl, token, manifest.outputName, artifact.bucket, target);
       const response = await compiledRuleSetFileResponse(content, target);
       if (workerCacheWarmDeadlineExceeded(deadline)) return cached;
-      await cacheCompiledRuleSetResponse(url, manifest.updatedAt, response);
+      await cacheCompiledRuleSetResponse(url, compiledCacheVersion(manifest), response);
       cached += 1;
     }
   }
@@ -119,7 +119,7 @@ function workerCacheWarmDeadlineExceeded(deadline: number | undefined): boolean 
 }
 
 function ruleSetContentType(target: RuleSetOutputTarget): string {
-  return target === "surge" ? "text/plain; charset=utf-8" : "text/yaml; charset=utf-8";
+  return target === "sing-box" ? "application/json; charset=utf-8" : target === "surge" ? "text/plain; charset=utf-8" : "text/yaml; charset=utf-8";
 }
 
 function workerCacheAvailable(): boolean {
@@ -139,4 +139,8 @@ function matchesIfNoneMatch(header: string | null, etag: string): boolean {
     const normalized = candidate.trim();
     return normalized === "*" || normalized.replace(/^W\//i, "") === normalizedEtag;
   });
+}
+
+export function compiledCacheVersion(manifest: CompiledRuleSetManifest): string {
+  return `${manifest.updatedAt}:${manifest.outputFingerprint}:${manifest.storageId ?? ""}`;
 }

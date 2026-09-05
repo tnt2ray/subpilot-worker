@@ -1,7 +1,5 @@
 import { DEFAULT_CONFIG } from "./default-config";
-import { parseConfiguredProxyNode } from "./parsers";
-import { SURGE_BUILT_IN_RULE_POLICIES, CLASH_BUILT_IN_RULE_POLICIES, STASH_BUILT_IN_RULE_POLICIES } from "./rule-targets";
-import { isAllPolicySelector, parseGroupOption, splitGroupSpec } from "./policy-group-spec";
+import { splitGroupSpec } from "./policy-group-spec";
 import {
   RULE_SET_SOURCE_FORMATS,
   type RuleSetConfig,
@@ -12,17 +10,16 @@ import {
 } from "./rule-set-types";
 import { inferUrlRewriteMitmHostnames } from "./surge-url-rewrite";
 import { ruleSetPathName } from "./managed-url";
-import { splitRuleLine } from "./rule-line";
-import { CHAIN_EXIT_PROTOCOLS, type AppConfig, type ChainExitProtocol, type NotificationChannel, type SourceConfig, type StaticProxyNodeConfig, type SurgeIpv6VifMode, type Target } from "./types";
+import { CHAIN_EXIT_PROTOCOLS, type RenderConfig, type ChainExitProtocol, type NotificationChannel, type SourceConfig, type StaticProxyNodeConfig, type SurgeIpv6VifMode, type Target } from "./types";
 import { normalizeDisplayTimeZone } from "./util";
 
 const SURGE_IPV6_VIF_MODES = ["off", "auto", "always"] as const satisfies readonly SurgeIpv6VifMode[];
 type ClashLikeBaseConfig = Pick<
-  AppConfig["clash"],
+  RenderConfig["clash"],
   "port" | "socksPort" | "mixedPort" | "allowLan" | "mode" | "logLevel" | "ipv6" | "unifiedDelay" | "tcpConcurrent" | "externalController"
 >;
-type ClashLikeTunConfig = AppConfig["clash"]["tun"];
-type ClashLikeDnsConfig = AppConfig["stash"]["dns"];
+type ClashLikeTunConfig = RenderConfig["clash"]["tun"];
+type ClashLikeDnsConfig = RenderConfig["stash"]["dns"];
 type LoosePartial<T> = { [Key in keyof T]?: T[Key] | undefined };
 
 function notificationChannelFromTelegramToken(token: string): NotificationChannel {
@@ -31,16 +28,21 @@ function notificationChannelFromTelegramToken(token: string): NotificationChanne
 
 export function normalizeTarget(value: string | null | undefined): Target | null {
   const lowered = String(value ?? "").toLowerCase();
-  if (lowered === "surge" || lowered === "clash" || lowered === "stash") return lowered;
+  if (lowered === "mihomo") return "clash";
+  if (lowered === "surge" || lowered === "clash" || lowered === "sing-box") return lowered;
   return null;
 }
 
-export function normalizeConfig(input: AppConfig): AppConfig {
+export function normalizeConfig(input: RenderConfig): RenderConfig {
   const chain = normalizeChain(input.chain);
-  const groups = normalizeGroups(typeof input.groups === "object" && input.groups ? input.groups : DEFAULT_CONFIG.groups, input);
+  const groups = normalizeGroups(typeof input.groups === "object" && input.groups ? input.groups : DEFAULT_CONFIG.groups);
   const notificationTelegramBotToken = stringValue(input.settings?.notificationTelegramBotToken, "");
   return {
     version: 1,
+    ...(input.document ? { document: input.document } : {}),
+    ...(input.renderTarget ? { renderTarget: input.renderTarget } : {}),
+    ...(input.migrationRequired ? { migrationRequired: true } : {}),
+    ...(input.groupTargets ? { groupTargets: input.groupTargets } : {}),
     settings: {
       managedBaseUrl: stringValue(input.settings?.managedBaseUrl, DEFAULT_CONFIG.settings.managedBaseUrl),
       userAgentSurge: input.settings?.userAgentSurge || DEFAULT_CONFIG.settings.userAgentSurge,
@@ -70,81 +72,13 @@ export function normalizeConfig(input: AppConfig): AppConfig {
   };
 }
 
-function normalizeGroups(input: Record<string, string>, config: AppConfig): Record<string, string> {
-  const policies = new Set([
-    ...Object.keys(input),
-    ...SURGE_BUILT_IN_RULE_POLICIES,
-    ...CLASH_BUILT_IN_RULE_POLICIES,
-    ...STASH_BUILT_IN_RULE_POLICIES,
-    ...(Array.isArray(config.proxyNodes) ? config.proxyNodes : []).flatMap((node) => {
-      try {
-        const name = node && typeof node === "object" ? parseConfiguredProxyNode(node)?.name.trim() : "";
-        return name ? [name] : [];
-      } catch {
-        return [];
-      }
-    }),
-    ...(Array.isArray(config.surge?.tailscaleNodes) ? config.surge.tailscaleNodes : [])
-      .flatMap((node) => typeof node?.name === "string" && node.name.trim() ? [node.name.trim()] : [])
-  ]);
-  return Object.fromEntries(Object.entries(input).map(([name, spec]) => [
-    name,
-    normalizeGroupSpec(name, spec, policies)
-  ]));
-}
-
-function normalizeGroupSpec(name: string, spec: string, policies: Set<string>): string {
-  const [rawType = "select", ...items] = splitGroupSpec(String(spec));
-  const type = rawType.trim().toLowerCase() || "select";
-  if (isSubnetGroupType(type)) {
-    const filtered: string[] = [];
-    let hasDefault = false;
-    for (const item of items) {
-      if (!isSubnetGroupOption(item, name)) continue;
-      const isDefault = parseGroupOption(item)?.key.toLowerCase() === "default";
-      if (isDefault) {
-        if (hasDefault) continue;
-        hasDefault = true;
-      }
-      filtered.push(item);
-    }
-    if (!hasDefault) {
-      filtered.unshift("default=Proxy");
-    }
-    return [type, ...filtered].join(", ");
-  }
-  const filtered = items.filter((item, index) => {
-    if (item === "Proxy" || item === name) return false;
-    if (policies.has(item)) return items.indexOf(item) === index;
-    return isGroupOption(item) || isAllSelector(item);
-  });
-  return [type, ...filtered].join(", ");
-}
-
-function isAllSelector(item: string): boolean {
-  return isAllPolicySelector(item);
-}
-
-function isGroupOption(item: string): boolean {
-  const option = parseGroupOption(item);
-  return Boolean(option);
-}
-
-function isSubnetGroupType(type: string): boolean {
-  return type === "subnet";
-}
-
-function isSubnetGroupOption(item: string, groupName: string): boolean {
-  const option = parseGroupOption(item);
-  if (!option) return false;
-  const key = option.key;
-  const value = option.value;
-  if (!value || value === groupName) return false;
-  return key.toLowerCase() === "default" || isSubnetConditionKey(key);
-}
-
-function isSubnetConditionKey(key: string): boolean {
-  return /^(SSID|BSSID|ROUTER):.+$/i.test(key) || /^TYPE:(WIFI|WIRED|CELLULAR)$/i.test(key);
+function normalizeGroups(input: Record<string, string>): Record<string, string> {
+  return Object.fromEntries(Object.entries(input).map(([name, spec]) => {
+    const [rawType = "select", ...items] = splitGroupSpec(String(spec));
+    const type = rawType.trim().toLowerCase() || "select";
+    // Preserve explicit references, including unresolved ones, for target diagnostics.
+    return [name, [type, ...items.filter((item) => item)].join(", ")];
+  }));
 }
 
 function normalizeDisabledGroups(input: unknown, groups: Record<string, string>): string[] {
@@ -163,7 +97,7 @@ export function inferManagedBaseUrl(requestUrl: string): string {
   return `${new URL(requestUrl).origin}/sync`;
 }
 
-export function withInferredManagedBaseUrl(config: AppConfig, requestUrl: string): AppConfig {
+export function withInferredManagedBaseUrl(config: RenderConfig, requestUrl: string): RenderConfig {
   const managedBaseUrl = config.settings.managedBaseUrl.trim();
   if (managedBaseUrl) {
     return {
@@ -196,16 +130,13 @@ export function normalizeSource(source: SourceConfig): SourceConfig {
 }
 
 function normalizeSourceFetchUserAgent(value: unknown): SourceConfig["fetchUserAgent"] {
-  return value === "clash" || value === "stash" || value === "shadowrocket" ? value : "surge";
+  return typeof value === "string" && value.trim() ? value.trim() : "surge";
 }
 
 export function normalizeRuleSets(input: Partial<RuleSetConfig> | undefined): RuleSetConfig {
   const ruleSets = input ?? {};
   const mode = ruleSets.mode === "compiled" ? "compiled" : "manual";
   const directRules = Array.isArray(ruleSets.directRules) ? normalizeRuleSetDirectRules(ruleSets.directRules) : [];
-  if (mode === "compiled" && !directRules.some(isEnabledFallbackRule)) {
-    directRules.push(defaultCompiledFallbackRule(directRules));
-  }
   return {
     mode,
     aggregateByPolicy: ruleSets.aggregateByPolicy === true,
@@ -215,34 +146,8 @@ export function normalizeRuleSets(input: Partial<RuleSetConfig> | undefined): Ru
   };
 }
 
-function isEnabledFallbackRule(rule: RuleSetDirectRule): boolean {
-  if (!rule.enabled) return false;
-  const type = (splitRuleLine(rule.rule)[0] || "").trim().toUpperCase();
-  return type === "FINAL" || type === "MATCH";
-}
-
-function defaultCompiledFallbackRule(existing: RuleSetDirectRule[]): RuleSetDirectRule {
-  const ids = new Set(existing.map((rule) => rule.id));
-  let id = "subpilot-default-final";
-  for (let suffix = 2; ids.has(id); suffix += 1) id = `subpilot-default-final-${suffix}`;
-  return {
-    id,
-    name: "Final",
-    enabled: true,
-    rule: "FINAL,Proxy",
-    policy: "Proxy",
-    order: existing.reduce((maximum, rule) => Math.max(maximum, rule.order), -1) + 1
-  };
-}
-
 function normalizeRuleSetSources(sources: RuleSetSource[]): RuleSetSource[] {
-  const seenIds = new Set<string>();
-  return sources.flatMap((source, index) => {
-    const normalized = normalizeRuleSetSource(source, index);
-    if (seenIds.has(normalized.id)) return [];
-    seenIds.add(normalized.id);
-    return [normalized];
-  }).sort(compareByOrder);
+  return sources.map(normalizeRuleSetSource).sort(compareByOrder);
 }
 
 function normalizeRuleSetSource(source: RuleSetSource, index: number): RuleSetSource {
@@ -257,13 +162,7 @@ function normalizeRuleSetSource(source: RuleSetSource, index: number): RuleSetSo
 }
 
 function normalizeRuleSetOutputs(outputs: RuleSetOutput[]): RuleSetOutput[] {
-  const seenNames = new Set<string>();
-  return outputs.flatMap((output, index) => {
-    const normalized = normalizeRuleSetOutput(output, index);
-    if (seenNames.has(normalized.name)) return [];
-    seenNames.add(normalized.name);
-    return [normalized];
-  }).sort(compareByOrder);
+  return outputs.map(normalizeRuleSetOutput).sort(compareByOrder);
 }
 
 function normalizeRuleSetOutput(output: RuleSetOutput, index: number): RuleSetOutput {
@@ -273,23 +172,17 @@ function normalizeRuleSetOutput(output: RuleSetOutput, index: number): RuleSetOu
   return {
     name: ruleSetPathName(output.name) || `规则集 ${index + 1}`,
     enabled: output.enabled !== false,
-    policy: stringValue(output.policy, "Proxy"),
+    policy: stringValue(output.policy, ""),
     sourceIds: uniqueStringArray(output.sourceIds, []),
     inlineRules: stringArray(output.inlineRules, []),
     order: finiteOrder(output.order, index),
-    surgeOptions: uniqueStringArray(output.surgeOptions, []).filter((option) => !option.includes(",")),
+    surgeOptions: uniqueStringArray(output.surgeOptions, []),
     ...(updatedAt ? { updatedAt } : {})
   };
 }
 
 function normalizeRuleSetDirectRules(rules: RuleSetDirectRule[]): RuleSetDirectRule[] {
-  const seenIds = new Set<string>();
-  return rules.flatMap((rule, index) => {
-    const normalized = normalizeRuleSetDirectRule(rule, index);
-    if (seenIds.has(normalized.id)) return [];
-    seenIds.add(normalized.id);
-    return [normalized];
-  }).sort(compareByOrder);
+  return rules.map(normalizeRuleSetDirectRule).sort(compareByOrder);
 }
 
 function normalizeRuleSetDirectRule(rule: RuleSetDirectRule, index: number): RuleSetDirectRule {
@@ -298,7 +191,7 @@ function normalizeRuleSetDirectRule(rule: RuleSetDirectRule, index: number): Rul
     name: stringValue(rule.name, `主配置规则 ${index + 1}`),
     enabled: rule.enabled !== false,
     rule: typeof rule.rule === "string" ? rule.rule.trim() : "",
-    policy: stringValue(rule.policy, "Proxy"),
+    policy: stringValue(rule.policy, ""),
     order: finiteOrder(rule.order, index)
   };
 }
@@ -351,7 +244,7 @@ function normalizeProxyNode(value: unknown, index: number, seenNames: Set<string
     chainFilter: filterArray(record.chainFilter, []),
     enabled: record.enabled !== false,
     chainExit,
-    includeInGroups: chainExit ? record.includeInGroups === true : true
+    includeInGroups: chainExit ? record.includeInGroups === true : record.includeInGroups !== false
   };
 }
 
@@ -411,7 +304,7 @@ function uniqueProxyNodeName(name: string, seenNames: Set<string>): string {
   return candidate;
 }
 
-export function normalizeSurge(input: Partial<AppConfig["surge"]> | undefined): AppConfig["surge"] {
+export function normalizeSurge(input: Partial<RenderConfig["surge"]> | undefined): RenderConfig["surge"] {
   const surge = input ?? {};
   const urlRewrite = stringArray(surge.urlRewrite, DEFAULT_CONFIG.surge.urlRewrite);
   const mitm = normalizeSurgeMitm(surge.mitm);
@@ -447,7 +340,7 @@ export function normalizeSurge(input: Partial<AppConfig["surge"]> | undefined): 
   };
 }
 
-function normalizeSurgeTailscaleNodes(value: unknown): AppConfig["surge"]["tailscaleNodes"] {
+function normalizeSurgeTailscaleNodes(value: unknown): RenderConfig["surge"]["tailscaleNodes"] {
   if (!Array.isArray(value)) return DEFAULT_CONFIG.surge.tailscaleNodes;
   const seenNames = new Set<string>();
   const seenSections = new Set<string>();
@@ -500,7 +393,7 @@ function normalizeSurgeTailscaleUnderlyingProxy(value: unknown): string {
   return normalized.toUpperCase() === "DIRECT" ? "" : normalized;
 }
 
-function normalizeSurgeMitm(input: Partial<AppConfig["surge"]["mitm"]> | undefined): AppConfig["surge"]["mitm"] {
+function normalizeSurgeMitm(input: Partial<RenderConfig["surge"]["mitm"]> | undefined): RenderConfig["surge"]["mitm"] {
   const mitm = input ?? {};
   return {
     skipServerCertVerify: mitm.skipServerCertVerify !== false,
@@ -518,7 +411,7 @@ function normalizePonteDeviceNames(value: unknown): string[] {
     .filter((item) => item && !/[,\r\n[\]]/.test(item)))];
 }
 
-export function normalizeClash(input: Partial<AppConfig["clash"]> | undefined): AppConfig["clash"] {
+export function normalizeClash(input: Partial<RenderConfig["clash"]> | undefined): RenderConfig["clash"] {
   const clash = input ?? {};
   const base = normalizeClashLikeBase(clash, DEFAULT_CONFIG.clash);
   const dns = normalizeClashLikeDns({
@@ -565,7 +458,7 @@ export function normalizeClash(input: Partial<AppConfig["clash"]> | undefined): 
   };
 }
 
-export function normalizeStash(input: Partial<AppConfig["stash"]> | undefined): AppConfig["stash"] {
+export function normalizeStash(input: Partial<RenderConfig["stash"]> | undefined): RenderConfig["stash"] {
   const stash = input ?? {};
   return {
     ...normalizeClashLikeBase(stash, DEFAULT_CONFIG.stash),
@@ -580,7 +473,7 @@ export function normalizeStash(input: Partial<AppConfig["stash"]> | undefined): 
   };
 }
 
-function normalizeStashDns(input: Partial<AppConfig["stash"]["dns"]> | undefined): AppConfig["stash"]["dns"] {
+function normalizeStashDns(input: Partial<RenderConfig["stash"]["dns"]> | undefined): RenderConfig["stash"]["dns"] {
   return normalizeClashLikeDns(input ?? {}, DEFAULT_CONFIG.stash.dns);
 }
 
@@ -636,14 +529,14 @@ function normalizeRuleProviders(input: unknown, fallback: string): string {
   return typeof input === "string" ? input.trimEnd() : fallback;
 }
 
-function normalizeStashMitm(input: Partial<AppConfig["stash"]["mitm"]> | undefined): AppConfig["stash"]["mitm"] {
+function normalizeStashMitm(input: Partial<RenderConfig["stash"]["mitm"]> | undefined): RenderConfig["stash"]["mitm"] {
   const mitm = input ?? {};
   return {
     hostname: stringArray(mitm.hostname, DEFAULT_CONFIG.stash.mitm.hostname)
   };
 }
 
-export function normalizeChain(_input: { filter?: unknown } | undefined): AppConfig["chain"] {
+export function normalizeChain(_input: { filter?: unknown } | undefined): RenderConfig["chain"] {
   return {
     filter: []
   };

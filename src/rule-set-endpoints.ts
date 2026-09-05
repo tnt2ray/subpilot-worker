@@ -4,6 +4,7 @@ import { compileRuleSetOutput, ensureCompiledRuleSet, readRuleSetStatus, refresh
 import { readCompiledRuleSetBucket, readCompiledRuleSetManifest } from "./rule-set-cache";
 import {
   cacheCompiledRuleSetResponse,
+  compiledCacheVersion,
   clientRuleSetResponse,
   compiledRuleSetFileResponse,
   matchCompiledRuleSetWorkerCache,
@@ -13,13 +14,13 @@ import { ruleSetPathName, type RuleSetSyncPath } from "./managed-url";
 import { planRuleSetArtifacts } from "./rule-set-artifacts";
 import { effectiveRuleSetOutputs } from "./rule-set-outputs";
 import type { RuleSetOutputTarget } from "./rule-set-types";
-import type { AppConfig } from "./types";
+import type { RenderConfig } from "./types";
 import { badRequest, jsonResponse, notFound } from "./util";
 
 const WAIT_UNTIL_CACHE_WARM_DEADLINE_MS = 20_000;
 const MANUAL_RULE_SET_REFRESH_DEADLINE_MS = 20_000;
 
-export async function handleRuleSetApi(request: Request, env: Env, ctx: ExecutionContext, config: AppConfig): Promise<Response | null> {
+export async function handleRuleSetApi(request: Request, env: Env, ctx: ExecutionContext, config: RenderConfig): Promise<Response | null> {
   const url = new URL(request.url);
   if (url.pathname === "/api/rule-sets/status" && request.method === "GET") {
     return jsonResponse({
@@ -69,7 +70,7 @@ export async function handleRuleSetDownload(
   request: Request,
   env: Env,
   ctx: ExecutionContext,
-  config: AppConfig,
+  config: RenderConfig,
   path: RuleSetSyncPath
 ): Promise<Response> {
   if (config.ruleSets.mode !== "compiled") return notFound();
@@ -86,7 +87,7 @@ export async function handleRuleSetDownload(
   if (!manifest) return notFound();
   if (!manifestSupportsDownload(manifest, bucket, target)) return notFound();
 
-  const cachedResponse = await matchCompiledRuleSetWorkerCache(request, manifest.updatedAt);
+  const cachedResponse = await matchCompiledRuleSetWorkerCache(request, compiledCacheVersion(manifest));
   if (cachedResponse) return cachedResponse;
 
   let content = await readCompiledRuleSetBucket(env, output.name, bucket, target, manifest);
@@ -102,7 +103,7 @@ export async function handleRuleSetDownload(
   }
   if (content === null) return notFound();
   const response = await compiledRuleSetFileResponse(content, target);
-  ctx.waitUntil(cacheCompiledRuleSetResponse(request.url, manifest.updatedAt, response.clone()).catch(logRuleSetWorkerCacheError));
+  ctx.waitUntil(cacheCompiledRuleSetResponse(request.url, compiledCacheVersion(manifest), response.clone()).catch(logRuleSetWorkerCacheError));
   return clientRuleSetResponse(request, response);
 }
 
@@ -117,8 +118,8 @@ function manifestSupportsDownload(
   return planRuleSetArtifacts(manifest.buckets, target).some((artifact) => artifact.bucket === bucket);
 }
 
-function resolveRuleSetDownload(config: AppConfig, path: RuleSetSyncPath): {
-  output: AppConfig["ruleSets"]["outputs"][number];
+function resolveRuleSetDownload(config: RenderConfig, path: RuleSetSyncPath): {
+  output: RenderConfig["ruleSets"]["outputs"][number];
   bucket: "domain" | "ipcidr" | "combined";
   target: RuleSetOutputTarget;
 } | null {
@@ -145,7 +146,7 @@ function safeDecodePathSegment(value: string): string | null {
 function scheduleRuleSetWorkerCacheWarm(
   env: Env,
   ctx: ExecutionContext,
-  config: AppConfig,
+  config: RenderConfig,
   requestUrl: string,
   outputNames?: string[]
 ): void {

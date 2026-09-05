@@ -3,7 +3,7 @@ import { parseConfiguredProxyNode } from "./parsers";
 import { parseAllPolicySelector, parseGroupOption, splitGroupSpec } from "./policy-group-spec";
 import { isRulePolicyCompatibleWithTarget } from "./rule-targets";
 import type { RuleSetOutputTarget } from "./rule-set-types";
-import { CHAIN_EXIT_PROXY_NAME, type AppConfig, type ProxyNode } from "./types";
+import { CHAIN_EXIT_PROXY_NAME, type RenderConfig, type ProxyNode } from "./types";
 
 export interface SurgeGroupOutput {
   name: string;
@@ -22,7 +22,7 @@ interface ResolvedPolicyGroup {
 }
 
 export function buildSurgeGroups(
-  config: AppConfig,
+  config: RenderConfig,
   nodes: ProxyNode[],
   buildOptions: SurgeGroupBuildOptions = {}
 ): SurgeGroupOutput[] {
@@ -43,18 +43,15 @@ export function buildSurgeGroups(
     const targetAvailable = filterUnavailableConfiguredPolicies(groupType, resolved, unavailableConfiguredProxyNames);
     const available = filterUnavailableTailscalePolicies(groupType, targetAvailable, buildOptions);
     const items = groupType === "subnet" ? available : available.filter((item) => !parseGroupOption(item));
-    const groupOptions = groupType === "subnet" || groupType === "url-test"
-      ? []
+    const groupOptions = groupType === "subnet"
+      ? groupItems.filter((item) => parseGroupOption(item)?.key.toLowerCase() === "icon-url")
       : resolved.filter((item) => parseGroupOption(item));
     return { name, type: groupType, items, options: groupOptions, surgeHidden };
   });
   const emittedNames = emittedPolicyGroupNames(config, groups);
   return groups.flatMap(({ name, type, items, options, surgeHidden }) => {
     if (!emittedNames.has(name)) return [];
-    const outputItems = ensureUsableRootProxyItems(
-      name,
-      ensureSubnetDefault(type, pruneUnavailableGroupReferences(config, type, items, emittedNames))
-    );
+    const outputItems = pruneUnavailableGroupReferences(config, type, items, emittedNames);
     const surgeOptions = surgeHidden ? ["hidden=true"] : [];
     return [{ name, line: `${name} = ${[mapSurgeGroupType(type), ...outputItems, ...options, ...surgeOptions].join(", ")}` }];
   });
@@ -75,7 +72,7 @@ function filterUnavailableTailscalePolicies(
 }
 
 export function buildClashGroups(
-  config: AppConfig,
+  config: RenderConfig,
   nodes: ProxyNode[],
   target: Extract<RuleSetOutputTarget, "clash" | "stash"> = "clash"
 ): Record<string, unknown>[] {
@@ -113,7 +110,7 @@ export function buildClashGroups(
   });
 }
 
-function configuredProxyNamesUnavailableIn(nodes: ProxyNode[], config: AppConfig): Set<string> {
+function configuredProxyNamesUnavailableIn(nodes: ProxyNode[], config: RenderConfig): Set<string> {
   const available = new Set(nodes.filter((node) => node.manual).map((node) => node.name));
   const unavailable = new Set<string>();
   for (const proxyNode of config.proxyNodes) {
@@ -140,7 +137,7 @@ function shouldEmitPolicyGroup(name: string, type: string, resolvedItems: string
   return name === "Proxy" || type === "subnet" || resolvedItems.length > 0;
 }
 
-function emittedPolicyGroupNames(config: AppConfig, groups: ResolvedPolicyGroup[]): Set<string> {
+function emittedPolicyGroupNames(config: RenderConfig, groups: ResolvedPolicyGroup[]): Set<string> {
   const emittedNames = new Set<string>();
   let changed = true;
   while (changed) {
@@ -157,7 +154,7 @@ function emittedPolicyGroupNames(config: AppConfig, groups: ResolvedPolicyGroup[
 }
 
 function pruneUnavailableGroupReferences(
-  config: AppConfig,
+  config: RenderConfig,
   groupType: string,
   items: string[],
   emittedNames: Set<string>
@@ -171,22 +168,15 @@ function pruneUnavailableGroupReferences(
   });
 }
 
-function ensureSubnetDefault(groupType: string, items: string[]): string[] {
-  if (groupType !== "subnet" || items.some((item) => parseGroupOption(item)?.key.toLowerCase() === "default")) {
-    return items;
-  }
-  return ["default=Proxy", ...items];
-}
-
 function ensureUsableRootProxyItems(name: string, items: string[]): string[] {
-  return name === "Proxy" && items.length === 0 ? ["DIRECT"] : items;
+  return items;
 }
 
-function activeGroupEntries(config: AppConfig, target: "surge" | "clash"): [string, string][] {
+function activeGroupEntries(config: RenderConfig, target: "surge" | "clash"): [string, string][] {
   const disabledGroups = new Set(config.disabledGroups);
   return Object.entries(config.groups).filter(([name, spec]) => {
-    if (disabledGroups.has(name)) return false;
-    return target === "surge" || !isSurgeOnlyGroupSpec(spec);
+    if (disabledGroups.has(name) || config.groupTargets?.[name] && !config.groupTargets[name]!.includes(target)) return false;
+    return target === "surge" || !isSurgeOnlyGroupSpec(spec) && splitGroupSpec(spec)[0] !== "smart";
   });
 }
 
@@ -214,7 +204,7 @@ function resolveGroupItems(items: string[], nodes: ProxyNode[]): string[] {
 }
 
 function nodeCanEnterGroups(node: ProxyNode): boolean {
-  return !node.chainExit || node.includeInGroups === true;
+  return node.includeInGroups !== false && (!node.chainExit || node.includeInGroups === true);
 }
 
 function isChainExitExcludedFromGroups(node: ProxyNode): boolean {
@@ -239,9 +229,6 @@ function resolveSubnetGroupItems(items: string[], groupName: string, disabledGro
     const line = `${option.key}=${option.value}`;
     output.push(line);
   }
-  if (!hasDefault) {
-    output.unshift("default=Proxy");
-  }
   return output;
 }
 
@@ -264,7 +251,7 @@ function isAllowedSubnetPolicy(
 }
 
 function isAllowedGroupItem(item: string): boolean {
-  return item !== "Proxy";
+  return Boolean(item);
 }
 
 function surgeHiddenValue(items: string[]): boolean {
@@ -282,7 +269,6 @@ function isSurgeHiddenOption(item: string): boolean {
 }
 
 function mapSurgeGroupType(type: string): string {
-  if (type === "url-test") return "smart";
   return type;
 }
 

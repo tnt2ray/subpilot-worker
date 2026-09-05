@@ -12,7 +12,7 @@ import {
   SURGE_BUILT_IN_RULE_POLICIES
 } from "./rule-targets";
 import { RULE_SET_TARGETS, type RuleSetDownloadBucket } from "./rule-set-types";
-import type { AppConfig } from "./types";
+import type { RenderConfig } from "./types";
 
 const RESERVED_MANAGED_BASE_PATHS = new Set([
   "/api",
@@ -24,6 +24,7 @@ const RESERVED_MANAGED_BASE_PATHS = new Set([
   "/app-proxy-node-drafts.js",
   "/app-yaml.js",
   "/app.js",
+  "/app-model.js",
   "/index.html",
   "/login.html",
   "/mitm-ca.js",
@@ -54,7 +55,7 @@ const MAX_RULE_PROVIDERS_LENGTH = 512 * 1024;
 const MAX_GENERAL_LIST_ITEMS = 2_000;
 const MAX_REFERENCE_LIST_ITEMS = 500;
 const MAX_INLINE_RULES_PER_OUTPUT = 10_000;
-const POLICY_GROUP_TYPES = new Set(["select", "url-test", "fallback", "load-balance", "subnet"]);
+const POLICY_GROUP_TYPES = new Set(["select", "url-test", "fallback", "load-balance", "smart", "subnet"]);
 const RESERVED_CLASH_GROUP_OPTION_KEYS = new Set(["name", "type", "proxies"]);
 const COMPILED_SURGE_OPTIONS = new Set(["no-resolve", "extended-matching"]);
 
@@ -79,7 +80,7 @@ export function validateManagedBaseUrl(config: { settings?: { managedBaseUrl?: u
   return null;
 }
 
-export function validateConfigEntityLimits(config: AppConfig): string | null {
+export function validateConfigEntityLimits(config: RenderConfig, options: { allowUnresolvedPolicies?: boolean } = {}): string | null {
   if (!config.settings || typeof config.settings !== "object") return "基础设置格式无效";
   if (!config.groups || typeof config.groups !== "object" || Array.isArray(config.groups)) return "策略组配置格式无效";
   if (!Array.isArray(config.disabledGroups)) return "禁用策略组配置格式无效";
@@ -118,10 +119,10 @@ export function validateConfigEntityLimits(config: AppConfig): string | null {
     if (nameError) return nameError;
     if (ALL_BUILT_IN_POLICIES.has(name.toUpperCase())) return `策略组名称 ${name} 与客户端内置策略冲突`;
     if (typeof spec !== "string" || spec.length > MAX_GROUP_SPEC_LENGTH) return `策略组 ${name} 配置过长或格式无效`;
-    const specError = validatePolicyGroupSpec(name, spec, config);
+    const specError = validatePolicyGroupSpec(name, spec, config, options.allowUnresolvedPolicies);
     if (specError) return specError;
   }
-  const groupCycleError = validatePolicyGroupCycles(config);
+  const groupCycleError = options.allowUnresolvedPolicies ? null : validatePolicyGroupCycles(config);
   if (groupCycleError) return groupCycleError;
 
   const sourceIds = new Set<string>();
@@ -135,6 +136,9 @@ export function validateConfigEntityLimits(config: AppConfig): string | null {
     const urlError = validateSizedString(source?.url, MAX_URL_LENGTH, `订阅源 ${source.id} URL`, true);
     if (urlError) return urlError;
     if (source.url && !isHttpUrl(source.url)) return `订阅源 ${source.id} URL 必须使用 http 或 https`;
+    const uaError = validateSizedString(source.fetchUserAgent, 512, `订阅源 ${source.id} User-Agent`);
+    if (uaError) return uaError;
+    if (/[\r\n]/.test(source.fetchUserAgent)) return "User-Agent 不能包含换行";
   }
 
   const proxyIds = new Set<string>();
@@ -211,7 +215,7 @@ export function validateConfigEntityLimits(config: AppConfig): string | null {
   return validateImportantSettings(config);
 }
 
-export function validateProxyPolicyNameConflicts(config: Partial<Pick<AppConfig, "groups" | "proxyNodes">>): string | null {
+export function validateProxyPolicyNameConflicts(config: Partial<Pick<RenderConfig, "groups" | "proxyNodes">>): string | null {
   const groupNames = new Set(Object.keys(config.groups || {}).map((name) => name.trim()).filter(Boolean));
   const proxyNames = new Set<string>();
   for (const proxyNode of Array.isArray(config.proxyNodes) ? config.proxyNodes : []) {
@@ -226,7 +230,7 @@ export function validateProxyPolicyNameConflicts(config: Partial<Pick<AppConfig,
   return null;
 }
 
-export function validateTailscalePolicies(config: AppConfig): string | null {
+export function validateTailscalePolicies(config: RenderConfig): string | null {
   const nodes = config.surge.tailscaleNodes;
   const groupNames = new Set(Object.keys(config.groups));
   const activeGroupNames = new Set(Object.keys(config.groups).filter((name) => !config.disabledGroups.includes(name)));
@@ -347,7 +351,7 @@ export function validateTailscalePolicies(config: AppConfig): string | null {
 }
 
 function resolvePotentialSurgePolicies(
-  config: AppConfig,
+  config: RenderConfig,
   activeProxyNames: Set<string>,
   configuredProxyNames: Set<string>,
   activeTailscaleNames: Set<string>
@@ -427,7 +431,7 @@ function potentialSurgeGroupHasMember(
   return false;
 }
 
-export function validateRuleSetOutputNames(config: Partial<Pick<AppConfig, "ruleSets">>): string | null {
+export function validateRuleSetOutputNames(config: Partial<Pick<RenderConfig, "ruleSets">>): string | null {
   if (!Array.isArray(config.ruleSets?.outputs)) return "规则集输出配置格式无效";
   const configuredError = validateOutputNameList(config.ruleSets.outputs);
   if (configuredError) return configuredError;
@@ -445,7 +449,7 @@ export function validateRuleSetOutputNames(config: Partial<Pick<AppConfig, "rule
   return effectiveError || validateRuleProviderNameCollisions(effectiveOutputs) || validateCompiledFallback(ruleSets);
 }
 
-export function validateCompiledFallbackTargets(config: AppConfig): string | null {
+export function validateCompiledFallbackTargets(config: RenderConfig): string | null {
   if (config.ruleSets.mode !== "compiled") return null;
   const fallback = config.ruleSets.directRules.find((rule) => {
     if (!rule.enabled) return false;
@@ -462,7 +466,7 @@ export function validateCompiledFallbackTargets(config: AppConfig): string | nul
     : null;
 }
 
-export function validateCompiledRulePolicies(config: AppConfig): string | null {
+export function validateCompiledRulePolicies(config: RenderConfig): string | null {
   if (config.ruleSets.mode !== "compiled") return null;
   const disabledGroups = new Set(config.disabledGroups);
   const configuredPolicies = new Set([
@@ -489,7 +493,7 @@ export function validateCompiledRulePolicies(config: AppConfig): string | null {
   return null;
 }
 
-function validatePolicyGroupSpec(name: string, spec: string, config: AppConfig): string | null {
+function validatePolicyGroupSpec(name: string, spec: string, config: RenderConfig, allowUnresolvedPolicies = false): string | null {
   if (/[\r\n\u0000-\u001f\u007f]/.test(spec)) return `策略组 ${name} 配置不能包含换行或控制字符`;
   const [rawType = "", ...items] = splitGroupSpec(spec);
   const type = rawType.trim().toLowerCase();
@@ -526,8 +530,8 @@ function validatePolicyGroupSpec(name: string, spec: string, config: AppConfig):
       const policyError = validatePolicyName(item, `策略组 ${name} 成员`);
       if (policyError) return policyError;
       if (type === "subnet") return `策略组 ${name} subnet 成员必须使用 条件=策略 格式`;
-      if (item === name) return `策略组 ${name} 不能引用自身`;
-      if (!configuredPolicies.has(item)) return `策略组 ${name} 成员 ${item} 不存在；订阅节点请使用 {all} 选择器`;
+      if (!allowUnresolvedPolicies && item === name) return `策略组 ${name} 不能引用自身`;
+      if (!allowUnresolvedPolicies && !configuredPolicies.has(item)) return `策略组 ${name} 成员 ${item} 不存在；订阅节点请使用 {all} 选择器`;
       continue;
     }
 
@@ -545,14 +549,25 @@ function validatePolicyGroupSpec(name: string, spec: string, config: AppConfig):
       if (!new Set(["true", "false", "1", "0"]).has(option.value.toLowerCase())) return `策略组 ${name} hidden 参数格式无效`;
       continue;
     }
+    if (lowerKey === "underlying-proxy") {
+      if (type === "subnet") return `策略组 ${name} subnet 不支持 underlying-proxy`;
+      const policyError = validatePolicyName(option.value, `策略组 ${name} underlying-proxy`);
+      if (policyError) return policyError;
+      continue;
+    }
+    if (lowerKey === "icon-url") {
+      try { if (!["http:", "https:"].includes(new URL(option.value).protocol)) throw new Error(); }
+      catch { return `策略组 ${name} icon-url 必须使用 http 或 https`; }
+      continue;
+    }
     if (type === "select") return `策略组 ${name} select 类型不支持参数 ${key}`;
     if (type === "subnet") {
       if (lowerKey === "default") defaultCount += 1;
       else if (!isSubnetConditionKey(key)) return `策略组 ${name} subnet 参数 ${key} 不受支持`;
       const policyError = validatePolicyName(option.value, `策略组 ${name} 参数 ${key} 策略`);
       if (policyError) return policyError;
-      if (option.value === name) return `策略组 ${name} 不能引用自身`;
-      if (!configuredPolicies.has(option.value)) return `策略组 ${name} 参数 ${key} 引用的策略 ${option.value} 不存在`;
+      if (!allowUnresolvedPolicies && option.value === name) return `策略组 ${name} 不能引用自身`;
+      if (!allowUnresolvedPolicies && !configuredPolicies.has(option.value)) return `策略组 ${name} 参数 ${key} 引用的策略 ${option.value} 不存在`;
       continue;
     }
     if (lowerKey === "url") {
@@ -569,13 +584,18 @@ function validatePolicyGroupSpec(name: string, spec: string, config: AppConfig):
       if (!Number.isSafeInteger(interval) || interval < 1 || interval > 604_800) return `策略组 ${name} interval 必须是 1 到 604800 的整数`;
       continue;
     }
+    if (lowerKey === "tolerance") {
+      const tolerance = Number(option.value);
+      if (!Number.isSafeInteger(tolerance) || tolerance < 0 || tolerance > 60_000) return `策略组 ${name} tolerance 必须是 0 到 60000 的整数`;
+      continue;
+    }
     if (type === "url-test") return `策略组 ${name} url-test 类型不支持参数 ${key}`;
   }
   if (defaultCount > 1) return `策略组 ${name} subnet 只能配置一个 default`;
   return null;
 }
 
-function validatePolicyGroupCycles(config: AppConfig): string | null {
+function validatePolicyGroupCycles(config: RenderConfig): string | null {
   const disabled = new Set(config.disabledGroups);
   const activeGroups = new Set(Object.keys(config.groups).filter((name) => !disabled.has(name)));
   const edges = new Map<string, string[]>();
@@ -622,11 +642,11 @@ function isSubnetConditionKey(key: string): boolean {
   return /^(SSID|BSSID|ROUTER):[^=,\r\n]+$/i.test(key) || /^TYPE:(WIFI|WIRED|CELLULAR)$/i.test(key);
 }
 
-function tailscaleNodeIsActive(node: AppConfig["surge"]["tailscaleNodes"][number]): boolean {
+function tailscaleNodeIsActive(node: RenderConfig["surge"]["tailscaleNodes"][number]): boolean {
   return node.enabled === true && typeof node.authKey === "string" && Boolean(node.authKey.trim());
 }
 
-function validateCompiledFallback(ruleSets: AppConfig["ruleSets"]): string | null {
+function validateCompiledFallback(ruleSets: RenderConfig["ruleSets"]): string | null {
   if (ruleSets.mode !== "compiled") return null;
   const finalRules = ruleSets.directRules.filter((rule) => {
     if (!rule.enabled) return false;
@@ -638,7 +658,7 @@ function validateCompiledFallback(ruleSets: AppConfig["ruleSets"]): string | nul
   return null;
 }
 
-function validateOutputNameList(outputs: AppConfig["ruleSets"]["outputs"]): string | null {
+function validateOutputNameList(outputs: RenderConfig["ruleSets"]["outputs"]): string | null {
   const names = new Set<string>();
   for (const output of outputs) {
     const name = ruleSetPathName(output?.name);
@@ -654,7 +674,7 @@ function validateOutputNameList(outputs: AppConfig["ruleSets"]["outputs"]): stri
   return null;
 }
 
-function validateRuleProviderNameCollisions(outputs: AppConfig["ruleSets"]["outputs"]): string | null {
+function validateRuleProviderNameCollisions(outputs: RenderConfig["ruleSets"]["outputs"]): string | null {
   const buckets: RuleSetDownloadBucket[] = ["combined", "domain", "ipcidr", "classical"];
   const owners = new Map<string, string>();
   for (const output of outputs) {
@@ -675,7 +695,7 @@ function firstCountLimit(entries: ReadonlyArray<readonly [string, number, number
   return exceeded ? `${exceeded[0]}数量不能超过 ${exceeded[2]}` : null;
 }
 
-function validateConfigLists(config: AppConfig): string | null {
+function validateConfigLists(config: RenderConfig): string | null {
   const lists: Array<readonly [unknown, string, number, number]> = [
     [config.disabledGroups, "禁用策略组", MAX_COUNTS.groups, MAX_NAME_LENGTH],
     [config.settings.excludeKeywords, "排除关键词", MAX_GENERAL_LIST_ITEMS, MAX_NAME_LENGTH],
@@ -771,7 +791,7 @@ function validateRuleLines(value: unknown, label: string): string | null {
   return null;
 }
 
-function validateImportantSettings(config: AppConfig): string | null {
+function validateImportantSettings(config: RenderConfig): string | null {
   const fields: Array<[unknown, number, string, boolean?]> = [
     [config.settings?.managedBaseUrl, MAX_URL_LENGTH, "Managed base URL", true],
     [config.settings?.userAgentSurge, 512, "Surge User-Agent"],

@@ -1,17 +1,16 @@
-# SubPilot UI Design Constraint
+# SubPilot 2.0 UI Design
 
-Source: https://raw.githubusercontent.com/VoltAgent/awesome-design-md/refs/heads/main/design-md/claude/DESIGN.md
+The accepted client-configuration concept defines a compact configuration workspace: a gray sidebar, a white main surface, blue selection and primary actions, three client tabs, routing tables, native configuration previews, and a diagnostics drawer.
 
-This project uses that design document as the visual constraint for the admin UI. The implementation adapts the editorial Claude-style system to a dense configuration tool:
+- Canvas `#ffffff`; sidebar and table headers `#f7f8fb`.
+- Primary blue `#2563eb`, text `#172033`, muted text `#667085`, border `#dce1e9`.
+- System sans-serif UI; monospace for editable/generated configuration. No external font dependency.
+- Sidebar width 214 px. Shared resources and client settings have separate navigation entries.
+- Client tabs: Surge, mihomo, sing-box. Subtabs: network/TUN, DNS, routing, advanced.
+- Rules show order, match type/value, outbound, edit and removal controls. Advanced rules retain native JSON/text editing.
+- The right drawer shows target-specific warnings and blockers, provides navigation to affected settings, and supports keyboard focus containment and Escape dismissal.
+- The fixed bottom bar reports draft/save status and offers preview, save, and a download enabled only for a current valid output.
+- Small screens use a collapsible sidebar and horizontally scrollable dense tables within the page. Page-level horizontal overflow is prohibited.
+- Empty states, validation messages, loading, disabled actions, and migration confirmation use actual application state. No synthetic activity data.
 
-- Canvas: warm cream `#faf9f5`; no pure white page floor.
-- Primary action: muted coral `#cc785c`, active `#a9583e`, disabled `#e6dfd8`.
-- Text: warm ink `#141413`, body `#3d3d3a`, muted `#6c6a64`.
-- Surfaces: cream cards `#efe9de`, soft bands `#f5f0e8`, dark product/code surfaces `#181715`.
-- Borders: soft hairline `#e6dfd8`; shadow use is intentionally rare.
-- Shapes: 8px standard controls, 12px cards, pill badges where status needs compact emphasis.
-- Typography: serif display fallback for page titles, Inter/system sans for UI, monospace for generated config and previews.
-- Controls: buttons and text inputs target 40px height; focus uses a coral ring.
-- Responsive behavior: no horizontal page overflow; dense tables collapse into readable cards on narrow viewports.
-
-Implementation note: display letter spacing stays at `0` in CSS to keep the admin UI aligned with the project's frontend constraints.
+The implementation uses the existing vanilla JavaScript and Worker asset pipeline. Drafts remain in memory; only language preference is stored in localStorage. Complex configuration can be edited as native text or JSON without introducing a second configuration representation in the browser.

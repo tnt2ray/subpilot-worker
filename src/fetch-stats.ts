@@ -1,13 +1,13 @@
 import { lookupIpLocation, type GeoIpLocation } from "./geoip";
 import { readSourceCacheStatus, type SourceCacheStatus } from "./source-cache";
-import type { AppConfig, Target } from "./types";
+import type { RenderConfig, Target } from "./types";
 
 const LAST_FETCH_PREFIX = "stats:config:lastFetched:";
 const RECENT_FETCHES_KEY = "stats:config:recentFetches";
 const RECENT_FETCH_PREFIX = "stats:config:recentFetch:";
 export type ConfigFetchTarget = Target;
 
-const TRACKED_TARGETS: ConfigFetchTarget[] = ["surge", "clash", "stash", "shadowrocket"];
+const TRACKED_TARGETS: ConfigFetchTarget[] = ["surge", "clash", "sing-box"];
 const MAX_STORED_FETCH_RECORDS = 500;
 const MAX_RECENT_FETCH_ROWS = MAX_STORED_FETCH_RECORDS;
 const MAX_USER_AGENT_LENGTH = 240;
@@ -36,7 +36,7 @@ export interface ConfigFetchStats {
   sourceCache: SourceCacheStatus;
 }
 
-export async function readConfigFetchStats(env: Env, config?: AppConfig): Promise<ConfigFetchStats> {
+export async function readConfigFetchStats(env: Env, config?: RenderConfig): Promise<ConfigFetchStats> {
   const [lastFetchedEntries, recentUserAgents, sourceCache] = await Promise.all([
     Promise.all(TRACKED_TARGETS.map(async (target): Promise<[ConfigFetchTarget, string | null]> => [
       target,

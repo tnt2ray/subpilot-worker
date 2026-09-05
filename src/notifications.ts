@@ -1,7 +1,7 @@
 import { formatSourceCacheStatusLines } from "./source-cache-format";
 import type { RuleSetRefreshResult } from "./rule-set-compiler";
 import type { SourceCacheRefreshResult } from "./source-cache";
-import type { AppConfig } from "./types";
+import type { RenderConfig } from "./types";
 import { getUpdateStatus, readNotifiedUpdateVersion, storeNotifiedUpdateVersion } from "./update-check";
 import { fetchWithTimeout } from "./upstream-fetch";
 
@@ -15,7 +15,7 @@ export interface NotificationDeliveryResult {
 
 export async function notifySourceRefreshFailures(
   env: Env,
-  config: AppConfig,
+  config: RenderConfig,
   result: SourceCacheRefreshResult,
   trigger: RefreshTrigger
 ): Promise<NotificationDeliveryResult> {
@@ -42,7 +42,7 @@ export async function notifySourceRefreshFailures(
 
 export async function notifyRuleSetRefreshFailures(
   env: Env,
-  config: AppConfig,
+  config: RenderConfig,
   result: RuleSetRefreshResult,
   trigger: RefreshTrigger
 ): Promise<NotificationDeliveryResult> {
@@ -68,7 +68,7 @@ export async function notifyRuleSetRefreshFailures(
   return delivery;
 }
 
-export async function notifyVersionUpdateAvailable(env: Env, config: AppConfig): Promise<NotificationDeliveryResult> {
+export async function notifyVersionUpdateAvailable(env: Env, config: RenderConfig): Promise<NotificationDeliveryResult> {
   const delivery: NotificationDeliveryResult = { telegram: "disabled", warnings: [] };
   if (!config.settings.updateCheckEnabled) return delivery;
 
@@ -155,7 +155,7 @@ function formatSourceFailures(result: SourceCacheRefreshResult): string[] {
 
 async function sendTelegramNotification(
   env: Env,
-  config: AppConfig,
+  config: RenderConfig,
   message: string,
   warnings: string[]
 ): Promise<NotificationDeliveryResult["telegram"]> {

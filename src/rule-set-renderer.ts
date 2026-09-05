@@ -1,3 +1,4 @@
+import { convertRule } from "./singbox-config";
 import YAML from "yaml";
 import type { ParsedRuleSetRule } from "./rule-set-parser";
 import { renderRuleSetRuleForTarget } from "./rule-targets";
@@ -12,6 +13,7 @@ export function renderCompiledRuleSetBucket(
     const rendered = renderRuleSetRuleForTarget(rule.raw, target);
     return rendered ? [{ ...rule, raw: rendered }] : [];
   });
+  if (target === "sing-box") return renderSingboxRules(compatible);
   if (target === "surge") return renderSurgeRuleSetBucket(compatible, bucket);
   return renderClashLikeRuleSetBucket(compatible, bucket);
 }
@@ -29,6 +31,7 @@ export function renderCombinedRuleSet(
     const rendered = renderRuleSetRuleForTarget(rule.raw, target);
     return rendered ? [{ ...rule, raw: rendered }] : [];
   });
+  if (target === "sing-box") return renderSingboxRules(rules);
   if (target === "surge") return `${rules.map((rule) => rule.raw).join("\n")}\n`;
   return YAML.stringify({ payload: rules.map((rule) => rule.raw) });
 }
@@ -62,4 +65,8 @@ function renderClashDomainPayloadLine(rule: ParsedRuleSetRule): string {
 
 function normalizeDomain(value: string): string {
   return value.trim().replace(/^\+\./, "").replace(/^\*\./, "").replace(/^\./, "").replace(/\.$/, "").toLowerCase();
+}
+
+function renderSingboxRules(rules: ParsedRuleSetRule[]): string {
+  return JSON.stringify({ version: 4, rules: rules.map((rule) => convertRule(rule.raw, true).rule) }, null, 2) + "\n";
 }

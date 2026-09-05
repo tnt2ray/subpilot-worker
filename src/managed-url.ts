@@ -1,12 +1,11 @@
-import { isConfigFileName, syncPathForToken } from "./target-files";
 import type { RuleSetDownloadBucket, RuleSetOutputTarget } from "./rule-set-types";
-import type { AppConfig } from "./types";
+import type { RenderConfig, Target } from "./types";
+import type { SurgeProfileTag } from "./surge-capabilities";
 
-export interface SyncPath {
-  token: string;
-  fileName?: string;
-  ruleSet?: RuleSetSyncPath | undefined;
-}
+export type SyncPath = { token: string } & (
+  | { target: Target; surgeProfile?: SurgeProfileTag; ruleSet?: never }
+  | { ruleSet: RuleSetSyncPath; target?: never; surgeProfile?: never }
+);
 
 export interface RuleSetSyncPath {
   artifactName: string;
@@ -35,11 +34,11 @@ export function parseSyncPath(pathname: string, managedBasePath: string): SyncPa
   const basePath = normalizeManagedBasePath(managedBasePath);
   const base = basePath === "/" ? "" : escapeRegExp(basePath);
   const tokenPattern = "([A-Za-z0-9_-]+)";
-  const mainMatch = pathname.match(new RegExp(`^${base}/${tokenPattern}/$`));
-  if (mainMatch) return { token: mainMatch[1]! };
-  const fileMatch = pathname.match(new RegExp(`^${base}/${tokenPattern}/([^/]+)$`));
-  if (fileMatch && isConfigFileName(fileMatch[2]!)) return { token: fileMatch[1]!, fileName: fileMatch[2]! };
-  const namedRuleSetMatch = pathname.match(new RegExp(`^${base}/${tokenPattern}/r/([^/]+?)\\.(list|stash\\.yaml|yaml)$`));
+  const surgeMatch = pathname.match(new RegExp(`^${base}/${tokenPattern}/surge/(stable|tf)/$`));
+  if (surgeMatch) return { token: surgeMatch[1]!, target: "surge", surgeProfile: surgeMatch[2] as SurgeProfileTag };
+  const targetMatch = pathname.match(new RegExp(`^${base}/${tokenPattern}/(surge|clash|sing-box)/$`));
+  if (targetMatch) return { token: targetMatch[1]!, target: targetMatch[2] as Target };
+  const namedRuleSetMatch = pathname.match(new RegExp(`^${base}/${tokenPattern}/r/([^/]+?)\\.(list|json|yaml)$`));
   if (namedRuleSetMatch) {
     const artifactName = safeDecodePathSegment(namedRuleSetMatch[2]!);
     if (!artifactName) return null;
@@ -54,27 +53,28 @@ export function parseSyncPath(pathname: string, managedBasePath: string): SyncPa
   return null;
 }
 
-export function managedBasePathFromConfig(config: AppConfig, requestUrl: string): string {
+export function managedBasePathFromConfig(config: RenderConfig, requestUrl: string): string {
   return normalizeManagedBasePath(managedBaseUrl(config, requestUrl).pathname);
 }
 
-export function managedSubscriptionUrl(config: AppConfig, requestUrl: string, token: string): string {
+export function managedSubscriptionUrl(config: RenderConfig, requestUrl: string, token: string, target: Target, surgeProfile: SurgeProfileTag = "stable"): string {
   const managed = managedBaseUrl(config, requestUrl);
-  managed.pathname = joinManagedRelativePath(managed.pathname, syncPathForToken(token));
+  const targetPath = target === "surge" ? `surge/${surgeProfile}/` : `${target}/`;
+  managed.pathname = joinManagedRelativePath(managed.pathname, `${encodeURIComponent(token)}/${targetPath}`);
   managed.search = "";
   managed.hash = "";
   return managed.toString();
 }
 
-export function managedSubscriptionUrlForRequest(config: AppConfig, requestUrl: string): string {
+export function managedSubscriptionUrlForRequest(config: RenderConfig, requestUrl: string, target: Target, surgeProfile: SurgeProfileTag = "stable"): string {
   const request = new URL(requestUrl);
   const managed = managedBaseUrl(config, requestUrl);
   const token = extractSubscriptionToken(request.pathname, normalizeManagedBasePath(managed.pathname)) ?? "";
-  return managedSubscriptionUrl(config, requestUrl, token);
+  return managedSubscriptionUrl(config, requestUrl, token, target, surgeProfile);
 }
 
 export function managedRuleSetUrlForRequest(
-  config: AppConfig,
+  config: RenderConfig,
   requestUrl: string,
   outputName: string,
   bucket: RuleSetDownloadBucket,
@@ -87,7 +87,7 @@ export function managedRuleSetUrlForRequest(
 }
 
 export function managedRuleSetUrl(
-  config: AppConfig,
+  config: RenderConfig,
   requestUrl: string,
   token: string,
   outputName: string,
@@ -114,7 +114,7 @@ export function ruleSetArtifactName(outputName: string, bucket: RuleSetDownloadB
   return `${ruleSetPathName(outputName)}${suffix}`;
 }
 
-function managedBaseUrl(config: AppConfig, requestUrl: string): URL {
+function managedBaseUrl(config: RenderConfig, requestUrl: string): URL {
   const request = new URL(requestUrl);
   const base = config.settings.managedBaseUrl || `${request.origin}/sync`;
   return new URL(base, request.origin);
@@ -140,12 +140,12 @@ function safeDecodePathSegment(value: string): string | null {
 
 function ruleSetExtension(target: RuleSetOutputTarget): string {
   if (target === "surge") return "list";
-  if (target === "stash") return "stash.yaml";
+  if (target === "sing-box") return "json";
   return "yaml";
 }
 
 function ruleSetTargetForExtension(extension: string): RuleSetOutputTarget {
   if (extension === "list") return "surge";
-  if (extension === "stash.yaml") return "stash";
+  if (extension === "json") return "sing-box";
   return "clash";
 }

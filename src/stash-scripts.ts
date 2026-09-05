@@ -1,4 +1,4 @@
-import type { AppConfig } from "./types";
+import type { RenderConfig } from "./types";
 
 export interface ParsedStashScript {
   name: string;
@@ -9,7 +9,7 @@ export interface ParsedStashScript {
   url: string;
 }
 
-export function validateStashScripts(config: Partial<Pick<AppConfig, "stash">>): string | null {
+export function validateStashScripts(config: Partial<Pick<RenderConfig, "stash">>): string | null {
   const lines = Array.isArray(config.stash?.scripts) ? config.stash.scripts : [];
   const scriptNames = new Set<string>();
   for (const [index, line] of lines.entries()) {

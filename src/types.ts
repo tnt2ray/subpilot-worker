@@ -1,7 +1,9 @@
 import type { RuleSetConfig } from "./rule-set-types";
+import type { SurgeClientProfile } from "./surge-capabilities";
 
-export type Target = "surge" | "clash" | "stash" | "shadowrocket";
-export type SourceFetchUserAgent = "surge" | "clash" | "stash" | "shadowrocket";
+export type Target = "surge" | "clash" | "sing-box";
+export type ClientId = "surge" | "mihomo" | "singbox";
+export type SourceFetchUserAgent = string;
 export type NotificationChannel = "off" | "telegram";
 export type SurgeIpv6VifMode = "off" | "auto" | "always";
 export const CHAIN_EXIT_PROXY_NAME = "Chain Exit";
@@ -20,6 +22,8 @@ export const CHAIN_EXIT_PROTOCOLS = [
   "tuic-v5",
   "anytls",
   "trust-tunnel",
+  "h2-connect",
+  "masque",
   "ssh"
 ] as const;
 
@@ -187,8 +191,12 @@ export interface StaticProxyNodeConfig {
   includeInGroups: boolean;
 }
 
-export interface AppConfig {
+export interface RenderConfig {
   version: 1;
+  document?: AppConfig;
+  renderTarget?: Target;
+  migrationRequired?: boolean;
+  groupTargets?: Record<string, Target[]>;
   settings: {
     managedBaseUrl: string;
     userAgentSurge: string;
@@ -233,6 +241,7 @@ export interface HostEntry {
 }
 
 export interface ProxyNode {
+  singbox?: Record<string, ProxyParamValue>;
   name: string;
   originalName?: string | undefined;
   type: string;
@@ -256,10 +265,54 @@ export interface ProxyNode {
 }
 
 export interface GenerationResult {
+  surgeClient?: SurgeClientProfile;
   target: Target;
   content: string;
   contentType: string;
   proxyCount: number;
   fetchedSources: number;
   warnings: string[];
+  diagnostics: ConfigDiagnostic[];
+  canDownload: boolean;
+}
+
+/** Persisted configuration. Format-specific fields never inherit from another client. */
+export interface AppConfig {
+  version: 2;
+  settings: Omit<RenderConfig["settings"], "userAgentStash" | "userAgentShadowrocket">;
+  groups: Record<string, string>;
+  disabledGroups: string[];
+  groupTargets: Record<string, Target[]>;
+  sources: SourceConfig[];
+  proxyNodes: StaticProxyNodeConfig[];
+  chain: ChainConfig;
+  ruleSources: RuleSetConfig["sources"];
+  clients: {
+    surge: SurgeConfig & ClientRuleSettings;
+    mihomo: ClashConfig & ClientRuleSettings;
+    singbox: SingboxConfig & ClientRuleSettings;
+  };
+  updatedAt?: string | undefined;
+}
+
+export interface ClientRuleSettings {
+  ruleSets: Omit<RuleSetConfig, "sources">;
+}
+
+export interface ConfigDiagnostic {
+  severity: "info" | "warning" | "error";
+  code: string;
+  target: Target;
+  path: string;
+  message: string;
+}
+
+export interface SingboxConfig {
+  coreVersion: "1.14.0";
+  log: Record<string, ProxyParamValue>;
+  dns: Record<string, ProxyParamValue>;
+  inbounds: Record<string, ProxyParamValue>[];
+  route: Record<string, ProxyParamValue>;
+  experimental: Record<string, ProxyParamValue>;
+  migrationIssues: ConfigDiagnostic[];
 }

@@ -16,7 +16,7 @@ export function planRuleSetOutputs(ruleSets: RuleSetConfig, enabledOnly = true):
 
   const plans = new Map<string, PlannedRuleSetOutput>();
   for (const { output } of outputs) {
-    const policy = output.policy.trim() || "Proxy";
+    const policy = output.policy.trim();
     const existing = plans.get(policy);
     if (!existing) {
       plans.set(policy, {

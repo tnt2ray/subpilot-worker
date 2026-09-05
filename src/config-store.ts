@@ -1,13 +1,16 @@
+import { configDocument, defaultConfigDocument, migrateConfigDocument, normalizeConfigDocument, renderConfig, OUTPUT_TARGETS } from "./config-document";
+import { ruleSetEnv } from "./rule-set-scope";
+import type { AppConfig } from "./types";
 import { DEFAULT_CONFIG } from "./default-config";
-import { CONFIG_SCHEMA_VERSION_KEY, CURRENT_KV_SCHEMA_VERSION, ensureKvSchema } from "./config-schema";
+import { CONFIG_SCHEMA_VERSION_KEY, CURRENT_KV_SCHEMA_VERSION } from "./config-schema";
 import { normalizeChain, normalizeClash, normalizeConfig, normalizeRuleSets, normalizeStash, normalizeSurge } from "./config-normalize";
 import { decryptJson, decryptText, encryptJson, unsealSources } from "./crypto-store";
 import { listKvKeys } from "./kv-helpers";
-import { pruneRuleSetCaches } from "./rule-set-cache";
+import { pruneRuleSetCaches, pruneCompiledRuleSetCaches } from "./rule-set-cache";
 import type { RuleSetConfig, RuleSetDirectRule, RuleSetOutput, RuleSetSource } from "./rule-set-types";
 import { getSecret, requireSecret } from "./secrets";
 import { pruneSourceCache } from "./source-cache";
-import type { AppConfig, SourceConfig, StaticProxyNodeConfig } from "./types";
+import type { RenderConfig, SourceConfig, StaticProxyNodeConfig } from "./types";
 import { base64Url, mapWithConcurrency, randomToken, sha256Hex } from "./util";
 
 export { inferManagedBaseUrl, normalizeConfig, normalizeTarget, withInferredManagedBaseUrl } from "./config-normalize";
@@ -22,7 +25,8 @@ const CONFIG_SNAPSHOT_CLEANUP_PENDING_KEY = "config:snapshot:legacyCleanupPendin
 const CONFIG_SNAPSHOT_CLEANUP_PENDING_PREFIX = `${CONFIG_SNAPSHOT_CLEANUP_PENDING_KEY}:`;
 const CONFIG_SNAPSHOT_CLEANUP_COMPLETE_PREFIX = `config:snapshot:legacyCleanupComplete:${CURRENT_KV_SCHEMA_VERSION}:`;
 const CONFIG_SNAPSHOT_CLEANUP_COMPLETE_BASE_PREFIX = "config:snapshot:legacyCleanupComplete:";
-const CONFIG_SNAPSHOT_VERSION = 1;
+const CONFIG_SNAPSHOT_VERSION = 2;
+const DOCUMENT_MIGRATION_COMMITTED = "config:documentMigration:committed";
 const CONFIG_SNAPSHOT_CLEANUP_GRACE_MS = 5 * 60 * 1000;
 const CONFIG_SNAPSHOT_CLEANUP_BATCH_SIZE = 200;
 const CONFIG_SNAPSHOT_RETAINED_VALID_VERSIONS = 3;
@@ -74,13 +78,13 @@ interface ConfigSnapshotRevision {
 }
 
 interface StoredConfigSnapshotResult {
-  config: AppConfig | null;
+  config: RenderConfig | null;
   found: boolean;
   key: string | null;
 }
 
 export interface PreparedConfigSave {
-  readonly config: AppConfig;
+  readonly config: RenderConfig;
   readonly snapshotKey: string;
   readonly logicalTime: number;
 }
@@ -113,7 +117,7 @@ const SETTING_KEYS = [
   "displayTimeZone",
   "notificationChannel",
   "notificationTelegramChatId"
-] as const satisfies readonly (keyof AppConfig["settings"])[];
+] as const satisfies readonly (keyof RenderConfig["settings"])[];
 
 const SURGE_KEYS = [
   "skipProxy",
@@ -139,7 +143,7 @@ const SURGE_KEYS = [
   "scripts",
   "mitm",
   "rules",
-] as const satisfies readonly (keyof AppConfig["surge"])[];
+] as const satisfies readonly (keyof RenderConfig["surge"])[];
 
 const CLASH_KEYS = [
   "port",
@@ -166,7 +170,7 @@ const CLASH_KEYS = [
   "fakeIpFilter",
   "ruleProviders",
   "rules"
-] as const satisfies readonly (keyof AppConfig["clash"])[];
+] as const satisfies readonly (keyof RenderConfig["clash"])[];
 
 const STASH_KEYS = [
   "port",
@@ -187,24 +191,27 @@ const STASH_KEYS = [
   "urlRewrite",
   "scripts",
   "mitm"
-] as const satisfies readonly (keyof AppConfig["stash"])[];
+] as const satisfies readonly (keyof RenderConfig["stash"])[];
 
-export async function loadConfig(env: Env): Promise<AppConfig> {
+export async function loadConfig(env: Env): Promise<RenderConfig> {
   return loadConfigUnlocked(env);
 }
 
-async function loadConfigUnlocked(env: Env): Promise<AppConfig> {
-  await ensureKvSchema(env);
+async function loadConfigUnlocked(env: Env): Promise<RenderConfig> {
   const stored = await readStoredConfigSnapshot(env);
   if (stored.config) {
-    await maintainConfigCleanup(env).catch(logConfigHousekeepingFailure);
+    if (!stored.config.migrationRequired) {
+      await markDocumentCommitted(env);
+      await maintainConfigCleanup(env).catch(logConfigHousekeepingFailure);
+    }
     return stored.config;
   }
 
   const remainingLegacyKeys = await legacyConfigKeys(env);
-  if (stored.found && remainingLegacyKeys.length === 0) {
+  if (stored.found && (remainingLegacyKeys.length === 0 || await env.SUBPILOT_CONFIG.get(DOCUMENT_MIGRATION_COMMITTED) !== null)) {
     throw new Error("No valid encrypted config snapshot is available");
   }
+  if (!stored.found && remainingLegacyKeys.length === 0) return renderConfig(defaultConfigDocument());
   const legacy = await loadLegacyStoredConfig(env);
   const config = await canonicalizeConfigSources(env, legacy);
   const concurrent = await readStoredConfigSnapshot(env);
@@ -212,16 +219,15 @@ async function loadConfigUnlocked(env: Env): Promise<AppConfig> {
     await maintainConfigCleanup(env).catch(logConfigHousekeepingFailure);
     return concurrent.config;
   }
-  await migrateConfigSnapshot(env, config);
-  return config;
+  return { ...renderConfig(migrateConfigDocument(config)), migrationRequired: true };
 }
 
-export async function saveConfig(env: Env, config: AppConfig): Promise<AppConfig> {
+export async function saveConfig(env: Env, config: RenderConfig): Promise<RenderConfig> {
   return commitPreparedConfigSave(env, await prepareConfigSave(env, config));
 }
 
-export async function prepareConfigSave(env: Env, config: AppConfig): Promise<PreparedConfigSave> {
-  await ensureKvSchema(env);
+export async function prepareConfigSave(env: Env, config: RenderConfig): Promise<PreparedConfigSave> {
+  if (config.migrationRequired) throw new Error("请先导出旧配置并完成迁移。");
   // Fail before callers perform any related external side effect.
   requireSecret(env, "CONFIG_ENCRYPTION_KEY");
   const revision = nextConfigSnapshotRevision();
@@ -235,8 +241,11 @@ export async function prepareConfigSave(env: Env, config: AppConfig): Promise<Pr
   };
 }
 
-export async function commitPreparedConfigSave(env: Env, prepared: PreparedConfigSave): Promise<AppConfig> {
+export async function commitPreparedConfigSave(env: Env, prepared: PreparedConfigSave): Promise<RenderConfig> {
   await writeConfigSnapshot(env, prepared.config, prepared.snapshotKey);
+  const verified = await env.SUBPILOT_CONFIG.get(prepared.snapshotKey);
+  if (!verified || !(await tryDecryptConfigSnapshot(env, verified))) throw new Error("新配置写入校验失败，请重试。");
+  await markDocumentCommitted(env);
   await finishCommittedConfigSave(env, prepared);
   return prepared.config;
 }
@@ -244,19 +253,22 @@ export async function commitPreparedConfigSave(env: Env, prepared: PreparedConfi
 export async function recoverCommittedPreparedConfigSave(
   env: Env,
   prepared: PreparedConfigSave
-): Promise<AppConfig | null> {
+): Promise<RenderConfig | null> {
   const stored = await env.SUBPILOT_CONFIG.get(prepared.snapshotKey);
   if (stored === null) return null;
   const config = await tryDecryptConfigSnapshot(env, stored);
-  if (!config || JSON.stringify(config) !== JSON.stringify(prepared.config)) return null;
+  if (!config || JSON.stringify(configDocument(config)) !== JSON.stringify(configDocument(prepared.config))) return null;
+  await markDocumentCommitted(env);
   await finishCommittedConfigSave(env, prepared);
   return config;
 }
 
 async function finishCommittedConfigSave(env: Env, prepared: PreparedConfigSave): Promise<void> {
+  const document = configDocument(prepared.config);
   const results = await Promise.allSettled([
     pruneSourceCache(env, prepared.config),
     pruneRuleSetCaches(env, prepared.config),
+    ...OUTPUT_TARGETS.map((target) => pruneCompiledRuleSetCaches(ruleSetEnv(env, target), renderConfig(document, target))),
     pruneConfigSnapshotVersions(env, {
       key: prepared.snapshotKey,
       logicalTime: prepared.logicalTime
@@ -317,13 +329,14 @@ export async function deterministicInitialReadToken(env: Env): Promise<string> {
   return deriveReadToken(env, "subpilot:initial-read-token:v1");
 }
 
-async function writeConfigSnapshot(env: Env, config: AppConfig, key = CONFIG_SNAPSHOT_KEY): Promise<void> {
-  const snapshot: ConfigSnapshot = { version: CONFIG_SNAPSHOT_VERSION, config };
+async function writeConfigSnapshot(env: Env, config: RenderConfig, key = CONFIG_SNAPSHOT_KEY): Promise<void> {
+  const snapshot: ConfigSnapshot = { version: CONFIG_SNAPSHOT_VERSION, config: configDocument(config) };
   const encrypted = await encryptJson(requireSecret(env, "CONFIG_ENCRYPTION_KEY"), snapshot);
   await env.SUBPILOT_CONFIG.put(key, encrypted);
 }
 
 async function readStoredConfigSnapshot(env: Env): Promise<StoredConfigSnapshotResult> {
+  const allowLegacy = await env.SUBPILOT_CONFIG.get(DOCUMENT_MIGRATION_COMMITTED) === null;
   const versionedPage = await env.SUBPILOT_CONFIG.list({
     prefix: CONFIG_SNAPSHOT_VERSION_PREFIX,
     limit: CONFIG_SNAPSHOT_VERSION_LIST_LIMIT
@@ -335,7 +348,7 @@ async function readStoredConfigSnapshot(env: Env): Promise<StoredConfigSnapshotR
     const stored = await env.SUBPILOT_CONFIG.get(key);
     if (stored === null) continue;
     const config = await tryDecryptConfigSnapshot(env, stored);
-    if (config) return { config, found: true, key };
+    if (config && (allowLegacy || !config.migrationRequired)) return { config, found: true, key };
   }
 
   const fixed = await env.SUBPILOT_CONFIG.get(CONFIG_SNAPSHOT_KEY);
@@ -343,7 +356,7 @@ async function readStoredConfigSnapshot(env: Env): Promise<StoredConfigSnapshotR
     found = true;
     requireSecret(env, "CONFIG_ENCRYPTION_KEY");
     const config = await tryDecryptConfigSnapshot(env, fixed);
-    if (config) return { config, found: true, key: CONFIG_SNAPSHOT_KEY };
+    if (config && (allowLegacy || !config.migrationRequired)) return { config, found: true, key: CONFIG_SNAPSHOT_KEY };
   }
 
   const migratedKeys = (await listKvKeys(env, CONFIG_MIGRATED_SNAPSHOT_PREFIX)).sort().reverse();
@@ -355,7 +368,7 @@ async function readStoredConfigSnapshot(env: Env): Promise<StoredConfigSnapshotR
     const migrated = await env.SUBPILOT_CONFIG.get(key);
     if (migrated === null) continue;
     const config = await tryDecryptConfigSnapshot(env, migrated);
-    if (config) return { config, found: true, key };
+    if (config && (allowLegacy || !config.migrationRequired)) return { config, found: true, key };
   }
 
   const migratedFixed = await env.SUBPILOT_CONFIG.get(CONFIG_MIGRATED_SNAPSHOT_KEY);
@@ -363,12 +376,12 @@ async function readStoredConfigSnapshot(env: Env): Promise<StoredConfigSnapshotR
     found = true;
     requireSecret(env, "CONFIG_ENCRYPTION_KEY");
     const config = await tryDecryptConfigSnapshot(env, migratedFixed);
-    if (config) return { config, found: true, key: CONFIG_MIGRATED_SNAPSHOT_KEY };
+    if (config && (allowLegacy || !config.migrationRequired)) return { config, found: true, key: CONFIG_MIGRATED_SNAPSHOT_KEY };
   }
   return { config: null, found, key: null };
 }
 
-async function tryDecryptConfigSnapshot(env: Env, stored: string): Promise<AppConfig | null> {
+async function tryDecryptConfigSnapshot(env: Env, stored: string): Promise<RenderConfig | null> {
   try {
     return await decryptConfigSnapshot(env, stored);
   } catch {
@@ -376,23 +389,21 @@ async function tryDecryptConfigSnapshot(env: Env, stored: string): Promise<AppCo
   }
 }
 
-async function decryptConfigSnapshot(env: Env, stored: string): Promise<AppConfig> {
+async function decryptConfigSnapshot(env: Env, stored: string): Promise<RenderConfig> {
   const snapshot = await decryptJson<unknown>(requireSecret(env, "CONFIG_ENCRYPTION_KEY"), stored);
   if (!isConfigSnapshot(snapshot)) throw new Error("Unsupported config snapshot");
-  return canonicalizeConfigSources(env, normalizeConfig(snapshot.config));
+  const value = snapshot as { version: number; config: AppConfig | RenderConfig };
+  if (value.version === 2 && value.config.version === 2) return canonicalizeConfigSources(env, renderConfig(normalizeConfigDocument(value.config)));
+  if (value.config.version !== 1) throw new Error("Unsupported configuration document version");
+  return { ...renderConfig(migrateConfigDocument(await canonicalizeConfigSources(env, normalizeConfig(value.config as RenderConfig)))), migrationRequired: true };
 }
 
 function isConfigSnapshot(value: unknown): value is ConfigSnapshot {
   if (!value || typeof value !== "object") return false;
   const snapshot = value as Partial<ConfigSnapshot>;
-  return snapshot.version === CONFIG_SNAPSHOT_VERSION
+  return (snapshot.version === CONFIG_SNAPSHOT_VERSION || Number(snapshot.version) === 1)
     && Boolean(snapshot.config)
     && typeof snapshot.config === "object";
-}
-
-async function migrateConfigSnapshot(env: Env, config: AppConfig): Promise<void> {
-  await writeConfigSnapshot(env, config, appendOnlyConfigMigrationKey());
-  await maintainConfigCleanup(env).catch(logConfigHousekeepingFailure);
 }
 
 function nextConfigSnapshotRevision(): ConfigSnapshotRevision {
@@ -412,6 +423,10 @@ function nextConfigSnapshotRevision(): ConfigSnapshotRevision {
 }
 
 async function pruneConfigSnapshotVersions(env: Env, current: ConfigSnapshotRevision): Promise<void> {
+  const committed = Number(await env.SUBPILOT_CONFIG.get(DOCUMENT_MIGRATION_COMMITTED));
+  if (!committed || Date.now() - committed < CONFIG_SNAPSHOT_CLEANUP_GRACE_MS) return;
+  // Version 2 uses target-scoped artifacts. Retire the old shared artifacts only after migration's grace period.
+  await pruneCompiledRuleSetCaches(env, { ...DEFAULT_CONFIG, ruleSets: { ...DEFAULT_CONFIG.ruleSets, outputs: [] } });
   const page = await env.SUBPILOT_CONFIG.list({
     prefix: CONFIG_SNAPSHOT_VERSION_PREFIX,
     limit: CONFIG_SNAPSHOT_VERSION_LIST_LIMIT
@@ -470,6 +485,8 @@ function configSnapshotLogicalTimeFromKey(key: string): number {
 type CleanupState = "missing" | "pending" | "complete";
 
 async function maintainConfigCleanup(env: Env): Promise<void> {
+  if (!await env.SUBPILOT_CONFIG.get(DOCUMENT_MIGRATION_COMMITTED)) return;
+  await cleanupRetiredSnapshots(env);
   const state = await retryConfigCleanup(env);
   if (state !== "missing") return;
   if ((await legacyConfigKeys(env)).length > 0) {
@@ -520,7 +537,7 @@ async function markConfigCleanupComplete(env: Env): Promise<void> {
 
 async function legacyConfigKeys(env: Env): Promise<string[]> {
   const keys = await listKvKeys(env, "config:");
-  return keys.filter((key) => key !== CONFIG_SCHEMA_VERSION_KEY
+  return keys.filter((key) => !key.startsWith("config:documentMigration:") && key !== CONFIG_SCHEMA_VERSION_KEY
     && key !== CONFIG_SNAPSHOT_KEY
     && key !== CONFIG_MIGRATED_SNAPSHOT_KEY
     && key !== CONFIG_SNAPSHOT_CLEANUP_PENDING_KEY
@@ -528,10 +545,6 @@ async function legacyConfigKeys(env: Env): Promise<string[]> {
     && !key.startsWith(CONFIG_SNAPSHOT_VERSION_PREFIX)
     && !key.startsWith(CONFIG_SNAPSHOT_CLEANUP_PENDING_PREFIX)
     && !key.startsWith(CONFIG_SNAPSHOT_CLEANUP_COMPLETE_BASE_PREFIX));
-}
-
-function appendOnlyConfigMigrationKey(): string {
-  return `${CONFIG_MIGRATED_SNAPSHOT_PREFIX}${String(Date.now()).padStart(16, "0")}:${randomToken(8)}`;
 }
 
 function configCleanupNotBeforeFromKey(key: string): number | null {
@@ -550,7 +563,7 @@ function logConfigHousekeepingFailure(error: unknown): void {
   }));
 }
 
-async function canonicalizeConfigSources(env: Env, config: AppConfig): Promise<AppConfig> {
+async function canonicalizeConfigSources(env: Env, config: RenderConfig): Promise<RenderConfig> {
   const sources = await unsealSources(config.sources, getSecret(env, "CONFIG_ENCRYPTION_KEY"));
   return {
     ...config,
@@ -740,7 +753,7 @@ function normalizeReadTokenHash(value: unknown): string | null {
   return typeof value === "string" && /^[a-f0-9]{64}$/i.test(value) ? value.toLowerCase() : null;
 }
 
-async function loadLegacyStoredConfig(env: Env): Promise<AppConfig> {
+async function loadLegacyStoredConfig(env: Env): Promise<RenderConfig> {
   const [settings, groups, disabledGroups, sources, proxyNodes, chain, ruleSets, surge, clash, stash, updatedAt] = await Promise.all([
     loadSettings(env),
     loadGroups(env),
@@ -771,8 +784,8 @@ async function loadLegacyStoredConfig(env: Env): Promise<AppConfig> {
   });
 }
 
-async function loadSettings(env: Env): Promise<Partial<AppConfig["settings"]>> {
-  const output: Partial<AppConfig["settings"]> = {};
+async function loadSettings(env: Env): Promise<Partial<RenderConfig["settings"]>> {
+  const output: Partial<RenderConfig["settings"]> = {};
   await Promise.all(SETTING_KEYS.map(async (key) => {
     const value = await getJson<unknown>(env, `${SETTINGS_PREFIX}${key}`);
     if (value !== undefined) (output as Record<string, unknown>)[key] = value;
@@ -821,7 +834,7 @@ async function loadProxyNodes(env: Env): Promise<StaticProxyNodeConfig[]> {
   return nodes.filter((node): node is StaticProxyNodeConfig => Boolean(node));
 }
 
-async function loadChain(_env: Env): Promise<AppConfig["chain"]> {
+async function loadChain(_env: Env): Promise<RenderConfig["chain"]> {
   return normalizeChain(undefined);
 }
 
@@ -866,16 +879,16 @@ async function loadRuleSetDirectRules(env: Env): Promise<RuleSetDirectRule[]> {
   return rules.filter((rule): rule is RuleSetDirectRule => Boolean(rule));
 }
 
-async function loadSurge(env: Env): Promise<AppConfig["surge"]> {
+async function loadSurge(env: Env): Promise<RenderConfig["surge"]> {
   return loadConfigSection(env, SURGE_PREFIX, SURGE_KEYS, DEFAULT_CONFIG.surge, normalizeSurge);
 }
 
-async function loadClash(env: Env): Promise<AppConfig["clash"]> {
+async function loadClash(env: Env): Promise<RenderConfig["clash"]> {
   return loadConfigSection(env, CLASH_PREFIX, CLASH_KEYS, DEFAULT_CONFIG.clash, normalizeClash);
 }
 
 
-async function loadStash(env: Env): Promise<AppConfig["stash"]> {
+async function loadStash(env: Env): Promise<RenderConfig["stash"]> {
   return loadConfigSection(env, STASH_PREFIX, STASH_KEYS, DEFAULT_CONFIG.stash, normalizeStash);
 }
 
@@ -906,4 +919,47 @@ async function getJson<T>(env: Env, key: string): Promise<T | undefined> {
 
 function encodeKey(value: string): string {
   return encodeURIComponent(value);
+}
+
+export async function exportConfigBeforeMigration(env: Env): Promise<unknown> {
+  const committed = await env.SUBPILOT_CONFIG.get(DOCUMENT_MIGRATION_COMMITTED) !== null;
+  const candidates = await listKvKeys(env, CONFIG_SNAPSHOT_VERSION_PREFIX);
+  const fallback = [CONFIG_SNAPSHOT_KEY, ...(await listKvKeys(env, CONFIG_MIGRATED_SNAPSHOT_PREFIX)).sort().reverse(), CONFIG_MIGRATED_SNAPSHOT_KEY];
+  for (const key of [...candidates.sort(), ...fallback]) {
+    const encrypted = await env.SUBPILOT_CONFIG.get(key);
+    if (!encrypted) continue;
+    try {
+      const snapshot = await decryptJson<{ version: number; config: { version?: number } }>(requireSecret(env, "CONFIG_ENCRYPTION_KEY"), encrypted);
+      if (snapshot.config && (!committed || snapshot.config.version === 2)) return snapshot.config;
+    } catch { /* Try a retained valid revision without rewriting it. */ }
+  }
+  if (committed) throw new Error("没有可导出的有效版本 2 配置。");
+  if (!candidates.length && !(await legacyConfigKeys(env)).length) return defaultConfigDocument();
+  return loadLegacyStoredConfig(env);
+}
+
+async function markDocumentCommitted(env: Env): Promise<void> {
+  if (await env.SUBPILOT_CONFIG.get(DOCUMENT_MIGRATION_COMMITTED) === null) await env.SUBPILOT_CONFIG.put(DOCUMENT_MIGRATION_COMMITTED, String(Date.now()));
+  if (await env.SUBPILOT_CONFIG.get(CONFIG_SCHEMA_VERSION_KEY) !== String(CURRENT_KV_SCHEMA_VERSION)) await env.SUBPILOT_CONFIG.put(CONFIG_SCHEMA_VERSION_KEY, String(CURRENT_KV_SCHEMA_VERSION));
+}
+
+export async function completeDocumentMigration(env: Env, document: AppConfig): Promise<RenderConfig> {
+  const current = await loadConfig(env);
+  if (!current.migrationRequired) return current;
+  const saved = await saveConfig(env, renderConfig(normalizeConfigDocument(document)));
+  return saved;
+}
+
+async function cleanupRetiredSnapshots(env: Env): Promise<void> {
+  const committed = Number(await env.SUBPILOT_CONFIG.get(DOCUMENT_MIGRATION_COMMITTED));
+  if (!committed || Date.now() - committed < CONFIG_SNAPSHOT_CLEANUP_GRACE_MS) return;
+  const keys = [...await listKvKeys(env, CONFIG_SNAPSHOT_VERSION_PREFIX), ...await listKvKeys(env, CONFIG_MIGRATED_SNAPSHOT_PREFIX), CONFIG_SNAPSHOT_KEY, CONFIG_MIGRATED_SNAPSHOT_KEY];
+  for (const key of keys.slice(0, CONFIG_SNAPSHOT_CLEANUP_BATCH_SIZE)) {
+    const value = await env.SUBPILOT_CONFIG.get(key);
+    if (!value) continue;
+    try {
+      const snapshot = await decryptJson<{ config?: { version?: number } }>(requireSecret(env, "CONFIG_ENCRYPTION_KEY"), value);
+      if (snapshot.config?.version === 1) await env.SUBPILOT_CONFIG.delete(key);
+    } catch { /* A damaged revision is handled by regular snapshot maintenance. */ }
+  }
 }

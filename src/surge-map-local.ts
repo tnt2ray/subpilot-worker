@@ -1,9 +1,9 @@
-import type { AppConfig } from "./types";
+import type { RenderConfig } from "./types";
 
 const DATA_TYPES = new Set(["file", "text", "tiny-gif", "base64"]);
 const OPTION_PATTERN = /([A-Za-z][\w-]*)=(?:"((?:\\.|[^"])*)"|(\S+))/gy;
 
-export function validateSurgeMapLocal(config: Partial<Pick<AppConfig, "surge">>): string | null {
+export function validateSurgeMapLocal(config: Partial<Pick<RenderConfig, "surge">>): string | null {
   const lines = Array.isArray(config.surge?.mapLocal) ? config.surge.mapLocal : [];
   for (const [index, line] of lines.entries()) {
     const error = validateSurgeMapLocalLine(line, index + 1);

@@ -1,4 +1,4 @@
-import type { AppConfig } from "./types";
+import type { RenderConfig } from "./types";
 import { splitRuleLine as splitSurgeRuleLine } from "./rule-line";
 import { validateLogicalRuleExpression } from "./logical-rules";
 import {
@@ -104,8 +104,9 @@ interface TopLevelRuleSetReference {
   lineNumber: number;
 }
 
-export function validateSurgeRules(config: Partial<Pick<AppConfig, "disabledGroups" | "groups" | "surge">>): string | null {
+export function validateSurgeRules(config: Partial<Pick<RenderConfig, "disabledGroups" | "groups" | "surge">>, nodePolicies: Iterable<string> = []): string | null {
   const knownPolicies = new Set([
+    ...nodePolicies,
     ...Object.keys(config.groups || {}).filter((name) => !config.disabledGroups?.includes(name)),
     ...SURGE_BUILT_IN_RULE_POLICIES,
     ...(config.surge?.tailscaleNodes || [])
@@ -123,7 +124,7 @@ export function validateSurgeRules(config: Partial<Pick<AppConfig, "disabledGrou
 }
 
 export async function collectSurgeRuleCoverageWarnings(
-  config: Partial<Pick<AppConfig, "settings" | "surge">>,
+  config: Partial<Pick<RenderConfig, "settings" | "surge">>,
   options: SurgeRuleCoverageOptions = {}
 ): Promise<string[]> {
   const rules = Array.isArray(config.surge?.rules) ? config.surge.rules : [];
@@ -144,7 +145,7 @@ export async function collectSurgeRuleCoverageWarnings(
 }
 
 async function flattenSurgeRulesForCoverage(
-  config: Partial<Pick<AppConfig, "settings" | "surge">>,
+  config: Partial<Pick<RenderConfig, "settings" | "surge">>,
   rules: string[],
   options: SurgeRuleCoverageOptions,
   warnings: CoverageWarningCollection
@@ -173,7 +174,7 @@ function parseTopLevelRuleForCoverage(line: string, lineNumber: number): Array<C
 }
 
 async function resolveRuleSetReferences(
-  config: Partial<Pick<AppConfig, "settings" | "surge">>,
+  config: Partial<Pick<RenderConfig, "settings" | "surge">>,
   references: TopLevelRuleSetReference[],
   options: SurgeRuleCoverageOptions,
   warnings: CoverageWarningCollection
@@ -457,7 +458,7 @@ function allowedRuleOptions(type: string): Set<string> {
 function validatePolicy(policy: string, knownPolicies: Set<string>): string | null {
   const trimmed = policy.trim();
   if (!trimmed || /[\r\n,[\]]/.test(trimmed)) return "策略出口格式无效";
-  if (!knownPolicies.has(trimmed) && !isSurgeDevicePolicy(trimmed)) return "策略出口必须是已配置策略组、Tailscale 节点或 Surge 内置策略";
+  if (!knownPolicies.has(trimmed) && !isSurgeDevicePolicy(trimmed)) return "策略出口必须是可用节点、已配置策略组或 Surge 内置策略";
   return null;
 }
 

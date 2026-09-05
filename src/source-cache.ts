@@ -8,7 +8,7 @@ import {
   type SourceCacheProtocolCount
 } from "./source-cache-stats";
 import { fetchUserAgentValue } from "./source-user-agent";
-import type { AppConfig, SourceConfig } from "./types";
+import type { RenderConfig, SourceConfig } from "./types";
 import { readResponseTextWithLimit, sha256Hex } from "./util";
 import { fetchWithTimeout, waitForRetry } from "./upstream-fetch";
 
@@ -78,7 +78,7 @@ export interface SourceCacheRefreshOptions {
   deadline?: number;
 }
 
-export function sourceUserAgent(config: AppConfig, source: SourceConfig): string {
+export function sourceUserAgent(config: RenderConfig, source: SourceConfig): string {
   return fetchUserAgentValue(config, source.fetchUserAgent);
 }
 
@@ -114,7 +114,7 @@ function logSourceCacheWriteFailure(sourceId: string, error: unknown): void {
 
 export async function refreshSourceCache(
   env: Env,
-  config: AppConfig,
+  config: RenderConfig,
   options: SourceCacheRefreshOptions = {}
 ): Promise<SourceCacheRefreshResult> {
   const enabled = config.sources.filter((source) => source.enabled && source.url);
@@ -126,8 +126,8 @@ export async function refreshSourceCache(
 
 export async function refreshChangedSourceCache(
   env: Env,
-  previousConfig: AppConfig,
-  config: AppConfig,
+  previousConfig: RenderConfig,
+  config: RenderConfig,
   options: SourceCacheRefreshOptions = {}
 ): Promise<SourceCacheRefreshResult | null> {
   const changed = changedEnabledSources(previousConfig, config);
@@ -140,7 +140,7 @@ export async function refreshChangedSourceCache(
 
 async function refreshSourceCacheForSources(
   env: Env,
-  config: AppConfig,
+  config: RenderConfig,
   sourcesToRefresh: SourceConfig[],
   options: { pruneUnexpected: boolean; deadline?: number }
 ): Promise<SourceCacheRefreshResult> {
@@ -233,7 +233,7 @@ async function refreshSourceCacheForSources(
   };
 }
 
-function changedEnabledSources(previousConfig: AppConfig, config: AppConfig): SourceConfig[] {
+function changedEnabledSources(previousConfig: RenderConfig, config: RenderConfig): SourceConfig[] {
   const previousById = new Map(previousConfig.sources.map((source) => [source.id, source]));
   return config.sources.filter((source) => {
     if (!source.enabled || !source.url) return false;
@@ -245,7 +245,7 @@ function changedEnabledSources(previousConfig: AppConfig, config: AppConfig): So
   });
 }
 
-export async function pruneSourceCache(env: Env, config: AppConfig): Promise<number> {
+export async function pruneSourceCache(env: Env, config: RenderConfig): Promise<number> {
   const existing = await readSourceCacheEntries(env);
   const expectedKeys = await sourceCacheKeysForEnabledSources(config);
   const deleted = await pruneUnexpectedSourceCacheEntries(env, existing, expectedKeys);
@@ -266,7 +266,7 @@ async function migrateRetainedSourceCacheContents(env: Env, expectedKeys: Set<st
   }
 }
 
-export async function readSourceCacheStatus(env: Env, config?: AppConfig): Promise<SourceCacheStatus> {
+export async function readSourceCacheStatus(env: Env, config?: RenderConfig): Promise<SourceCacheStatus> {
   const entries = await readSourceCacheEntries(env);
   const sorted = entries.map((entry) => entry.fetchedAt).sort();
   const updatedAt = sorted.length > 0 ? sorted[sorted.length - 1]! : null;
@@ -295,7 +295,7 @@ export async function readSourceCacheStatus(env: Env, config?: AppConfig): Promi
 }
 
 async function readSourceCacheSourceStatuses(
-  config: AppConfig,
+  config: RenderConfig,
   entries: SourceCacheEntry[]
 ): Promise<SourceCacheSourceStatus[]> {
   const entriesByKey = new Map(entries.map((entry) => [entry.key, entry]));
@@ -317,7 +317,7 @@ async function readSourceCacheSourceStatuses(
   return statuses;
 }
 
-async function sourceCacheKeysForEnabledSources(config: AppConfig): Promise<Set<string>> {
+async function sourceCacheKeysForEnabledSources(config: RenderConfig): Promise<Set<string>> {
   const expectedKeys = new Set<string>();
   for (const source of config.sources) {
     if (!source.enabled || !source.url) continue;

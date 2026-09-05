@@ -1,8 +1,8 @@
-import type { AppConfig } from "./types";
+import type { RenderConfig } from "./types";
 
 const SURGE_DNS_PROTOCOLS = new Set(["https:", "h3:", "quic:", "tls:", "tcp:"]);
 
-export function validateSurgeHosts(config: Partial<Pick<AppConfig, "surge">>): string | null {
+export function validateSurgeHosts(config: Partial<Pick<RenderConfig, "surge">>): string | null {
   const hosts = Array.isArray(config.surge?.hosts) ? config.surge.hosts : [];
   return validateHostLines(hosts, "Surge Host");
 }

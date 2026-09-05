@@ -10,6 +10,7 @@ import {
   type CompiledRuleSetManifest,
   type CompiledRuleSetStatusItem,
   type RuleSetSourceCacheFailure,
+  type RuleSetSourceCacheRefreshResult,
   type RuleSetSourceFetchResult
 } from "./rule-set-cache";
 import { RULE_SET_BUCKETS, RULE_SET_TARGETS, type RuleSetBucket, type RuleSetOutput, type RuleSetOutputTarget } from "./rule-set-types";
@@ -23,7 +24,7 @@ import {
   renderRuleSetRuleForTarget
 } from "./rule-targets";
 import { effectiveRuleSetOutputs, planRuleSetOutputs } from "./rule-set-outputs";
-import type { AppConfig } from "./types";
+import type { RenderConfig } from "./types";
 import { sha256Hex } from "./util";
 
 export interface RuleSetRefreshResult {
@@ -45,6 +46,7 @@ export interface RuleSetOutputRefreshFailure {
 }
 
 export interface RuleSetRefreshOptions {
+  sourceRefresh?: RuleSetSourceCacheRefreshResult;
   /** Absolute Unix timestamp in milliseconds after which no new fetch or output compilation starts. */
   deadline?: number;
 }
@@ -54,6 +56,7 @@ export interface CompiledRuleSetReferencePlan {
   clashRuleProviders: Record<string, Record<string, unknown>>;
   clashRules: string[];
   clashRuleComments: Record<string, string>;
+  errors: string[];
   warnings: string[];
 }
 
@@ -67,13 +70,13 @@ interface CompileOptions {
 
 const FINAL_RULE_TYPES = new Set(["FINAL", "MATCH"]);
 const RULE_SET_UPDATE_INTERVAL_SECONDS = 24 * 60 * 60;
-const RULE_SET_COMPILER_REVISION = 5;
+const RULE_SET_COMPILER_REVISION = 6;
 const MAX_RULE_SET_OUTPUT_SOURCE_CHARACTERS = 8 * 1024 * 1024;
 const MAX_RULE_SET_OUTPUT_RULES = 50_000;
 
 export async function compileRuleSetOutput(
   env: Env,
-  config: AppConfig,
+  config: RenderConfig,
   output: RuleSetOutput,
   options: CompileOptions = {}
 ): Promise<{ manifest: CompiledRuleSetManifest; stale: boolean }> {
@@ -93,11 +96,11 @@ export async function compileRuleSetOutput(
     }
     const source = sourceById.get(sourceId);
     if (!source) {
-      warnings.push(`${output.name}: 规则来源 ${sourceId} 不存在。`);
+      sourceErrors.push(`${output.name}: 规则来源 ${sourceId} 不存在。`);
       continue;
     }
     if (!source.enabled || !source.url) {
-      warnings.push(`${output.name}: 规则来源 ${source.name} 已禁用或缺少 URL。`);
+      sourceErrors.push(`${output.name}: 规则来源 ${source.name} 已禁用或缺少 URL。`);
       continue;
     }
     try {
@@ -128,7 +131,7 @@ export async function compileRuleSetOutput(
         throw new Error(`${output.name}: 编译规则数量超过 ${MAX_RULE_SET_OUTPUT_RULES} 条限制`);
       }
       parsedRules.push(...parsed.rules);
-      warnings.push(...parsed.warnings);
+      sourceErrors.push(...parsed.warnings);
     } catch (error) {
       sourceErrors.push(error instanceof Error ? error.message : String(error));
     }
@@ -140,7 +143,7 @@ export async function compileRuleSetOutput(
   } else {
     parsedRules.push(...inline.rules);
   }
-  warnings.push(...inline.warnings);
+  sourceErrors.push(...inline.warnings);
 
   if (sourceErrors.length > 0) {
     const existing = options.allowStaleFallback && !refreshDeadlineExceeded(options.deadline)
@@ -220,7 +223,7 @@ export async function compileRuleSetOutput(
 
 export async function ensureCompiledRuleSet(
   env: Env,
-  config: AppConfig,
+  config: RenderConfig,
   output: RuleSetOutput
 ): Promise<CompiledRuleSetManifest> {
   const cached = await readCompiledRuleSetManifest(env, output.name);
@@ -228,10 +231,11 @@ export async function ensureCompiledRuleSet(
   return compileRuleSetOutput(env, config, output, { allowStaleFallback: true }).then((result) => result.manifest);
 }
 
-async function ruleSetOutputFingerprint(config: AppConfig, output: RuleSetOutput): Promise<string> {
+async function ruleSetOutputFingerprint(config: RenderConfig, output: RuleSetOutput): Promise<string> {
   const sources = new Map(config.ruleSets.sources.map((source) => [source.id, source]));
   return sha256Hex(JSON.stringify({
     compilerRevision: RULE_SET_COMPILER_REVISION,
+    target: config.renderTarget ?? "surge",
     policy: output.policy,
     sourceIds: output.sourceIds,
     sources: output.sourceIds.map((id) => {
@@ -245,7 +249,7 @@ async function ruleSetOutputFingerprint(config: AppConfig, output: RuleSetOutput
 
 export async function refreshRuleSetCaches(
   env: Env,
-  config: AppConfig,
+  config: RenderConfig,
   outputName?: string,
   options: RuleSetRefreshOptions = {}
 ): Promise<RuleSetRefreshResult> {
@@ -260,8 +264,8 @@ export async function refreshRuleSetCaches(
 
 export async function refreshChangedRuleSetCaches(
   env: Env,
-  previousConfig: AppConfig,
-  config: AppConfig,
+  previousConfig: RenderConfig,
+  config: RenderConfig,
   options: RuleSetRefreshOptions = {}
 ): Promise<RuleSetRefreshResult | null> {
   if (config.ruleSets.mode !== "compiled") return null;
@@ -276,13 +280,13 @@ export async function refreshChangedRuleSetCaches(
 
 async function refreshRuleSetOutputs(
   env: Env,
-  config: AppConfig,
+  config: RenderConfig,
   outputs: RuleSetOutput[],
-  sourcesToRefresh: AppConfig["ruleSets"]["sources"],
+  sourcesToRefresh: RenderConfig["ruleSets"]["sources"],
   pruneUnexpected: boolean,
   options: RuleSetRefreshOptions
 ): Promise<RuleSetRefreshResult> {
-  const sourceRefresh = await refreshRuleSetSourceCaches(env, config, sourcesToRefresh, {
+  const sourceRefresh = options.sourceRefresh ?? await refreshRuleSetSourceCaches(env, config, sourcesToRefresh, {
     pruneUnexpected,
     ...(options.deadline !== undefined ? { deadline: options.deadline } : {})
   });
@@ -350,7 +354,7 @@ function refreshDeadlineExceeded(deadline: number | undefined): boolean {
   return deadline !== undefined && Date.now() >= deadline;
 }
 
-export async function readRuleSetStatus(env: Env, config: AppConfig): Promise<CompiledRuleSetStatusItem[]> {
+export async function readRuleSetStatus(env: Env, config: RenderConfig): Promise<CompiledRuleSetStatusItem[]> {
   return Promise.all(effectiveRuleSetOutputs(config.ruleSets).map(async (output) => {
     const manifest = await readCompiledRuleSetManifest(env, output.name);
     return {
@@ -368,7 +372,7 @@ export async function readRuleSetStatus(env: Env, config: AppConfig): Promise<Co
 
 export async function buildCompiledRuleSetReferencePlan(
   env: Env,
-  config: AppConfig,
+  config: RenderConfig,
   target: RuleSetOutputTarget,
   requestUrl: string
 ): Promise<CompiledRuleSetReferencePlan> {
@@ -377,6 +381,7 @@ export async function buildCompiledRuleSetReferencePlan(
     clashRuleProviders: {},
     clashRules: [],
     clashRuleComments: {},
+    errors: [],
     warnings: []
   };
   const directRules = config.ruleSets.directRules.filter((rule) => rule.enabled);
@@ -391,16 +396,16 @@ export async function buildCompiledRuleSetReferencePlan(
   for (const item of items) {
     if (item.kind === "direct") {
       if (target !== "surge" && tailscalePolicies.has(item.rule.policy.trim())) {
-        plan.warnings.push(`${item.rule.name}: Tailscale 策略 ${item.rule.policy} 仅支持 Surge，已从 ${targetName(target)} 输出过滤。`);
+        plan.errors.push(`${item.rule.name}: Tailscale 策略 ${item.rule.policy} 仅支持 Surge，已从 ${targetName(target)} 输出过滤。`);
         continue;
       }
       if (!isRulePolicyCompatibleWithTarget(item.rule.policy, target)) {
-        plan.warnings.push(`${item.rule.name}: 策略 ${item.rule.policy} 不受 ${targetName(target)} 支持，已过滤。`);
+        plan.errors.push(`${item.rule.name}: 策略 ${item.rule.policy} 不受 ${targetName(target)} 支持，已过滤。`);
         continue;
       }
       const line = renderDirectRuleForTarget(item.rule, target);
       if (!line) {
-        plan.warnings.push(`${item.rule.name}: 规则语法不受 ${targetName(target)} 支持，已过滤。`);
+        plan.errors.push(`${item.rule.name}: 规则语法不受 ${targetName(target)} 支持，已过滤。`);
         continue;
       }
       if (!isFinalRuleLine(line) && directRuleMatchSignature(item.rule.rule) !== directRuleMatchSignature(line)) {
@@ -415,15 +420,18 @@ export async function buildCompiledRuleSetReferencePlan(
     }
     try {
       const { output, includedOutputNames } = item.outputPlan;
+      if (target !== "surge" && output.surgeOptions.some((option) => option !== "no-resolve")) throw new Error("规则输出含有不能等价转换的 Surge 专属选项。");
       if (target !== "surge" && tailscalePolicies.has(output.policy.trim())) {
-        plan.warnings.push(`${output.name}: Tailscale 策略 ${output.policy} 仅支持 Surge，已从 ${targetName(target)} 输出过滤。`);
+        plan.errors.push(`${output.name}: Tailscale 策略 ${output.policy} 仅支持 Surge，已从 ${targetName(target)} 输出过滤。`);
         continue;
       }
       if (!isRulePolicyCompatibleWithTarget(output.policy, target)) {
-        plan.warnings.push(`${output.name}: 策略 ${output.policy} 不受 ${targetName(target)} 支持，已过滤。`);
+        plan.errors.push(`${output.name}: 策略 ${output.policy} 不受 ${targetName(target)} 支持，已过滤。`);
         continue;
       }
       const manifest = await ensureCompiledRuleSet(env, config, output);
+      const compatibleCount = manifest.buckets.reduce((sum, bucket) => sum + (bucket.targetCounts?.[target] ?? 0), 0);
+      if (compatibleCount !== manifest.ruleCount) throw new Error("规则集中存在当前输出端无法等价表达的规则。");
       const surgeStart = plan.surgeRules.length;
       const clashStart = plan.clashRules.length;
       appendCompiledOutputReferences(plan, config, output, manifest, target, requestUrl);
@@ -437,7 +445,7 @@ export async function buildCompiledRuleSetReferencePlan(
       }
       plan.warnings.push(...manifest.warnings);
     } catch (error) {
-      plan.warnings.push(`${item.outputPlan.output.name}: 规则集尚未可用：${error instanceof Error ? error.message : String(error)}`);
+      plan.errors.push(`${item.outputPlan.output.name}: 规则集尚未可用：${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
@@ -452,7 +460,7 @@ function ruleSetAggregationComment(policy: string, outputNames: string[]): strin
 
 function appendCompiledOutputReferences(
   plan: CompiledRuleSetReferencePlan,
-  config: AppConfig,
+  config: RenderConfig,
   output: RuleSetOutput,
   manifest: CompiledRuleSetManifest,
   target: RuleSetOutputTarget,
@@ -565,7 +573,7 @@ function targetName(target: RuleSetOutputTarget): string {
   return target === "stash" ? "Stash" : "Clash";
 }
 
-function ruleSetSourcesForOutputs(config: AppConfig, outputs: RuleSetOutput[], outputSpecific: boolean): AppConfig["ruleSets"]["sources"] {
+function ruleSetSourcesForOutputs(config: RenderConfig, outputs: RuleSetOutput[], outputSpecific: boolean): RenderConfig["ruleSets"]["sources"] {
   if (!outputSpecific) {
     return config.ruleSets.sources.filter((source) => source.enabled && source.url);
   }
@@ -573,7 +581,7 @@ function ruleSetSourcesForOutputs(config: AppConfig, outputs: RuleSetOutput[], o
   return config.ruleSets.sources.filter((source) => source.enabled && source.url && sourceIds.has(source.id));
 }
 
-function changedRuleSetOutputs(previousConfig: AppConfig, config: AppConfig): RuleSetOutput[] {
+function changedRuleSetOutputs(previousConfig: RenderConfig, config: RenderConfig): RuleSetOutput[] {
   const outputs = effectiveRuleSetOutputs(config.ruleSets);
   if (previousConfig.ruleSets.mode !== "compiled") return outputs;
   const changedSourceIds = changedRuleSetSourceIds(previousConfig, config);
@@ -590,7 +598,7 @@ function changedRuleSetOutputs(previousConfig: AppConfig, config: AppConfig): Ru
   });
 }
 
-function changedRuleSetSourceIds(previousConfig: AppConfig, config: AppConfig): Set<string> {
+function changedRuleSetSourceIds(previousConfig: RenderConfig, config: RenderConfig): Set<string> {
   const previousById = new Map(previousConfig.ruleSets.sources.map((source) => [source.id, source]));
   const nextById = new Map(config.ruleSets.sources.map((source) => [source.id, source]));
   const ids = new Set([...previousById.keys(), ...nextById.keys()]);

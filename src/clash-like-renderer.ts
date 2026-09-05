@@ -1,20 +1,12 @@
 import YAML from "yaml";
 import { parseClashRuleProvidersYaml } from "./clash-rule-providers";
 import { parseHostEntries } from "./host-entries";
-import { managedSubscriptionUrlForRequest } from "./managed-url";
 import { beijingTimestamp } from "./output-render";
 import { toClashProxy } from "./parsers";
 import { buildClashGroups } from "./policy-groups";
-import {
-  addMissingClashRuleProviderRules,
-  configuredTailscalePolicyNames,
-  filterClashRules,
-  omitRulesTargetingPolicies,
-  rewriteUnavailableGroupRuleTargets
-} from "./rule-targets";
 import type { CompiledRuleSetReferencePlan } from "./rule-set-compiler";
 import { parseStashScriptLine } from "./stash-scripts";
-import type { AppConfig, HostEntry, HostEntryValue, ProxyNode } from "./types";
+import type { RenderConfig, HostEntry, HostEntryValue, ProxyNode } from "./types";
 
 interface ClashLikeTunConfig {
   enable: boolean;
@@ -69,7 +61,7 @@ interface StashHttpOutput {
 }
 
 export function buildClash(
-  config: AppConfig,
+  config: RenderConfig,
   nodes: ProxyNode[],
   sourceHostEntries: HostEntry[],
   ruleSetPlan?: CompiledRuleSetReferencePlan
@@ -86,7 +78,7 @@ export function buildClash(
 }
 
 export function buildStash(
-  config: AppConfig,
+  config: RenderConfig,
   nodes: ProxyNode[],
   sourceHostEntries: HostEntry[],
   requestUrl: string,
@@ -106,7 +98,7 @@ export function buildStash(
       ...(Object.keys(http.scriptProviders).length > 0 ? { "script-providers": http.scriptProviders } : {})
     }
   });
-  return `#SUBSCRIBED ${managedSubscriptionUrlForRequest(config, requestUrl)}\n# Last Updated: ${beijingTimestamp()} (UTC+8)\n${stringifyClashLikeConfig(data, ruleSetPlan?.clashRuleComments)}`;
+  return `# Last Updated: ${beijingTimestamp()} (UTC+8)\n${stringifyClashLikeConfig(data, ruleSetPlan?.clashRuleComments)}`;
 }
 
 function stringifyClashLikeConfig(data: Record<string, unknown>, comments: Record<string, string> = {}): string {
@@ -174,7 +166,7 @@ function buildClashLikeDns(config: ClashLikeDnsConfig): Record<string, unknown> 
   return dns;
 }
 
-function clashBaseConfig(config: AppConfig["clash"]): ClashLikeBaseConfig {
+function clashBaseConfig(config: RenderConfig["clash"]): ClashLikeBaseConfig {
   return {
     port: config.port,
     socksPort: config.socksPort,
@@ -203,7 +195,7 @@ function clashBaseConfig(config: AppConfig["clash"]): ClashLikeBaseConfig {
   };
 }
 
-function stashBaseConfig(config: AppConfig["stash"]): ClashLikeBaseConfig {
+function stashBaseConfig(config: RenderConfig["stash"]): ClashLikeBaseConfig {
   return {
     port: config.port,
     socksPort: config.socksPort,
@@ -233,7 +225,7 @@ function stashBaseConfig(config: AppConfig["stash"]): ClashLikeBaseConfig {
 }
 
 function buildClashLikeConfigData(
-  config: AppConfig,
+  config: RenderConfig,
   nodes: ProxyNode[],
   options: ClashLikeConfigDataOptions
 ): Record<string, unknown> {
@@ -249,19 +241,7 @@ function buildClashLikeConfigData(
   data.proxies = nodes.map(toClashProxy);
   const proxyGroups = buildClashGroups(config, nodes, options.target);
   data["proxy-groups"] = proxyGroups;
-  data.rules = addMissingClashRuleProviderRules(
-    rewriteUnavailableGroupRuleTargets(
-      config,
-      omitRulesTargetingPolicies(
-        filterClashRules(config.ruleSets.mode === "compiled" && options.ruleSetPlan ? options.ruleSetPlan.clashRules : options.rules),
-        configuredTailscalePolicyNames(config)
-      ),
-      nodes,
-      new Set(proxyGroups.map((group) => String(group.name))),
-      options.target
-    ),
-    Object.keys(ruleProviders)
-  );
+  data.rules = config.ruleSets.mode === "compiled" && options.ruleSetPlan ? options.ruleSetPlan.clashRules : options.rules;
   return data;
 }
 
@@ -283,7 +263,7 @@ function hostEntriesToStashHosts(configHostLines: string[], sourceHostEntries: H
   return hosts;
 }
 
-function buildStashHttp(config: AppConfig, warnings: string[]): StashHttpOutput {
+function buildStashHttp(config: RenderConfig, warnings: string[]): StashHttpOutput {
   const http: Record<string, unknown> = {};
   const scriptProviders: Record<string, unknown> = {};
   if (config.stash.urlRewrite.length > 0) {

@@ -1,3 +1,4 @@
+import { SINGBOX_PROTOCOLS, nativeNodeCompatibility } from "./singbox-nodes";
 import { lookupIpRegions, type RegionInfo } from "./geoip";
 import { parseConfiguredProxyNode } from "./parsers";
 import {
@@ -5,10 +6,10 @@ import {
   STASH_BUILT_IN_RULE_POLICIES,
   SURGE_BUILT_IN_RULE_POLICIES
 } from "./rule-targets";
-import { CHAIN_EXIT_PROXY_NAME, type AppConfig, type ProxyNode, type Target } from "./types";
+import { CHAIN_EXIT_PROXY_NAME, type RenderConfig, type ProxyNode, type Target } from "./types";
 
 const SHARED_PROTOCOLS = ["http", "https", "socks5", "socks5-tls", "ss", "snell", "trojan", "vmess", "hysteria2", "hy2", "tuic-v5", "anytls", "trust-tunnel", "ssh"];
-const SURGE_PROTOCOLS = new Set([...SHARED_PROTOCOLS, "tuic"]);
+const SURGE_PROTOCOLS = new Set([...SHARED_PROTOCOLS, "tuic", "h2-connect", "masque"]);
 const CLASH_PROTOCOLS = new Set([...SHARED_PROTOCOLS, "vless"]);
 const UNKNOWN_REGION_NAME = "ZZ";
 const MAX_GEOIP_LOOKUPS_PER_GENERATION = 100;
@@ -147,7 +148,7 @@ export interface FeatureTagRule {
   keywords: string[];
 }
 
-export function buildConfiguredProxyNodes(config: AppConfig): ProxyNode[] {
+export function buildConfiguredProxyNodes(config: RenderConfig): ProxyNode[] {
   const featureTagRules = parseFeatureTagRules(config.settings.featureTagRules);
   return config.proxyNodes
     .filter((node) => node.enabled)
@@ -169,13 +170,20 @@ export function buildConfiguredProxyNodes(config: AppConfig): ProxyNode[] {
 export async function applyTransforms(
   env: Env,
   nodes: ProxyNode[],
-  config: AppConfig,
+  config: RenderConfig,
   target: Target,
   warnings: string[]
 ): Promise<ProxyNode[]> {
   const filtered = nodes.filter((node) => node.manual || !config.settings.excludeKeywords.some((keyword) => node.name.includes(keyword)));
   const deduped = dedupeByFingerprint(filtered);
-  const supported = filterNodesForTarget(deduped, target);
+  const protocols = filterNodesForTarget(deduped, target);
+  const omitted = deduped.length - protocols.length;
+  if (omitted) warnings.push(`${target}: ${omitted} 个不支持的协议节点已跳过。`);
+  const supported = protocols.filter((node) => {
+    const reason = nativeNodeCompatibility(node, target);
+    if (reason) warnings.push(`${node.name}：${reason}，已跳过。`);
+    return !reason;
+  });
   return config.settings.geoipRenameEnabled
     ? await renameByNodeRegion(env, supported, config.settings.featureTagRules, warnings)
     : supported.map((node) => ({ ...node, name: prependSourceNameTag(node.name, node.sourceName) }));
@@ -207,7 +215,7 @@ export function buildChainNodes(nodes: ProxyNode[]): ProxyNode[] {
 
 export function ensureUniqueProxyPolicyNames(
   nodes: ProxyNode[],
-  config: AppConfig,
+  config: RenderConfig,
   warnings: string[],
   additionalReservedNames: Iterable<string> = []
 ): ProxyNode[] {
@@ -292,7 +300,7 @@ function filterNodesForTarget(nodes: ProxyNode[], target: Target): ProxyNode[] {
 }
 
 export function isProxyNodeSupportedForTarget(node: Pick<ProxyNode, "type">, target: Target): boolean {
-  const supported = target === "surge" ? SURGE_PROTOCOLS : CLASH_PROTOCOLS;
+  const supported = target === "sing-box" ? SINGBOX_PROTOCOLS : target === "surge" ? SURGE_PROTOCOLS : CLASH_PROTOCOLS;
   return supported.has(node.type.toLowerCase());
 }
 
@@ -527,7 +535,8 @@ function nodeFingerprint(node: ProxyNode): string {
     node.password ?? "",
     node.uuid ?? "",
     node.cipher ?? "",
-    stableParamFingerprint(node.params)
+    stableParamFingerprint(node.params),
+    node.singbox ? stableParamFingerprint(Object.fromEntries(Object.entries(node.singbox).filter(([key]) => key !== "tag"))) : ""
   ].join("|");
 }
 
