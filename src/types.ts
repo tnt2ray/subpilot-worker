@@ -1,8 +1,7 @@
 import type { RuleSetConfig } from "./rule-set-types";
-import type { SurgeClientProfile } from "./surge-capabilities";
 
 export type Target = "surge" | "clash" | "sing-box";
-export type ClientId = "surge" | "mihomo" | "singbox";
+export type ClientId = "surge" | "clash" | "singbox";
 export type SourceFetchUserAgent = string;
 export type NotificationChannel = "off" | "telegram";
 export type SurgeIpv6VifMode = "off" | "auto" | "always";
@@ -265,7 +264,6 @@ export interface ProxyNode {
 }
 
 export interface GenerationResult {
-  surgeClient?: SurgeClientProfile;
   target: Target;
   content: string;
   contentType: string;
@@ -278,26 +276,40 @@ export interface GenerationResult {
 
 /** Persisted configuration. Format-specific fields never inherit from another client. */
 export interface AppConfig {
-  version: 2;
+  version: 3;
   settings: Omit<RenderConfig["settings"], "userAgentStash" | "userAgentShadowrocket">;
-  groups: Record<string, string>;
-  disabledGroups: string[];
-  groupTargets: Record<string, Target[]>;
   sources: SourceConfig[];
   proxyNodes: StaticProxyNodeConfig[];
   chain: ChainConfig;
-  ruleSources: RuleSetConfig["sources"];
   clients: {
     surge: SurgeConfig & ClientRuleSettings;
-    mihomo: ClashConfig & ClientRuleSettings;
+    clash: ClashConfig & ClientRuleSettings;
     singbox: SingboxConfig & ClientRuleSettings;
   };
   updatedAt?: string | undefined;
 }
 
 export interface ClientRuleSettings {
-  ruleSets: Omit<RuleSetConfig, "sources">;
+  groups: Record<string, string>;
+  disabledGroups: string[];
+  ruleSets: RuleSetConfig;
 }
+
+type SharedClientSettings<T> = Omit<T, keyof ClientRuleSettings> & { ruleSets: Omit<RuleSetConfig, "sources"> };
+export interface SharedConfigDocument extends Omit<AppConfig, "version" | "clients"> {
+  version: 2;
+  groups: Record<string, string>;
+  disabledGroups: string[];
+  groupTargets: Record<string, Target[]>;
+  ruleSources: RuleSetConfig["sources"];
+  clients: {
+    surge: SharedClientSettings<AppConfig["clients"]["surge"]>;
+    clash?: SharedClientSettings<AppConfig["clients"]["clash"]>;
+    mihomo?: SharedClientSettings<AppConfig["clients"]["clash"]>;
+    singbox: SharedClientSettings<AppConfig["clients"]["singbox"]>;
+  };
+}
+export type StoredConfigDocument = AppConfig | SharedConfigDocument;
 
 export interface ConfigDiagnostic {
   severity: "info" | "warning" | "error";
@@ -312,6 +324,7 @@ export interface SingboxConfig {
   log: Record<string, ProxyParamValue>;
   dns: Record<string, ProxyParamValue>;
   inbounds: Record<string, ProxyParamValue>[];
+  endpoints?: Record<string, ProxyParamValue>[];
   route: Record<string, ProxyParamValue>;
   experimental: Record<string, ProxyParamValue>;
   migrationIssues: ConfigDiagnostic[];

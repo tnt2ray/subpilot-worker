@@ -1,10 +1,9 @@
 import type { RuleSetDownloadBucket, RuleSetOutputTarget } from "./rule-set-types";
-import type { RenderConfig, Target } from "./types";
-import type { SurgeProfileTag } from "./surge-capabilities";
+import type { RenderConfig } from "./types";
 
 export type SyncPath = { token: string } & (
-  | { target: Target; surgeProfile?: SurgeProfileTag; ruleSet?: never }
-  | { ruleSet: RuleSetSyncPath; target?: never; surgeProfile?: never }
+  | { ruleSet?: never }
+  | { ruleSet: RuleSetSyncPath }
 );
 
 export interface RuleSetSyncPath {
@@ -34,10 +33,8 @@ export function parseSyncPath(pathname: string, managedBasePath: string): SyncPa
   const basePath = normalizeManagedBasePath(managedBasePath);
   const base = basePath === "/" ? "" : escapeRegExp(basePath);
   const tokenPattern = "([A-Za-z0-9_-]+)";
-  const surgeMatch = pathname.match(new RegExp(`^${base}/${tokenPattern}/surge/(stable|tf)/$`));
-  if (surgeMatch) return { token: surgeMatch[1]!, target: "surge", surgeProfile: surgeMatch[2] as SurgeProfileTag };
-  const targetMatch = pathname.match(new RegExp(`^${base}/${tokenPattern}/(surge|clash|sing-box)/$`));
-  if (targetMatch) return { token: targetMatch[1]!, target: targetMatch[2] as Target };
+  const mainMatch = pathname.match(new RegExp(`^${base}/${tokenPattern}/?$`));
+  if (mainMatch) return { token: mainMatch[1]! };
   const namedRuleSetMatch = pathname.match(new RegExp(`^${base}/${tokenPattern}/r/([^/]+?)\\.(list|json|yaml)$`));
   if (namedRuleSetMatch) {
     const artifactName = safeDecodePathSegment(namedRuleSetMatch[2]!);
@@ -57,20 +54,19 @@ export function managedBasePathFromConfig(config: RenderConfig, requestUrl: stri
   return normalizeManagedBasePath(managedBaseUrl(config, requestUrl).pathname);
 }
 
-export function managedSubscriptionUrl(config: RenderConfig, requestUrl: string, token: string, target: Target, surgeProfile: SurgeProfileTag = "stable"): string {
+export function managedSubscriptionUrl(config: RenderConfig, requestUrl: string, token: string): string {
   const managed = managedBaseUrl(config, requestUrl);
-  const targetPath = target === "surge" ? `surge/${surgeProfile}/` : `${target}/`;
-  managed.pathname = joinManagedRelativePath(managed.pathname, `${encodeURIComponent(token)}/${targetPath}`);
+  managed.pathname = joinManagedRelativePath(managed.pathname, `${encodeURIComponent(token)}/`);
   managed.search = "";
   managed.hash = "";
   return managed.toString();
 }
 
-export function managedSubscriptionUrlForRequest(config: RenderConfig, requestUrl: string, target: Target, surgeProfile: SurgeProfileTag = "stable"): string {
+export function managedSubscriptionUrlForRequest(config: RenderConfig, requestUrl: string): string {
   const request = new URL(requestUrl);
   const managed = managedBaseUrl(config, requestUrl);
   const token = extractSubscriptionToken(request.pathname, normalizeManagedBasePath(managed.pathname)) ?? "";
-  return managedSubscriptionUrl(config, requestUrl, token, target, surgeProfile);
+  return managedSubscriptionUrl(config, requestUrl, token);
 }
 
 export function managedRuleSetUrlForRequest(

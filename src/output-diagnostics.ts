@@ -9,12 +9,13 @@ export function collectOutputDiagnostics(config: RenderConfig, target: Target, c
   const add = (path: string, code: string, message: string) => diagnostics.push({ target, severity: "error", path, code, message });
   const nodes = new Set<string>();
   const groups = new Map<string,string[]>();
+  const surgeGroupTypes = new Map<string, string>();
   const roots = new Set<string>();
   const detours = new Map<string,string>();
   const builtins = new Set(builtInPoliciesForTarget(target));
   if (config.ruleSets.mode === "compiled") {
     const items = [...config.ruleSets.outputs.filter((item) => item.enabled), ...config.ruleSets.directRules.filter((item) => item.enabled)].sort((a,b) => a.order - b.order);
-    const finals = items.filter((item) => "rule" in item && /^(FINAL|MATCH),/i.test(item.rule));
+    const finals = items.filter((item) => "rule" in item && ["FINAL", "MATCH"].includes(splitRuleLine(item.rule)[0]?.toUpperCase() ?? ""));
     if (finals.length > 1 || !finals.length && target !== "sing-box") add("ruleSets.directRules", "final-count", "编译规则必须且只能包含一个兜底规则。");
     if (finals.length === 1 && items.at(-1) !== finals[0]) add("ruleSets.directRules", "final-order", "兜底规则必须位于最后。");
   }
@@ -70,7 +71,10 @@ export function collectOutputDiagnostics(config: RenderConfig, target: Target, c
           const tag = typeof item === "string" ? item : (item as {server?: string})?.server;
           if (tag && !dnsTags.has(tag)) add(path, "missing-dns", `DNS 解析器 ${tag} 不存在。`);
         }
-        if (key === "preferred_by" || key === "server" && (path.startsWith("clients.singbox.dns.rules") || (value as {action?: string}).action === "resolve")) {
+        if (key === "preferred_by" && path.startsWith("clients.singbox.route.rules")) {
+          for (const tag of Array.isArray(item) ? item : [item]) if (typeof tag === "string") roots.add(tag);
+        }
+        if (key === "preferred_by" && path.startsWith("clients.singbox.dns.rules") || key === "server" && (path.startsWith("clients.singbox.dns.rules") || (value as {action?: string}).action === "resolve")) {
           for (const tag of Array.isArray(item) ? item : [item]) if (typeof tag === "string" && !dnsTags.has(tag)) add(path, "missing-dns", `DNS 规则引用的 ${tag} 不存在。`);
         }
         walk(item, `${path}.${key}`);
@@ -108,6 +112,7 @@ export function collectOutputDiagnostics(config: RenderConfig, target: Target, c
       if (section === "[proxy group]" && line.includes("=")) {
         const at = line.indexOf("="); const [type,...parts] = splitGroupSpec(line.slice(at+1));
         const name = line.slice(0,at).trim();
+        surgeGroupTypes.set(name, type!);
         groups.set(name, parts.flatMap((part) => { const option = parseGroupOption(part); return type === "subnet" ? option && !["hidden", "icon-url"].includes(option.key.toLowerCase()) ? [option.value] : [] : option ? [] : [part]; }));
         const underlying = parts.map((part) => parseGroupOption(part)).find((option) => option?.key.toLowerCase() === "underlying-proxy");
         if (underlying) detours.set(name, underlying.value);
@@ -128,6 +133,7 @@ export function collectOutputDiagnostics(config: RenderConfig, target: Target, c
     if (target !== "surge" && splitGroupSpec(spec).some((part) => parseGroupOption(part)?.key.toLowerCase() === "underlying-proxy")) add(`groups.${name}`, "group-chain-unsupported", `${name} 的组级链式出口仅适用于 Surge，请将此组的适用端限制为 Surge，或配置共享链式节点。`);
     const supported = target === "sing-box" ? ["select", "url-test"] : target === "clash" ? ["select", "url-test", "fallback", "load-balance"] : ["select", "url-test", "fallback", "load-balance", "subnet", "smart"];
     if (!supported.includes(type)) diagnostics.push({ target, severity: "warning", path: `groups.${name}`, code: "group-type", message: `${name} 的 ${type} 类型不适用于当前输出端，已跳过。` });
+    if (target === "surge" && type === "url-test" && surgeGroupTypes.get(name) === "smart") diagnostics.push({ target, severity: "info", path: `groups.${name}`, code: "group-type-adapted", message: `${name} 的 url-test 已自动转换为 Surge smart；smart 使用自身测速周期，interval 不生效。` });
     if (target === "surge" && type === "url-test" && splitGroupSpec(spec).some((part) => parseGroupOption(part)?.key === "url")) diagnostics.push({ target, severity: "warning", path: `groups.${name}`, code: "group-url", message: `${name} 的组级 url 不被当前 Surge 使用，请设置 Surge 的代理测速 URL。` });
   }
   const available = new Set([...nodes, ...groups.keys(), ...builtins]);
@@ -147,9 +153,12 @@ export function collectOutputDiagnostics(config: RenderConfig, target: Target, c
         const option = parseGroupOption(part);
         const member = splitGroupSpec(original)[0] === "subnet" && option && !["hidden", "icon-url"].includes(option.key.toLowerCase()) ? option.value : !option ? part : undefined;
         if (!parseAllPolicySelector(part) && member && !available.has(member)) add(`groups.${name}`, "missing-member", `${name} 引用的 ${member} 不可用。`);
-        if (target === "surge" && splitGroupSpec(original)[0] === "smart" && member && (groups.has(member) || builtins.has(member))) add(`groups.${name}`, "smart-member", `${name} 的 smart 类型只支持代理节点成员。`);
+        else if (target === "sing-box" && !parseAllPolicySelector(part) && member && !members.includes(member)) add(`groups.${name}`, "omitted-member", `${name} 引用的 ${member} 未保留在输出策略组中。`);
       }
       if (original && splitGroupSpec(original)[0] === "subnet" && !splitGroupSpec(original).some((part) => parseGroupOption(part)?.key === "default")) add(`groups.${name}`, "missing-default", `${name} 必须显式设置 default 策略。`);
+      if (target === "surge" && surgeGroupTypes.get(name) === "smart") {
+        for (const member of members) if (groups.has(member) || builtins.has(member)) add(`groups.${name}`, "smart-member", `${name} 的 smart 类型只支持代理节点成员，不能包含 ${member}。`);
+      }
       for (const member of members) visit(member, new Set([...stack,name]));
     }
     const detour = detours.get(name); if (detour) visit(detour, new Set([...stack,name]));

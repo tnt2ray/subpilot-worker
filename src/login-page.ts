@@ -4,225 +4,95 @@ export const LOGIN_PAGE_HTML = `<!doctype html>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>SubPilot 登录</title>
+    <meta name="color-scheme" content="light">
     <style>
       :root {
-        --canvas: #faf9f5;
-        --surface-soft: #f5f0e8;
-        --surface-card: #efe9de;
-        --primary: #cc785c;
-        --primary-active: #a9583e;
-        --primary-disabled: #e6dfd8;
-        --ink: #141413;
-        --body: #3d3d3a;
-        --body-strong: #252523;
-        --muted: #6c6a64;
-        --hairline: #e6dfd8;
-        --hairline-soft: #ebe6df;
-        --error: #c64545;
-        --on-primary: #ffffff;
-        --display: "Tiempos Headline", "Cormorant Garamond", "EB Garamond", Georgia, serif;
-        --sans: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-        color: var(--body);
-        background: var(--canvas);
-        font-family: var(--sans);
-      }
-
-      * { box-sizing: border-box; }
-
-      body {
-        margin: 0;
-        min-width: 320px;
-        background: var(--canvas);
-        color: var(--body);
-        font-family: var(--sans);
+        font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC", sans-serif;
+        color: #172033;
+        background: #fff;
         font-size: 14px;
-        line-height: 1.55;
+        font-synthesis: none;
+        --blue: #2563eb;
+        --border: #dce1e9;
+        --muted: #667085;
+        --surface: #f7f8fb;
+        --danger: #c23139;
       }
-
-      button,
-      input {
-        font: inherit;
+      * { box-sizing: border-box; }
+      body {
+        margin: 0; line-height: 1.55;
+        min-height: 100vh; min-height: 100dvh;
+        display: flex; flex-direction: column;
       }
-
+      button, input { font: inherit; }
       .header {
-        min-height: 64px;
-        padding: 12px 24px;
+        flex-shrink: 0;
+        min-height: 80px;
+        padding: 20px 32px;
         display: flex;
         align-items: center;
-        color: var(--ink);
-        background: var(--canvas);
-        border-bottom: 1px solid var(--hairline);
+        background: var(--surface);
+        border-bottom: 1px solid var(--border);
       }
-
       .brand {
         display: flex;
         align-items: center;
         gap: 12px;
+        color: var(--blue);
+        font-size: 26px;
+        font-weight: 650;
       }
-
-      .mark {
-        width: 40px;
-        height: 40px;
-        border-radius: 8px;
-        display: grid;
-        place-items: center;
-        background: var(--primary);
-        color: var(--on-primary);
-        font-weight: 700;
-      }
-
-      .brand strong {
-        display: block;
-        color: var(--ink);
-        font-size: 18px;
-        font-weight: 600;
-        line-height: 1.1;
-      }
-
+      .brand svg { width: 28px; height: 28px; fill: none; stroke: currentColor; stroke-width: 2.5; }
       main {
-        width: 100%;
-        max-width: 1480px;
-        margin: 0 auto;
-        padding: 32px;
+        width: 100%; max-width: 480px; margin: 0 auto; padding: 32px 24px;
+        flex: 1; display: flex; flex-direction: column; justify-content: center;
       }
-
-      .panel {
-        max-width: 760px;
-        overflow: hidden;
-        border: 1px solid var(--hairline);
-        border-radius: 12px;
-        background: var(--surface-card);
-      }
-
-      .title {
-        min-height: 48px;
-        padding: 14px 18px;
-        border-bottom: 1px solid var(--hairline);
-        background: var(--surface-soft);
-        color: var(--ink);
-        font-size: 28px;
-        font-family: var(--display);
-        font-weight: 400;
-        letter-spacing: 0;
-        line-height: 1.2;
-      }
-
-      .row {
-        display: grid;
-        grid-template-columns: 210px minmax(0, 1fr);
-        gap: 18px;
-        padding: 18px;
-        border-bottom: 1px solid var(--hairline-soft);
-        background: var(--canvas);
-      }
-
-      label {
-        padding-top: 8px;
-        color: var(--body-strong);
-        font-weight: 600;
-      }
-
-      .field {
-        display: grid;
-        gap: 8px;
-      }
-
+      .panel { padding: 28px; border: 1px solid var(--border); border-radius: 8px; }
+      h1 { margin: 0 0 8px; font-size: 24px; font-weight: 600; line-height: 1.3; }
+      .description { margin: 0 0 28px; color: var(--muted); }
+      label { display: block; margin-bottom: 8px; font-weight: 500; }
+      .field { display: grid; gap: 8px; }
       input {
-        width: 100%;
-        min-height: 40px;
-        border: 1px solid var(--hairline);
-        border-radius: 8px;
-        background: var(--canvas);
-        color: var(--ink);
-        padding: 9px 12px;
+        width: 100%; min-width: 0; min-height: 44px;
+        padding: 10px 12px; border: 1px solid var(--border); border-radius: 6px;
+        color: inherit; background: #fff;
       }
-
-      input:focus-visible,
-      button:focus-visible {
-        border-color: var(--primary);
-        outline: 3px solid rgba(204, 120, 92, .18);
-        outline-offset: 1px;
-      }
-
-      small {
-        color: var(--muted);
-        font-size: 12px;
-        line-height: 1.45;
-      }
-
-      .actions {
-        display: flex;
-        justify-content: flex-end;
-        padding: 18px;
-        background: var(--surface-soft);
-      }
-
+      input::placeholder { color: var(--muted); }
+      :focus-visible { outline: 3px solid #93b4fd; outline-offset: 2px; }
+      .error { min-height: 20px; color: var(--danger); font-size: 13px; overflow-wrap: anywhere; }
+      .actions { margin-top: 16px; }
       button {
-        min-height: 40px;
-        border: 1px solid var(--primary);
-        border-radius: 8px;
-        padding: 0 20px;
-        background: var(--primary);
-        color: var(--on-primary);
-        cursor: pointer;
-        font-size: 14px;
-        font-weight: 500;
-        line-height: 1;
+        width: 100%; min-height: 44px; padding: 10px 16px;
+        border: 1px solid var(--blue); border-radius: 6px;
+        background: var(--blue); color: #fff; cursor: pointer;
       }
-
-      button:active {
-        border-color: var(--primary-active);
-        background: var(--primary-active);
-      }
-
-      button:disabled {
-        border-color: var(--primary-disabled);
-        background: var(--primary-disabled);
-        color: var(--muted);
-        cursor: not-allowed;
-      }
-
-      .error {
-        min-height: 18px;
-        color: var(--error);
-      }
-
-      @media (max-width: 820px) {
-        main {
-          padding: 20px 12px;
-        }
-
-        .row {
-          grid-template-columns: 1fr;
-          gap: 8px;
-          padding: 16px;
-        }
-
-        label {
-          padding-top: 0;
-        }
+      button:hover, button:active { background: #1d4ed8; border-color: #1d4ed8; }
+      button:disabled { background: #b5c8ed; border-color: #b5c8ed; cursor: not-allowed; }
+      @media (max-width: 520px) {
+        .header { min-height: 72px; padding: 18px 20px; }
+        main { padding: 24px 20px; }
+        .panel { padding: 24px 20px; }
+        input { font-size: 16px; }
       }
     </style>
   </head>
   <body>
     <header class="header">
       <div class="brand">
-        <div class="mark">SP</div>
-        <div>
-          <strong>SubPilot</strong>
-        </div>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 4-7 8 7 8m6-16 7 8-7 8"/></svg>
+        <span>SubPilot</span>
       </div>
     </header>
     <main>
-      <section class="panel">
-        <div class="title">管理员登录</div>
+      <section class="panel" aria-labelledby="loginTitle">
+        <h1 id="loginTitle">管理员登录</h1>
+        <p class="description">登录以管理订阅、规则和客户端配置。</p>
         <form id="loginForm">
           <div class="row">
             <label for="adminToken">管理令牌</label>
             <div class="field">
-              <input id="adminToken" type="password" autocomplete="current-password" placeholder="输入管理令牌" required>
-              <small>请输入管理员令牌以进入控制台。</small>
-              <small id="loginError" class="error"></small>
+              <input id="adminToken" type="password" autocomplete="current-password" placeholder="输入管理令牌" aria-describedby="loginError" required>
+              <small id="loginError" class="error" role="alert"></small>
             </div>
           </div>
           <div class="actions">

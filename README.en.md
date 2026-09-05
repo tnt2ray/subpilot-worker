@@ -2,377 +2,375 @@
 
 Language: [中文](./readme.md) | English
 
-SubPilot Worker is a subscription configuration generator on Cloudflare Workers, with encrypted configuration in Workers KV. Version 2.0 provides independent Surge, mihomo, and sing-box configurations sharing subscription sources, proxy nodes, policy groups, and rule sources.
+Generate independent Surge, clash, and sing-box configurations from shared resources. SubPilot runs on Cloudflare Workers, stores encrypted configuration in Workers KV, and provides a browser admin UI.
 
-This repository is safe to use publicly: it does not store production KV namespace IDs, production domains, admin tokens, subscription source URLs, chain exit passwords, MITM CAs, or other personal runtime data. Keep your own production deployment details in the local untracked `wrangler.jsonc`, Cloudflare Worker Secrets, and Workers KV.
+[Overview](#overview) · [Deployment](#deployment) · [First use](#first-use) · [Subscription URLs](#subscription-urls) · [Configuration](#configuration) · [Updates and migration](#updates-and-migration) · [Cache and operational limits](#cache-and-operational-limits) · [Telegram and GeoIP](#telegram-and-geoip) · [Security and data](#security-and-data) · [Local development](#local-development) · [License](#license)
 
-## License
+## Overview
 
-SubPilot Worker is licensed under the [GNU Affero General Public License v3.0 or later](./LICENSE). If you run a modified version of the service over a network, you must also provide the corresponding source code as required by the AGPL.
+Subscription sources, manual nodes, and chain exits are shared. Policy groups, disabled states, and rule sources belong to each client. Network, DNS, routing, and advanced settings are independent for each client. Subscription generation validates the selected client configuration and blocks output when conversion would lose critical behavior.
 
-Third-party dependencies and bundled code keep their original licenses. Upstream subscriptions, rule sets, GeoIP MMDB files, client-provided resources, and other external data configured or uploaded by users are not licensed by this project. Check their source and license before use.
+| Capability | Surge | clash | sing-box |
+| --- | --- | --- | --- |
+| Output | `.conf` | Clash-compatible `.yaml` | Native JSON for **1.14.0** |
+| Nodes and groups | Supported protocols and group types | Supported protocols and group types | Native outbounds, `selector` / `urltest`, endpoint references |
+| Native routing | Surge rule text | `rules` + `rule-providers` | JSON `route` |
+| Compiled rule sources | `.list` | `.yaml` | JSON source `.json` |
+| Network and DNS | Surge settings | clash settings | Native inbounds and DNS |
+| Rewrite / Map Local / MITM / scripts | Retained | Omitted | Omitted |
+| Ponte / Surge Tailscale | Supported Surge fields | Omitted | Not automatically converted |
 
-## Features
+The admin UI provides migration issue resolution, a universal subscription link, token rotation, cache refresh, GeoIP renaming, and Telegram notifications. Version 2 retires Stash and Shadowrocket output. See [architecture and ablation decisions](./docs/architecture.md) and the [UI design specification](./docs/ui-design.md) for design details.
 
-- Independent network, DNS, routing, and advanced settings for all three clients. Switching clients preserves the other clients' settings.
-- Shared subscription sources, manual nodes, chain exits, policy groups, and rule sources. Each source can specify its fetch User-Agent.
-- Full sing-box JSON output targeting **1.14.0**. Node input accepts JSON `outbounds`, a node array, or a single outbound object. DNS, routes, and groups from input files are not imported as a complete client configuration.
-- Target-specific protocol and group support. Unsupported nodes and ordinary extras are skipped with diagnostics. Missing policies, dependency cycles, incompatible critical rules, and referenced empty groups block downloads for that target.
-- Native rules or shared-source compilation selected independently per client. Source bodies are cached once; compiled artifacts are isolated by target.
-- A gray, white, and blue admin UI with network/TUN, DNS, routing, and advanced tabs, structured editors, native text/JSON, draft previews, and diagnostics.
-- Dedicated subscription links for each client, token rotation, cache refresh, GeoIP renaming, and Telegram notifications.
-- Export and confirm before migrating old configuration. Surge and mihomo retain their settings; sing-box is initialized once from Surge. Stash and Shadowrocket output is retired.
+The overview lists recent subscription requests newest first, with the request date and time in the configured display time zone. Each page shows 10 requests, with pagination for the latest 50. Reloading the page returns to the first page. The overview retains the application version display; the Refresh status and Check updates buttons have been removed.
 
-See [architecture and ablation decisions](./docs/architecture.md) and the [UI design specification](./docs/ui-design.md).
+Subscription cache appears before recent subscription requests and shows cached source coverage, total nodes, the last update time, and each source's cache status and protocol counts. **Force refresh** fetches saved, enabled sources again and prevents duplicate submissions while running. Failures show the reason and whether previous cached content was retained.
 
-## Security Model
+## Deployment
 
-- The admin token is not written into code and is not stored in KV as plaintext.
-- Production login validation only reads the Worker Secret `ADMIN_TOKEN_HASH`, which is the SHA-256 hex value of the admin token.
-- `CONFIG_ENCRYPTION_KEY` must be stored as a Worker Secret. It encrypts complete configuration snapshots, subscription-source and rule-source cache bodies, compiled rule bodies, and the recoverable subscription read token.
-- Old configuration remains intact until an administrator exports it and confirms migration. Cleanup starts only after the new encrypted snapshot is written and read back successfully. Cache encryption still migrates on demand. Preserve the existing `CONFIG_ENCRYPTION_KEY`.
-- Admin sessions are HttpOnly signed cookies. The app does not create `session:*` KV keys.
-- `wrangler.jsonc` is excluded by `.gitignore` and should hold your personal Worker name, KV namespace ID, and custom domain settings.
+### Prerequisites
 
-## Quick Deployment
-
-Prerequisites:
-
-- A Cloudflare account.
-- Node.js and npm installed locally.
-- Wrangler installed globally and logged in:
+You need a Cloudflare account, Git or a release archive, Node.js/npm, and a globally installed Wrangler authenticated to the intended account. Install Wrangler only if it is missing:
 
 ```bash
 npm install -g wrangler
 wrangler login
 ```
 
-Clone and deploy:
+### Recommended setup
+
+Obtain the source and install runtime dependencies:
 
 ```bash
 git clone https://github.com/tnt2ray/subpilot-worker.git
 cd subpilot-worker
 npm install --omit=dev
+```
+
+Alternatively, extract `subpilot-worker-vX.Y.Z.tar.gz` from [GitHub Releases](https://github.com/tnt2ray/subpilot-worker/releases), enter its directory, and run `npm install --omit=dev`.
+
+**The following command creates or configures Cloudflare resources and deploys the Worker and admin UI:**
+
+```bash
 npm run setup
 ```
 
-You can also download `subpilot-worker-vX.Y.Z.tar.gz` from GitHub Releases, extract it, enter the directory, and run:
+On a new installation, setup creates local `wrangler.jsonc`, creates or reuses the `SUBPILOT_CONFIG` KV namespace, and asks for the source refresh interval (1–24 hours, default 12) and an admin token of at least 24 characters. It hashes the token, generates an encryption key, and deploys with the required Worker Secrets through a temporary secrets file that is removed afterward. Keep the admin token in a password manager.
 
-```bash
-npm install --omit=dev
-npm run setup
-```
+If `wrangler.jsonc` already exists, setup reuses it and skips Secret writes by default. Do not copy the template before using the recommended setup; template copying belongs to the manual steps below. `npm run setup -- --force-secrets` also deploys and replaces both Secrets; use it only for an intentional reset or planned rotation. **Preserve the existing `CONFIG_ENCRYPTION_KEY` when reusing encrypted KV data.**
 
-`npm run setup` will:
+<details>
+<summary>Automation environment variables</summary>
 
-1. Generate a local `wrangler.jsonc` from `wrangler.example.jsonc`.
-2. Create or write the `SUBPILOT_CONFIG` KV namespace.
-3. Ask for the upstream subscription auto-fetch interval (1–24 hours), defaulting to 12 hours.
-4. Ask for an admin token of at least 24 characters and generate the configuration encryption key.
-5. Deploy the Worker and static admin UI with both required Secrets through `wrangler deploy --secrets-file`. The temporary secrets file is removed even if Wrangler fails.
+Pass these through your environment or secret manager when running `npm run setup`. Setup still deploys by default.
 
-The script converts the admin token you enter into a SHA-256 hash and writes that hash to `ADMIN_TOKEN_HASH`. Store the admin token in a password manager; its plaintext is not stored in the repository, KV, or Cloudflare Secrets.
+| Variable | Purpose |
+| --- | --- |
+| `SUBPILOT_WORKER_NAME` | Worker name |
+| `SUBPILOT_KV_NAMESPACE_ID` | Reuse an existing KV namespace |
+| `SUBPILOT_ADMIN_TOKEN` | Admin token; required in non-interactive mode when setup writes Secrets, at least 24 characters |
+| `SUBPILOT_CONFIG_ENCRYPTION_KEY` | Encryption key to use when writing Secrets; otherwise generated automatically |
+| `SUBPILOT_SOURCE_REFRESH_HOURS` | Source refresh interval, integer from 1 to 24 |
+| `SUBPILOT_LOGIN_RATE_LIMIT_NAMESPACE_ID` | Optional Rate Limiter namespace override, integer from 1 to 4294967295 |
 
-If a local `wrangler.jsonc` already exists, `npm run setup` reuses it and skips Secret writes by default. This avoids accidentally rotating `CONFIG_ENCRYPTION_KEY` in production and making old encrypted KV data unreadable. Use the following only when you intentionally want to replace the admin token and configuration encryption key:
+The login limit defaults to 10 attempts per minute per client IP within each Cloudflare location. Setup derives the Rate Limiter namespace ID from the Worker name; use the override if it conflicts with another limiter in the same account.
 
-```bash
-npm run setup -- --force-secrets
-```
+</details>
 
-Optional environment variables:
+<details>
+<summary>Manual deployment</summary>
 
-```bash
-SUBPILOT_WORKER_NAME=my-subpilot \
-SUBPILOT_KV_NAMESPACE_ID=<existing-kv-namespace-id> \
-SUBPILOT_ADMIN_TOKEN=<your-admin-token> \
-SUBPILOT_LOGIN_RATE_LIMIT_NAMESPACE_ID=<positive-integer> \
-SUBPILOT_SOURCE_REFRESH_HOURS=12 \
-npm run setup
-```
+1. Install runtime dependencies and copy the example configuration:
 
-In interactive mode, the script prompts for the admin token. In non-interactive mode, if Secrets need to be written, provide an admin token of at least 24 characters through `SUBPILOT_ADMIN_TOKEN`. By default, the script generates the configuration encryption key automatically and writes Worker Secrets through a temporary file.
+   ```bash
+   npm install --omit=dev
+   cp wrangler.example.jsonc wrangler.jsonc
+   ```
 
-The setup script configures login rate limiting: each client IP can make up to 10 attempts per minute within each Cloudflare location by default. The Rate Limiter namespace ID is derived deterministically from the Worker name. To avoid a namespace collision with another Rate Limiter in the same account, set `SUBPILOT_LOGIN_RATE_LIMIT_NAMESPACE_ID` to a positive integer from 1 through 4294967295.
+2. Set your Worker name in `wrangler.jsonc`. The following command creates a remote KV namespace; copy its returned `id` into `kv_namespaces[0].id`:
 
-## Manual Deployment
+   ```bash
+   wrangler kv namespace create SUBPILOT_CONFIG
+   ```
 
-If you do not use the setup script, deploy manually with these steps.
+3. Choose an admin token of at least 24 characters and calculate its SHA-256 hex value. This Bash command prompts without echoing the token:
 
-1. Install dependencies:
+   ```bash
+   read -r -s -p 'Admin token: ' SUBPILOT_SETUP_TOKEN
+   printf '\n'
+   printf '%s' "$SUBPILOT_SETUP_TOKEN" | shasum -a 256 | awk '{print $1}'
+   unset SUBPILOT_SETUP_TOKEN
+   ```
 
-```bash
-npm install --omit=dev
-```
+4. These commands write remote Worker Secrets. Supply the hash above for `ADMIN_TOKEN_HASH` and a long random string for `CONFIG_ENCRYPTION_KEY`; retain an existing encryption key when reusing KV data:
 
-2. Create local Wrangler configuration:
+   ```bash
+   wrangler secret put ADMIN_TOKEN_HASH
+   wrangler secret put CONFIG_ENCRYPTION_KEY
+   ```
 
-```bash
-cp wrangler.example.jsonc wrangler.jsonc
-```
+5. The following command deploys to the Worker configured in `wrangler.jsonc`:
 
-3. Create the KV namespace:
+   ```bash
+   wrangler deploy
+   ```
 
-```bash
-wrangler kv namespace create SUBPILOT_CONFIG
-```
+</details>
 
-Copy the namespace `id` from the output into `kv_namespaces[0].id` in `wrangler.jsonc`.
+For a custom domain, connect it to the Worker in Cloudflare or configure `routes` in local `wrangler.jsonc`. Keep that file untracked. The example configuration includes both refresh schedules described in [Cache and operational limits](#cache-and-operational-limits).
 
-4. Generate the admin token hash:
-
-```bash
-read -r -s -p 'Admin token: ' ADMIN_TOKEN
-printf '\n'
-printf '%s' "$ADMIN_TOKEN" | shasum -a 256 | awk '{print $1}'
-```
-
-5. Write Worker Secrets:
-
-```bash
-wrangler secret put ADMIN_TOKEN_HASH
-wrangler secret put CONFIG_ENCRYPTION_KEY
-```
-
-Use an admin token of at least 24 characters. Use its SHA-256 hex from step 4 for `ADMIN_TOKEN_HASH`, and use a sufficiently long random string for `CONFIG_ENCRYPTION_KEY`.
-
-6. Deploy:
-
-```bash
-wrangler deploy
-```
-
-The default `wrangler.example.jsonc` fetches upstream subscriptions every 12 hours and refreshes compiled rule sets once per day. To adjust the upstream interval, edit its entry in `triggers.crons` in `wrangler.jsonc` and deploy again. Keep `0 16 * * *` for the daily compiled rule-set task; other cron entries refresh upstream subscriptions.
-
-For a custom domain, connect the domain to the Worker in Cloudflare or add your own `routes` configuration in local `wrangler.jsonc`. Do not commit a `wrangler.jsonc` that contains real domains or namespace IDs to the public repository.
-
-## Usage
+## First use
 
 Open the deployment URL and sign in with the admin token.
 
-1. Confirm Managed Base URL (usually `https://<your-domain>/sync`) and the display time zone in **System settings**.
-2. Add upstream URLs, names, and fetch User-Agents under **Sources**; add manual nodes or chain exits under **Proxy nodes**.
-3. Set policy-group members, filters, and applicable clients under **Policy groups**.
-4. Choose Surge, mihomo, or sing-box in **Client configuration**, then edit its network, DNS, routing, and advanced settings.
-5. For compiled routing, add sources under **Rule sources** and choose their policies and order in the selected client's routing tab.
-6. Preview the draft, resolve blocking diagnostics, save, and copy a subscription URL from **Configuration links**.
+1. In **System settings**, confirm Managed Base URL (usually `https://<your-domain>/sync`) and the display time zone.
+2. In **Sources**, add upstream subscriptions and their fetch User-Agents. In **Proxy nodes**, add manual nodes and chain exits as needed. The node editor shows **Upstream node selection** only when **Chain exit** is enabled; turning it off hides the field while retaining its values. Enter one keyword per line: a case-insensitive substring match against any keyword in a node name or label selects that node; regular expressions are not supported. Only matching non-exit nodes generate chained nodes; unmatched nodes do not participate, and an empty selection generates none. The path is device → matching node → current exit node → destination.
+3. In **Policy groups**, select a client, then configure its members, filters, and options.
+4. In **Client configuration**, choose Surge, clash, or sing-box and edit its network, DNS, routing, and advanced settings.
+5. For compiled routing, select the client in **Rule sources**, add its sources, then configure policies and order in the same client’s routing tab.
+6. Review the configuration and resolve pending **Migration issues**, save, and copy the universal URL from **Configuration links**.
 
-Drafts live in the current page's memory. They survive navigation between pages and clients, but reloading or closing the page loses unsaved edits. Save writes the complete document while retaining independent client fields. Preview accepts unsaved drafts. Copy and download are enabled only for a current preview without blockers.
+To update an existing source, proxy node, rule source, or policy group, click its name or the row’s **Edit** button. Choose **Apply changes** in the dialog, then **Save configuration** at the bottom of the page to persist the changes. On narrow screens, the action column remains visible while other details scroll horizontally.
 
-Subscription URLs:
+The page header and bottom action bar remain visible. Long content scrolls within the space between them, keeping the last items clear of the action bar.
+
+Configuration export, backup downloads, and migration draft downloads have been removed. Legacy migration requires review and confirmation without downloading a backup.
+
+Drafts stay in the current page's memory while navigating between pages and clients. Reloading or closing the page loses unsaved edits. Save writes the full document while retaining independent client settings; subscription requests use saved configuration and perform compatibility validation during generation. The output preview page, related buttons, and preview API have been removed.
+
+If an older deployment shows a migration banner, follow [Updates and migration](#updates-and-migration) first.
+
+## Subscription URLs
+
+With Managed Base URL set to `https://<your-domain>/sync`, use the shared subscription address below:
+
+Surge, clash, and sing-box all use the same URL:
 
 ```text
-https://<your-domain>/sync/<read_token>/surge/
-https://<your-domain>/sync/<read_token>/surge/stable/
-https://<your-domain>/sync/<read_token>/surge/tf/
-https://<your-domain>/sync/<read_token>/clash/
-https://<your-domain>/sync/<read_token>/sing-box/
+https://<your-domain>/sync/<read_token>/
 ```
 
-Surge, mihomo, and sing-box each use a dedicated URL; the path alone determines the output format. The generic `/sync/<read_token>/` URL and legacy filename endpoints have been removed, along with User-Agent detection. Clients using an old URL need to import their dedicated link. Response filenames remain `SubPilot.conf`, `SubPilot.yaml`, and `SubPilot.json` for downloaded files only. Subscription and rule URLs reject query parameters. Stash and Shadowrocket output is no longer supported. A blocked target returns 422; sign in to inspect diagnostics.
+The server selects the output from a case-insensitive client identifier in User-Agent:
 
-Managed Base URL must contain a non-root path and cannot occupy `/api`, `/vendor`, or admin asset paths. Only the currently configured base path is active; update subscription URLs after changing it.
+| UA identifier | Output client | Download filename |
+| --- | --- | --- |
+| `Surge` | Surge | `SubPilot.conf` |
+| `clash` | clash | `SubPilot.yaml` |
+| `sing-box` or `singbox` | sing-box | `SubPilot.json` |
 
-Surge selects compatibility using the trailing `stable` / `tf` path tag. User-Agent does not determine its version or channel. `/surge/` defaults to `stable`; unknown tags are rejected. The admin offers both links and matching preview options. Downloaded Surge configurations retain the selected tag in their automatic update URL. mihomo uses `/clash/`; the client should retain this subscription URL for future updates. The old `/mihomo/` path no longer serves output. The preview API requires an explicit `target`.
+Import the universal URL in your client. Missing, unrecognized, or ambiguous client identifiers return HTTP 400. Keep the appropriate client identifier when customizing User-Agent. The subscription entry accepts an optional trailing slash.
 
-As verified on 2026-09-05, `stable` targets iOS **5.22.0** / macOS **6.9.0**; `tf` uses a verified capability snapshot for iOS build **3823** / macOS build **12250**. Tags do not detect the installed version; older clients need updating. All newly integrated features currently also ship in stable, so both profiles may emit the same features. Future TF-only features require explicit support in the selected profile. See [Surge compatibility profiles](docs/surge-compatibility.md) for sources, the capability table, and maintenance.
+Surge uses the same output behavior for iOS/macOS, stable/TestFlight, and all client versions. There are no version tags or version-based feature filters. Subscriptions use the saved Surge settings, and generated automatic update URLs always use the universal entry. See [Surge output behavior](./docs/surge-compatibility.md).
 
-## Upstream Subscription Auto-Fetch
+Dedicated client paths, tagged Surge paths, legacy filename endpoints, and Stash/Shadowrocket outputs are not available. Filenames are only used for downloads. Subscription and rule URLs reject query parameters; a blocked configuration returns HTTP 422.
 
-SubPilot periodically fetches enabled upstream subscription sources into encrypted Workers KV cache. Client subscription requests can then prefer cached upstream content. If an upstream source temporarily fails, the system tries to keep using the old cache to reduce client-side fetch failures.
+Managed Base URL must include a non-root path and cannot occupy `/api`, `/vendor`, or admin asset paths. Only its currently configured path is active. Update client subscription URLs after changing the base URL or rotating the read token.
 
-When `npm run setup` runs for the first time, it asks for the auto-fetch interval, defaulting to once every 12 hours. The interval is written to `triggers.crons` in local `wrangler.jsonc` and is executed by Cloudflare Workers Cron Triggers. For non-interactive installation, use:
+## Configuration
 
-```bash
-SUBPILOT_SOURCE_REFRESH_HOURS=6 npm run setup
-```
+### Shared resources and client settings
 
-The value must be between 1 and 24 hours. After deployment, edit `triggers.crons` in `wrangler.jsonc` and run `wrangler deploy` again to change the interval.
+Older `clients.mihomo` documents are accepted and normalized to `clients.clash` when loaded; saving writes the new key. Existing `mihomo` User-Agents remain supported. No manual KV migration is required.
 
-The admin status page shows coverage, last update time, and item details for both upstream and compiled rule-set caches, with separate force-refresh actions. Admin and Telegram notification times are converted to the display time zone configured in **System settings**, using the `yyyy-mm-dd hh:mm:ss` format; system timestamps in KV remain UTC. The Telegram bot command `/status` shows cache overview, `/recent` shows the 5 most recent configuration fetch records, and `/refresh` force-fetches upstream subscriptions while refreshing compiled rule sets asynchronously in the background; each operation sends its own result. When Telegram notifications are enabled, scheduled fetch failures send alerts.
+Document version 3 shares subscription sources, nodes, and chain settings. Each client in `clients.surge`, `clients.clash`, and `clients.singbox` owns `groups`, `disabledGroups`, and `ruleSets.sources`, alongside its network, DNS, rule plan, default policy, and advanced settings. Group names and source IDs resolve only within their owning client; shared `groupTargets` is removed. Subsequent changes to one client do not update the others.
 
-Upstream and compiled rule-set refreshes have execution deadlines. A refresh may partially succeed: successful sources and rule outputs are retained, while each failure is reported separately in status, preview, or notifications. After the deadline, SubPilot does not start new remote fetches or compilations and tries to keep using existing cache entries.
+Save APIs use the complete version 3 document; older configuration is converted on load. The User-Agent of a universal subscription request selects the output client. Migrate existing legacy configuration through the admin UI; do not write client JSON directly into KV.
 
-## Operational Limits and KV Consistency
+### Nodes and policy groups
 
-The following primary limits keep saves and generation within Cloudflare Workers request, memory, and subrequest budgets:
+- Subscription input supports the recognized Surge/Clash and proxy-link formats, including Base64 subscriptions. Native sing-box JSON accepts an object containing `outbounds`, an outbound array, or a single outbound. It imports nodes, not the input file's complete DNS, routes, or groups.
+- Manual nodes accept Surge syntax, Clash YAML/JSON with `name` and `port`, or native sing-box JSON with `tag` and `server_port`. Native SSH uses port 22 when omitted. Native fields are preserved for sing-box; conversions that cannot retain TLS, transport, or authentication options skip the node with a diagnostic.
+- Group members can use `{all}`, filters, or explicit names. Keep `Proxy`. Configure each client’s groups independently: `select` and `url-test` have equivalents across clients; `fallback` and `load-balance` apply to Surge/clash; `subnet` and `smart` are Surge only. Migrating shared groups converts Surge `url-test` to `smart`. Surge output also retains this conversion for compatibility; clash and sing-box use their own automatic-testing types. Surge smart groups require proxy-node members; built-in policies and nested groups block that output. Smart uses its own testing schedule, so `interval` has no effect.
+- sing-box groups can reference tags defined in advanced `endpoints`, preserving member order. Configure these groups in the sing-box tab. Routing `preferred_by` references outbounds or endpoints, while DNS `preferred_by` references DNS servers.
 
-| Scope | Limit |
+`hidden=true` is emitted for Surge and clash; clash requires client or dashboard support. sing-box omits it and reports a diagnostic when enabled.
+
+Surge ignores group-level `url`; use its proxy test URL setting. Snell 6 is not downgraded to clash Snell 5; automatic sing-box conversion supports Snell 4/6. See the [Surge group documentation](https://manual.nssurge.com/policy-groups/url-test.html) and [clash Snell documentation](https://wiki.metacubex.one/en/config/proxies/snell/).
+
+### Routing and compilation
+
+Each client chooses native routing or compilation from its own rule sources. Source definitions, selection, policies, order, inline content, and direct rules are independent. Identical URLs can reuse cached response bodies; generated artifacts are isolated by target. Removing a source in one client preserves cached bodies still used by another.
+
+| Routing concern | Required behavior |
 | --- | --- |
-| Configuration entities | 20 subscription sources and 40 rule outputs; rule sources have no separate count limit |
-| Individual remote input | 4 MiB per subscription source; 2 MiB per rule source |
-| Nodes and hosts | 10,000 source nodes and 20,000 host entries in aggregate; 15,000 nodes in the final output |
-| Compilation of one rule output | 8 MiB of rule-source content, counted as characters, and 50,000 rules |
-| Final client configuration | 8 MiB, counted as characters |
-| Online GeoIP completion | 100 distinct IP lookups per generation |
-| Rule coverage diagnostics | 24 external sources, 8 MiB of content, and 5,000 rules in aggregate |
+| Final policy | Surge/clash compiled plans need one final `FINAL`/`MATCH`; sing-box can instead use explicit `route.final` or a final unconditional route/reject rule. Place the final rule last. |
+| Direct final rules | `FINAL`, `MATCH`, or full rule text with optional comma whitespace are accepted. The separate policy field determines the output policy. |
+| Same-policy aggregation | Optional; merges outputs at the policy's first occurrence and can change precedence across policies. Review rule order before enabling it. |
+| Native clash providers | Add explicit `RULE-SET` references and policies in `rules`; providers only supply data. |
+| sing-box remote rule sets | Uses 1.14 `http_client`; generated JSON source files use version 4. |
 
-Complete configuration snapshots, read-token records, and compiled rule artifacts use versioned, append-only KV data: SubPilot writes a complete new version first, and readers select the newest valid version; an incomplete or corrupt new version falls back to the previous valid data. Old versions, orphaned artifacts from failed writes, and migration leftovers are cleaned up later in bounded batches to accommodate Workers KV eventual consistency. Seeing old keys briefly remain is therefore expected; external scripts should not edit or delete runtime data by assuming fixed KV key names. Configuration changes involving a Telegram webhook commit their new snapshot only after the remote operation succeeds; if the commit cannot be confirmed, SubPilot keeps the old configuration and attempts to restore the old webhook. The admin UI still serializes save requests.
+Unsupported ordinary extras or nodes are skipped with diagnostics. Missing policies or detours, dependency cycles, referenced empty groups, and incompatible critical rule semantics block that target. Renaming, disabling, or deleting resources preserves references so diagnostics can locate them. For example, legacy GEOIP data rules, Surge IN-PORT, and no-resolve semantics need suitable sing-box native rules or rule sets; they are not silently dropped or broadened.
 
-If Workers KV rejects a write or applies a write rate limit, the API returns HTTP 429. The admin UI serializes save operations. If saving fails, keep the page draft and retry later instead of repeatedly writing from several admin tabs.
+Native sing-box fields are checked against the pinned official JSON Schema. See the [sing-box rule-set documentation](https://sing-box.sagernet.org/configuration/rule-set/).
 
-## Updates
+### Advanced settings
 
-When a new version is available, read the release notes on GitHub Releases first. A normal update only requires this command in the project directory:
+Surge keeps Tailscale, Ponte, Hosts, DNS outbound following, Map Local, and scripts in its DNS/advanced settings. MITM has a dedicated **MITM certificates** tab. Simple IP Hosts can convert to sing-box; aliases, wildcard hosts, and resolver directives need manual handling.
+
+Use **Client settings → Surge → MITM certificates** to generate, import, or export a CA certificate. Generation fills in an editable CA passphrase, runs in the browser, and shows its working state. Save the configuration afterward, then update the client subscription. Expand the certificate data to view or edit it; MITM hostnames and other options are in the same tab.
+
+sing-box advanced settings expose the complete client JSON, including additional top-level fields, while shared nodes and the current client’s groups generate `outbounds`. Verify device permissions, file paths, certificates, and connectivity in the actual client after importing the subscription.
+
+## Updates and migration
+
+### Update an existing deployment
+
+Read the [release notes](https://github.com/tnt2ray/subpilot-worker/releases) first. **The following command updates local program files, installs runtime dependencies, and deploys to the Worker in local `wrangler.jsonc`:**
 
 ```bash
 npm run update
 ```
 
-If the current directory is a Git clone, the command pulls the latest code for the current branch. If the current directory came from a GitHub Releases `subpilot-worker-vX.Y.Z.tar.gz` archive, the command downloads the latest release asset with the same archive name and overlays the program files. Both paths preserve local `wrangler.jsonc`, install only dependencies needed for runtime deployment, and deploy to the configured Worker.
+For a Git clone, it requires clean tracked files and pulls the current branch with `--ff-only`. For a release-archive installation, it prefers the latest `subpilot-worker-vX.Y.Z.tar.gz`, falls back to the source archive when that attachment is absent, and replaces managed program files. Both paths preserve `wrangler.jsonc` and existing Secrets. Do not remove that file or replace `CONFIG_ENCRYPTION_KEY`: existing encrypted data depends on the same key.
 
-Updates preserve local `wrangler.jsonc`. Confirm that `triggers.crons` contains both the upstream subscription task and the compiled rule-set task:
+`npm run update -- --no-deploy` skips only the final deployment. It still updates code, dependencies, and local configuration, so it is not a read-only check.
+
+Confirm both refresh schedules are present after upgrading; see [Cache and operational limits](#cache-and-operational-limits). Scheduled version checks are disabled by default; when enabled, GitHub Releases is checked at most daily and a bound Telegram chat receives one notification for each newly detected version.
+
+### Configuration document migration
+
+**Use the universal subscription URL in every client after upgrading.** `/sync/<read_token>/` is available again; existing universal URLs continue to work if the base path and token are unchanged. Replace `/surge/`, `/clash/`, `/sing-box/`, and any `stable` / `tf` tagged URLs with the universal URL copied from the dashboard, then refresh the subscription. See [Subscription URLs](#subscription-urls).
+
+Fresh installations use document version 3; **KV schema remains 12**. Version 2 documents are split automatically on read and saved as version 3. Groups are copied according to their former target selections, retaining disabled states. Legacy shared `hidden` remains Surge-only; configure hiding independently in clash after the split; the complete rule-source list is copied to each client with IDs and references intact. Subsequent edits are independent. Reload any open admin pages after upgrading before editing. No manual KV changes or subscription URL changes are required.
+
+Version 1 deployments still require explicit migration:
+
+1. Review the migration draft. Surge and clash keep their settings and shared nodes; groups, rule sources, and plans become independent per client. sing-box is initialized once from Surge.
+2. Confirm migration. Unconvertible critical DNS/routing behavior remains flagged: sing-box downloads stay blocked until you fix the issue or explicitly mark it resolved after reviewing the omitted behavior.
+3. The Worker writes and reads back the new encrypted snapshot before scheduling legacy data cleanup after at least five minutes. After commit, reads cannot fall back to a legacy snapshot.
+
+Reviewing the migration draft does not delete legacy configuration. Confirmation checks the legacy revision fingerprint. If that revision changes, submission is blocked and the page keeps the draft in memory. Note any edits you want to retain, reload, and review migration again.
+
+<details>
+<summary>Command-line migration</summary>
+
+Supply `SUBPILOT_ADMIN_TOKEN` through your environment. Check migration status without applying:
+
+```bash
+npm run migrate -- --url "https://your-worker.example"
+```
+
+After review, this command **writes the migrated configuration to the deployment**:
+
+```bash
+npm run migrate -- --url "https://your-worker.example" --apply
+```
+
+Replace the example domain, or use `SUBPILOT_BASE_URL` to provide the URL. The script does not export configuration files; the former `--backup` option and `SUBPILOT_BACKUP_PATH` environment variable have been removed. Conversion issues remain available in the admin UI after migration.
+
+</details>
+
+## Cache and operational limits
+
+Enabled upstream subscriptions are fetched into encrypted KV cache. Requests prefer cached content; failed refreshes try to retain usable old entries. Rule-source bodies share cache, while compiled artifacts remain separate for each client. Refreshes have execution deadlines, retain successful results, and report individual failures; once the deadline is reached, no new remote fetches or compilations start.
+
+The default schedules in local `wrangler.jsonc` are:
 
 ```json
-"triggers": {
-  "crons": ["0 */12 * * *", "0 16 * * *"]
+{
+  "triggers": {
+    "crons": ["0 */12 * * *", "0 16 * * *"]
+  }
 }
 ```
 
-The first entry may keep your existing upstream refresh interval. The second entry runs the daily compiled rule-set refresh. Without it, compiled rule sets can still be refreshed manually from the status page or generated on demand, but the daily background refresh does not run. Run `wrangler deploy` after editing the file. New installations write both tasks automatically through `npm run setup`.
+The first entry refreshes subscriptions every 12 hours; keep your chosen interval if different. Keep `0 16 * * *` for daily compiled rule-set refresh. Other cron entries run upstream refreshes. Without the daily rule task, manual refresh and on-demand generation remain available. Schedule changes require a new deployment using `wrangler deploy`.
 
-**Upgrading to 2.0 requires confirmed configuration migration.** The admin UI guides you through:
+Use **Refresh subscriptions** on the status page and the rule refresh action in the selected client's routing settings. Save drafts before refreshing. Admin and Telegram times use the configured display time zone in `yyyy-mm-dd hh:mm:ss`; stored timestamps remain UTC.
 
-1. Export the complete old JSON configuration, including retired clients, and store it securely.
-2. Review Surge → sing-box diagnostics and confirm migration to document version 2 and KV schema 12.
-3. Keep existing Surge/mihomo settings and shared resources. Rule plans are copied per client. Later Surge edits do not change sing-box.
-4. Unconvertible critical DNS/routing behavior remains marked for attention. Migration can finish, but sing-box downloads stay blocked until you resolve those items or explicitly acknowledge omitting the behavior.
-5. Write and read back the new encrypted snapshot before scheduling old Stash/Shadowrocket data for cleanup after a grace period of at least five minutes. Once committed, reads cannot fall back to a legacy snapshot. Rolling back the application requires your exported old configuration.
+| Scope | Limit |
+| --- | --- |
+| Configuration request | 6 MiB |
+| Entities | 20 shared subscription sources, 500 shared manual nodes; 100 policy groups per client; no separate rule-source count limit |
+| Compiled outputs | 40 per client |
+| One remote input | 4 MiB per subscription source; 2 MiB per rule source |
+| One subscription source | 2,500 nodes and 5,000 host entries |
+| Nodes and hosts in aggregate | 10,000 source nodes and 20,000 host entries; 15,000 final nodes |
+| One compiled rule output | 8 × 1024 × 1024 input characters; 50,000 rules |
+| Final client configuration | 8 × 1024 × 1024 characters |
+| GeoIP completion | 100 distinct IP lookups per generation |
+| Rule coverage diagnostics | 24 external sources, 8 × 1024 × 1024 input characters, and 5,000 rules in aggregate |
 
-Browsing, exporting, and previewing before confirmation do not delete old configuration. Confirmation is retryable; export again if the old document changes. Fresh installations start with version 2.
+Configuration snapshots, read-token records, and compiled artifacts use complete, append-only versions. Readers select the newest valid version and can fall back when a new write is incomplete or corrupt. Workers KV is eventually consistent, so changes may take time to become visible and old versions or failed-write artifacts are cleaned up later in bounded batches. Do not edit or delete runtime data based on assumed fixed KV key names.
 
-Alternatively, run `npm run migrate -- --url <deployment-url> --backup <private-backup-path>` to export, then add `--apply` to confirm. Supply the admin token through `SUBPILOT_ADMIN_TOKEN`. The script refuses to overwrite existing backup files, so use a new backup path for the second command.
+The admin serializes saves. KV write rejection or throttling returns HTTP 429; retain the page draft and retry later instead of writing repeatedly from multiple tabs. For changes involving a Telegram webhook, the new snapshot is committed after the remote operation succeeds; if commit cannot be confirmed, SubPilot retains the old configuration and attempts to restore the old webhook.
 
-Do not delete local `wrangler.jsonc` during updates, and do not rerun commands that rotate Secrets unless that is intentional. In particular, do not accidentally replace `CONFIG_ENCRYPTION_KEY`, or encrypted configuration snapshots, subscription and rule-source caches, compiled rules, Telegram Bot Tokens, and subscription read tokens in KV will no longer decrypt. Use `npm run setup -- --force-secrets` only when you intentionally reset the whole deployment or rotate keys.
+## Telegram and GeoIP
 
-The admin status page shows the current app version and latest-version check result. The `Version update check` setting is disabled by default; when enabled, the scheduled task checks GitHub Releases at most once per day. If Telegram is bound, a new-version notification is sent once. The same latest version is not notified repeatedly. Clicking `Check updates` on the status page checks GitHub Releases immediately.
+### Telegram
 
-## Rules and Policy Groups
+1. Create a bot with `/newbot` in [BotFather](https://core.telegram.org/bots/tutorial) and securely retain its token.
+2. In **System settings**, enter the Telegram Bot Token and save. A non-empty token enables Telegram notifications and configures the webhook; clearing it disables notifications.
+3. Click **Generate binding code**. Unsaved changes must be saved first. The webhook path is `/api/telegram/webhook`, preferring the origin of Managed Base URL; unchanged webhook settings do not need re-registration.
+4. Send the displayed `/bind <code>` to the bot in the receiving conversation within 10 minutes. After success, only that chat can run bot commands.
 
-Shared resources have one definition. Network, DNS, rule selection/order, default policy, and advanced settings remain independent for each client.
+Use a personal chat or a private admin group. Groups normally need command access and permission to send messages, not bot administrator rights; keep BotFather privacy mode enabled. Channels require suitable posting permissions, typically by making the bot an administrator. For group commands, use `/status@your_bot_username` if necessary.
 
-| Feature | Surge | mihomo | sing-box 1.14.0 |
-| --- | --- | --- | --- |
-| Nodes and groups | Adapted by protocol/type | Adapted by protocol/type | `selector` / `urltest` |
-| Native routing | Surge rule text | rules + rule-providers | Native JSON route |
-| Compiled rule files | `.list` | `.yaml` | JSON source `.json` |
-| DNS and TUN | Independent Surge fields | Independent mihomo fields | Native DNS and inbounds |
-| Rewrite / Map Local / MITM / scripts | Surge features retained | Omitted | Omitted |
-| Ponte / Surge Tailscale | Surge only | Omitted | Not automatically converted |
+| Command | Result |
+| --- | --- |
+| `/status` | Subscription/cache overview and recent client fetch times |
+| `/sources` | Subscription sources and enabled state |
+| `/recent` | Five recent configuration requests, including target, location, and User-Agent |
+| `/refresh` | Force source refresh and asynchronous compiled rule refresh, with separate results |
+| `/help` | Command list |
 
-Select applicable clients for each shared group. `select` and `url-test` have equivalents across clients; `fallback` and `load-balance` apply to Surge/mihomo, while `subnet` and `smart` are Surge only. Types are never silently substituted. Groups accept `{all}`, filters, or explicit members; Proxy must remain. Referenced empty groups, missing policies or detours, and dependency cycles block output without switching to direct access. Renaming, disabling, or deleting resources preserves references for diagnostics. sing-box requires an explicit default outbound or a final unconditional route/reject rule.
+BotFather `/setcommands` can expose these commands in a menu; omit the temporary `/bind` command. Bound notifications include refresh failures and, when enabled, new-version alerts.
 
-Current Surge ignores group-level `url`; use its proxy test URL setting. Preview reports this difference. [Surge documentation](https://manual.nssurge.com/policy-groups/url-test.html)
+To change the receiving chat, click **Unbind**, generate a new code, and bind again. If the bot token changes, the old chat binding is cleared; save the new token and bind again. Clearing the token removes the old webhook. If binding fails, check the token, code expiry, Telegram API access, and chat permissions; for a leaked token, revoke it through BotFather before replacing it. See Telegram's [bot features](https://core.telegram.org/bots/features) and [FAQ](https://core.telegram.org/bots/faq).
 
-Each client chooses native routing or shared-source compilation. Compiled mode stores source selection, policy, order, inline rules, and direct rules independently. Source bodies share encrypted cache; identically named artifacts are isolated by target. Optional aggregation merges outputs with the same policy at its first occurrence, which can change precedence across policies. Review that choice before previewing. Final rules belong last. Surge/mihomo compiled plans require one FINAL/MATCH; sing-box can also use explicit `route.final`.
+### GeoIP MMDB
 
-Incompatible match semantics block that target instead of silently dropping or broadening rules. For example, sing-box does not directly consume legacy GEOIP data rules, Surge IN-PORT, or no-resolve rules; rewrite native routing or use an appropriate rule set in that client. Unknown native fields are checked against the pinned official sing-box JSON Schema. Remote sets use 1.14 `http_client`; generated JSON source files use version 4. [sing-box rule sets](https://sing-box.sagernet.org/configuration/rule-set/)
+**System settings → GeoIP MMDB** shows the current file name, database type, database version (build time), upload time, and size. Existing uploads also expose their embedded build metadata; unavailable build times are explicitly labeled.
 
-Native mihomo rule-providers supply data and need explicit RULE-SET references and policies in rules. The app does not insert Proxy rules or remove references automatically. Native Surge/mihomo previews retain rule-coverage diagnostics.
+Select a MaxMind DB Country `.mmdb` file up to **25 MiB**, then click **Upload**. The page shows transfer progress followed by server validation and saving, and prevents duplicate uploads. Success immediately updates the displayed database information. Failure shows the reason and retains the selected file for retry; **Refresh database information** checks the current state. Files upload directly as binary without Base64 conversion. Uploading a replacement invalidates old region-cache results through the database version.
 
-Native sing-box node input preserves its fields. Conversions that cannot retain TLS, transport, or authentication options skip the node with a reason. Snell 6 is never downgraded to mihomo Snell 5. Automatic sing-box conversion supports Snell 4/6; review native options for other versions. [mihomo Snell support](https://wiki.metacubex.one/en/config/proxies/snell/)
+You can select an existing file from a local client at these reference paths:
 
-Surge Tailscale, Ponte, Hosts, DNS outbound following, Map Local, MITM, and scripts remain under its advanced/DNS settings. Simple IP Hosts can be converted for sing-box; aliases, wildcard hosts, and resolver directives need manual handling. sing-box advanced settings expose the complete client JSON, including additional top-level settings; shared nodes and groups generate `outbounds`. Platform permissions, file paths, certificates, and actual connectivity still need verification on the target device.
+| Client | MMDB file path |
+| --- | --- |
+| Surge macOS | `~/Library/Application Support/com.nssurge.surge-mac/GeoLite2-Country.mmdb` |
+| Clash Verge Windows | `%APPDATA%\io.github.clash-verge-rev.clash-verge-rev\Country.mmdb` |
+| Clash Verge macOS | `~/Library/Application Support/io.github.clash-verge-rev.clash-verge-rev/Country.mmdb` |
 
-## Telegram Notifications
+Region lookup uses existing single-IP overrides first, then the uploaded database; it does not query an external geolocation service. Without a database, unknown IP nodes may lack region-based names and group matches, and recent request locations may be unknown. Use an appropriately licensed data source; client-bundled databases retain their own licensing terms.
 
-SubPilot supports two notification states: notifications off, or Telegram notifications enabled. Telegram notifications report upstream subscription and compiled rule-set refresh failures, and provide bot commands for status checks and manual refresh.
+## Security and data
 
-### Create a Telegram Bot
+- `ADMIN_TOKEN_HASH` and `CONFIG_ENCRYPTION_KEY` belong in **Cloudflare Worker Secrets**. Login checks the admin token's SHA-256 hex hash; the plaintext admin token is not stored in the repository, KV, or Worker Secrets.
+- Configuration snapshots, subscription/rule-source caches, compiled rules, and recoverable subscription read tokens are encrypted. Telegram tokens and other private configuration values are protected within the encrypted snapshot. Preserve the encryption key across updates and migration.
+- Admin sessions use signed HttpOnly cookies; they do not create `session:*` KV keys. Subscription read tokens grant configuration access and should be kept private and rotated if exposed.
+- `wrangler.jsonc` is local and untracked. Keep real Worker names, namespace IDs, domains, subscription URLs, passwords, MITM CAs, tokens, and private exports out of public source, issues, logs, and release archives. Configuration data contains private information and must not be shared publicly.
 
-1. Open the official `@BotFather` in Telegram.
-2. Send `/newbot` and follow the prompts for the bot display name.
-3. Enter a bot username. It must end with `bot`, for example `my_subpilot_bot`.
-4. BotFather returns a Bot Token, formatted like `123456:ABC-...`. Copy and store it securely.
+## Local development
 
-Do not put the Bot Token in the repository, README, issues, or public chat history. When SubPilot stores the token from the admin UI, it writes it to an encrypted Workers KV configuration key. Production decryption depends on `CONFIG_ENCRYPTION_KEY`.
+Install all dependencies with `npm install`. Use global Wrangler for development and checks:
 
-### Bot Permissions and Privacy Mode
+| Command | Purpose |
+| --- | --- |
+| `npm run dev` | Start the local Worker and admin UI |
+| `npm run typecheck` | TypeScript validation |
+| `npm run typecheck:worker` | Generate Worker types and check TypeScript |
+| `npm run verify` | Worker type checks, TypeScript, and public-content scan |
+| `npm audit` | Dependency vulnerability advisory check |
+| `npm run dry-run` | Build deployment artifacts locally without deploying |
 
-Bind the SubPilot bot to a private chat with yourself or a private group that only has admin members.
+`dry-run` uses local `wrangler.jsonc`. To check the public example instead:
 
-- Personal chat: no extra permission is needed. Open the bot conversation directly before binding.
-- Private group: add the bot to the group. SubPilot only needs command messages and the ability to send messages, so administrator permission is usually unnecessary.
-- Channel: if you need to bind a channel, the bot must receive channel posts and send messages, which usually requires adding it as a channel administrator. Personal chat or a private group is recommended because the permission boundary is clearer.
-
-BotFather `/setprivacy` should usually remain enabled. SubPilot only needs to receive `/bind`, `/status`, `/sources`, `/recent`, `/refresh`, and `/help`. With privacy mode enabled, the bot can still receive explicit commands addressed to it in groups. If you previously disabled privacy mode, Telegram may require removing and re-adding the bot to existing groups before the setting fully takes effect.
-
-### Set the Command Menu
-
-The command menu is optional, but recommended for easier command selection in Telegram clients.
-
-Send `/setcommands` to `@BotFather`, choose your SubPilot bot, and paste:
-
-```text
-status - View subscription and cache overview
-sources - View subscription source enabled state
-recent - View recent configuration fetch records
-refresh - Refresh subscription sources and compiled rule sets
-help - View command list
+```bash
+wrangler deploy --dry-run --config wrangler.example.jsonc --outdir /tmp/subpilot-dry-run
 ```
 
-Do not put `/bind` in the public command menu. `/bind <code>` is a one-time binding command temporarily generated by the SubPilot admin UI. It is valid for 10 minutes and should only be copied during binding.
+Use the matching sing-box core to validate downloaded configuration and generated rule sources:
 
-### Bind in the SubPilot Admin UI
-
-1. Confirm the Worker is deployed and the admin UI can be opened through the Workers.dev domain or your custom domain.
-2. Log in to the SubPilot admin UI and open **System settings**.
-3. Paste the Bot Token in the Telegram token field under `System settings`. A non-empty Bot Token enables Telegram notifications; clearing it disables notifications.
-4. Save the configuration, then click `Generate binding code`. SubPilot automatically registers the Telegram webhook at `/api/telegram/webhook` under the current Worker domain.
-5. Copy `/bind <code>` from the admin UI and send it to the bot in the target Telegram conversation. The target can be a personal chat, private group, or correctly authorized channel.
-6. After the bot replies `SubPilot Telegram 通知已绑定成功。`, SubPilot records that conversation's Chat ID. The admin button changes to `Unbind`.
-
-After binding succeeds, only the bound Chat ID can trigger SubPilot bot commands. Commands from other conversations are ignored.
-
-### Available Bot Commands
-
-```text
-/status  View source count, cache count, and recent Surge/clash/sing-box fetch time
-/sources View subscription source enabled state
-/recent  View recent configuration fetch records, target type, client location, and User-Agent
-/refresh Force refresh upstream subscriptions and asynchronously refresh compiled rule sets; each task replies with its own result
-/help    View command list
+```bash
+sing-box check -c SubPilot.json
+sing-box rule-set compile rules.json -o rules.srs
 ```
 
-In a group, if there are multiple bots or commands do not respond, use the username-qualified form, for example `/status@my_subpilot_bot`. SubPilot supports this standard Telegram command format.
+Schema and build checks do not replace importing the result, granting VPN permissions, and checking connectivity on the target device.
 
-### Rotate the Bot Token or Change the Receiving Chat
+## License
 
-- If the Bot Token leaks, use `/revoke` in `@BotFather` to regenerate it, then replace the Bot Token in the SubPilot admin UI and generate a new binding command.
-- To change the receiving conversation, click `Unbind` in the SubPilot admin UI, then generate a new binding command and send it to the new target conversation.
-- After the Bot Token changes, SubPilot clears the previous Chat ID binding and registers the Telegram webhook again; generate a new binding command to bind the new token. When the Bot Token is cleared and notifications are disabled, SubPilot deletes the old webhook.
+SubPilot Worker is licensed under the [GNU Affero General Public License v3.0 or later](./LICENSE). Modified versions offered over a network must provide corresponding source as required by the AGPL.
 
-### Troubleshooting
-
-- Binding command generation fails: check whether the Bot Token is complete, whether extra spaces were copied, and whether the Worker can access the Telegram API.
-- No success reply after sending `/bind <code>`: confirm the command is still within its 10-minute validity window, was sent to the correct bot conversation, and the bot is not blocked from speaking by group permissions.
-- Group commands do not respond: try sending `/status@your_bot_username`; if you changed BotFather privacy mode, remove and re-add the bot to the group.
-- Channel binding fails: prefer a personal chat or private group. If you must use a channel, confirm the bot is a channel administrator and has the required send-message permission.
-
-References: Telegram bot creation is documented in [From BotFather to Hello World](https://core.telegram.org/bots/tutorial). Privacy mode and group message behavior are covered by [Bot Features](https://core.telegram.org/bots/features) and [Bots FAQ](https://core.telegram.org/bots/faq). Command menus can be configured through BotFather or the Bot API [`setMyCommands`](https://core.telegram.org/bots/api#setmycommands).
-
-## GeoIP MMDB
-
-The admin **System settings** page provides a GeoIP MMDB upload entry. Users can upload a MaxMind DB Country `.mmdb` file up to 25 MiB. The UI sends it as raw binary without changing the workflow; no manual Base64 or other conversion is needed. After upload, IP node region detection prefers that database.
-
-If related clients are already installed locally, MMDB files may exist in these locations. Different MMDB data sources have their own license terms; directly copying, uploading, or reusing these files may violate their licenses. Check the file source and allowed usage before use.
-
-- Surge macOS: `~/Library/Application Support/com.nssurge.surge-mac/GeoLite2-Country.mmdb`
-- Clash Verge Windows: `%APPDATA%\io.github.clash-verge-rev.clash-verge-rev\Country.mmdb`
-- Clash Verge macOS: `~/Library/Application Support/io.github.clash-verge-rev.clash-verge-rev/Country.mmdb`
-
-If no MMDB is uploaded, SubPilot can only identify regions from existing single-IP records. Nodes with unknown IP addresses cannot have their country or region detected automatically. This makes the following features incomplete:
-
-- IP-address nodes cannot be reliably renamed by their real region.
-- Policy group filters that depend on region labels may miss IP-address nodes.
-- When chain nodes are matched by region, IP nodes with unknown regions are not included in the matching region filter result.
-- Client IP location in recent fetch records may show as unknown.
-
-After uploading or re-uploading an MMDB file, the system clears old region detection cache so new region results take effect as soon as possible.
-
-## Configuration preservation and local verification
-
-Version 2 documents contain shared resources and `clients.surge`, `clients.mihomo`, and `clients.singbox`; retired Stash/Shadowrocket output settings are no longer persisted. Save and preview APIs use this document. `target=mihomo` (with `clash` as an alias) selects mihomo. Convert old backups through migration; do not write client JSON directly into KV.
-
-`npm run verify` generates Worker types, checks TypeScript, and scans public files. `npm audit` checks dependency advisories. Use global Wrangler with `wrangler deploy --dry-run --config wrangler.example.jsonc --outdir /tmp/subpilot-dry-run` for a build check without deployment. AI-created or modified test code is prohibited in this repository.
-
-Use `sing-box check -c SubPilot.json` to check downloaded output and `sing-box rule-set compile rules.json -o rules.srs` for generated rule sources. Schema/core checks do not replace import, VPN permission, and connectivity verification in desktop/mobile clients.
+Third-party dependencies and bundled code retain their licenses. Upstream subscriptions, rule sets, GeoIP databases, and other external data are not licensed by this project; check the terms of their respective sources.

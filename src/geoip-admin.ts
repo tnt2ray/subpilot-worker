@@ -16,6 +16,8 @@ interface GeoIpMmdbMeta {
   size: number;
   updatedAt: string;
   storageKey: string;
+  databaseType?: string;
+  builtAt?: string;
 }
 
 export async function readGeoIpMmdbStatus(env: Env): Promise<{ uploaded: boolean } & Partial<GeoIpMmdbMeta>> {
@@ -27,7 +29,24 @@ export async function readGeoIpMmdbStatus(env: Env): Promise<{ uploaded: boolean
   const fileName = typeof meta.fileName === "string" ? meta.fileName : "";
   const size = typeof meta.size === "number" && Number.isFinite(meta.size) ? meta.size : 0;
   const updatedAt = typeof meta.updatedAt === "string" ? meta.updatedAt : "";
-  return { uploaded: true, fileName, size, updatedAt };
+  let databaseType = typeof meta.databaseType === "string" ? meta.databaseType : undefined;
+  let builtAt = typeof meta.builtAt === "string" && Number.isFinite(Date.parse(meta.builtAt)) ? meta.builtAt : undefined;
+  if (!databaseType || !builtAt) {
+    // Older uploads did not persist the database build metadata. Read it without
+    // rewriting the active database or changing its cache version.
+    const data = await env.SUBPILOT_CONFIG.get(descriptor.storageKey, "arrayBuffer");
+    if (data) {
+      try {
+        ({ databaseType, builtAt } = databaseMetadata(data));
+      } catch { /* Keep the existing upload details when metadata is unavailable. */ }
+    }
+  }
+  return { uploaded: true, fileName, size, updatedAt, ...(databaseType ? { databaseType } : {}), ...(builtAt ? { builtAt } : {}) };
+}
+
+function databaseMetadata(data: ArrayBuffer): Pick<GeoIpMmdbMeta, "databaseType" | "builtAt"> {
+  const { databaseType, buildEpoch } = createGeoIpCountryReader(data).metadata;
+  return { databaseType, ...(Number.isFinite(buildEpoch.getTime()) ? { builtAt: buildEpoch.toISOString() } : {}) };
 }
 
 export async function handleGeoIpMmdbUpload(request: Request, env: Env): Promise<Response> {
@@ -45,13 +64,15 @@ export async function handleGeoIpMmdbUpload(request: Request, env: Env): Promise
   if (body.byteLength <= 0) return badRequest("MMDB file is empty");
 
   const data = body.buffer as ArrayBuffer;
+  let metadata: Pick<GeoIpMmdbMeta, "databaseType" | "builtAt">;
   try {
-    createGeoIpCountryReader(data);
+    metadata = databaseMetadata(data);
   } catch {
     return badRequest("Invalid MMDB file");
   }
 
   const meta: GeoIpMmdbMeta = {
+    ...metadata,
     fileName: uploadedFileName(request.headers.get("x-subpilot-file-name")),
     size: body.byteLength,
     updatedAt: new Date().toISOString(),
@@ -68,7 +89,9 @@ export async function handleGeoIpMmdbUpload(request: Request, env: Env): Promise
     uploaded: true,
     fileName: meta.fileName,
     size: meta.size,
-    updatedAt: meta.updatedAt
+    updatedAt: meta.updatedAt,
+    databaseType: meta.databaseType,
+    builtAt: meta.builtAt
   });
 }
 

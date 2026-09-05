@@ -8,10 +8,14 @@ export function parseSingboxNodes(content: string, sourceId: string): ProxyNode[
   let value: unknown;
   try { value = JSON.parse(content); } catch { return []; }
   const object = record(value);
-  const entries = Array.isArray(object?.outbounds) ? object.outbounds : Array.isArray(value) ? value : object?.type ? [object] : [];
+  const outbounds = object?.outbounds;
+  const nativeDocument = Array.isArray(outbounds);
+  const entries = nativeDocument ? outbounds : Array.isArray(value) ? value : object?.type ? [object] : [];
   return entries.flatMap((entry, index): ProxyNode[] => {
     const outbound = record(entry);
     if (!outbound || typeof outbound.type !== "string" || typeof outbound.server !== "string") return [];
+    // Standalone Clash JSON is also valid YAML; let the Clash parser retain its name and port.
+    if (!nativeDocument && ("name" in outbound || "port" in outbound) && !("tag" in outbound) && !("server_port" in outbound)) return [];
     const tls = record(outbound.tls);
     const transport = record(outbound.transport);
     const type = tls?.enabled && outbound.type === "socks" ? "socks5-tls" : tls?.enabled && outbound.type === "http" ? "https" : NORMAL_TYPE[outbound.type] ?? outbound.type;
@@ -34,7 +38,7 @@ export function parseSingboxNodes(content: string, sourceId: string): ProxyNode[
     const obfs = record(outbound.obfs);
     if (obfs) { params.obfs = obfs.type ?? "salamander"; params["obfs-password"] = obfs.password ?? ""; }
     return [{ name: typeof outbound.tag === "string" && outbound.tag ? outbound.tag : `sing-box-${index + 1}`, type,
-      server: outbound.server, port: Number(outbound.server_port || 0),
+      server: outbound.server, port: outbound.server_port === undefined && outbound.type === "ssh" ? 22 : Number(outbound.server_port ?? 0),
       password: typeof (outbound.password ?? outbound.psk) === "string" ? String(outbound.password ?? outbound.psk) : undefined,
       uuid: typeof outbound.uuid === "string" ? outbound.uuid : undefined,
       cipher: typeof (outbound.method ?? outbound.security) === "string" ? String(outbound.method ?? outbound.security) : undefined,
@@ -120,7 +124,7 @@ export function toSingboxOutbound(node: ProxyNode, canonical: JsonObject): JsonO
 
 /** Reject lossy native-node conversions before a legacy renderer sees the node. */
 export function nativeNodeCompatibility(node: ProxyNode, target: Target): string | null {
-  if (target === "clash" && node.type === "snell" && Number(node.params.version ?? node.raw?.version) === 6) return "mihomo 不支持 Snell 6，未改写协议版本";
+  if (target === "clash" && node.type === "snell" && Number(node.params.version ?? node.raw?.version) === 6) return "clash 不支持 Snell 6，未改写协议版本";
   if (!node.singbox || target === "sing-box") return null;
   const native = node.singbox;
   const supported = new Set(["type", "tag", "server", "server_port", "username", "password", "uuid", "method", "security", "alter_id", "flow", "congestion_control", "up_mbps", "down_mbps", "detour", "version", "user", "psk", "userkey", "tls", "transport", "obfs"]);

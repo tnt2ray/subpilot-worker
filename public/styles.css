@@ -21,6 +21,12 @@
 }
 body {
   margin: 0;
+  padding-left: 214px;
+  height: 100vh;
+  height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 button,
 input,
@@ -118,6 +124,7 @@ a {
   display: flex;
   flex-direction: column;
   z-index: 20;
+  overflow-y: auto;
 }
 .brand {
   font-size: 26px;
@@ -167,12 +174,32 @@ nav a.active {
   justify-content: flex-start;
 }
 .workspace {
-  margin-left: 214px;
-  padding: 0 25px 98px;
-  min-height: 100vh;
+  padding: 0 25px;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+#content {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  overflow: auto;
+  padding-bottom: 24px;
+  scroll-padding-block: 16px;
+}
+#content > * {
+  min-width: 0;
+}
+#migration-banner {
+  flex-shrink: 0;
+  max-height: 35dvh;
+  overflow: auto;
 }
 .page-header {
-  height: 65px;
+  flex-shrink: 0;
+  min-height: 65px;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -214,6 +241,38 @@ p {
 .help {
   font-size: 12px;
   line-height: 1.6;
+}
+.mmdb-path-help ul {
+  padding-left: 20px;
+}
+.mmdb-upload-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-top: 20px;
+}
+.mmdb-upload-controls input {
+  min-width: 0;
+  max-width: 100%;
+}
+#mmdb-status .value,
+.mmdb-file {
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+#mmdb-transfer progress {
+  width: 100%;
+  max-width: 480px;
+  accent-color: var(--blue);
+}
+.mmdb-path-help li + li {
+  margin-top: 10px;
+}
+.mmdb-path-help code {
+  display: block;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 .small {
   font-size: 12px;
@@ -390,12 +449,74 @@ td {
   padding: 10px 12px;
   line-height: 1.5;
 }
+.request-table {
+  min-width: 680px;
+}
+.request-time {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.request-pagination {
+  flex-direction: row;
+}
+@media (max-width: 520px) {
+  .page-header {
+    flex-wrap: wrap;
+    padding-block: 10px;
+    gap: 8px;
+  }
+  .heading {
+    min-width: 0;
+    max-width: 100%;
+  }
+  .heading h1 {
+    overflow-wrap: anywhere;
+  }
+  #header-actions {
+    margin-left: auto;
+    max-width: 100%;
+  }
+  .request-pagination > span:first-child { flex-basis: 100%; }
+  .request-pagination > .spacer { display: none; }
+}
 td.actions {
   white-space: nowrap;
   width: 94px;
 }
 td.actions button {
   margin-right: 5px;
+}
+/* Keep editing reachable even when resource details need horizontal scrolling. */
+.editable-table {
+  min-width: 620px;
+}
+.editable-table .actions {
+  position: sticky;
+  right: 0;
+  z-index: 1;
+  min-width: 126px;
+  background: white;
+  box-shadow: -1px 0 var(--border);
+}
+.editable-table th.actions {
+  background: var(--surface);
+}
+.editable-table .entity-name {
+  min-width: 140px;
+  max-width: 260px;
+}
+button.entity-link {
+  display: inline;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-align: left;
+}
+button.entity-link:hover {
+  text-decoration: underline;
+}
+.edit-button {
+  gap: 5px;
+  padding-inline: 8px;
 }
 td.truncate {
   max-width: 240px;
@@ -450,17 +571,14 @@ td.truncate {
   tab-size: 2;
 }
 .save-bar {
-  position: fixed;
-  bottom: 0;
-  left: 214px;
-  right: 0;
+  flex-shrink: 0;
   min-height: 76px;
   border-top: 1px solid var(--border);
   background: #fff;
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 14px 26px;
+  padding: 14px 26px calc(14px + env(safe-area-inset-bottom, 0px));
   gap: 15px;
   z-index: 25;
 }
@@ -533,7 +651,7 @@ dialog header h2 {
   margin-right: 350px;
 }
 .drawer-open .save-bar {
-  right: 350px;
+  margin-right: 350px;
 }
 .notice {
   padding: 14px 18px;
@@ -563,6 +681,40 @@ dialog header h2 {
 .status-row .value {
   font-variant-numeric: tabular-nums;
 }
+.section > .status-row:last-child {
+  border-bottom: 0;
+}
+.cache-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+  margin: 16px 0;
+}
+.cache-summary > div {
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+}
+.cache-summary dt { color: var(--muted); }
+.cache-summary dd {
+  margin: 10px 0 0;
+  font-size: 26px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.cache-summary .cache-updated { font-size: 16px; }
+.cache-summary .cache-detail { margin: 8px 0 0; color: var(--muted); font-size: 12px; font-weight: 400; line-height: 1.7; }
+.cache-protocols { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.cache-table { min-width: 740px; }
+.cache-source-name { min-width: 150px; max-width: 280px; overflow-wrap: anywhere; }
+.chip.cache-ready { color: #166534; border-color: #b8dbc5; background: #f0faf3; white-space: nowrap; }
+.chip.cache-missing { color: #854d0e; border-color: #ead6aa; background: #fffaf2; white-space: nowrap; }
+.cache-failures { padding-left: 20px; overflow-wrap: anywhere; }
+.cache-failures li + li { margin-top: 16px; }
+@media (max-width: 760px) {
+  .cache-summary { grid-template-columns: 1fr; gap: 10px; }
+}
 .split {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -584,7 +736,7 @@ dialog header h2 {
 }
 .toast {
   position: fixed;
-  bottom: 92px;
+  top: calc(16px + env(safe-area-inset-top, 0px));
   left: 50%;
   transform: translateX(-50%);
   background: #172033;
@@ -644,7 +796,7 @@ dialog footer {
     margin-right: 0;
   }
   .drawer-open .save-bar {
-    right: 0;
+    margin-right: 0;
   }
   .form-row {
     grid-template-columns: 190px minmax(150px, 1fr);
@@ -662,20 +814,24 @@ dialog footer {
   }
 }
 @media (max-width: 760px) {
+  body {
+    padding-left: 0;
+  }
   .sidebar {
     transform: translateX(-100%);
     transition: transform .15s;
   }
   .menu-open .sidebar {
+    z-index: 30;
     transform: translateX(0);
     box-shadow: 15px 0 50px #17203333;
   }
   .workspace {
     margin-left: 0;
-    padding: 0 16px 110px;
+    padding: 0 16px;
   }
   .page-header {
-    height: 63px;
+    min-height: 63px;
   }
   h1 {
     font-size: 22px;
@@ -684,8 +840,7 @@ dialog footer {
     display: inline-flex;
   }
   .save-bar {
-    left: 0;
-    padding: 12px 16px;
+    padding: 12px 16px calc(12px + env(safe-area-inset-bottom, 0px));
     flex-wrap: wrap;
     gap: 8px;
     min-height: 80px;
@@ -744,7 +899,7 @@ dialog footer {
     max-width: 160px;
   }
   .drawer-open .save-bar {
-    right: 0;
+    margin-right: 0;
   }
   .drawer-open .workspace {
     margin-right: 0;

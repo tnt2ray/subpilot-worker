@@ -1,9 +1,9 @@
-const CLIENTS = { surge: { label: "Surge", target: "surge" }, mihomo: { label: "mihomo", target: "clash" }, singbox: { label: "sing-box", target: "sing-box" } };
-const NAV = [["status", "概览", "Overview", "grid"], ["sources", "订阅源", "Sources", "source"], ["nodes", "代理节点", "Proxy nodes", "nodes"], ["groups", "策略组", "Policy groups", "settings"], ["clients", "客户端配置", "Client settings", "settings"], ["rule-sources", "规则来源", "Rule sources", "source"], ["output", "输出预览", "Output preview", "code"], ["links", "配置链接", "Subscription links", "link"], ["system", "系统设置", "System settings", "settings"]];
+const CLIENTS = { surge: { label: "Surge", target: "surge" }, clash: { label: "clash", target: "clash" }, singbox: { label: "sing-box", target: "sing-box" } };
+const NAV = [["status", "概览", "Overview", "grid"], ["sources", "订阅源", "Sources", "source"], ["nodes", "代理节点", "Proxy nodes", "nodes"], ["groups", "策略组", "Policy groups", "settings"], ["clients", "客户端配置", "Client settings", "settings"], ["rule-sources", "规则来源", "Rule sources", "source"], ["links", "配置链接", "Subscription links", "link"], ["system", "系统设置", "System settings", "settings"]];
 const LABELS = {
   managedBaseUrl: "订阅基础 URL",
   userAgentSurge: "Surge 抓取 User-Agent",
-  userAgentClash: "mihomo 抓取 User-Agent",
+  userAgentClash: "clash 抓取 User-Agent",
   excludeKeywords: "排除关键词",
   geoipRenameEnabled: "GeoIP 节点重命名",
   featureTagRules: "节点特征标签",
@@ -99,7 +99,7 @@ const LABELS = {
   config: "节点配置（Surge / YAML / sing-box JSON）",
   chainExit: "作为链式出口",
   includeInGroups: "加入策略组",
-  chainFilter: "链式节点过滤器",
+  chainFilter: "前置节点筛选",
   filter: "筛选条件",
   policy: "策略",
   sourceIds: "规则来源 ID",
@@ -128,9 +128,10 @@ const CLIENT_SECTIONS = {
     network: ["ipv6", "ipv6Vif", "allowWifiAccess", "skipProxy", "tunExcludedRoutes", "wifiAssist", "excludeSimpleHostnames", "managedConfigIntervalSeconds", "internetTestUrl", "proxyTestUrl", "showErrorPageForReject"],
     dns: ["dnsServer", "encryptedDnsServer", "encryptedDnsFollowOutboundMode", "alwaysRealIp", "hosts"],
     rules: ["rules"],
-    advanced: ["ponteDeviceNames", "tailscaleNodes", "urlRewrite", "mapLocal", "scripts", "mitm"]
+    advanced: ["ponteDeviceNames", "tailscaleNodes", "urlRewrite", "mapLocal", "scripts"],
+    mitm: ["mitm"]
   },
-  mihomo: {
+  clash: {
     network: ["port", "socksPort", "mixedPort", "allowLan", "mode", "logLevel", "ipv6", "unifiedDelay", "tcpConcurrent", "externalController", "tun"],
     dns: ["dnsEnabled", "dnsListen", "dnsIpv6", "dnsEnhancedMode", "dnsFakeIpRange", "defaultNameservers", "nameservers", "fallbackNameservers", "fallbackFilterGeoip", "fallbackFilterIpcidr", "fakeIpFilter"],
     rules: ["rules", "ruleProviders"],

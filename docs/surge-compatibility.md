@@ -1,54 +1,30 @@
-# Surge 兼容档位 / Compatibility profiles
+# Surge 输出说明 / Output behavior
 
-## 链接与版本
+## 统一订阅与输出
 
-`/sync/<read_token>/surge/stable/` 使用正式版能力；`/sync/<read_token>/surge/tf/` 使用 TestFlight / Mac Beta 能力。两者共享保存的 Surge 设置。Tag 区分大小写，保留末尾 `/`；未知 Tag 拒绝访问。`/surge/` 默认正式版。通用订阅地址与旧配置文件地址已移除。
+Surge、clash和 sing-box 使用同一个 `/sync/<read_token>/` 订阅入口，基础路径可在设置中修改。UA 仅识别客户端类型，Surge 不再区分 iOS/macOS、正式版/TestFlight、版本号或 build。
 
-输出客户端、Surge 版本与渠道均由独立地址决定，不从 UA 推断。管理页预览必须指定 `target`，其 `profile=stable|tf` 参数选择同一个能力档位；这些参数仅用于预览 API，订阅地址仍拒绝查询参数。自动更新地址保留 Tag，切换预览档位会使旧预览失效。
+配置链接页只显示通用地址。独立客户端路径、`stable` / `tf` Tag 及旧文件名入口不再提供。此前使用这些地址的客户端需要重新复制通用地址。订阅入口可省略末尾 `/`，订阅与规则下载均不接受查询参数。
 
-核实日期：2026-09-05。
+Surge 订阅按保存的客户端设置生成，`#!MANAGED-CONFIG` 始终引用通用地址，不使用版本档位。
 
-| 档位 / Profile | iOS 基线 | macOS 基线 |
-| --- | --- | --- |
-| `stable` | 5.22.0 | 6.9.0（正式版 build 12250） |
-| `tf` | 已核实 build 3823 | 已核实 build 12250 |
+All clients share the universal subscription URL. User-Agent selects the client family only. Surge uses one rendering path across platforms, versions, and release channels. Dedicated paths and version tags are removed; generated automatic update URLs always use the universal entry.
 
-iOS 正式版本以 [App Store](https://apps.apple.com/us/app/surge-5/id1442620678) 为准，Mac 正式版本以 [官方更新源](https://nssurge.com/mac/latest/appcast-signed.xml) 为准。TF 档位是已核实能力的固定快照，不承诺跟随最新测试构建；iOS 的 TF 营销版本（例如 5.102.0）不能直接换算正式版本。
+## 功能与检查
 
-Profiles select a fixed capability snapshot, not the installed client version. Untagged Surge URLs use stable. Both platforms must support a feature before their shared profile enables it. Upgrade older clients to the documented baseline. No UA sample or KV migration is required.
+策略组由三端独立维护。旧共享组迁移时，Surge 的 `url-test` 转为 `smart`；Surge 输出仍兼容这一转换；clash 和 sing-box 保持各自自动测速类型。转换后的 smart 组仅允许代理节点成员，内置策略与嵌套组会产生阻断诊断。Smart 的 `interval` 不生效，详见 [Smart 组文档](https://manual.nssurge.com/policy-groups/smart.html)。
 
-## 已接入能力
+Groups are independent per client. Migrating shared groups converts Surge `url-test` to `smart`; Surge subscriptions retain this conversion for compatibility. Other clients keep their own definitions and automatic-testing types. Validation checks the emitted smart type and blocks built-in policies or nested groups as members. Smart ignores `interval`.
 
-能力注册表在 `src/surge-capabilities.ts`。正式版按版本门槛检查，TF 按已观察到的保守 build 门槛检查；表中的 build 是支持依据，不一定是功能最早出现的构建。
+已接入的 Surge 功能按保存的设置输出，包括 Smart 策略组、Snell、AnyTLS、TrustTunnel、HTTP/2 CONNECT、MASQUE、Tailscale、策略组链式出口、Hosts 和事件脚本，不再查询版本能力表。
 
-| 能力 | iOS 正式版门槛 | macOS 正式版门槛 | TF build 门槛（iOS / Mac） |
-| --- | --- | --- | --- |
-| Smart 组 | 5.11.0 | 5.7.0 | 3730 / 7210 |
-| Snell 5 | 5.15.0 | 6.0.0 | 3730 / 7210 |
-| AnyTLS | 5.17.0 | 6.4.3 | 3730 / 10320 |
-| TrustTunnel | 5.18.0 | 6.4.4 | 3730 / 10661 |
-| HTTP/2 CONNECT、自定义请求头 | 5.20.0 | 6.6.0 | 3765 / 11270 |
-| Snell 6、Tailscale | 5.20.0 | 6.7.0 | 3765 / 11730 |
-| Tailscale idle-keepalive | 5.21.0 | 6.8.0 | 3791 / 11990 |
-| MASQUE、HTTP/2 UDP、TrustTunnel HTTP/3 | 5.22.0 | 6.9.0 | 3813 / 12040 |
-| 策略组 underlying-proxy | 5.22.0 | 6.9.0 | 3813 / 12040 |
-| 策略组 icon-url | 5.20.0 | 6.5.0 | 3765 / 10960 |
-| Host 别名的独立 DNS | 5.22.0 | 6.9.0 | 3820 / 12080 |
-| engine-started / profile-reloaded 事件脚本 | 5.22.0 | 6.9.0 | 3823 / 12250 |
+不支持的节点和跨客户端功能仍按各输出端的语义进行适配。缺少正在引用的策略、无法保留的链式关系、空组、无效规则或 DNS 语义仍会阻断输出。这次调整只移除版本判断，不移除协议转换、引用或配置校验，也不改写已保存的配置。
 
-以上能力目前均已进入当前正式版，因此 `stable` 与 `tf` 可能只在档位标记和自动更新 URL 上不同。Snell 服务端的 beta 状态不等于 Surge 客户端只在 TF 支持该协议。
+Generated output follows the saved settings without filtering features by Surge version. Protocol conversion and configuration validation remain active. The application does not verify the installed Surge version; support for a configured feature is determined by the client importing it.
 
-不支持的节点整体省略并报告诊断，避免删除必需传输参数后改变连接语义；可选装饰参数可以省略。缺少正在引用的策略、无法保留的链式关系或 DNS 语义会阻断输出。保存的原始配置不会因选择档位而丢失字段。
-
-该表覆盖应用已接入的能力，不是任意 Surge 原生文本的完整版本校验器。手填 General、脚本及其他原生扩展中的未知新语法仍需按目标版本核实。
-
-## 依据与维护
+## 配置参考
 
 - 协议与参数：[代理概览](https://manual.nssurge.com/policies/overview.html)、[HTTP](https://manual.nssurge.com/policies/http.html)、[MASQUE](https://manual.nssurge.com/policies/masque.html)、[TrustTunnel](https://manual.nssurge.com/policies/trust-tunnel.html)、[Snell](https://manual.nssurge.com/policies/snell.html)。
 - 策略与会话：[策略组参数](https://manual.nssurge.com/policy-groups/parameters.html)、[Smart 组](https://kb.nssurge.com/surge-knowledge-base/guidelines/smart-group.md)、[Tailscale](https://manual.nssurge.com/policies/tailscale.html)。
-- 当前正式功能：[iOS App Store 更新说明](https://apps.apple.com/us/app/surge-5/id1442620678)、[Mac 更新说明](https://nssurge.com/support/mac/release-notes)。
-- iOS TF build 核对辅助材料：[开发者 TestFlight 更新邮件转录归档](https://t.me/s/SurgeTestFlightChangelog)。该归档不是官方账号；语义仍以官方文档与正式更新说明为准。保守采用已观察构建，特别是 idle-keepalive 使用 build 3791 之后的语义（省略、0、-1 均保持会话）。
 
-新增 TF 专属能力时，在注册表中登记每个平台的已核实 build，将尚未正式发布的平台 `version` 设为 `null`，并在对应渲染入口使用同一能力检查。只有核实过的构建才能提升 `tf` 基线。功能正式发布后填写正式版本门槛，并根据项目支持范围更新 `stable` 基线。两平台支持不一致时暂不启用其共用档位。
-
-维护能力表时同步中文与英文 README。请求处理中不联网查询版本，不把上游更新自动转化为新增输出能力。`#!REQUIREMENT` 是逐行条件，不作为配置全局最低版本声明；生成文件用注释标明兼容基线。
+本次调整无需迁移 KV 数据或轮换 Secrets。更新功能或订阅行为时同步中英文 README。

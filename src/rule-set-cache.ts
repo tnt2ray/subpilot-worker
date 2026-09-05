@@ -61,6 +61,7 @@ export interface RuleSetSourceFetchResult {
   content: string;
   usedCachedContent: boolean;
   warning?: string | undefined;
+  reason?: string | undefined;
 }
 
 export interface RuleSetSourceCacheRefreshResult {
@@ -103,6 +104,33 @@ export interface CompiledRuleSetStatusItem {
   buckets: CompiledRuleSetBucketMeta[];
   warnings: string[];
   cached: boolean;
+}
+
+/** Resource ownership is per client; cached response bodies are keyed by URL. */
+export function allEnabledRuleSetSources(config: RenderConfig): RuleSetSource[] {
+  const selectedId = config.renderTarget === "sing-box" ? "singbox" : config.renderTarget ?? "surge";
+  const sources = config.document ? Object.entries(config.document.clients).flatMap(([id, client]) => id === selectedId ? config.ruleSets.sources : client.ruleSets.sources) : config.ruleSets.sources;
+  return [...new Map(sources.filter((source) => source.enabled && source.url).map((source) => [source.url, source])).values()];
+}
+
+export async function scopeRuleSetSourceRefresh(result: RuleSetSourceCacheRefreshResult, config: RenderConfig): Promise<RuleSetSourceCacheRefreshResult> {
+  const contentByKey: RuleSetSourceCacheRefreshResult["contentByKey"] = new Map();
+  const errorsByKey: RuleSetSourceCacheRefreshResult["errorsByKey"] = new Map();
+  const failures: RuleSetSourceCacheFailure[] = [];
+  const warnings = result.warnings.filter((message) => !result.failures.some((failure) => message === `${failure.sourceName}: ${failure.reason}`));
+  for (const source of config.ruleSets.sources.filter((source) => source.enabled && source.url)) {
+    const key = await ruleSetSourceCacheKey(source.url);
+    const content = result.contentByKey.get(key);
+    const error = result.errorsByKey.get(key);
+    if (content) contentByKey.set(key, content);
+    if (error) errorsByKey.set(key, error);
+    const reason = error ?? content?.reason ?? content?.warning;
+    if (reason) {
+      failures.push({ sourceId: source.id, sourceName: source.name, reason, usedCachedContent: Boolean(content?.usedCachedContent) });
+      warnings.push(`${source.name}: ${reason}`);
+    }
+  }
+  return { refreshed: [...contentByKey.values()].filter((item) => !item.usedCachedContent).length, cached: [...contentByKey.values()].filter((item) => item.usedCachedContent).length, failed: failures.length, deleted: 0, warnings, failures, contentByKey, errorsByKey };
 }
 
 export async function fetchCachedRuleSetSource(
@@ -183,7 +211,7 @@ export async function refreshRuleSetSourceCaches(
       warnings: failures.map((failure) => `${failure.sourceName}: ${reason}`),
       failures,
       contentByKey: new Map(),
-      errorsByKey: new Map()
+      errorsByKey: new Map(await Promise.all(sourcesToRefresh.filter((source) => source.enabled && source.url).map(async (source) => [await ruleSetSourceCacheKey(source.url), reason] as const)))
     };
   }
   const existing = await readRuleSetSourceCacheEntries(env);
@@ -200,7 +228,7 @@ export async function refreshRuleSetSourceCaches(
   let cached = 0;
   let retainedCharacters = 0;
 
-  for (const source of sourcesToRefresh) {
+  for (const source of new Map(sourcesToRefresh.filter((source) => source.enabled && source.url).map((source) => [source.url, source])).values()) {
     if (!source.enabled || !source.url) continue;
     const key = await ruleSetSourceCacheKey(source.url);
     if (deadlineExceeded(options.deadline)) {
@@ -261,6 +289,7 @@ export async function refreshRuleSetSourceCaches(
           contentByKey.set(key, {
             content: cachedContent,
             usedCachedContent: true,
+            reason,
             warning: `${source.name}: ${reason}`
           });
           cached += 1;
@@ -806,8 +835,7 @@ async function readRuleSetSourceCacheEntries(env: Env): Promise<RuleSetSourceCac
 
 async function ruleSetSourceCacheKeysForEnabledSources(config: RenderConfig): Promise<Set<string>> {
   const expectedKeys = new Set<string>();
-  for (const source of config.ruleSets.sources) {
-    if (!source.enabled || !source.url) continue;
+  for (const source of allEnabledRuleSetSources(config)) {
     expectedKeys.add(await ruleSetSourceCacheKey(source.url));
   }
   return expectedKeys;

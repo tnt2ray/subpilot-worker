@@ -31,8 +31,8 @@ export function buildSurgeGroups(
   const groups = activeGroupEntries(config, "surge").map(([name, spec]) => {
     const [type, ...rawItems] = splitGroupSpec(spec);
     const groupType = (type || "select").trim().toLowerCase();
-    const surgeHidden = surgeHiddenValue(rawItems);
-    const groupItems = rawItems.filter((item) => !isSurgeHiddenOption(item));
+    const surgeHidden = groupHiddenValue(rawItems);
+    const groupItems = rawItems.filter((item) => !isGroupHiddenOption(item));
     const resolved = groupType === "subnet"
       ? resolveSubnetGroupItems(groupItems, name, disabledGroups, nodes)
       : resolveGroupItems(groupItems, nodes).filter((item) => (
@@ -90,12 +90,12 @@ export function buildClashGroups(
       && !unavailableConfiguredPolicies.has(item)
     ));
     const options = Object.fromEntries(items
-      .filter((item) => !parseAllPolicySelector(item) && !isSurgeHiddenOption(item) && item.includes("="))
+      .filter((item) => !parseAllPolicySelector(item) && !isGroupHiddenOption(item) && item.includes("="))
       .map((item) => item.split(/=(.*)/s) as [string, string]));
-    return { name, type: groupType, items: proxies, options };
+    return { name, type: groupType, items: proxies, options, hidden: groupHiddenValue(items) };
   });
   const emittedNames = emittedPolicyGroupNames(config, groups);
-  return groups.flatMap(({ name, type, items, options }) => {
+  return groups.flatMap(({ name, type, items, options, hidden }) => {
     if (!emittedNames.has(name)) return [];
     const proxies = ensureUsableRootProxyItems(
       name,
@@ -104,6 +104,7 @@ export function buildClashGroups(
     return [{
       name,
       type: mapClashGroupType(type),
+      ...(hidden ? { hidden: true } : {}),
       proxies,
       ...options
     }];
@@ -254,7 +255,7 @@ function isAllowedGroupItem(item: string): boolean {
   return Boolean(item);
 }
 
-function surgeHiddenValue(items: string[]): boolean {
+function groupHiddenValue(items: string[]): boolean {
   let hidden = false;
   for (const item of items) {
     const option = parseGroupOption(item);
@@ -264,12 +265,12 @@ function surgeHiddenValue(items: string[]): boolean {
   return hidden;
 }
 
-function isSurgeHiddenOption(item: string): boolean {
+function isGroupHiddenOption(item: string): boolean {
   return parseGroupOption(item)?.key.toLowerCase() === "hidden";
 }
 
 function mapSurgeGroupType(type: string): string {
-  return type;
+  return type === "url-test" ? "smart" : type;
 }
 
 function mapClashGroupType(type: string): string {

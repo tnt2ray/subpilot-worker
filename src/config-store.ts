@@ -1,6 +1,6 @@
 import { configDocument, defaultConfigDocument, migrateConfigDocument, normalizeConfigDocument, renderConfig, OUTPUT_TARGETS } from "./config-document";
 import { ruleSetEnv } from "./rule-set-scope";
-import type { AppConfig } from "./types";
+import type { AppConfig, StoredConfigDocument } from "./types";
 import { DEFAULT_CONFIG } from "./default-config";
 import { CONFIG_SCHEMA_VERSION_KEY, CURRENT_KV_SCHEMA_VERSION } from "./config-schema";
 import { normalizeChain, normalizeClash, normalizeConfig, normalizeRuleSets, normalizeStash, normalizeSurge } from "./config-normalize";
@@ -392,8 +392,8 @@ async function tryDecryptConfigSnapshot(env: Env, stored: string): Promise<Rende
 async function decryptConfigSnapshot(env: Env, stored: string): Promise<RenderConfig> {
   const snapshot = await decryptJson<unknown>(requireSecret(env, "CONFIG_ENCRYPTION_KEY"), stored);
   if (!isConfigSnapshot(snapshot)) throw new Error("Unsupported config snapshot");
-  const value = snapshot as { version: number; config: AppConfig | RenderConfig };
-  if (value.version === 2 && value.config.version === 2) return canonicalizeConfigSources(env, renderConfig(normalizeConfigDocument(value.config)));
+  const value = snapshot as { version: number; config: StoredConfigDocument | RenderConfig };
+  if (value.version === 2 && (value.config.version === 2 || value.config.version === 3)) return canonicalizeConfigSources(env, renderConfig(normalizeConfigDocument(value.config)));
   if (value.config.version !== 1) throw new Error("Unsupported configuration document version");
   return { ...renderConfig(migrateConfigDocument(await canonicalizeConfigSources(env, normalizeConfig(value.config as RenderConfig)))), migrationRequired: true };
 }
@@ -921,7 +921,7 @@ function encodeKey(value: string): string {
   return encodeURIComponent(value);
 }
 
-export async function exportConfigBeforeMigration(env: Env): Promise<unknown> {
+export async function exportConfigBeforeMigration(env: Env): Promise<StoredConfigDocument | RenderConfig> {
   const committed = await env.SUBPILOT_CONFIG.get(DOCUMENT_MIGRATION_COMMITTED) !== null;
   const candidates = await listKvKeys(env, CONFIG_SNAPSHOT_VERSION_PREFIX);
   const fallback = [CONFIG_SNAPSHOT_KEY, ...(await listKvKeys(env, CONFIG_MIGRATED_SNAPSHOT_PREFIX)).sort().reverse(), CONFIG_MIGRATED_SNAPSHOT_KEY];
@@ -929,13 +929,23 @@ export async function exportConfigBeforeMigration(env: Env): Promise<unknown> {
     const encrypted = await env.SUBPILOT_CONFIG.get(key);
     if (!encrypted) continue;
     try {
-      const snapshot = await decryptJson<{ version: number; config: { version?: number } }>(requireSecret(env, "CONFIG_ENCRYPTION_KEY"), encrypted);
-      if (snapshot.config && (!committed || snapshot.config.version === 2)) return snapshot.config;
+      const snapshot = await decryptJson<{ version: number; config: StoredConfigDocument | RenderConfig }>(requireSecret(env, "CONFIG_ENCRYPTION_KEY"), encrypted);
+      if (snapshot.config && (!committed || (snapshot.config.version === 2 || snapshot.config.version === 3))) return snapshot.config;
     } catch { /* Try a retained valid revision without rewriting it. */ }
   }
-  if (committed) throw new Error("没有可导出的有效版本 2 配置。");
+  if (committed) throw new Error("没有可读取的有效客户端配置。");
   if (!candidates.length && !(await legacyConfigKeys(env)).length) return defaultConfigDocument();
   return loadLegacyStoredConfig(env);
+}
+
+export async function loadConfigMigration(env: Env): Promise<{ fingerprint: string; config: RenderConfig }> {
+  const backup = await exportConfigBeforeMigration(env);
+  const fingerprint = await sha256Hex(JSON.stringify(backup));
+  // Derive the editable document from the exact revision identified by the fingerprint.
+  if (backup.version === 2 || backup.version === 3) return { fingerprint, config: await canonicalizeConfigSources(env, renderConfig(normalizeConfigDocument(backup))) };
+  if (backup.version !== 1) throw new Error("Unsupported configuration document version");
+  const legacy = await canonicalizeConfigSources(env, normalizeConfig(backup));
+  return { fingerprint, config: { ...renderConfig(migrateConfigDocument(legacy)), migrationRequired: true } };
 }
 
 async function markDocumentCommitted(env: Env): Promise<void> {

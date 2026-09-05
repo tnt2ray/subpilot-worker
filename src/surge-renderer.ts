@@ -1,5 +1,4 @@
 import { managedSubscriptionUrlForRequest } from "./managed-url";
-import { surgeClientProfile, supportsSurgeFeature, type SurgeClientProfile } from "./surge-capabilities";
 import { isIPv4, isIPv6 } from "./node-transforms";
 import { beijingTimestamp, renderHostEntryLine, renderSection } from "./output-render";
 import { toSurgeLine } from "./parsers";
@@ -16,10 +15,9 @@ export function buildSurge(
   nodes: ProxyNode[],
   sourceHostEntries: HostEntry[],
   requestUrl: string,
-  ruleSetPlan?: CompiledRuleSetReferencePlan,
-  client: SurgeClientProfile = surgeClientProfile()
+  ruleSetPlan?: CompiledRuleSetReferencePlan
 ): string {
-  return buildSurgeInline(config, nodes, sourceHostEntries, requestUrl, ruleSetPlan, client);
+  return buildSurgeInline(config, nodes, sourceHostEntries, requestUrl, ruleSetPlan);
 }
 
 function buildSurgeInline(
@@ -27,8 +25,7 @@ function buildSurgeInline(
   nodes: ProxyNode[],
   sourceHostEntries: HostEntry[],
   requestUrl: string,
-  ruleSetPlan: CompiledRuleSetReferencePlan | undefined,
-  client: SurgeClientProfile
+  ruleSetPlan: CompiledRuleSetReferencePlan | undefined
 ): string {
   const proxyLines = nodes.map(toSurgeLine);
   const resolvedPolicies = resolveRuntimeTailscalePolicies(config, nodes);
@@ -39,12 +36,10 @@ function buildSurgeInline(
     proxyLines,
     resolvedPolicies.groupOutputs,
     resolvedPolicies.tailscaleNodes,
-    ruleSetPlan,
-    client
+    ruleSetPlan
   );
-  const managedUrl = managedSubscriptionUrlForRequest(config, requestUrl, "surge", client.tag);
-  const baseline = client.tag === "stable" ? `iOS ${client.ios.version}+ / Mac ${client.mac.version}+` : `iOS build ${client.ios.build}+ / Mac build ${client.mac.build}+`;
-  return `#!MANAGED-CONFIG ${managedUrl} interval=${config.surge.managedConfigIntervalSeconds} strict=true\n# Surge profile: ${client.tag} (${baseline})\n# Last Updated: ${beijingTimestamp()} (UTC+8)\n${variant}`;
+  const managedUrl = managedSubscriptionUrlForRequest(config, requestUrl);
+  return `#!MANAGED-CONFIG ${managedUrl} interval=${config.surge.managedConfigIntervalSeconds} strict=true\n# Last Updated: ${beijingTimestamp()} (UTC+8)\n${variant}`;
 }
 
 function renderSurgeInlineProfile(
@@ -54,8 +49,7 @@ function renderSurgeInlineProfile(
   proxyLines: string[],
   groupOutputs: SurgeGroupOutput[],
   tailscaleNodes: RenderConfig["surge"]["tailscaleNodes"],
-  ruleSetPlan: CompiledRuleSetReferencePlan | undefined,
-  client: SurgeClientProfile
+  ruleSetPlan: CompiledRuleSetReferencePlan | undefined
 ): string {
   const sections = renderSurgeBaseSections(config);
   const configuredHostEntries = parseHostEntries(`[Host]\n${config.surge.hosts.join("\n")}`);
@@ -69,9 +63,9 @@ function renderSurgeInlineProfile(
     ...proxyLines,
     ...tailscaleNodes.map(renderTailscaleProxyLine)
   ]));
-  sections.push(...tailscaleNodes.map((node) => renderTailscaleSection(node, client)));
+  sections.push(...tailscaleNodes.map(renderTailscaleSection));
   sections.push(renderSection("Proxy Group", groupOutputs.map((group) => group.line)));
-  appendSurgeStableTailSections(sections, config);
+  appendSurgeTailSections(sections, config);
   appendSurgeRuleSection(sections, config, nodes, groupOutputs, new Set(tailscaleNodes.map((node) => node.name)), ruleSetPlan);
   return `${sections.join("\n\n")}\n`;
 }
@@ -86,13 +80,13 @@ function renderTailscaleProxyLine(node: RenderConfig["surge"]["tailscaleNodes"][
   return `${node.name} = tailscale, ${options.join(", ")}`;
 }
 
-function renderTailscaleSection(node: RenderConfig["surge"]["tailscaleNodes"][number], client: SurgeClientProfile): string {
+function renderTailscaleSection(node: RenderConfig["surge"]["tailscaleNodes"][number]): string {
   const lines = [`auth-key = ${node.authKey}`];
   if (node.controlUrl) lines.push(`control-url = ${node.controlUrl}`);
   if (node.hostname) lines.push(`hostname = ${node.hostname}`);
   if (node.derpOnly) lines.push("derp-only = true");
   if (node.exitNode && node.exitNode !== "none") lines.push(`exit-node = ${node.exitNode}`);
-  if (supportsSurgeFeature(client, "tailscaleSession")) lines.push(`idle-keepalive = ${node.idleKeepalive}`);
+  lines.push(`idle-keepalive = ${node.idleKeepalive}`);
   if (node.preferIpv6) lines.push("prefer-ipv6 = true");
   if (node.dnsServer.length > 0) lines.push(`dns-server = ${node.dnsServer.join(", ")}`);
   if (node.mtu !== 1280) lines.push(`mtu = ${node.mtu}`);
@@ -130,7 +124,7 @@ function renderSurgeBaseSections(config: RenderConfig): string[] {
   return sections;
 }
 
-function appendSurgeStableTailSections(sections: string[], config: RenderConfig): void {
+function appendSurgeTailSections(sections: string[], config: RenderConfig): void {
   if (config.surge.urlRewrite.length > 0) {
     sections.push(renderSection("URL Rewrite", config.surge.urlRewrite));
   }

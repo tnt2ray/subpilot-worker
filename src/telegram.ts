@@ -8,7 +8,7 @@ import {
 } from "./config-store";
 import { readConfigFetchStats } from "./fetch-stats";
 import { refreshRuleSetCaches, type RuleSetRefreshResult } from "./rule-set-compiler";
-import { refreshRuleSetSourceCaches } from "./rule-set-cache";
+import { allEnabledRuleSetSources, refreshRuleSetSourceCaches } from "./rule-set-cache";
 import { configDocument, renderConfig, OUTPUT_TARGETS } from "./config-document";
 import { ruleSetEnv } from "./rule-set-scope";
 import { refreshSourceCache } from "./source-cache";
@@ -277,10 +277,10 @@ function scheduleTelegramRuleSetRefresh(
   if (!token) return;
   ctx.waitUntil((async () => {
     try {
-      const sourceRefresh = await refreshRuleSetSourceCaches(env, config, config.ruleSets.sources.filter((source) => source.enabled && source.url), { deadline, pruneUnexpected: true });
+      const sourceRefresh = await refreshRuleSetSourceCaches(env, config, allEnabledRuleSetSources(config), { deadline, pruneUnexpected: true });
       for (const target of targets) {
         const result = await refreshRuleSetCaches(ruleSetEnv(env, target), renderConfig(document, target), undefined, { deadline, sourceRefresh });
-        await sendTelegramBotMessage(token, chatId, `${target === "clash" ? "mihomo" : target}\n${formatTelegramRuleSetRefreshResultMessage(result, config.settings.displayTimeZone)}`);
+        await sendTelegramBotMessage(token, chatId, `${target}\n${formatTelegramRuleSetRefreshResultMessage(result, config.settings.displayTimeZone)}`);
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -327,7 +327,7 @@ function formatTelegramStatusMessage(
       protocolLinePosition: "afterTimestamp"
     }),
     `最近 Surge 配置获取：${formatTelegramTimestamp(stats.lastFetched.surge, config.settings.displayTimeZone)}`,
-    `最近 mihomo 配置获取：${formatTelegramTimestamp(stats.lastFetched.clash, config.settings.displayTimeZone)}`,
+    `最近 clash 配置获取：${formatTelegramTimestamp(stats.lastFetched.clash, config.settings.displayTimeZone)}`,
     `最近 sing-box 配置获取：${formatTelegramTimestamp(stats.lastFetched["sing-box"], config.settings.displayTimeZone)}`
   ].join("\n");
 }

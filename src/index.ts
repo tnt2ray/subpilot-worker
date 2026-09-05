@@ -1,6 +1,6 @@
-import { refreshRuleSetSourceCaches } from "./rule-set-cache";
+import { allEnabledRuleSetSources, refreshRuleSetSourceCaches } from "./rule-set-cache";
 import { configDocument, normalizeConfigDocument, renderConfig, OUTPUT_TARGETS } from "./config-document";
-import { exportConfigBeforeMigration, completeDocumentMigration } from "./config-store";
+import { exportConfigBeforeMigration, loadConfigMigration, completeDocumentMigration } from "./config-store";
 import { ruleSetEnv } from "./rule-set-scope";
 import { validateManagedBaseUrl, validateConfigEntityLimits, validateProxyPolicyNameConflicts, validateRuleSetOutputNames } from "./config-validation";
 import { assertSafeConfigText } from "./config-text-safety";
@@ -8,11 +8,10 @@ import type { AppConfig, RenderConfig } from "./types";
 import { clearSessionCookie, createSession, getOrCreateReadToken, isAdminRequest, rotateReadToken, sessionCookie, validateAdminToken, validateReadToken } from "./auth";
 import { loadConfig, normalizeTarget, saveConfig, withInferredManagedBaseUrl } from "./config-store";
 import { readConfigFetchStats, recordConfigFetch } from "./fetch-stats";
-import { generateConfig, generateForRequest } from "./generator";
-import { resolveSurgeProfileTag } from "./surge-capabilities";
+import { generateConfig, generateForRequest, inferTarget } from "./generator";
 import { handleGeoIpMmdbUpload, readGeoIpMmdbStatus } from "./geoip-admin";
 import { LOGIN_PAGE_HTML } from "./login-page";
-import { extractSubscriptionToken, isUnderManagedBasePath, managedBasePathFromConfig, managedSubscriptionUrl, parseSyncPath } from "./managed-url";
+import { extractSubscriptionToken, isUnderManagedBasePath, managedBasePathFromConfig, parseSyncPath } from "./managed-url";
 import { notifyRuleSetRefreshFailures, notifySourceRefreshFailures, notifyVersionUpdateAvailable } from "./notifications";
 import { refreshChangedRuleSetCaches, refreshRuleSetCaches } from "./rule-set-compiler";
 import { handleRuleSetApi, handleRuleSetDownload } from "./rule-set-endpoints";
@@ -26,7 +25,8 @@ import { badRequest, forbidden, jsonResponse, notFound, payloadTooLarge, readReq
 
 const RULE_SET_REFRESH_CRON = "0 16 * * *";
 const MAX_LOGIN_REQUEST_BYTES = 4 * 1024;
-const MAX_CONFIG_REQUEST_BYTES = 2 * 1024 * 1024;
+// Independent client resources may occupy up to three times the old shared document.
+const MAX_CONFIG_REQUEST_BYTES = 6 * 1024 * 1024;
 const LOGIN_RATE_LIMIT = 10;
 const LOGIN_RATE_LIMIT_PERIOD_SECONDS = 60;
 const MAX_FALLBACK_LOGIN_KEYS = 1_024;
@@ -50,7 +50,7 @@ export default {
     if (controller.cron === RULE_SET_REFRESH_CRON) {
       const deadline = Date.now() + SCHEDULED_REFRESH_DEADLINE_MS;
       if (!OUTPUT_TARGETS.some((target) => renderConfig(configDocument(config), target).ruleSets.mode === "compiled")) return;
-      const sourceRefresh = await refreshRuleSetSourceCaches(env, config, config.ruleSets.sources.filter((source) => source.enabled && source.url), { deadline, pruneUnexpected: true });
+      const sourceRefresh = await refreshRuleSetSourceCaches(env, config, allEnabledRuleSetSources(config), { deadline, pruneUnexpected: true });
       for (const target of OUTPUT_TARGETS) {
         const selected = renderConfig(configDocument(config), target);
         if (selected.ruleSets.mode !== "compiled") continue;
@@ -142,21 +142,14 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
     const loaded = withInferredManagedBaseUrl(await loadConfig(env), request.url);
     return jsonResponse({ ...configDocument(loaded), migrationRequired: Boolean(loaded.migrationRequired) });
   }
-  if (url.pathname === "/api/config/export" && request.method === "GET") {
-    const backup = await exportConfigBeforeMigration(env);
-    const content = JSON.stringify(backup, null, 2);
-    return textResponse(content, "application/json; charset=utf-8", { "content-disposition": 'attachment; filename="subpilot-config-backup.json"', "cache-control": "no-store" });
-  }
   if (url.pathname === "/api/config/migration" && request.method === "GET") {
-    const backup = await exportConfigBeforeMigration(env);
-    const loaded = await loadConfig(env);
-    return jsonResponse({ required: Boolean(loaded.migrationRequired), fingerprint: await sha256Hex(JSON.stringify(backup)), config: configDocument(withInferredManagedBaseUrl(loaded, request.url)) });
+    const { config, fingerprint } = await loadConfigMigration(env);
+    return jsonResponse({ required: Boolean(config.migrationRequired), fingerprint, config: configDocument(withInferredManagedBaseUrl(config, request.url)) });
   }
   if (url.pathname === "/api/config/migration" && request.method === "POST") {
-    const body = await readRequestJsonWithLimit<{ config: AppConfig; fingerprint: string; backupDownloaded: boolean }>(request, MAX_CONFIG_REQUEST_BYTES);
-    if (body.backupDownloaded !== true) return badRequest("请先下载旧配置备份。");
+    const body = await readRequestJsonWithLimit<{ config: AppConfig; fingerprint: string }>(request, MAX_CONFIG_REQUEST_BYTES);
     const current = await exportConfigBeforeMigration(env);
-    if (await sha256Hex(JSON.stringify(current)) !== body.fingerprint) return jsonResponse({ error: "旧配置已变化，请重新导出并预览迁移。" }, { status: 409 });
+    if (await sha256Hex(JSON.stringify(current)) !== body.fingerprint) return jsonResponse({ error: "旧配置已变化，当前页面草稿未提交。请记下需要保留的修改，刷新页面后重新检查迁移。" }, { status: 409 });
     try {
       const document = normalizeConfigDocument(body.config);
       const error = validateDocumentForSave(document);
@@ -179,7 +172,7 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
     });
   }
   if (url.pathname === "/api/system/migrate" && request.method === "POST") {
-    return jsonResponse({ error: "请通过配置迁移页面导出备份并确认迁移。" }, { status: 409 });
+    return jsonResponse({ error: "请通过配置迁移页面检查并确认迁移。" }, { status: 409 });
   }
   if (url.pathname === "/api/update-check" && request.method === "POST") {
     return jsonResponse({ update: await getUpdateStatus(env, { force: true }) });
@@ -217,10 +210,11 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
   }
   if (url.pathname === "/api/config" && (request.method === "PUT" || request.method === "PATCH")) {
     const current = await loadConfig(env);
-    if (current.migrationRequired) return jsonResponse({ error: "请先导出旧配置并完成迁移。" }, { status: 409 });
+    if (current.migrationRequired) return jsonResponse({ error: "请先检查并完成旧配置迁移。" }, { status: 409 });
     let document: AppConfig;
     try {
       const body = await readRequestJsonWithLimit<AppConfig>(request, MAX_CONFIG_REQUEST_BYTES);
+      if ((request.method === "PUT" || body.version !== undefined) && body.version !== 3) return jsonResponse({ error: "配置格式已升级，请刷新页面后重新编辑。" }, { status: 409 });
       const existing = configDocument(current);
       const input = request.method === "PATCH" ? { ...existing, ...body, settings: { ...existing.settings, ...body.settings }, clients: { ...existing.clients, ...body.clients } } : body;
       document = normalizeConfigDocument(input);
@@ -230,26 +224,6 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
     const saved = await saveConfigWithTelegramWebhook(env, current, renderConfig(document), request.url);
     scheduleChangedCacheRefresh(env, ctx, current, saved, request.url);
     return jsonResponse(configDocument(saved));
-  }
-  if (url.pathname === "/api/preview" && request.method === "POST") {
-    const target = normalizeTarget(url.searchParams.get("target"));
-    if (!target) return badRequest("Missing or invalid target");
-    const profileParam = url.searchParams.get("profile");
-    const surgeProfile = resolveSurgeProfileTag(profileParam ?? "stable");
-    if (!surgeProfile || target !== "surge" && profileParam !== null) return badRequest("无效的 Surge 兼容档位。");
-    const loaded = await loadConfig(env);
-    let document = configDocument(loaded);
-    if (request.headers.get("content-type")?.includes("application/json")) {
-      try {
-        const body = await readRequestJsonWithLimit<AppConfig>(request, MAX_CONFIG_REQUEST_BYTES);
-        document = normalizeConfigDocument(body);
-        const error = validateDocumentForSave(document);
-        if (error) return badRequest(error);
-      } catch { return badRequest("预览配置格式无效。"); }
-    }
-    const selected = renderConfig(document, target);
-    const previewRequestUrl = managedSubscriptionUrl(selected, request.url, await getOrCreateReadToken(env), target, surgeProfile);
-    return jsonResponse(await generateConfig(env, selected, target, previewRequestUrl, { includeRuleDiagnostics: true, surgeProfile }));
   }
   if (url.pathname === "/api/read-token" && request.method === "GET") {
     const token = await getOrCreateReadToken(env);
@@ -316,14 +290,16 @@ async function handleSync(request: Request, env: Env, ctx: ExecutionContext, man
     const target = syncPath.ruleSet.target;
     return handleRuleSetDownload(request, ruleSetEnv(env, target), ctx, renderConfig(configDocument(await loadConfig(env)), target), syncPath.ruleSet);
   }
-  const target = syncPath.target;
-  const result = await generateForRequest(env, request, target, { surgeProfile: syncPath.surgeProfile ?? "stable" });
+  const target = inferTarget(request);
+  if (!target) return badRequest("Cannot identify the client. User-Agent must identify Surge, clash, or sing-box.");
+  const result = await generateForRequest(env, request, target);
   if (!result.canDownload) return jsonResponse({ error: "Configuration is not ready for this target" }, { status: 422 });
   ctx.waitUntil(recordConfigFetch(env, result.target, request).catch((error) => {
     console.error(JSON.stringify({ level: "error", message: error instanceof Error ? error.message : String(error) }));
   }));
   return textResponse(result.content, result.contentType, {
-    "content-disposition": contentDispositionForFileName(configFileNameForTarget(result.target))
+    "content-disposition": contentDispositionForFileName(configFileNameForTarget(result.target)),
+    vary: "User-Agent"
   });
 }
 
@@ -346,8 +322,8 @@ function scheduleChangedCacheRefresh(
   ctx.waitUntil((async () => {
     const sourceResult = await refreshChangedSourceCache(env, previousConfig, config, { deadline });
     if (sourceResult) await notifySourceRefreshFailures(env, config, sourceResult, "config");
-    const oldSources = new Map(previousConfig.ruleSets.sources.map((source) => [source.id, JSON.stringify(source)]));
-    const changedSources = config.ruleSets.sources.filter((source) => oldSources.get(source.id) !== JSON.stringify(source));
+    const oldSourceUrls = new Set(allEnabledRuleSetSources(previousConfig).map((source) => source.url));
+    const changedSources = allEnabledRuleSetSources(config).filter((source) => !oldSourceUrls.has(source.url));
     const sourceRefresh = await refreshRuleSetSourceCaches(env, config, changedSources, { deadline, pruneUnexpected: false });
     for (const target of OUTPUT_TARGETS) {
       if (Date.now() >= deadline) break;
@@ -385,7 +361,7 @@ function wantsHtml(request: Request, url: URL): boolean {
 
 function validateDocumentForSave(document: AppConfig): string | null {
   try {
-    for (const name of Object.keys(document.groups)) assertSafeConfigText(name, "Policy name");
+    for (const client of Object.values(document.clients)) for (const name of Object.keys(client.groups)) assertSafeConfigText(name, "Policy name");
     for (const source of document.sources) assertSafeConfigText({ id: source.id, name: source.name, url: source.url, fetchUserAgent: source.fetchUserAgent }, "Source");
     const managedError = validateManagedBaseUrl(document);
     if (managedError) return managedError;

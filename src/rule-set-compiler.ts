@@ -5,6 +5,7 @@ import {
   pruneCompiledRuleSetCaches,
   readCompiledRuleSetManifest,
   refreshRuleSetSourceCaches,
+  scopeRuleSetSourceRefresh,
   ruleSetSourceCacheKey,
   writeCompiledRuleSet,
   type CompiledRuleSetManifest,
@@ -286,7 +287,7 @@ async function refreshRuleSetOutputs(
   pruneUnexpected: boolean,
   options: RuleSetRefreshOptions
 ): Promise<RuleSetRefreshResult> {
-  const sourceRefresh = options.sourceRefresh ?? await refreshRuleSetSourceCaches(env, config, sourcesToRefresh, {
+  const sourceRefresh = options.sourceRefresh ? await scopeRuleSetSourceRefresh(options.sourceRefresh, config) : await refreshRuleSetSourceCaches(env, config, sourcesToRefresh, {
     pruneUnexpected,
     ...(options.deadline !== undefined ? { deadline: options.deadline } : {})
   });

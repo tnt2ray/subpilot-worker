@@ -7,6 +7,7 @@ import { effectiveRuleSetOutputs } from "./rule-set-outputs";
 import { ensureCompiledRuleSet } from "./rule-set-compiler";
 import { planRuleSetArtifacts } from "./rule-set-artifacts";
 import { managedRuleSetUrlForRequest } from "./managed-url";
+import { splitRuleLine } from "./rule-line";
 import { convertRule, policyAction, issue, mergeSingboxHosts } from "./singbox-config";
 import type { ConfigDiagnostic, HostEntry, ProxyNode, ProxyParamValue, RenderConfig } from "./types";
 
@@ -24,6 +25,9 @@ export async function buildSingbox(env: Env, config: RenderConfig, nodes: ProxyN
     catch (error) { diagnostics.push(issue(`proxyNodes.${node.name}`, "node-conversion", "warning", `${node.name}：${error instanceof Error ? error.message : "节点无法转换"}`)); }
   }
   const available = new Set(outbounds.map((outbound) => String(outbound.tag)));
+  for (const endpoint of Array.isArray(client.endpoints) ? client.endpoints : []) {
+    if (typeof endpoint?.tag === "string") available.add(endpoint.tag);
+  }
   const activeGroups = Object.entries(config.groups).filter(([name]) => !config.disabledGroups.includes(name) && (!config.groupTargets?.[name] || config.groupTargets[name]!.includes("sing-box")));
   const groupNames = new Set(activeGroups.map(([name]) => name));
   for (const [name, spec] of activeGroups) {
@@ -52,6 +56,7 @@ export async function buildSingbox(env: Env, config: RenderConfig, nodes: ProxyN
       if (options.interval) group.interval = `${Number(options.interval)}s`;
       if (options.tolerance) group.tolerance = Number(options.tolerance);
     }
+    if (options.hidden && ["true", "1"].includes(options.hidden.toLowerCase())) diagnostics.push(issue(`groups.${name}`, "group-hidden-unsupported", "warning", `${name} 的 hidden 未输出：sing-box 不支持原生策略组隐藏。`));
     for (const key of Object.keys(options)) if (!["url", "interval", "tolerance", "hidden"].includes(key)) diagnostics.push(issue(`groups.${name}`, "group-option", "warning", `${name} 的 ${key} 选项未输出。`));
     outbounds.push(group);
   }
@@ -66,7 +71,9 @@ export async function buildSingbox(env: Env, config: RenderConfig, nodes: ProxyN
     for (const item of items) {
       try {
         if ("direct" in item) {
-          const converted = convertRule(item.direct.rule);
+          const parts = splitRuleLine(item.direct.rule);
+          const final = ["FINAL", "MATCH"].includes(parts[0]?.toUpperCase() ?? "");
+          const converted = convertRule(final ? [parts[0], item.direct.policy || parts[1], ...parts.slice(2)].join(",") : item.direct.rule);
           if (converted.final) {
             const action = policyAction(item.direct.policy || converted.final);
             if (action.action === "reject") { rules.push(action); delete route.final; }
@@ -91,8 +98,8 @@ export async function buildSingbox(env: Env, config: RenderConfig, nodes: ProxyN
   }
   const dns = structuredClone(client.dns);
   mergeSingboxHosts(dns, hosts, diagnostics);
-  const { coreVersion: _, migrationIssues: __, ruleSets: ___, ...nativeSettings } = client;
-  if ("outbounds" in nativeSettings) diagnostics.push(issue("clients.singbox.outbounds", "managed-outbounds", "error", "出站节点由共享节点和策略组生成，请在共享资源中编辑。"));
+  const { coreVersion: _, migrationIssues: __, ruleSets: ___, groups: ____, disabledGroups: _____, ...nativeSettings } = client;
+  if ("outbounds" in nativeSettings) diagnostics.push(issue("clients.singbox.outbounds", "managed-outbounds", "error", "出站节点由共享节点和当前客户端策略组生成，请在相应页面编辑。"));
   const result = { ...nativeSettings, dns, outbounds, route };
   return JSON.stringify(result, null, 2) + "\n";
 }

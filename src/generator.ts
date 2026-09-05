@@ -1,5 +1,4 @@
 import { validateSingboxOutput } from "./singbox-validation";
-import { surgeClientProfile, projectSurgeConfig, filterSurgeNodes, type SurgeClientProfile, type SurgeProfileTag } from "./surge-capabilities";
 import { validateSurgeRules } from "./surge-rules";
 import { validateClashLikeRules } from "./clash-rules";
 import { validateTailscalePolicies } from "./config-validation";
@@ -48,7 +47,6 @@ interface PreparedOutput {
 
 interface GenerationOptions {
   includeRuleDiagnostics?: boolean;
-  surgeProfile?: SurgeProfileTag;
 }
 
 const SOURCE_FETCH_CONCURRENCY = 2;
@@ -58,6 +56,17 @@ const MAX_TOTAL_SOURCE_NODES = 10_000;
 const MAX_TOTAL_HOST_ENTRIES = 20_000;
 const MAX_TOTAL_OUTPUT_NODES = 15_000;
 const MAX_RENDERED_CONFIG_CHARACTERS = 8 * 1024 * 1024;
+
+/** The universal subscription selects the client family, never its version. */
+export function inferTarget(request: Request): Target | null {
+  const ua = request.headers.get("user-agent")?.toLowerCase() ?? "";
+  if (ua.includes("shadowrocket") || ua.includes("stash")) return null;
+  const targets: Target[] = [];
+  if (ua.includes("surge")) targets.push("surge");
+  if (ua.includes("clash") || ua.includes("mihomo")) targets.push("clash");
+  if (ua.includes("sing-box") || ua.includes("singbox")) targets.push("sing-box");
+  return targets.length === 1 ? targets[0]! : null;
+}
 
 export async function generateForRequest(env: Env, request: Request, target: Target, options: GenerationOptions = {}): Promise<GenerationResult> {
   const config = await loadConfig(env);
@@ -75,12 +84,9 @@ export async function generateConfig(
   env = ruleSetEnv(env, target);
   const renderTarget = target;
   const diagnostics: ConfigDiagnostic[] = [];
-  const surgeClient = target === "surge" ? surgeClientProfile(options.surgeProfile) : undefined;
-  if (surgeClient) config = projectSurgeConfig(config, surgeClient, diagnostics);
   let prepared: PreparedOutput;
-  try { prepared = await prepareOutput(env, config, target, requestUrl, surgeClient, diagnostics); }
+  try { prepared = await prepareOutput(env, config, target, requestUrl); }
   catch { return { target, content: "", contentType: "text/plain; charset=utf-8", proxyCount: 0, fetchedSources: 0, warnings: [], canDownload: false,
-    ...(surgeClient ? { surgeClient } : {}),
     diagnostics: [...diagnostics, { target, severity: "error", code: "preparation-failed", path: "ruleSets", message: "生成准备失败，请检查规则来源和配置引用。" }] }; }
   if (options.includeRuleDiagnostics && config.ruleSets.mode !== "compiled") {
     if (renderTarget === "surge") {
@@ -95,7 +101,7 @@ export async function generateConfig(
   try {
     content = target === "sing-box"
       ? await buildSingbox(env, config, prepared.nodes, prepared.hostEntries, requestUrl, diagnostics)
-      : buildTargetContent(config, target, prepared.nodes, prepared.hostEntries, requestUrl, prepared.warnings, options, prepared.ruleSetPlan, surgeClient);
+      : buildTargetContent(config, target, prepared.nodes, prepared.hostEntries, requestUrl, prepared.ruleSetPlan);
     diagnostics.push(...collectOutputDiagnostics(config, target, content));
     if (target === "sing-box") {
       const output = JSON.parse(content);
@@ -122,7 +128,6 @@ export async function generateConfig(
     target,
     content: canDownload ? content : "",
     canDownload, diagnostics,
-    ...(surgeClient ? { surgeClient } : {}),
     contentType: target === "surge"
       ? "text/plain; charset=utf-8"
       : target === "sing-box" ? "application/json; charset=utf-8" : "text/yaml; charset=utf-8",
@@ -138,22 +143,18 @@ function buildTargetContent(
   nodes: ProxyNode[],
   hostEntries: HostEntry[],
   requestUrl: string,
-  warnings: string[],
-  options: GenerationOptions,
-  ruleSetPlan?: CompiledRuleSetReferencePlan,
-  surgeClient?: SurgeClientProfile
+  ruleSetPlan?: CompiledRuleSetReferencePlan
 ): string {
-  if (target === "surge") return buildSurge(config, nodes, hostEntries, requestUrl, ruleSetPlan, surgeClient);
+  if (target === "surge") return buildSurge(config, nodes, hostEntries, requestUrl, ruleSetPlan);
   return buildClash(config, nodes, hostEntries, ruleSetPlan);
 }
 
-async function prepareOutput(env: Env, config: RenderConfig, target: Target, requestUrl: string, surgeClient?: SurgeClientProfile, diagnostics: ConfigDiagnostic[] = []): Promise<PreparedOutput> {
+async function prepareOutput(env: Env, config: RenderConfig, target: Target, requestUrl: string): Promise<PreparedOutput> {
   const warnings: string[] = [];
   const fetched = await fetchAllSources(env, config, target, warnings);
   const configuredNodes = buildConfiguredProxyNodes(config);
   const transformed = await applyTransforms(env, [...fetched.nodes, ...configuredNodes], config, target, warnings);
-  const eligible = surgeClient ? filterSurgeNodes(transformed, surgeClient, diagnostics) : transformed;
-  const supported = ensureUniqueProxyPolicyNames(eligible, config, warnings);
+  const supported = ensureUniqueProxyPolicyNames(transformed, config, warnings);
   const renamed = new Map(supported.map((node) => [`${node.sourceId ?? "manual"}\0${node.originalName ?? node.name}`, node.name]));
   for (const node of supported) {
     for (const key of ["dialer-proxy", "underlying-proxy"]) {
