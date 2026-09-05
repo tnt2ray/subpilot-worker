@@ -290,7 +290,8 @@ export async function refreshRuleSetSourceCaches(
   }
   const entries = [...nextEntries.values()].sort((a, b) => b.fetchedAt.localeCompare(a.fetchedAt));
   if (!deadlineExceeded(options.deadline)) {
-    await env.SUBPILOT_CONFIG.put(RULE_SET_SOURCE_CACHE_META_INDEX_KEY, JSON.stringify(entries));
+    const warning = await writeRuleSetSourceCacheIndex(env, entries);
+    if (warning) warnings.push(warning);
   }
 
   return {
@@ -310,10 +311,7 @@ export async function pruneRuleSetCaches(env: Env, config: AppConfig): Promise<n
   const expectedKeys = await ruleSetSourceCacheKeysForEnabledSources(config);
   const sourceDeleted = await pruneUnexpectedRuleSetSourceCacheEntries(env, sourceEntries, expectedKeys);
   await migrateRetainedRuleSetSourceCacheContents(env, expectedKeys);
-  await env.SUBPILOT_CONFIG.put(
-    RULE_SET_SOURCE_CACHE_META_INDEX_KEY,
-    JSON.stringify(sourceEntries.filter((entry) => expectedKeys.has(entry.key)).sort((a, b) => b.fetchedAt.localeCompare(a.fetchedAt)))
-  );
+  await writeRuleSetSourceCacheIndex(env, sourceEntries.filter((entry) => expectedKeys.has(entry.key)));
   const compiledDeleted = await pruneCompiledRuleSetCaches(env, config);
   return sourceDeleted + compiledDeleted;
 }
@@ -680,10 +678,26 @@ async function writeRuleSetSourceCacheEntry(
       meta,
       ...await readRuleSetSourceCacheEntries(env).then((existing) => existing.filter((item) => item.key !== entry.key))
     ];
-    writes.push(env.SUBPILOT_CONFIG.put(RULE_SET_SOURCE_CACHE_META_INDEX_KEY, JSON.stringify(entries)));
+    writes.push(writeRuleSetSourceCacheIndex(env, entries));
   }
   await Promise.all(writes);
   return meta;
+}
+
+async function writeRuleSetSourceCacheIndex(env: Env, entries: RuleSetSourceCacheEntry[]): Promise<string | null> {
+  // Individual metadata records are authoritative. This compatibility index
+  // must not prevent compilation when another request just updated the key.
+  const content = JSON.stringify([...entries].sort((a, b) => a.key.localeCompare(b.key)));
+  try {
+    if (await env.SUBPILOT_CONFIG.get(RULE_SET_SOURCE_CACHE_META_INDEX_KEY) !== content) {
+      await env.SUBPILOT_CONFIG.put(RULE_SET_SOURCE_CACHE_META_INDEX_KEY, content);
+    }
+    return null;
+  } catch {
+    const warning = "规则来源缓存索引更新失败，将使用独立缓存元数据。";
+    console.warn(JSON.stringify({ level: "warn", message: warning }));
+    return warning;
+  }
 }
 
 async function migrateRetainedRuleSetSourceCacheContents(env: Env, expectedKeys: Set<string>): Promise<void> {

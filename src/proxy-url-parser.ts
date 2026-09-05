@@ -101,7 +101,7 @@ function parseShadowsocks(value: string): ProxyNode | null {
     const password = credentials.slice(credentialSeparator + 1);
     if (!cipher || !password) return null;
 
-    const serverUrl = new URL(`http://${serverAuthority}`);
+    const serverUrl = new URL(`ss://${serverAuthority}`);
     const port = toPort(serverUrl.port);
     if (!serverUrl.hostname || port === undefined) return null;
 
@@ -194,11 +194,26 @@ function normalizeUriParams(params: ProxyNode["params"]): void {
 
 function parseVmess(value: string): ProxyNode | null {
   try {
-    const decoded = atob(value.replace(/^vmess:\/\//, ""));
+    const decoded = decodeBase64Url(value.replace(/^vmess:\/\//, ""));
+    if (!decoded) return null;
     const data = JSON.parse(decoded) as Record<string, unknown>;
     const server = asString(data.add);
     const port = toPort(data.port);
     if (!server || port === undefined) return null;
+    const network = asString(data.net) || "tcp";
+    const params: ProxyNode["params"] = {
+      tls: asString(data.tls) === "tls",
+      network
+    };
+    if (network === "ws") {
+      const host = asString(data.host);
+      params["ws-opts"] = {
+        path: asString(data.path) || "/",
+        ...(host ? { headers: { Host: host } } : {})
+      };
+    } else if (network === "grpc") {
+      params["grpc-opts"] = { "grpc-service-name": asString(data.path) };
+    }
     const node: ProxyNode = {
       name: asString(data.ps) || `vmess-${server}`,
       type: "vmess",
@@ -206,12 +221,7 @@ function parseVmess(value: string): ProxyNode | null {
       port,
       uuid: asString(data.id),
       cipher: "auto",
-      params: {
-        tls: asString(data.tls) === "tls",
-        network: asString(data.net) || "tcp",
-        "ws-path": asString(data.path),
-        "ws-headers": asString(data.host)
-      }
+      params
     };
     return isSafeConfigText(node) ? node : null;
   } catch {

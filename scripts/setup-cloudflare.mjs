@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { createHash, randomBytes } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -314,13 +315,18 @@ function deployWorker() {
   run("wrangler", ["deploy", "--config", CONFIG_PATH]);
 }
 
-function putSecrets(adminToken, encryptionKey) {
+function runWithSecrets(command, adminToken, encryptionKey) {
   const { directory, file } = writeTempSecrets(adminToken, encryptionKey);
+  let result;
   try {
-    run("wrangler", ["secret", "bulk", file, "--config", CONFIG_PATH]);
+    const commandArgs = command === "deploy"
+      ? ["deploy", "--secrets-file", file, "--config", CONFIG_PATH]
+      : ["secret", "bulk", file, "--config", CONFIG_PATH];
+    result = spawnSync("wrangler", commandArgs, { stdio: "inherit" });
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
+  if (result.status !== 0) process.exit(result.status ?? 1);
 }
 
 capture("wrangler", ["--version"], { includeStderr: true });
@@ -338,12 +344,15 @@ const shouldWriteSecrets = !args.has("--no-secrets") && (createdConfig || args.h
 const adminToken = shouldWriteSecrets ? await readAdminToken() : "";
 const encryptionKey = shouldWriteSecrets ? (process.env.SUBPILOT_CONFIG_ENCRYPTION_KEY || randomSecret()) : "";
 
-if (!args.has("--no-deploy") && !existingConfigOnly) deployWorker();
+const shouldDeploy = !args.has("--no-deploy") && !existingConfigOnly;
 if (shouldWriteSecrets) {
-  putSecrets(adminToken, encryptionKey);
-} else if (!args.has("--no-secrets")) {
-  process.stdout.write("Existing wrangler.jsonc detected; skipped secret writes to avoid rotating production secrets.\n");
-  process.stdout.write("Pass --force-secrets only when you intentionally want to replace ADMIN_TOKEN_HASH and CONFIG_ENCRYPTION_KEY.\n");
+  runWithSecrets(shouldDeploy ? "deploy" : "bulk", adminToken, encryptionKey);
+} else {
+  if (shouldDeploy) deployWorker();
+  if (!args.has("--no-secrets")) {
+    process.stdout.write("Existing wrangler.jsonc detected; skipped secret writes to avoid rotating production secrets.\n");
+    process.stdout.write("Pass --force-secrets only when you intentionally want to replace ADMIN_TOKEN_HASH and CONFIG_ENCRYPTION_KEY.\n");
+  }
 }
 
 process.stdout.write("\nSubPilot setup complete.\n");

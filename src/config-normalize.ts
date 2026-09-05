@@ -1,4 +1,6 @@
 import { DEFAULT_CONFIG } from "./default-config";
+import { parseConfiguredProxyNode } from "./parsers";
+import { SURGE_BUILT_IN_RULE_POLICIES, CLASH_BUILT_IN_RULE_POLICIES, STASH_BUILT_IN_RULE_POLICIES } from "./rule-targets";
 import { isAllPolicySelector, parseGroupOption, splitGroupSpec } from "./policy-group-spec";
 import {
   RULE_SET_SOURCE_FORMATS,
@@ -35,7 +37,7 @@ export function normalizeTarget(value: string | null | undefined): Target | null
 
 export function normalizeConfig(input: AppConfig): AppConfig {
   const chain = normalizeChain(input.chain);
-  const groups = normalizeGroups(typeof input.groups === "object" && input.groups ? input.groups : DEFAULT_CONFIG.groups);
+  const groups = normalizeGroups(typeof input.groups === "object" && input.groups ? input.groups : DEFAULT_CONFIG.groups, input);
   const notificationTelegramBotToken = stringValue(input.settings?.notificationTelegramBotToken, "");
   return {
     version: 1,
@@ -68,15 +70,30 @@ export function normalizeConfig(input: AppConfig): AppConfig {
   };
 }
 
-function normalizeGroups(input: Record<string, string>): Record<string, string> {
-  const groupNames = new Set(Object.keys(input));
+function normalizeGroups(input: Record<string, string>, config: AppConfig): Record<string, string> {
+  const policies = new Set([
+    ...Object.keys(input),
+    ...SURGE_BUILT_IN_RULE_POLICIES,
+    ...CLASH_BUILT_IN_RULE_POLICIES,
+    ...STASH_BUILT_IN_RULE_POLICIES,
+    ...(Array.isArray(config.proxyNodes) ? config.proxyNodes : []).flatMap((node) => {
+      try {
+        const name = node && typeof node === "object" ? parseConfiguredProxyNode(node)?.name.trim() : "";
+        return name ? [name] : [];
+      } catch {
+        return [];
+      }
+    }),
+    ...(Array.isArray(config.surge?.tailscaleNodes) ? config.surge.tailscaleNodes : [])
+      .flatMap((node) => typeof node?.name === "string" && node.name.trim() ? [node.name.trim()] : [])
+  ]);
   return Object.fromEntries(Object.entries(input).map(([name, spec]) => [
     name,
-    normalizeGroupSpec(name, spec, groupNames)
+    normalizeGroupSpec(name, spec, policies)
   ]));
 }
 
-function normalizeGroupSpec(name: string, spec: string, groupNames: Set<string>): string {
+function normalizeGroupSpec(name: string, spec: string, policies: Set<string>): string {
   const [rawType = "select", ...items] = splitGroupSpec(String(spec));
   const type = rawType.trim().toLowerCase() || "select";
   if (isSubnetGroupType(type)) {
@@ -98,7 +115,7 @@ function normalizeGroupSpec(name: string, spec: string, groupNames: Set<string>)
   }
   const filtered = items.filter((item, index) => {
     if (item === "Proxy" || item === name) return false;
-    if (groupNames.has(item)) return items.indexOf(item) === index;
+    if (policies.has(item)) return items.indexOf(item) === index;
     return isGroupOption(item) || isAllSelector(item);
   });
   return [type, ...filtered].join(", ");

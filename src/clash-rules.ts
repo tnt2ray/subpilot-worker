@@ -14,6 +14,7 @@ import type { AppConfig, Target } from "./types";
 import { mapWithConcurrency, readResponseTextWithLimit } from "./util";
 import { CLASH_BUILT_IN_RULE_POLICIES, STASH_BUILT_IN_RULE_POLICIES } from "./rule-targets";
 import { validateRuleMatchValue } from "./rule-value-validation";
+import { fetchWithTimeout } from "./upstream-fetch";
 
 const MAX_PROVIDER_CONTENT_BYTES = 2 * 1024 * 1024;
 const MAX_EXTERNAL_PROVIDER_FETCHES = 24;
@@ -409,22 +410,13 @@ function addMissingRuleProviderRules(rules: string[], providerNames: string[]): 
 }
 
 async function fetchProviderContent(url: string, userAgent: string, fetcher: Fetcher): Promise<string> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), PROVIDER_FETCH_TIMEOUT_MS);
-  let response: Response;
-  try {
-    response = await fetcher(url, { headers: { "user-agent": userAgent }, signal: controller.signal });
-  } catch (error) {
-    if (controller.signal.aborted) throw new Error("fetch timeout");
-    throw error;
-  } finally {
-    clearTimeout(timeout);
-  }
-  if (!response.ok) {
-    await response.body?.cancel().catch(() => undefined);
-    throw new Error(`HTTP ${response.status}`);
-  }
-  return readResponseTextWithLimit(response, MAX_PROVIDER_CONTENT_BYTES, "rule provider");
+  return fetchWithTimeout(fetcher, url, { headers: { "user-agent": userAgent } }, PROVIDER_FETCH_TIMEOUT_MS, async (response) => {
+    if (!response.ok) {
+      await response.body?.cancel().catch(() => undefined);
+      throw new Error(`HTTP ${response.status}`);
+    }
+    return readResponseTextWithLimit(response, MAX_PROVIDER_CONTENT_BYTES, "rule provider");
+  });
 }
 
 function ruleSetLineLabel(reference: RuleSetReference, ruleSetLineNumber: number): string {

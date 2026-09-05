@@ -15,7 +15,7 @@
     "typecheck": "tsc --noEmit",
     "typecheck:worker": "npm run types && npm run typecheck",
     "test": "vitest run",
-    "verify": "npm run typecheck:worker && npm test",
+    "verify": "npm run typecheck:worker && npm run public:scan",
     "vendor:codemirror": "node scripts/build-codemirror-vendor.mjs",
     "public:scan": "node scripts/check-public-safety.mjs",
     "dry-run": "wrangler deploy --dry-run --outdir dist"

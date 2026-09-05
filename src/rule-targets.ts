@@ -213,7 +213,7 @@ function translateRuleLineForTarget(rule: string, target: RuleSetOutputTarget, m
     if (expression === null) return null;
     parts[1] = expression;
   }
-  return (mainRule ? parts : filterRuleSetRuleOptions(parts, target)).join(",");
+  return translateSourceMatchOptions(parts, target, mainRule)?.join(",") ?? null;
 }
 
 function translateLogicalExpression(expression: string, target: RuleSetOutputTarget): string | null {
@@ -277,7 +277,7 @@ function translateLogicalNode(content: string, target: RuleSetOutputTarget): str
     if (expression === null) return null;
     parts[1] = expression;
   }
-  return filterRuleSetRuleOptions(parts, target).join(",");
+  return translateSourceMatchOptions(parts, target, false)?.join(",") ?? null;
 }
 
 function logicalRuleParts(content: string): string[] | null {
@@ -357,10 +357,16 @@ function filterDirectRuleOptions(type: string, options: string[], target: RuleSe
     : normalized.filter((option) => option === "no-resolve");
 }
 
-function filterRuleSetRuleOptions(parts: string[], target: RuleSetOutputTarget): string[] {
+function translateSourceMatchOptions(parts: string[], target: RuleSetOutputTarget, mainRule: boolean): string[] | null {
   const type = parts[0]?.trim().toUpperCase() ?? "";
   if (target === "clash" || !TARGET_IP_RULE_TYPES.has(type)) return parts;
-  return parts.filter((part, index) => index < 2 || part.trim().toLowerCase() !== "src");
+  const optionStart = mainRule ? parts.length - directRuleOptions(parts).length : 2;
+  if (!parts.slice(optionStart).some((part) => part.trim().toLowerCase() === "src")) return parts;
+  // Dropping `src` would silently turn source matching into destination
+  // matching. Only CIDRs have an equivalent on both other targets.
+  if (type !== "IP-CIDR" && type !== "IP-CIDR6") return null;
+  const sourceType = translateRuleType("SRC-IP-CIDR", target);
+  return sourceType ? [sourceType, ...parts.slice(1, optionStart)] : null;
 }
 
 function usesSurgeSubnetRule(rule: string): boolean {
@@ -395,7 +401,7 @@ function directRuleOptions(parts: string[]): string[] {
   const normalized = parts.map((part) => part.trim()).filter(Boolean);
   if (normalized.length <= 2) return [];
   const third = (normalized[2] || "").toLowerCase();
-  if (third === "no-resolve") return normalized.slice(2);
+  if (third === "no-resolve" || third === "src") return normalized.slice(2);
   return normalized.slice(3);
 }
 

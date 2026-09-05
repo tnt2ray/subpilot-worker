@@ -39,7 +39,6 @@ const READ_TOKEN_CLEANUP_PENDING_KEY = "auth:read_token_cleanup_pending";
 const READ_TOKEN_CLEANUP_PENDING_PREFIX = `${READ_TOKEN_CLEANUP_PENDING_KEY}:`;
 const READ_TOKEN_CLEANUP_COMPLETE_PREFIX = `auth:read_token_cleanup_complete:${READ_TOKEN_RECORD_VERSION}:`;
 const READ_TOKEN_CLEANUP_GRACE_MS = 5 * 60 * 1000;
-const READ_TOKEN_ROTATION_SLOT_MS = 30 * 1000;
 const LEGACY_READ_TOKEN_HASH_KEY = "auth:read_token_hash";
 const LEGACY_READ_TOKEN_KEY = "auth:read_token";
 const SETTINGS_PREFIX = "config:settings:";
@@ -300,13 +299,15 @@ export async function storeInitialReadToken(env: Env, token: string): Promise<st
 
 export async function rotateStoredReadToken(env: Env): Promise<string> {
   const now = Date.now();
-  const rotationSlot = Math.floor(now / READ_TOKEN_ROTATION_SLOT_MS);
-  const token = await deriveRotatedReadToken(env, rotationSlot);
+  const latestKey = (await listKvKeys(env, READ_TOKEN_ROTATION_PREFIX)).sort().at(-1);
+  const previousTime = latestKey ? Number(latestKey.slice(READ_TOKEN_ROTATION_PREFIX.length).split(":", 1)[0]) : 0;
+  const rotationTime = Math.max(now, Number.isSafeInteger(previousTime) ? previousTime + 1 : 0);
+  const token = randomToken(32);
   const legacyCleanupRequired = await legacyReadTokenKeysExist(env).catch(() => true);
   await writeReadTokenRecord(
     env,
     await createReadTokenRecord(token, { rotatedAt: now, legacyCleanupRequired }),
-    readTokenRotationKey(rotationSlot)
+    readTokenRotationKey(rotationTime)
   );
   await maintainReadTokenCleanup(env, legacyCleanupRequired).catch(logConfigHousekeepingFailure);
   return token;
@@ -717,12 +718,9 @@ function readTokenCleanupNotBeforeFromKey(key: string): number | null {
   return normalizeCleanupNotBefore(key.slice(READ_TOKEN_CLEANUP_PENDING_PREFIX.length).split(":", 1)[0]);
 }
 
-async function deriveRotatedReadToken(env: Env, rotationSlot: number): Promise<string> {
-  return deriveReadToken(env, `subpilot:rotated-read-token:v1:${rotationSlot}`);
-}
-
-function readTokenRotationKey(rotationSlot: number): string {
-  return `${READ_TOKEN_ROTATION_PREFIX}${String(rotationSlot).padStart(16, "0")}:${randomToken(8)}`;
+function readTokenRotationKey(rotationTime: number): string {
+  // Millisecond keys sort after legacy 30-second slots without rewriting them.
+  return `${READ_TOKEN_ROTATION_PREFIX}${String(rotationTime).padStart(16, "0")}:${randomToken(8)}`;
 }
 
 async function deriveReadToken(env: Env, purpose: string): Promise<string> {

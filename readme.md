@@ -73,10 +73,9 @@ npm run setup
 
 1. 从 `wrangler.example.jsonc` 生成本地 `wrangler.jsonc`。
 2. 创建或写入 `SUBPILOT_CONFIG` KV namespace。
-3. 部署 Worker 和静态管理页。
+3. 询问上游订阅自动获取间隔（1～24 小时），默认每 12 小时一次。
 4. 要求输入至少 24 个字符的管理员 token，并生成配置加密密钥。
-5. 询问上游订阅自动获取间隔，默认每 12 小时一次。
-6. 通过 `wrangler secret bulk` 写入 `ADMIN_TOKEN_HASH` 和 `CONFIG_ENCRYPTION_KEY`。
+5. 通过 `wrangler deploy --secrets-file` 同时部署 Worker、静态管理页和两个必需 Secrets；即使 Wrangler 失败，也会删除临时密钥文件。
 
 脚本会把你输入的管理员 token 转成 SHA-256 hash 写入 `ADMIN_TOKEN_HASH`。请把管理员 token 保存在密码管理器中；仓库、KV 和 Cloudflare Secret 中都不会保存它的明文。
 
@@ -148,7 +147,7 @@ wrangler secret put CONFIG_ENCRYPTION_KEY
 wrangler deploy
 ```
 
-默认 `wrangler.example.jsonc` 会配置每 12 小时获取上游订阅，并每天刷新一次统一规则集。需要调整间隔时，可以修改 `wrangler.jsonc` 中的 `triggers.crons` 后重新部署。
+默认 `wrangler.example.jsonc` 会配置每 12 小时获取上游订阅，并每天刷新一次统一规则集。需要调整上游订阅间隔时，可以修改 `wrangler.jsonc` 中对应的 `triggers.crons` 项后重新部署。保留 `0 16 * * *` 作为统一规则集每日任务，其余 cron 项用于刷新上游订阅。
 
 如需自定义域名，在 Cloudflare 中把域名接到 Worker，或在本地 `wrangler.jsonc` 中添加自己的 `routes` 配置。不要把包含真实域名和 namespace ID 的 `wrangler.jsonc` 提交到公开仓库。
 
@@ -268,7 +267,7 @@ FINAL,Proxy
 
 编译域名型规则源时，不带前缀的 `example.com` 始终按精确 `DOMAIN` 处理。前缀语义取决于来源格式：在 Surge `DOMAIN-SET` 中，`.example.com` 的前导点表示 `DOMAIN-SUFFIX`，匹配根域及其子域；在 Clash / mihomo domain provider（以及兼容的 Stash 输出）中，`+.example.com` 匹配根域和任意层级子域，`.example.com` 只匹配子域而不匹配根域，`*.example.com` 只匹配一级子域。Clash / Stash 输出会保留这些模式；无法在 Surge 中等价表达的 `.example.com` 与 `*.example.com` provider 模式会从 Surge 产物中过滤并产生诊断，而不会扩大成 `DOMAIN-SUFFIX`。
 
-统一规则会按目标客户端的能力做映射和过滤：合法的 `IP-ASN` 会保留；`no-resolve` 只在目标支持时输出；`src` 只为 Clash 保留，并让对应 IP 规则使用 classical 规则集，Surge 与 Stash 会移除该参数。目标不支持的规则类型、附加参数和内置策略不会泄漏到对应配置；例如 Surge 专属的 `CELLULAR`、`CELLULAR-ONLY`、`HYBRID`、`NO-HYBRID`，以及 Clash 专属的 `PASS-RULE`、`COMPATIBLE`，只会在对应目标中保留。Surge 独立规则必须且只能以一个 `FINAL` 兜底；Clash / Stash 独立规则必须且只能以一个 `MATCH` 或 `FINAL` 兜底，兜底项都必须位于最后。
+统一规则会按目标客户端的能力做映射和过滤：合法的 `IP-ASN` 会保留；`no-resolve` 只在目标支持时输出；`src` 始终保持源地址匹配语义：Clash 在 classical 规则集中保留该参数，CIDR 规则为 Surge 转换成 `SRC-IP`、为 Stash 转换成 `SRC-IP-CIDR`；没有等价表达的源地址 GEOIP/ASN 规则会从 Surge/Stash 输出中省略并给出兼容性提示。目标不支持的规则类型、附加参数和内置策略不会泄漏到对应配置；例如 Surge 专属的 `CELLULAR`、`CELLULAR-ONLY`、`HYBRID`、`NO-HYBRID`，以及 Clash 专属的 `PASS-RULE`、`COMPATIBLE`，只会在对应目标中保留。Surge 独立规则必须且只能以一个 `FINAL` 兜底；Clash / Stash 独立规则必须且只能以一个 `MATCH` 或 `FINAL` 兜底，兜底项都必须位于最后。
 
 规则行解析会保留引号或复合逻辑表达式内部的逗号，避免把 `AND`、`OR`、`NOT` 子规则或带引号的值错误拆列。保存手工逻辑规则时，系统会递归校验括号和引号是否平衡、`AND` / `OR` 是否至少包含两个子规则、`NOT` 是否恰好包含一个子规则，以及每个叶子规则的类型、匹配值和附加参数是否合法；逻辑子规则不能携带策略出口。代理订阅解析同时兼容 SIP002 URL。TUIC 会保留明确的协议版本：Surge `tuic` 按 v4 的 `token` 认证处理，`tuic-v5` 按 v5 的 `uuid` 与 `password` 处理；Clash / Stash 的 `type: tuic` 和 `tuic://` URL 按 v5 处理。Surge v4 节点不会转换成不兼容的 Clash / Stash 节点。
 
@@ -381,3 +380,13 @@ help - 查看命令列表
 - 最近获取记录中的客户端 IP 位置可能显示为未知。
 
 上传或重新上传 MMDB 后，系统会清理旧的地区识别缓存，使新的地区识别结果尽快生效。
+
+## 配置保留与本地验证
+
+策略组固定成员可以选择内置策略、手动节点、Tailscale 节点及其它策略组，订阅节点仍通过全部节点选择器加入。保存无关设置时，会保留这些成员以及 Clash/Stash 原有的独立引导 DNS 与上游 DNS 列表；明确编辑统一 DNS 时才应用共享 DNS 值。VMess 链接保留 TCP、WebSocket（包括 Host 头）和 gRPC 传输类型，SIP002 链接支持显式使用 80 端口。
+
+每次轮换订阅读取 token 都会生成新的随机值，包括同一 30 秒内的连续操作。已有 token 在轮换前仍可读取；跨节点失效时间仍受 Workers KV 传播延迟影响。
+
+编译缓存的有效性包含来源 URL、格式和启用状态。此次更新后的首次使用会重新编译旧产物，无需手工迁移 KV 数据结构。兼容索引写入失败不会阻断规则编译，预览请求的超时覆盖响应头和正文读取。
+
+运行 `npm run verify` 执行 Worker 类型生成、TypeScript 检查和公开文件安全扫描，再运行 `npm audit` 检查依赖漏洞。验证不会生成或运行测试代码。本地构建可使用全局 Wrangler 执行 `wrangler deploy --dry-run --config wrangler.example.jsonc --outdir /tmp/subpilot-dry-run`，不会部署 Worker。

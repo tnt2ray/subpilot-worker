@@ -24,6 +24,7 @@ import {
 } from "./rule-targets";
 import { effectiveRuleSetOutputs, planRuleSetOutputs } from "./rule-set-outputs";
 import type { AppConfig } from "./types";
+import { sha256Hex } from "./util";
 
 export interface RuleSetRefreshResult {
   refreshed: number;
@@ -66,7 +67,7 @@ interface CompileOptions {
 
 const FINAL_RULE_TYPES = new Set(["FINAL", "MATCH"]);
 const RULE_SET_UPDATE_INTERVAL_SECONDS = 24 * 60 * 60;
-const RULE_SET_COMPILER_REVISION = 4;
+const RULE_SET_COMPILER_REVISION = 5;
 const MAX_RULE_SET_OUTPUT_SOURCE_CHARACTERS = 8 * 1024 * 1024;
 const MAX_RULE_SET_OUTPUT_RULES = 50_000;
 
@@ -76,6 +77,7 @@ export async function compileRuleSetOutput(
   output: RuleSetOutput,
   options: CompileOptions = {}
 ): Promise<{ manifest: CompiledRuleSetManifest; stale: boolean }> {
+  const outputFingerprint = await ruleSetOutputFingerprint(config, output);
   const buckets = emptyBuckets();
   const warnings: string[] = [];
   const sourceErrors: string[] = [];
@@ -144,7 +146,7 @@ export async function compileRuleSetOutput(
     const existing = options.allowStaleFallback && !refreshDeadlineExceeded(options.deadline)
       ? await readCompiledRuleSetManifest(env, output.name)
       : null;
-    if (existing?.outputFingerprint === ruleSetOutputFingerprint(output)) {
+    if (existing?.outputFingerprint === outputFingerprint) {
       return {
         manifest: {
           ...existing,
@@ -174,7 +176,7 @@ export async function compileRuleSetOutput(
 
   const manifest: CompiledRuleSetManifest = {
     outputName: output.name,
-    outputFingerprint: ruleSetOutputFingerprint(output),
+    outputFingerprint,
     policy: output.policy,
     updatedAt: new Date().toISOString(),
     sourceIds: output.sourceIds,
@@ -199,7 +201,7 @@ export async function compileRuleSetOutput(
     const existing = options.allowStaleFallback
       ? await readCompiledRuleSetManifest(env, output.name).catch(() => null)
       : null;
-    if (existing?.outputFingerprint === ruleSetOutputFingerprint(output)) {
+    if (existing?.outputFingerprint === outputFingerprint) {
       return {
         manifest: {
           ...existing,
@@ -222,18 +224,23 @@ export async function ensureCompiledRuleSet(
   output: RuleSetOutput
 ): Promise<CompiledRuleSetManifest> {
   const cached = await readCompiledRuleSetManifest(env, output.name);
-  if (cached?.outputFingerprint === ruleSetOutputFingerprint(output)) return cached;
+  if (cached?.outputFingerprint === await ruleSetOutputFingerprint(config, output)) return cached;
   return compileRuleSetOutput(env, config, output, { allowStaleFallback: true }).then((result) => result.manifest);
 }
 
-function ruleSetOutputFingerprint(output: RuleSetOutput): string {
-  return JSON.stringify({
+async function ruleSetOutputFingerprint(config: AppConfig, output: RuleSetOutput): Promise<string> {
+  const sources = new Map(config.ruleSets.sources.map((source) => [source.id, source]));
+  return sha256Hex(JSON.stringify({
     compilerRevision: RULE_SET_COMPILER_REVISION,
     policy: output.policy,
     sourceIds: output.sourceIds,
+    sources: output.sourceIds.map((id) => {
+      const source = sources.get(id);
+      return source ? { id, url: source.url, enabled: source.enabled, format: source.format } : { id, missing: true };
+    }),
     inlineRules: output.inlineRules,
     surgeOptions: output.surgeOptions
-  });
+  }));
 }
 
 export async function refreshRuleSetCaches(

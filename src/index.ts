@@ -18,7 +18,6 @@ import { readCachedUpdateStatus, getUpdateStatus } from "./update-check";
 import { APP_VERSION, RELEASE_REPOSITORY } from "./version";
 import { badRequest, forbidden, jsonResponse, notFound, payloadTooLarge, readRequestJsonWithLimit, RequestBodyTooLargeError, sha256Hex, textResponse, tooManyRequests, unauthorized } from "./util";
 
-const SOURCE_REFRESH_CRON = "0 */12 * * *";
 const RULE_SET_REFRESH_CRON = "0 16 * * *";
 const MAX_LOGIN_REQUEST_BYTES = 4 * 1024;
 const MAX_CONFIG_REQUEST_BYTES = 2 * 1024 * 1024;
@@ -51,7 +50,8 @@ export default {
       await warmScheduledRuleSetWorkerCache(env, config);
       return;
     }
-    if (controller.cron !== SOURCE_REFRESH_CRON) return;
+    // The installer allows custom upstream schedules; the other trigger is
+    // reserved for rule sets above.
     const result = await refreshSourceCache(env, config, {
       deadline: Date.now() + SCHEDULED_REFRESH_DEADLINE_MS
     });

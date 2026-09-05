@@ -73,10 +73,9 @@ npm run setup
 
 1. Generate a local `wrangler.jsonc` from `wrangler.example.jsonc`.
 2. Create or write the `SUBPILOT_CONFIG` KV namespace.
-3. Deploy the Worker and static admin UI.
+3. Ask for the upstream subscription auto-fetch interval (1–24 hours), defaulting to 12 hours.
 4. Ask for an admin token of at least 24 characters and generate the configuration encryption key.
-5. Ask for the upstream subscription auto-fetch interval, defaulting to once every 12 hours.
-6. Write `ADMIN_TOKEN_HASH` and `CONFIG_ENCRYPTION_KEY` through `wrangler secret bulk`.
+5. Deploy the Worker and static admin UI with both required Secrets through `wrangler deploy --secrets-file`. The temporary secrets file is removed even if Wrangler fails.
 
 The script converts the admin token you enter into a SHA-256 hash and writes that hash to `ADMIN_TOKEN_HASH`. Store the admin token in a password manager; its plaintext is not stored in the repository, KV, or Cloudflare Secrets.
 
@@ -148,7 +147,7 @@ Use an admin token of at least 24 characters. Use its SHA-256 hex from step 4 fo
 wrangler deploy
 ```
 
-The default `wrangler.example.jsonc` fetches upstream subscriptions every 12 hours and refreshes unified rule sets once per day. To adjust either interval, edit `triggers.crons` in `wrangler.jsonc` and deploy again.
+The default `wrangler.example.jsonc` fetches upstream subscriptions every 12 hours and refreshes unified rule sets once per day. To adjust the upstream interval, edit its entry in `triggers.crons` in `wrangler.jsonc` and deploy again. Keep `0 16 * * *` for the daily unified rule-set task; other cron entries refresh upstream subscriptions.
 
 For a custom domain, connect the domain to the Worker in Cloudflare or add your own `routes` configuration in local `wrangler.jsonc`. Do not commit a `wrangler.jsonc` that contains real domains or namespace IDs to the public repository.
 
@@ -268,7 +267,7 @@ FINAL,Proxy
 
 When compiling domain-based rule sources, an unprefixed `example.com` is always treated as an exact `DOMAIN` rule. Prefix semantics depend on the source format: in a Surge `DOMAIN-SET`, the leading dot in `.example.com` means `DOMAIN-SUFFIX` and matches both the root domain and its subdomains; in a Clash / mihomo domain provider (and compatible Stash output), `+.example.com` matches the root and subdomains at any depth, `.example.com` matches subdomains but not the root, and `*.example.com` matches exactly one subdomain label. Clash / Stash output preserves these patterns. Provider patterns such as `.example.com` and `*.example.com` that have no equivalent Surge representation are filtered from Surge artifacts with a diagnostic instead of being broadened to `DOMAIN-SUFFIX`.
 
-Unified rules are mapped and filtered according to each target client's capabilities. Valid `IP-ASN` rules are retained; `no-resolve` is emitted only where supported; and `src` is retained only for Clash, where the corresponding IP rule uses a classical rule set, while Surge and Stash remove that option. Unsupported rule types, options, and built-in policies do not leak into that target's profile. For example, Surge-only `CELLULAR`, `CELLULAR-ONLY`, `HYBRID`, and `NO-HYBRID`, and Clash-only `PASS-RULE` and `COMPATIBLE`, are retained only for their respective targets. Target-specific Surge rules must contain exactly one `FINAL`; target-specific Clash / Stash rules must contain exactly one `MATCH` or `FINAL`; in every case, the fallback must be last.
+Unified rules are mapped and filtered according to each target client's capabilities. Valid `IP-ASN` rules are retained; `no-resolve` is emitted only where supported; and `src` remains a source-address match: Clash retains the option in a classical rule set, while CIDR rules map to `SRC-IP` for Surge and `SRC-IP-CIDR` for Stash. Source GEOIP/ASN rules without an equivalent are omitted from Surge/Stash with a compatibility warning. Unsupported rule types, options, and built-in policies do not leak into that target's profile. For example, Surge-only `CELLULAR`, `CELLULAR-ONLY`, `HYBRID`, and `NO-HYBRID`, and Clash-only `PASS-RULE` and `COMPATIBLE`, are retained only for their respective targets. Target-specific Surge rules must contain exactly one `FINAL`; target-specific Clash / Stash rules must contain exactly one `MATCH` or `FINAL`; in every case, the fallback must be last.
 
 Rule parsing preserves commas inside quoted values and composite logical expressions instead of splitting `AND`, `OR`, or `NOT` subrules incorrectly. When manual logical rules are saved, the validator recursively checks balanced parentheses and quotes, requires at least two children for `AND` / `OR` and exactly one for `NOT`, and validates every leaf rule's type, match value, and options; logical children cannot carry policy targets. Proxy subscription parsing also accepts SIP002 URLs. TUIC protocol versions remain explicit: Surge `tuic` uses the v4 `token` scheme, while `tuic-v5` uses the v5 `uuid` and `password` scheme; Clash / Stash `type: tuic` entries and `tuic://` URLs are treated as v5. Surge v4 nodes are not converted into incompatible Clash / Stash nodes.
 
@@ -381,3 +380,13 @@ If no MMDB is uploaded, SubPilot can only identify regions from existing single-
 - Client IP location in recent fetch records may show as unknown.
 
 After uploading or re-uploading an MMDB file, the system clears old region detection cache so new region results take effect as soon as possible.
+
+## Configuration preservation and local verification
+
+Fixed policy-group members can include built-in policies, manual nodes, Tailscale nodes, and other groups. Subscription nodes still use the all-nodes selector. Saving unrelated settings preserves these members and the separate Clash/Stash bootstrap and upstream DNS lists; editing unified DNS explicitly applies the shared DNS values. VMess URLs preserve TCP, WebSocket (including its Host header), and gRPC transports; SIP002 links may explicitly use port 80.
+
+Each subscription-token rotation generates a new random value, including consecutive rotations within 30 seconds. Existing tokens remain readable until rotated; Workers KV propagation can still delay revocation across locations.
+
+Compiled-cache validity includes source URL, format, and enabled state. The first use after this update recompiles older artifacts; no manual KV schema migration is required. Failed compatibility-index writes do not abort rule compilation. Preview fetch deadlines cover both response headers and body.
+
+Run `npm run verify` for Worker type generation, TypeScript checks, and the public-file safety scan, then `npm audit` for dependency advisories. Verification does not generate or run test code. A local build can be checked with global Wrangler using `wrangler deploy --dry-run --config wrangler.example.jsonc --outdir /tmp/subpilot-dry-run`; this does not deploy a Worker.

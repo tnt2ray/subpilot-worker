@@ -1072,6 +1072,10 @@ function unifiedCommonState(config) {
       clashEncryptedDnsServers,
       stashEncryptedDnsServers
     ],
+    nameservers: [
+      [...(config.clash.nameservers || [])],
+      [...(config.stash.dns?.nameservers || [])]
+    ],
     realIpDomains: [
       [...(config.surge.alwaysRealIp || [])],
       [...(config.clash.fakeIpFilter || [])],
@@ -1174,6 +1178,9 @@ function setUnifiedDnsServers(field, value) {
   const common = ensureUnifiedCommonDraft();
   const servers = textToLines(value);
   common[field] = [servers.slice(), servers.slice(), servers.slice()];
+  common.nameservers = [1, 2].map((index) => effectiveUnifiedNameservers(
+    common.basicDnsServers[index], common.encryptedDnsServers[index]
+  ));
   const control = field === "basicDnsServers" ? refs.unifiedBasicDnsServers : refs.unifiedEncryptedDnsServers;
   const mixedNotice = field === "basicDnsServers" ? refs.unifiedBasicDnsServersMixed : refs.unifiedEncryptedDnsServersMixed;
   control.dataset.mixed = "false";
@@ -1208,7 +1215,7 @@ function buildUnifiedCommonPatch(common, ruleSets) {
       ipv6: common.ipv6[1],
       allowLan: common.lanAccess[1],
       defaultNameservers: common.basicDnsServers[1].slice(),
-      nameservers: effectiveUnifiedNameservers(common.basicDnsServers[1], common.encryptedDnsServers[1]),
+      nameservers: common.nameservers[0].slice(),
       fakeIpFilter: common.realIpDomains[1].slice()
     },
     stash: {
@@ -1216,7 +1223,7 @@ function buildUnifiedCommonPatch(common, ruleSets) {
       allowLan: common.lanAccess[2],
       dns: {
         defaultNameservers: common.basicDnsServers[2].slice(),
-        nameservers: effectiveUnifiedNameservers(common.basicDnsServers[2], common.encryptedDnsServers[2]),
+        nameservers: common.nameservers[1].slice(),
         fakeIpFilter: common.realIpDomains[2].slice()
       }
     }
@@ -3940,8 +3947,19 @@ function choiceList(value) {
   return commaList(value);
 }
 
-function groupList(value, currentName, groupNames = Object.keys(state.groups || {})) {
-  const groups = new Set(groupNames.filter((name) => name !== currentName && name !== "Proxy"));
+function groupPolicyCandidates(currentName, groupNames = Object.keys(state.groups || {})) {
+  return [...new Set([
+    ...groupNames,
+    ...SUBNET_BUILT_IN_POLICIES,
+    ...CLASH_BUILT_IN_POLICIES,
+    ...STASH_BUILT_IN_POLICIES,
+    ...proxyNodeDraftNames(),
+    ...(state.surge?.tailscaleNodes || []).map((node) => node.name)
+  ])].filter((name) => name && name !== currentName && name !== "Proxy");
+}
+
+function groupList(value, currentName, groupNames) {
+  const groups = new Set(groupPolicyCandidates(currentName, groupNames));
   const choices = choiceList(value);
   return choices.filter((item, index) => groups.has(item) && choices.indexOf(item) === index);
 }
@@ -4079,7 +4097,7 @@ function groupTypeLabel(type) {
 }
 
 function renderGroupChoiceInputs(currentName, choices) {
-  const candidates = groupEntries().map(([name]) => name).filter((name) => name !== currentName && name !== "Proxy");
+  const candidates = groupPolicyCandidates(currentName, groupEntries().map(([name]) => name));
   if (candidates.length === 0) {
     return `<div class="group-choice-empty">${escapeHtml(t("noGroupChoices"))}</div>`;
   }
