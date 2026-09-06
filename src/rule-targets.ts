@@ -1,7 +1,7 @@
 import { convertRule } from "./singbox-config";
 import { isValidSingboxHeadlessRule } from "./singbox-validation";
 import type { RenderConfig, ProxyNode } from "./types";
-import { splitRuleLine } from "./rule-line";
+import { compiledFinalRuleOptions, splitRuleLine } from "./rule-line";
 import { RULE_SET_TARGETS, type RuleSetDirectRule, type RuleSetOutputTarget } from "./rule-set-types";
 
 export const SURGE_BUILT_IN_RULE_POLICIES = new Set([
@@ -165,8 +165,12 @@ export function renderDirectRuleForTarget(rule: RuleSetDirectRule, target: RuleS
   const type = (parts[0] || "").trim().toUpperCase();
   if (!type) return null;
   if (FINAL_RULE_TYPES.has(type)) {
-    const options = filterDirectRuleOptions(type, parts.slice(2), target);
-    if (options.length !== parts.slice(2).filter(Boolean).length) return null;
+    // The plan's policy is independent; allow FINAL,dns-failed as well as
+    // FINAL,Proxy,dns-failed. Keep unsupported options visible to diagnostics.
+    const rawOptions = compiledFinalRuleOptions(parts);
+    const outputType = target === "surge" ? "FINAL" : "MATCH";
+    const options = filterDirectRuleOptions(outputType, rawOptions, target);
+    if (options.length !== rawOptions.filter(Boolean).length) return null;
     return target === "surge"
       ? ["FINAL", rule.policy, ...options].join(",")
       : `MATCH,${rule.policy}`;
@@ -190,7 +194,7 @@ export function renderRuleSetRuleForTarget(rule: string, target: RuleSetOutputTa
 export function isRulePolicyCompatibleWithTarget(policy: string, target: RuleSetOutputTarget): boolean {
   const normalized = policy.trim();
   if (!normalized) return false;
-  if (isSurgeDevicePolicy(normalized)) return target === "surge";
+  if (/^DEVICE:/i.test(normalized)) return false;
   const upper = normalized.toUpperCase();
   if (!ALL_BUILT_IN_RULE_POLICIES.has(upper)) return true;
   return builtInPoliciesForTarget(target).has(upper);
@@ -417,10 +421,6 @@ function directRuleOptions(parts: string[]): string[] {
   return normalized.slice(3);
 }
 
-function isSurgeDevicePolicy(policy: string): boolean {
-  return /^DEVICE:[^,\r\n[\]]+$/i.test(policy.trim());
-}
-
 export function ruleTargetIndex(parts: string[]): number | null {
   const type = parts[0]?.trim().toUpperCase();
   if (!type || type.startsWith("#")) return null;
@@ -437,9 +437,8 @@ function isAvailableRuleTarget(
   proxyNames: Set<string>,
   outputTarget: RuleSetOutputTarget
 ): boolean {
-  if (disabledGroups.has(target)) return false;
+  if (disabledGroups.has(target) || /^DEVICE:/i.test(target)) return false;
   return activeGroups.has(target)
     || proxyNames.has(target)
-    || builtInPoliciesForTarget(outputTarget).has(target.toUpperCase())
-    || (outputTarget === "surge" && isSurgeDevicePolicy(target));
+    || builtInPoliciesForTarget(outputTarget).has(target.toUpperCase());
 }

@@ -21,6 +21,8 @@ import { configFileNameForTarget } from "./target-files";
 import { handleTelegramBindCode, handleTelegramUnbind, handleTelegramWebhook, saveConfigWithTelegramWebhook } from "./telegram";
 import { readCachedUpdateStatus, getUpdateStatus } from "./update-check";
 import { APP_VERSION, RELEASE_REPOSITORY } from "./version";
+import { singboxSchema, validateSingboxSection } from "./singbox-validation";
+import { applyTransforms, buildChainNodes, buildConfiguredProxyNodes, ensureUniqueProxyPolicyNames } from "./node-transforms";
 import { badRequest, forbidden, jsonResponse, notFound, payloadTooLarge, readRequestJsonWithLimit, RequestBodyTooLargeError, sha256Hex, textResponse, tooManyRequests, unauthorized } from "./util";
 
 const RULE_SET_REFRESH_CRON = "0 16 * * *";
@@ -138,9 +140,45 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
   if (!await isAdminRequest(env, request)) return unauthorized();
   const url = new URL(request.url);
 
+  if (url.pathname === "/api/singbox/schema" && request.method === "GET") return jsonResponse(singboxSchema);
+  if (url.pathname === "/api/singbox/validate" && request.method === "POST") {
+    let body: { section?: unknown; value?: unknown };
+    try { body = await readRequestJsonWithLimit(request, MAX_CONFIG_REQUEST_BYTES); }
+    catch (error) { return error instanceof RequestBodyTooLargeError ? payloadTooLarge("Configuration is too large") : badRequest("Invalid JSON"); }
+    if (!body || typeof body.section !== "string") return badRequest("A sing-box section is required");
+    const errors = validateSingboxSection(body.section, body.value);
+    return jsonResponse({ valid: errors.length === 0, errors });
+  }
+
   if (url.pathname === "/api/config" && request.method === "GET") {
     const loaded = withInferredManagedBaseUrl(await loadConfig(env), request.url);
     return jsonResponse({ ...configDocument(loaded), migrationRequired: Boolean(loaded.migrationRequired) });
+  }
+  if (url.pathname === "/api/config/check" && request.method === "POST") {
+    const target = normalizeTarget(url.searchParams.get("target"));
+    if (!target) return badRequest("Invalid target");
+    const result = await generateForRequest(env, request, target);
+    return jsonResponse({ target, canDownload: result.canDownload, diagnostics: result.diagnostics });
+  }
+  if (url.pathname === "/api/config/proxy-names" && request.method === "POST") {
+    let body: AppConfig;
+    try { body = await readRequestJsonWithLimit(request, MAX_CONFIG_REQUEST_BYTES); }
+    catch (error) { return error instanceof RequestBodyTooLargeError ? payloadTooLarge("Configuration is too large") : badRequest("Invalid JSON"); }
+    try {
+      const document = normalizeConfigDocument(body);
+      const error = validateDocumentForSave(document);
+      if (error) return badRequest(error);
+      const names = await Promise.all(OUTPUT_TARGETS.map(async (target) => {
+        const config = renderConfig(document, target);
+        // Manual nodes retain their names even with GeoIP renaming enabled.
+        // Resolve the unsaved draft without fetching subscriptions or writing KV.
+        const view = { ...config, settings: { ...config.settings, geoipRenameEnabled: false } };
+        const nodes = ensureUniqueProxyPolicyNames(await applyTransforms(env, buildConfiguredProxyNodes(view), view, target, []), view, []);
+        const chains = ensureUniqueProxyPolicyNames(buildChainNodes(nodes), view, [], nodes.map((node) => node.name));
+        return [target === "sing-box" ? "singbox" : target, [...nodes, ...chains].map((node) => node.name)];
+      }));
+      return jsonResponse(Object.fromEntries(names));
+    } catch { return badRequest("Cannot read proxy names from this configuration"); }
   }
   if (url.pathname === "/api/config/migration" && request.method === "GET") {
     const { config, fingerprint } = await loadConfigMigration(env);
@@ -293,7 +331,14 @@ async function handleSync(request: Request, env: Env, ctx: ExecutionContext, man
   const target = inferTarget(request);
   if (!target) return badRequest("Cannot identify the client. User-Agent must identify Surge, clash, or sing-box.");
   const result = await generateForRequest(env, request, target);
-  if (!result.canDownload) return jsonResponse({ error: "Configuration is not ready for this target" }, { status: 422 });
+  if (!result.canDownload) {
+    const diagnostics = result.diagnostics.filter((item) => item.severity === "error");
+    return jsonResponse({
+      error: diagnostics[0]?.message || "Configuration is not ready for this target",
+      target,
+      diagnostics
+    }, { status: 422, headers: { vary: "User-Agent" } });
+  }
   ctx.waitUntil(recordConfigFetch(env, result.target, request).catch((error) => {
     console.error(JSON.stringify({ level: "error", message: error instanceof Error ? error.message : String(error) }));
   }));
@@ -373,6 +418,9 @@ function validateDocumentForSave(document: AppConfig): string | null {
       if (error) return error;
     }
     if (document.clients.singbox.inbounds.length > 100 || (Array.isArray(document.clients.singbox.route.rules) && document.clients.singbox.route.rules.length > 10_000)) return "sing-box 入站或路由规则超过数量限制。";
+    for (const key of ["outbounds", "endpoints", "services", "http_clients", "certificate_providers", "network_namespaces"] as const) {
+      if ((document.clients.singbox[key]?.length ?? 0) > 500) return `sing-box ${key} 超过数量限制。`;
+    }
     return null;
   } catch { return "配置包含非法内容。"; }
 }

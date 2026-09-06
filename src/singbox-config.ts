@@ -66,7 +66,7 @@ export function convertSurgeToSingbox(config: RenderConfig): SingboxConfig {
     const at = line.indexOf("=");
     return [{ host: line.slice(0, at).trim(), value: line.slice(at + 1).trim() }];
   }), issues);
-  for (const field of ["urlRewrite", "mapLocal", "scripts", "ponteDeviceNames", "tailscaleNodes", "alwaysRealIp", "skipProxy"] as const) {
+  for (const field of ["urlRewrite", "mapLocal", "scripts", "tailscaleNodes", "alwaysRealIp", "skipProxy"] as const) {
     if (surge[field].length) issues.push(issue(`clients.singbox`, `surge-${field}`, field === "skipProxy" ? "error" : "warning", `Surge ${field} 未自动转换，请检查 sing-box 对应设置。`));
   }
   if (surge.mitm.hostname.length) issues.push(issue("clients.singbox", "surge-mitm", "warning", "sing-box 不输出 MITM 配置。"));

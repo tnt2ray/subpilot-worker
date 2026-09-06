@@ -1,4 +1,5 @@
 import { normalizeManagedBasePath, ruleSetPathName } from "./managed-url";
+import { isValidSingboxOutbound } from "./singbox-validation";
 import { isProxyNodeSupportedForTarget } from "./node-transforms";
 import { parseConfiguredProxyNode } from "./parsers";
 import { parseAllPolicySelector, parseGroupOption, splitGroupSpec } from "./policy-group-spec";
@@ -25,6 +26,8 @@ const RESERVED_MANAGED_BASE_PATHS = new Set([
   "/app-yaml.js",
   "/app.js",
   "/app-model.js",
+  "/singbox-ui.js",
+  "/tailscale-ui.js",
   "/index.html",
   "/login.html",
   "/mitm-ca.js",
@@ -480,13 +483,13 @@ export function validateCompiledRulePolicies(config: RenderConfig): string | nul
   ]);
   for (const output of config.ruleSets.outputs.filter((item) => item.enabled)) {
     const policy = output.policy.trim();
-    if (!configuredPolicies.has(policy) && !/^DEVICE:[^,\r\n[\]]+$/i.test(policy)) {
+    if (/^DEVICE:/i.test(policy) || !configuredPolicies.has(policy)) {
       return `规则输出 ${output.name} 的策略 ${policy} 不存在或不可用`;
     }
   }
   for (const rule of config.ruleSets.directRules.filter((item) => item.enabled)) {
     const policy = rule.policy.trim();
-    if (!configuredPolicies.has(policy) && !/^DEVICE:[^,\r\n[\]]+$/i.test(policy)) {
+    if (/^DEVICE:/i.test(policy) || !configuredPolicies.has(policy)) {
       return `主配置单条规则 ${rule.name || rule.id} 的策略 ${policy} 不存在或不可用`;
     }
   }
@@ -498,7 +501,6 @@ function validatePolicyGroupSpec(name: string, spec: string, config: RenderConfi
   const [rawType = "", ...items] = splitGroupSpec(spec);
   const type = rawType.trim().toLowerCase();
   if (!POLICY_GROUP_TYPES.has(type)) return `策略组 ${name} 类型 ${rawType || "(空)"} 不受支持`;
-  if (name === "Proxy" && type !== "select") return "内置 Proxy 策略组类型必须为 select";
 
   const configuredPolicies = new Set([
     ...Object.keys(config.groups),
@@ -513,7 +515,8 @@ function validatePolicyGroupSpec(name: string, spec: string, config: RenderConfi
         return [];
       }
     }),
-    ...config.surge.tailscaleNodes.flatMap((node) => typeof node?.name === "string" && node.name.trim() ? [node.name.trim()] : [])
+    ...config.surge.tailscaleNodes.flatMap((node) => typeof node?.name === "string" && node.name.trim() ? [node.name.trim()] : []),
+    ...(config.renderTarget === "sing-box" ? [...config.document?.clients.singbox.outbounds ?? [], ...config.document?.clients.singbox.endpoints ?? []].flatMap((node) => typeof node.tag === "string" ? [node.tag] : []) : [])
   ]);
   let defaultCount = 0;
   const optionKeys = new Set<string>();
@@ -559,6 +562,21 @@ function validatePolicyGroupSpec(name: string, spec: string, config: RenderConfi
       try { if (!["http:", "https:"].includes(new URL(option.value).protocol)) throw new Error(); }
       catch { return `策略组 ${name} icon-url 必须使用 http 或 https`; }
       continue;
+    }
+    if (config.renderTarget === "sing-box" && ["select", "url-test"].includes(type)) {
+      if (key === "interrupt_exist_connections") {
+        if (!["true", "false"].includes(option.value)) return `策略组 ${name} interrupt_exist_connections 必须为 true 或 false`;
+        continue;
+      }
+      if (type === "select" && key === "default") {
+        const policyError = validatePolicyName(option.value, `策略组 ${name} 默认成员`);
+        if (policyError) return policyError;
+        continue;
+      }
+      if (type === "url-test" && key === "idle_timeout") {
+        if (!isValidSingboxOutbound({ type: "urltest", outbounds: ["DIRECT"], idle_timeout: option.value })) return `策略组 ${name} idle_timeout 时长格式无效`;
+        continue;
+      }
     }
     if (type === "select") return `策略组 ${name} select 类型不支持参数 ${key}`;
     if (type === "subnet") {
@@ -706,7 +724,6 @@ function validateConfigLists(config: RenderConfig): string | null {
     [config.surge.alwaysRealIp, "Surge always-real-ip", MAX_GENERAL_LIST_ITEMS, MAX_URL_LENGTH],
     [config.surge.tunExcludedRoutes, "Surge tun-excluded-routes", MAX_GENERAL_LIST_ITEMS, MAX_URL_LENGTH],
     [config.surge.encryptedDnsServer, "Surge encrypted-dns-server", MAX_GENERAL_LIST_ITEMS, MAX_URL_LENGTH],
-    [config.surge.ponteDeviceNames, "Surge Ponte 设备名", MAX_REFERENCE_LIST_ITEMS, MAX_NAME_LENGTH],
     [config.surge.hosts, "Surge Host", MAX_GENERAL_LIST_ITEMS, MAX_RULE_LENGTH],
     [config.surge.urlRewrite, "Surge URL Rewrite", MAX_GENERAL_LIST_ITEMS, MAX_RULE_LENGTH],
     [config.surge.mapLocal, "Surge Map Local", MAX_GENERAL_LIST_ITEMS, MAX_RULE_LENGTH],

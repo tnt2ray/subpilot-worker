@@ -326,7 +326,6 @@ export function normalizeSurge(input: Partial<RenderConfig["surge"]> | undefined
     wifiAssist: surge.wifiAssist === true,
     excludeSimpleHostnames: surge.excludeSimpleHostnames !== false,
     encryptedDnsFollowOutboundMode: surge.encryptedDnsFollowOutboundMode !== false,
-    ponteDeviceNames: normalizePonteDeviceNames(surge.ponteDeviceNames),
     tailscaleNodes: normalizeSurgeTailscaleNodes(surge.tailscaleNodes),
     hosts: stringArray(surge.hosts, DEFAULT_CONFIG.surge.hosts),
     urlRewrite,
@@ -402,13 +401,6 @@ function normalizeSurgeMitm(input: Partial<RenderConfig["surge"]["mitm"]> | unde
     caPassphrase: typeof mitm.caPassphrase === "string" ? mitm.caPassphrase.trim() : DEFAULT_CONFIG.surge.mitm.caPassphrase,
     caP12: typeof mitm.caP12 === "string" ? mitm.caP12.trim() : DEFAULT_CONFIG.surge.mitm.caP12
   };
-}
-
-function normalizePonteDeviceNames(value: unknown): string[] {
-  if (!Array.isArray(value)) return DEFAULT_CONFIG.surge.ponteDeviceNames;
-  return [...new Set(value
-    .map((item) => String(item).trim().replace(/^DEVICE:/i, "").trim())
-    .filter((item) => item && !/[,\r\n[\]]/.test(item)))];
 }
 
 export function normalizeClash(input: Partial<RenderConfig["clash"]> | undefined): RenderConfig["clash"] {

@@ -1,5 +1,5 @@
 const CLIENTS = { surge: { label: "Surge", target: "surge" }, clash: { label: "clash", target: "clash" }, singbox: { label: "sing-box", target: "sing-box" } };
-const NAV = [["status", "概览", "Overview", "grid"], ["sources", "订阅源", "Sources", "source"], ["nodes", "代理节点", "Proxy nodes", "nodes"], ["groups", "策略组", "Policy groups", "settings"], ["clients", "客户端配置", "Client settings", "settings"], ["rule-sources", "规则来源", "Rule sources", "source"], ["links", "配置链接", "Subscription links", "link"], ["system", "系统设置", "System settings", "settings"]];
+const NAV = [["status", "概览", "Overview", "grid"], ["sources", "订阅源", "Sources", "source"], ["nodes", "代理节点", "Proxy nodes", "nodes"], ["groups", "策略组", "Policy groups", "settings"], ["clients", "客户端配置", "Client settings", "settings"], ["links", "配置链接", "Subscription links", "link"], ["system", "系统设置", "System settings", "settings"]];
 const LABELS = {
   managedBaseUrl: "订阅基础 URL",
   userAgentSurge: "Surge 抓取 User-Agent",
@@ -28,7 +28,6 @@ const LABELS = {
   wifiAssist: "Wi-Fi 助理",
   excludeSimpleHostnames: "排除简单主机名",
   encryptedDnsFollowOutboundMode: "加密 DNS 跟随出站",
-  ponteDeviceNames: "Ponte 设备",
   tailscaleNodes: "Tailscale 节点",
   hosts: "Hosts",
   urlRewrite: "URL Rewrite",
@@ -128,7 +127,8 @@ const CLIENT_SECTIONS = {
     network: ["ipv6", "ipv6Vif", "allowWifiAccess", "skipProxy", "tunExcludedRoutes", "wifiAssist", "excludeSimpleHostnames", "managedConfigIntervalSeconds", "internetTestUrl", "proxyTestUrl", "showErrorPageForReject"],
     dns: ["dnsServer", "encryptedDnsServer", "encryptedDnsFollowOutboundMode", "alwaysRealIp", "hosts"],
     rules: ["rules"],
-    advanced: ["ponteDeviceNames", "tailscaleNodes", "urlRewrite", "mapLocal", "scripts"],
+    advanced: ["urlRewrite", "mapLocal", "scripts"],
+    tailscale: ["tailscaleNodes"],
     mitm: ["mitm"]
   },
   clash: {
@@ -137,7 +137,7 @@ const CLIENT_SECTIONS = {
     rules: ["rules", "ruleProviders"],
     advanced: []
   },
-  singbox: { network: ["inbounds"], dns: ["dns"], rules: ["route"], advanced: ["log", "experimental"] }
+  singbox: { network: ["inbounds"], dns: ["dns"], rules: ["route"], tailscale: ["endpoints"], advanced: ["log", "experimental"] }
 };
 const RULE_FIELDS = { domain: ["域名", "Domain"], domain_suffix: ["域名后缀", "Domain suffix"], domain_keyword: ["域名关键词", "Domain keyword"], ip_cidr: ["IP 网段", "IP CIDR"], source_ip_cidr: ["来源 IP 网段", "Source IP CIDR"], process_name: ["进程名称", "Process name"], rule_set: ["规则集", "Rule set"], protocol: ["协议", "Protocol"], network: ["网络", "Network"], port: ["目标端口", "Destination port"] };
 const LEGACY_RULE_FIELDS = ["DOMAIN", "DOMAIN-SUFFIX", "DOMAIN-KEYWORD", "DOMAIN-REGEX", "IP-CIDR", "IP-CIDR6", "GEOIP", "GEOSITE", "RULE-SET", "PROCESS-NAME", "SRC-IP-CIDR", "DST-PORT", "NETWORK", "FINAL", "MATCH"];

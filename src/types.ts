@@ -53,7 +53,6 @@ export interface SurgeConfig {
   wifiAssist: boolean;
   excludeSimpleHostnames: boolean;
   encryptedDnsFollowOutboundMode: boolean;
-  ponteDeviceNames: string[];
   tailscaleNodes: SurgeTailscaleNodeConfig[];
   hosts: string[];
   urlRewrite: string[];
@@ -325,6 +324,13 @@ export interface SingboxConfig {
   dns: Record<string, ProxyParamValue>;
   inbounds: Record<string, ProxyParamValue>[];
   endpoints?: Record<string, ProxyParamValue>[];
+  outbounds?: Record<string, ProxyParamValue>[];
+  ntp?: Record<string, ProxyParamValue>;
+  certificate?: Record<string, ProxyParamValue>;
+  certificate_providers?: Record<string, ProxyParamValue>[];
+  http_clients?: Record<string, ProxyParamValue>[];
+  network_namespaces?: Record<string, ProxyParamValue>[];
+  services?: Record<string, ProxyParamValue>[];
   route: Record<string, ProxyParamValue>;
   experimental: Record<string, ProxyParamValue>;
   migrationIssues: ConfigDiagnostic[];

@@ -458,10 +458,7 @@ function allowedRuleOptions(type: string): Set<string> {
 function validatePolicy(policy: string, knownPolicies: Set<string>): string | null {
   const trimmed = policy.trim();
   if (!trimmed || /[\r\n,[\]]/.test(trimmed)) return "策略出口格式无效";
-  if (!knownPolicies.has(trimmed) && !isSurgeDevicePolicy(trimmed)) return "策略出口必须是可用节点、已配置策略组或 Surge 内置策略";
+  if (/^DEVICE:/i.test(trimmed)) return "已移除 Surge Ponte 支持，请替换 DEVICE: 策略引用";
+  if (!knownPolicies.has(trimmed)) return "策略出口必须是可用节点、已配置策略组或 Surge 内置策略";
   return null;
-}
-
-function isSurgeDevicePolicy(policy: string): boolean {
-  return /^DEVICE:[^,\r\n[\]]+$/i.test(policy);
 }

@@ -4,7 +4,7 @@
 https://github.com/SagerNet/sing-box/blob/v1.14.0/docs/schema.json
 
 Copyright © 2022 nekohasekai. The upstream GPL-3.0-or-later license and additional
-terms are retained in `LICENSE`. This schema is used to validate compatible
+terms are retained in `LICENSE`. This schema powers the native configuration forms and validates compatible
 configuration output; SubPilot is an independent project.
 
 Update this file only together with the supported core version, adapters,

@@ -88,7 +88,6 @@ function matchConfigPolicyToken(stream, policies) {
   }
   return Boolean(
     stream.match(/(?:DIRECT|Proxy|REJECT(?:-(?:DROP|NO-DROP|TINYGIF))?|PASS|GLOBAL)(?=\s*,|\s|\]|\)|$)/i)
-    || stream.match(/DEVICE:[^,\s\])]+/i)
   );
 }
 

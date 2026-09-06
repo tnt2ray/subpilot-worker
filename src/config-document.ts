@@ -82,6 +82,14 @@ export function normalizeConfigDocument(stored: StoredConfigDocument): AppConfig
   for (const [path, items] of [["inbounds", singbox.inbounds], ["dns.servers", singbox.dns.servers], ["dns.rules", singbox.dns.rules], ["route.rules", singbox.route.rules], ["route.rule_set", singbox.route.rule_set]] as const) {
     if (items !== undefined && (!Array.isArray(items) || items.some((item) => !item || typeof item !== "object" || Array.isArray(item)))) throw new Error(`sing-box ${path} 必须是对象数组。`);
   }
+  for (const key of ["outbounds", "endpoints", "certificate_providers", "http_clients", "network_namespaces", "services"] as const) {
+    const items = singbox[key];
+    if (items !== undefined && (!Array.isArray(items) || items.some((item) => !item || typeof item !== "object" || Array.isArray(item)))) throw new Error(`sing-box ${key} 必须是对象数组。`);
+  }
+  for (const key of ["ntp", "certificate"] as const) {
+    const value = singbox[key];
+    if (value !== undefined && (!value || typeof value !== "object" || Array.isArray(value))) throw new Error(`sing-box ${key} 必须是对象。`);
+  }
   if (singbox.migrationIssues !== undefined && (!Array.isArray(singbox.migrationIssues) || singbox.migrationIssues.some((item) => !item || item.target !== "sing-box" || !["error", "warning"].includes(item.severity) || [item.path, item.code, item.message].some((value) => typeof value !== "string")))) throw new Error("sing-box 迁移诊断格式无效。");
   return {
     version: 3,

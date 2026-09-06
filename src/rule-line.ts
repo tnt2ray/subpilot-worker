@@ -1,3 +1,10 @@
+/** Compiled rules may omit the policy stored in their separate policy field. */
+export function compiledFinalRuleOptions(parts: string[]): string[] {
+  const second = parts[1]?.toLowerCase() ?? "";
+  const option = ["dns-failed", "no-resolve", "src", "extended-matching"].includes(second) || second.includes("=");
+  return parts.slice(option ? 1 : 2);
+}
+
 export function splitRuleLine(line: string): string[] {
   const parts: string[] = [];
   let current = "";

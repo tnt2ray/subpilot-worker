@@ -135,7 +135,6 @@ const SURGE_KEYS = [
   "wifiAssist",
   "excludeSimpleHostnames",
   "encryptedDnsFollowOutboundMode",
-  "ponteDeviceNames",
   "tailscaleNodes",
   "hosts",
   "urlRewrite",

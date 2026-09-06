@@ -100,7 +100,6 @@ export const DEFAULT_CONFIG: RenderConfig = {
     wifiAssist: false,
     excludeSimpleHostnames: true,
     encryptedDnsFollowOutboundMode: true,
-    ponteDeviceNames: [],
     tailscaleNodes: [],
     hosts: [],
     urlRewrite: [

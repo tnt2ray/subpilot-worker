@@ -910,19 +910,6 @@ dialog footer {
     transition: none !important;
   }
 }
-.rule-mode {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 10px;
-  margin: -10px 0 14px;
-  color: var(--muted);
-  font-size: 12px;
-}
-.rule-mode select {
-  width: 180px;
-  font-size: 12px;
-}
 .numbered-code {
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -971,9 +958,6 @@ dialog footer {
   .sidebar {
     transition: none;
   }
-  .rule-mode {
-    justify-content: flex-start;
-  }
   .rule-table {
     min-width: 620px;
   }
@@ -983,4 +967,66 @@ dialog footer {
   .numbered-code {
     max-height: 360px;
   }
+}
+
+.rule-plan-table { min-width: 900px; }
+.rule-plan-table .plan-match { min-width: 260px; width: 40%; }
+.rule-plan-table textarea { min-height: 74px; width: 100%; resize: vertical; }
+.rule-plan-table select { min-width: 145px; max-width: 220px; }
+.rule-plan-table code { white-space: pre-wrap; overflow-wrap: anywhere; }
+.group-syntax { margin: 0 0 20px; }
+.group-syntax summary { cursor: pointer; }
+.group-syntax ul { padding-left: 24px; }
+.group-syntax li + li { margin-top: 12px; }
+.group-syntax code { white-space: pre-wrap; overflow-wrap: anywhere; }
+.rule-plan-table label { display: grid; gap: 6px; margin-top: 6px; }
+.rule-plan-table td { vertical-align: top; }
+
+.rule-plan-table .plan-enabled { display: flex; align-items: center; gap: 8px; }
+.rule-plan-table .plan-enabled-label { display: none; }
+@media (max-width: 760px) {
+  .rule-plan-table, .rule-plan-table tbody { display: block; min-width: 0; width: 100%; }
+  .rule-plan-table thead { display: none; }
+  .rule-plan-table tr { display: grid; grid-template-columns: 30px minmax(0, 1fr); padding: 12px; border-bottom: 1px solid var(--border); }
+  .rule-plan-table tr:last-child { border-bottom: 0; }
+  .rule-plan-table td { border: 0; padding: 6px 0; min-width: 0; }
+  .rule-plan-table td:nth-child(n+3) { grid-column: 1 / -1; }
+  .rule-plan-table .plan-match { min-width: 0; width: 100%; }
+  .rule-plan-table select { width: 100%; max-width: none; }
+  .rule-plan-table td.actions { position: static; width: auto; min-width: 0; box-shadow: none; }
+  .rule-plan-table .plan-enabled-label { display: inline; }
+}
+
+.output-source-settings + .output-source-settings { border-top: 1px solid var(--border); margin-top: 12px; padding-top: 12px; }
+.output-source-settings > p { overflow-wrap: anywhere; }
+
+.ts-field-group { margin-top: 16px; border-top: 1px solid var(--border); padding-top: 12px; }
+.ts-field-group summary { cursor: pointer; font-weight: 600; }
+.ts-networks { display: flex; flex-wrap: wrap; gap: 12px; }
+.ts-networks label { display: flex; align-items: center; gap: 6px; }
+.tailscale-table { min-width: 650px; }
+.sb-summary { overflow-wrap: anywhere; color: var(--muted, #64748b); }
+.sb-form { min-width: 0; }
+.sb-field { position: relative; border-bottom: 1px solid #e5e7eb; padding: 14px 0; }
+.sb-label { display: block; margin-bottom: 8px; padding-right: 66px; font-weight: 600; overflow-wrap: anywhere; }
+.sb-field code { display: inline-block; color: #64748b; font-size: 12px; font-weight: 400; overflow-wrap: anywhere; }
+.sb-field > details { margin-right: 66px; }
+.sb-field > details > summary { cursor: pointer; padding: 6px 0; }
+.sb-control { margin-right: 66px; }
+.sb-remove { position: absolute; right: 0; top: 14px; }
+.sb-remove button { font-size: 12px; padding: 5px 8px; }
+.sb-variant { display: grid; gap: 6px; margin: 10px 0; color: #475569; }
+.sb-add { display: flex; gap: 8px; margin: 16px 0; align-items: center; }
+.sb-add select, .sb-add input { min-width: 0; flex: 1; }
+.sb-form input, .sb-form select, .sb-form textarea { max-width: 100%; width: 100%; }
+.sb-form button { flex-shrink: 0; }
+.sb-item { border: 1px solid #dbe2ea; border-radius: 8px; padding: 12px; margin: 12px 0; min-width: 0; }
+.sb-item > summary { cursor: pointer; overflow-wrap: anywhere; }
+.sb-item-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.sb-secret { -webkit-text-security: disc; }
+@media (max-width: 600px) {
+  .sb-item { padding: 8px; }
+  .sb-add { flex-wrap: wrap; }
+  .sb-add select, .sb-add input { flex-basis: 100%; }
+  .sb-field > details { margin-right: 0; padding-top: 30px; }
 }

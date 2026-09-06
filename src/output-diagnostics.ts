@@ -1,4 +1,5 @@
 import YAML from "yaml";
+import { singboxReferences, singboxSchema } from "./singbox-validation";
 import { splitRuleLine } from "./rule-line";
 import { splitGroupSpec, parseAllPolicySelector, parseGroupOption } from "./policy-group-spec";
 import { ruleTargetIndex, builtInPoliciesForTarget } from "./rule-targets";
@@ -22,7 +23,7 @@ export function collectOutputDiagnostics(config: RenderConfig, target: Target, c
   if (target === "sing-box") {
     builtins.clear();
     const data = JSON.parse(content);
-    for (const [path, items] of [["outbounds", [...data.outbounds ?? [], ...data.endpoints ?? []]], ["inbounds", data.inbounds], ["http_clients", data.http_clients], ["dns.servers", data.dns?.servers], ["route.rule_set", data.route?.rule_set]] as const) {
+    for (const [path, items] of [["outbounds", [...data.outbounds ?? [], ...data.endpoints ?? []]], ["inbounds", data.inbounds], ["http_clients", data.http_clients], ["certificate_providers", data.certificate_providers], ["network_namespaces", data.network_namespaces], ["services", data.services], ["dns.servers", data.dns?.servers], ["route.rule_set", data.route?.rule_set]] as const) {
       const tags = new Set<string>();
       for (const item of items ?? []) {
         if (!item.tag) continue;
@@ -37,14 +38,16 @@ export function collectOutputDiagnostics(config: RenderConfig, target: Target, c
       else nodes.add(outbound.tag);
       if (outbound.detour) detours.set(outbound.tag, outbound.detour);
     }
-    for (const endpoint of data.endpoints ?? []) if (endpoint.tag) nodes.add(endpoint.tag);
-    collectJsonReferences(data.route?.rules, roots);
+    for (const endpoint of data.endpoints ?? []) if (endpoint.tag) {
+      nodes.add(endpoint.tag);
+      if (endpoint.detour) detours.set(endpoint.tag, endpoint.detour);
+    }
     if (data.route?.final) roots.add(data.route.final);
     else if (!hasTerminalRule(data.route?.rules)) add("clients.singbox.route.final", "missing-final", "请显式设置默认出站，或在最后添加无条件的路由/拒绝规则。");
-    const ruleSets = new Set((data.route?.rule_set ?? []).flatMap((item: { tag: string | string[] }) => item.tag));
-    const dnsTags = new Set((data.dns?.servers ?? []).map((item: { tag: string }) => item.tag));
-    const httpTags = new Set((data.http_clients ?? []).map((item: { tag: string }) => item.tag));
-    const inboundTags = new Set((data.inbounds ?? []).map((item: { tag: string }) => item.tag));
+    const ruleSets = new Set<string>((data.route?.rule_set ?? []).flatMap((item: { tag: string | string[] }) => item.tag));
+    const dnsTags = new Set<string>((data.dns?.servers ?? []).map((item: { tag: string }) => item.tag));
+    const httpTags = new Set<string>((data.http_clients ?? []).map((item: { tag: string }) => item.tag));
+    const inboundTags = new Set<string>((data.inbounds ?? []).map((item: { tag: string }) => item.tag));
     const inboundEdges = new Map<string, string>();
     for (const inbound of data.inbounds ?? []) {
       if (!inbound.detour) continue;
@@ -58,29 +61,38 @@ export function collectOutputDiagnostics(config: RenderConfig, target: Target, c
         seen.add(next); next = inboundEdges.get(next);
       }
     }
-    const walk = (value: unknown, path: string) => {
-      if (!value || typeof value !== "object") return;
-      if (Array.isArray(value)) { value.forEach((item,index) => walk(item, `${path}.${index}`)); return; }
-      for (const [key,item] of Object.entries(value)) {
-        if (key === "rule_set" && (typeof item === "string" || Array.isArray(item) && item.every((part) => typeof part === "string"))) {
-          for (const tag of Array.isArray(item) ? item : [item]) if (!ruleSets.has(tag)) add(path, "missing-rule-set", `规则集 ${tag} 不存在。`);
+    const tagSets: Record<string, Set<string>> = {
+      inbound: inboundTags, dns_server: dnsTags, http_client: httpTags, rule_set: ruleSets,
+      certificate_provider: new Set((data.certificate_providers ?? []).map((item: { tag: string }) => item.tag))
+    };
+    for (const reference of singboxReferences(data)) {
+      if (reference.kind === "outbound") roots.add(reference.tag);
+      // netns also accepts OS namespace names and paths on the client device.
+      // A value absent from network_namespaces is not necessarily a missing tag.
+      else if (tagSets[reference.kind] && !tagSets[reference.kind]!.has(reference.tag)) add(reference.path, "missing-reference", `${reference.kind} 引用 ${reference.tag} 不存在。`);
+    }
+    // These semantic references are not annotated in the upstream schema.
+    const preferred = (rules: unknown, dns: boolean): void => {
+      if (!Array.isArray(rules)) return;
+      for (const rule of rules) {
+        if (!rule || typeof rule !== "object") continue;
+        const values = Array.isArray(rule.preferred_by) ? rule.preferred_by : [rule.preferred_by];
+        for (const tag of values) if (typeof tag === "string") {
+          if (!dns) roots.add(tag);
+          else if (!dnsTags.has(tag)) add("clients.singbox.dns.rules", "missing-dns", `DNS 规则引用的 ${tag} 不存在。`);
         }
-        if ((key === "detour" || key === "download_detour") && !/^clients\.singbox\.inbounds\.\d+$/.test(path)) { if (typeof item === "string") roots.add(item); }
-        if ((key === "http_client" || key === "default_http_client") && typeof item === "string" && !httpTags.has(item)) add(path, "missing-http-client", `HTTP 客户端 ${item} 不存在。`);
-        if (key === "domain_resolver" || key === "default_domain_resolver") {
-          const tag = typeof item === "string" ? item : (item as {server?: string})?.server;
-          if (tag && !dnsTags.has(tag)) add(path, "missing-dns", `DNS 解析器 ${tag} 不存在。`);
-        }
-        if (key === "preferred_by" && path.startsWith("clients.singbox.route.rules")) {
-          for (const tag of Array.isArray(item) ? item : [item]) if (typeof tag === "string") roots.add(tag);
-        }
-        if (key === "preferred_by" && path.startsWith("clients.singbox.dns.rules") || key === "server" && (path.startsWith("clients.singbox.dns.rules") || (value as {action?: string}).action === "resolve")) {
-          for (const tag of Array.isArray(item) ? item : [item]) if (typeof tag === "string" && !dnsTags.has(tag)) add(path, "missing-dns", `DNS 规则引用的 ${tag} 不存在。`);
-        }
-        walk(item, `${path}.${key}`);
+        preferred(rule.rules, dns);
       }
     };
-    walk(data, "clients.singbox");
+    preferred(data.route?.rules, false); preferred(data.dns?.rules, true);
+    const endpointTypes = new Map<string, string>((data.endpoints ?? []).map((item: { tag: string; type: string }) => [item.tag, item.type]));
+    for (const server of data.dns?.servers ?? []) {
+      const expected = ({ tailscale: "tailscale", openconnect: "openconnect", openvpn: "openvpn-client" } as Record<string, string>)[server.type];
+      if (expected && endpointTypes.get(server.endpoint) !== expected) add("clients.singbox.dns.servers", "missing-endpoint", `DNS ${server.tag || server.type} 需要引用 ${expected} 类型的端点。`);
+    }
+    for (const outbound of data.outbounds ?? []) {
+      if (outbound.type === "selector" && outbound.default && !outbound.outbounds?.includes(outbound.default)) add("clients.singbox.outbounds", "selector-default", `${outbound.tag} 的默认成员不在成员列表中。`);
+    }
     if (data.dns?.final && !dnsTags.has(data.dns.final)) add("clients.singbox.dns.final", "missing-dns", "默认 DNS 解析器不存在。");
     const dnsEdges = new Map<string, string>();
     for (const server of data.dns?.servers ?? []) {
@@ -102,7 +114,9 @@ export function collectOutputDiagnostics(config: RenderConfig, target: Target, c
   } else {
     let section = "";
     for (const line of content.split(/\r?\n/)) {
-      if (line.startsWith("[")) { section = line.toLowerCase(); continue; }
+      // Source-prefixed names such as "[FP] US 01 = ..." are proxy declarations,
+      // not section headers. Only a complete bracketed line changes the section.
+      if (/^\[[^\[\]\r\n]+\]$/.test(line.trim())) { section = line.trim().toLowerCase(); continue; }
       if (section === "[rule]") collectLineReference(line, roots);
       if (section === "[proxy]" && line.includes("=")) {
         const at = line.indexOf("="); const name = line.slice(0,at).trim(); nodes.add(name);
@@ -140,7 +154,7 @@ export function collectOutputDiagnostics(config: RenderConfig, target: Target, c
   for (const [name, dependency] of detours) if (!available.has(dependency)) add(`proxyNodes.${name}`, "missing-detour", `${name} 的链式出口 ${dependency} 不存在。`);
   const checked = new Set<string>();
   const visit = (name: string, stack: Set<string>) => {
-    if (target === "surge" && /^DEVICE:[^,\r\n[\]]+$/i.test(name)) return;
+    if (target === "surge" && /^DEVICE:/i.test(name)) { add("rules", "unsupported-ponte", "已移除 Surge Ponte 支持，请替换 DEVICE: 策略引用。"); return; }
     if (!available.has(name)) { add("rules", "missing-policy", `策略 ${name} 不存在或不适用于当前输出端。`); return; }
     if (stack.has(name)) { add(`groups.${name}`, "policy-cycle", `策略 ${name} 存在循环引用。`); return; }
     if (checked.has(name)) return;
@@ -165,6 +179,7 @@ export function collectOutputDiagnostics(config: RenderConfig, target: Target, c
   };
   for (const root of roots) visit(root, new Set());
   for (const name of detours.keys()) visit(name, new Set());
+  if (target === "sing-box") for (const name of groups.keys()) visit(name, new Set());
   return diagnostics;
 }
 
@@ -172,8 +187,10 @@ function hasTerminalRule(rules: unknown): boolean {
   const last = Array.isArray(rules) ? rules.at(-1) : undefined;
   if (!last || typeof last !== "object") return false;
   const action = last.action ?? "route";
-  return (action === "reject" || action === "route" && Boolean(last.outbound))
-    && Object.keys(last).every((key) => ["type", "action", "outbound", "method", "no_drop"].includes(key))
+  const actionSchema = singboxSchema.$defs.RuleAction.oneOf.find((item) => item.properties.action.const === action);
+  return (action === "reject" || action === "direct" || ["route", "bypass"].includes(action) && Boolean(last.outbound))
+    && Boolean(actionSchema)
+    && Object.keys(last).every((key) => key === "type" || Object.hasOwn(actionSchema!.properties, key))
     && (!last.type || last.type === "default");
 }
 
@@ -181,12 +198,4 @@ function collectLineReference(line: string, roots: Set<string>): void {
   if (!line.trim() || /^\s*[#;]/.test(line)) return;
   const parts = splitRuleLine(line); const index = ruleTargetIndex(parts);
   if (index !== null && parts[index]) roots.add(parts[index]!);
-}
-function collectJsonReferences(value: unknown, roots: Set<string>): void {
-  if (!value || typeof value !== "object") return;
-  if (Array.isArray(value)) { value.forEach((item) => collectJsonReferences(item, roots)); return; }
-  for (const [key,item] of Object.entries(value)) {
-    if (key === "outbound" && typeof item === "string") roots.add(item);
-    else collectJsonReferences(item, roots);
-  }
 }
