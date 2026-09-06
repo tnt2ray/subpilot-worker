@@ -8,8 +8,8 @@ import {
   type RuleSetSource,
   type RuleSetSourceFormat
 } from "./rule-set-types";
-import { inferUrlRewriteMitmHostnames } from "./surge-url-rewrite";
 import { ruleSetPathName } from "./managed-url";
+import { inferUrlRewriteMitmHostnames } from "./surge-url-rewrite";
 import { CHAIN_EXIT_PROTOCOLS, type RenderConfig, type ChainExitProtocol, type NotificationChannel, type SourceConfig, type StaticProxyNodeConfig, type SurgeIpv6VifMode, type Target } from "./types";
 import { normalizeDisplayTimeZone } from "./util";
 
@@ -177,6 +177,8 @@ function normalizeRuleSetOutput(output: RuleSetOutput, index: number): RuleSetOu
     inlineRules: stringArray(output.inlineRules, []),
     order: finiteOrder(output.order, index),
     surgeOptions: uniqueStringArray(output.surgeOptions, []),
+    ...(output.provider !== undefined ? { provider: structuredClone(output.provider) } : {}),
+    ...(output.surgeType !== undefined ? { surgeType: output.surgeType } : {}),
     ...(updatedAt ? { updatedAt } : {})
   };
 }
@@ -188,7 +190,6 @@ function normalizeRuleSetDirectRules(rules: RuleSetDirectRule[]): RuleSetDirectR
 function normalizeRuleSetDirectRule(rule: RuleSetDirectRule, index: number): RuleSetDirectRule {
   return {
     id: normalizeStableId(rule.id, `rule-set-direct-rule-${index + 1}`),
-    name: stringValue(rule.name, `主配置规则 ${index + 1}`),
     enabled: rule.enabled !== false,
     rule: typeof rule.rule === "string" ? rule.rule.trim() : "",
     policy: stringValue(rule.policy, ""),

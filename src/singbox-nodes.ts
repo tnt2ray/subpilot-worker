@@ -63,7 +63,8 @@ export function toSingboxOutbound(node: ProxyNode, canonical: JsonObject): JsonO
   const convertedFields = new Set(["name", "type", "server", "port", "password", "uuid", "cipher", "username", "psk", "version", "userkey", "reuse", "mode", "obfs-opts", "obfs", "obfs-password", "up", "down", "alterId", "alter-id", "flow", "congestion-controller", "udp-relay-mode", "zero-rtt-handshake", "private-key", "tls", "sni", "servername", "skip-cert-verify", "alpn", "client-fingerprint", "reality-opts", "network", "ws", "ws-path", "ws-headers", "ws-opts", "grpc-opts", "dialer-proxy", "underlying-proxy", "plugin", "plugin-opts", "udp", "udp-relay", "tfo", "fast-open"]);
   for (const [key, value] of Object.entries(p)) if (value !== undefined && value !== "" && !convertedFields.has(key)) throw new Error(`节点选项 ${key} 无法等价转换，请使用原生 sing-box 节点配置`);
   if (node.password || type === "snell" && p.psk) output[type === "snell" ? "psk" : "password"] = node.password || p.psk!;
-  if (node.uuid) output.uuid = node.uuid;
+  // The canonical proxy separates username authentication from UUID credentials.
+  if (p.uuid) output.uuid = p.uuid;
   if (p.username) output.username = p.username;
   if (type === "ss") {
     output.method = node.cipher ?? canonical.cipher ?? "";

@@ -8,7 +8,7 @@ import {
 } from "./config-store";
 import { readConfigFetchStats } from "./fetch-stats";
 import { refreshRuleSetCaches, type RuleSetRefreshResult } from "./rule-set-compiler";
-import { allEnabledRuleSetSources, refreshRuleSetSourceCaches } from "./rule-set-cache";
+import { allCompiledRuleSetSources, refreshRuleSetSourceCaches } from "./rule-set-cache";
 import { configDocument, renderConfig, OUTPUT_TARGETS } from "./config-document";
 import { ruleSetEnv } from "./rule-set-scope";
 import { refreshSourceCache } from "./source-cache";
@@ -277,7 +277,7 @@ function scheduleTelegramRuleSetRefresh(
   if (!token) return;
   ctx.waitUntil((async () => {
     try {
-      const sourceRefresh = await refreshRuleSetSourceCaches(env, config, allEnabledRuleSetSources(config), { deadline, pruneUnexpected: true });
+      const sourceRefresh = await refreshRuleSetSourceCaches(env, config, allCompiledRuleSetSources(config), { deadline, pruneUnexpected: true });
       for (const target of targets) {
         const result = await refreshRuleSetCaches(ruleSetEnv(env, target), renderConfig(document, target), undefined, { deadline, sourceRefresh });
         await sendTelegramBotMessage(token, chatId, `${target}\n${formatTelegramRuleSetRefreshResultMessage(result, config.settings.displayTimeZone)}`);

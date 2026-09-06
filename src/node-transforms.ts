@@ -200,6 +200,7 @@ export function buildChainNodes(nodes: ProxyNode[]): ProxyNode[] {
       originalName: chainNodeName(node, exit),
       manual: false,
       chainExit: false,
+      generatedChain: true,
       includeInGroups: true,
       surgeDetail: undefined,
       featureTags: node.featureTags,

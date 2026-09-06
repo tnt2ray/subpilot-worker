@@ -8,6 +8,7 @@ import { validateSurgeUrlRewrite } from "./surge-url-rewrite";
 import { configDocument, renderConfig } from "./config-document";
 import { ruleSetEnv } from "./rule-set-scope";
 import { buildSingbox } from "./singbox-renderer";
+import { omitEmptyPolicyGroups } from "./empty-policy-groups";
 import { collectOutputDiagnostics } from "./output-diagnostics";
 import type { ConfigDiagnostic } from "./types";
 import { Buffer } from "node:buffer";
@@ -102,6 +103,10 @@ export async function generateConfig(
     content = target === "sing-box"
       ? await buildSingbox(env, config, prepared.nodes, prepared.hostEntries, requestUrl, diagnostics)
       : buildTargetContent(config, target, prepared.nodes, prepared.hostEntries, requestUrl, prepared.ruleSetPlan);
+    const resolved = omitEmptyPolicyGroups(config, target, content);
+    config = resolved.config;
+    content = resolved.content;
+    diagnostics.push(...resolved.diagnostics);
     diagnostics.push(...collectOutputDiagnostics(config, target, content));
     if (target === "sing-box") {
       const output = JSON.parse(content);

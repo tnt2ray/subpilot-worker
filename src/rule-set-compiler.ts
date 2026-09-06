@@ -25,9 +25,11 @@ import {
   renderDirectRuleForTarget,
   renderRuleSetRuleForTarget
 } from "./rule-targets";
-import { effectiveRuleSetOutputs, planRuleSetOutputs } from "./rule-set-outputs";
+import { directRuleSetSource, effectiveRuleSetOutputs, planRuleSetOutputs } from "./rule-set-outputs";
 import type { RenderConfig } from "./types";
 import { sha256Hex } from "./util";
+import { createSingboxAsnResolver } from "./singbox-asn";
+import { validateRuleMatchValue } from "./rule-value-validation";
 
 export interface RuleSetRefreshResult {
   refreshed: number;
@@ -63,6 +65,7 @@ export interface CompiledRuleSetReferencePlan {
 }
 
 interface CompileOptions {
+  asnResolver?: ReturnType<typeof createSingboxAsnResolver>;
   allowStaleFallback?: boolean;
   forceSourceRefresh?: boolean;
   sourceContentByKey?: Map<string, RuleSetSourceFetchResult>;
@@ -89,9 +92,28 @@ export async function compileRuleSetOutput(
   const suffixes = new Set<string>();
   const compatibility = new Map<string, CompatibilitySummary>();
   const targets = config.renderTarget ? [config.renderTarget] : RULE_SET_TARGETS;
+  const singbox = config.renderTarget === "sing-box";
+  const asnRules = new Map<string, ParsedRuleSetRule>();
+  let asnExpiresAt: number | undefined;
   let duplicateCount = 0;
   const acceptRule = (rule: ParsedRuleSetRule): void => {
+    if (config.renderTarget === "surge" && output.surgeType === "DOMAIN-SET" && (rule.bucket !== "domain" || !isPlainDomainRule(rule))) {
+      if (!sourceErrors.some((message) => message.includes("DOMAIN-SET 只能"))) sourceErrors.push(`${rule.label}：DOMAIN-SET 只能包含域名或域名后缀，请检查来源类型。`);
+      return;
+    }
+    if (config.renderTarget === "clash" && output.provider && output.provider.behavior !== "classical"
+      && rule.bucket !== output.provider.behavior) {
+      if (!sourceErrors.some((message) => message.includes("behavior="))) sourceErrors.push(`${rule.label}：规则内容与 behavior=${output.provider.behavior} 不符，请调整 behavior 或来源地址。`);
+      return;
+    }
+    if (singbox && rule.type === "IP-ASN" && !validateRuleMatchValue(rule.type, rule.value)
+      && splitRuleLine(rule.raw).slice(2).every((option) => ["no-resolve", "src"].includes(option))) {
+      if (asnRules.has(rule.normalizedKey)) duplicateCount += 1;
+      else asnRules.set(rule.normalizedKey, rule);
+      return;
+    }
     recordTargetCompatibility(rule, compatibility, targets);
+    if (singbox && renderRuleSetRuleForTarget(rule.raw, "sing-box") === null) return;
     if (seen.has(rule.normalizedKey)) { duplicateCount += 1; return; }
     seen.add(rule.normalizedKey);
     if (rule.type === "DOMAIN") {
@@ -111,7 +133,7 @@ export async function compileRuleSetOutput(
       ...(rule.clashDomainPattern ? { clashDomainPattern: rule.clashDomainPattern } : {}) });
   };
   let usedCachedSource = false;
-  const nativeAggregation = config.renderTarget === "clash" && config.ruleSets.aggregateByPolicy;
+  const nativeAggregation = config.renderTarget === "clash" && config.ruleSets.aggregateByPolicy && !output.provider;
   const memberNames = nativeAggregation
     ? planRuleSetOutputs(config.ruleSets).find((plan) => plan.output.name === output.name)?.includedOutputNames
     : undefined;
@@ -157,8 +179,9 @@ export async function compileRuleSetOutput(
         warnings.push(`${output.name}: ${result.warning}`);
       }
       const { content } = result;
-      const parsed = parseRuleSetContent(content, source.format, source.name, visitorFor(member), config.renderTarget === "clash");
-      for (const warning of parsed.warnings) sourceErrors.push(warning);
+      const format = config.renderTarget === "surge" && output.surgeType ? output.surgeType === "DOMAIN-SET" ? "surge-domain-set" : "surge-rule-set" : source.format;
+      const parsed = parseRuleSetContent(content, format, source.name, visitorFor(member), config.renderTarget === "clash", singbox);
+      for (const warning of parsed.warnings) (singbox && !parsed.fatal ? warnings : sourceErrors).push(warning);
     } catch (error) {
       sourceErrors.push(error instanceof Error ? error.message : String(error));
     }
@@ -166,7 +189,20 @@ export async function compileRuleSetOutput(
 
   for (const member of members) {
     const inline = parseInlineRuleSetLines(member.inlineRules, `${member.name} 内联规则`, visitorFor(member), config.renderTarget === "clash");
-    for (const warning of inline.warnings) sourceErrors.push(warning);
+    for (const warning of inline.warnings) (singbox ? warnings : sourceErrors).push(warning);
+  }
+
+  if (singbox && asnRules.size && !sourceErrors.length) {
+    const resolve = options.asnResolver ?? createSingboxAsnResolver(env, options.deadline);
+    for (const rule of asnRules.values()) {
+      const result = await resolve(rule.value);
+      asnExpiresAt = Math.min(asnExpiresAt ?? Infinity, result.expiresAt);
+      usedCachedSource ||= result.stale;
+      if (result.warning) warnings.push(result.warning);
+      if (result.prefixes.length) warnings.push(`AS${rule.value.replace(/^AS/i, "")} 已展开为 ${result.prefixes.length} 条 IPv4/IPv6 CIDR（RIPE RIS 快照）。`);
+      const options = splitRuleLine(rule.raw).slice(2);
+      parseInlineRuleSetLines(result.prefixes.map((prefix) => [prefix.includes(":") ? "IP-CIDR6" : "IP-CIDR", prefix, ...options].join(",")), rule.label, acceptRule);
+    }
   }
 
   if (sourceErrors.length > 0) {
@@ -204,6 +240,9 @@ export async function compileRuleSetOutput(
     sourceIds: output.sourceIds,
     ruleCount: RULE_SET_BUCKETS.reduce((sum, bucket) => sum + buckets[bucket].length, 0),
     duplicateCount,
+    ...(config.renderTarget === "clash" && output.provider ? { provider: output.provider } : {}),
+    ...(config.renderTarget === "surge" && output.surgeType ? { surgeType: output.surgeType } : {}),
+    ...(asnExpiresAt !== undefined ? { asnExpiresAt } : {}),
     buckets: RULE_SET_BUCKETS.flatMap((bucket) => {
       if (!buckets[bucket].length) return [];
       const counts = targetCounts(bucket);
@@ -240,14 +279,15 @@ export async function ensureCompiledRuleSet(
   output: RuleSetOutput
 ): Promise<CompiledRuleSetManifest> {
   const cached = await readCompiledRuleSetManifest(env, output.name);
-  if (cached?.outputFingerprint === await ruleSetOutputFingerprint(config, output)) return cached;
+  if (cached?.outputFingerprint === await ruleSetOutputFingerprint(config, output)
+    && (cached.asnExpiresAt === undefined || cached.asnExpiresAt > Date.now())) return cached;
   return compileRuleSetOutput(env, config, output, { allowStaleFallback: true }).then((result) => result.manifest);
 }
 
 async function ruleSetOutputFingerprint(config: RenderConfig, output: RuleSetOutput): Promise<string> {
   const sources = new Map(config.ruleSets.sources.map((source) => [source.id, source]));
   return sha256Hex(JSON.stringify({
-    compilerRevision: RULE_SET_COMPILER_REVISION,
+    compilerRevision: config.renderTarget === "sing-box" || config.renderTarget === "clash" ? RULE_SET_COMPILER_REVISION + 1 : RULE_SET_COMPILER_REVISION,
     target: config.renderTarget ?? "surge",
     policy: output.policy,
     sourceIds: output.sourceIds,
@@ -257,7 +297,9 @@ async function ruleSetOutputFingerprint(config: RenderConfig, output: RuleSetOut
     }),
     nativeMembers: nativeOutputMembers(config, output),
     inlineRules: output.inlineRules,
-    surgeOptions: output.surgeOptions
+    surgeOptions: output.surgeOptions,
+    ...(config.renderTarget === "surge" && output.surgeType ? { surgeType: output.surgeType } : {}),
+    ...(config.renderTarget === "clash" && output.provider ? { provider: output.provider } : {})
   }));
 }
 
@@ -300,6 +342,9 @@ async function refreshRuleSetOutputs(
   pruneUnexpected: boolean,
   options: RuleSetRefreshOptions
 ): Promise<RuleSetRefreshResult> {
+  outputs = outputs.filter((output) => !directRuleSetSource(config.ruleSets, output, config.renderTarget ?? "surge"));
+  const neededSourceIds = new Set(outputs.flatMap((output) => output.sourceIds));
+  sourcesToRefresh = sourcesToRefresh.filter((source) => neededSourceIds.has(source.id));
   const sourceRefresh = options.sourceRefresh ? await scopeRuleSetSourceRefresh(options.sourceRefresh, config) : await refreshRuleSetSourceCaches(env, config, sourcesToRefresh, {
     pruneUnexpected,
     ...(options.deadline !== undefined ? { deadline: options.deadline } : {})
@@ -312,6 +357,7 @@ async function refreshRuleSetOutputs(
   let cached = 0;
   const warnings = new Set(sourceRefresh.warnings);
   const outputFailures: RuleSetOutputRefreshFailure[] = [];
+  const asnResolver = createSingboxAsnResolver(env, options.deadline);
   if (pruneUnexpected && !canContinue) warnings.add("规则集刷新已到截止时间，跳过过期编译缓存清理。");
 
   for (let outputIndex = 0; outputIndex < outputs.length; outputIndex += 1) {
@@ -327,6 +373,7 @@ async function refreshRuleSetOutputs(
     }
     try {
       const result = await compileRuleSetOutput(env, config, output, {
+        asnResolver,
         allowStaleFallback: true,
         sourceContentByKey: sourceRefresh.contentByKey,
         sourceErrorsByKey: sourceRefresh.errorsByKey,
@@ -370,6 +417,10 @@ function refreshDeadlineExceeded(deadline: number | undefined): boolean {
 
 export async function readRuleSetStatus(env: Env, config: RenderConfig): Promise<CompiledRuleSetStatusItem[]> {
   return Promise.all(effectiveRuleSetOutputs(config.ruleSets).map(async (output) => {
+    if (directRuleSetSource(config.ruleSets, output, config.renderTarget ?? "surge")) return {
+      outputName: output.name, enabled: output.enabled, direct: true, updatedAt: null,
+      ruleCount: 0, duplicateCount: 0, buckets: [], artifacts: [], warnings: [], cached: false
+    };
     const stored = await readCompiledRuleSetManifest(env, output.name);
     const manifest = stored?.outputFingerprint === await ruleSetOutputFingerprint(config, output) ? stored : null;
     const target = config.renderTarget ?? "surge";
@@ -381,7 +432,7 @@ export async function readRuleSetStatus(env: Env, config: RenderConfig): Promise
       ruleCount: manifest?.ruleCount ?? 0,
       duplicateCount: manifest?.duplicateCount ?? 0,
       buckets: manifest?.buckets ?? [],
-      artifacts: planRuleSetArtifacts(manifest?.buckets ?? [], target).map((artifact) => ({
+      artifacts: planRuleSetArtifacts(manifest?.buckets ?? [], target, manifest?.provider?.behavior, manifest?.surgeType).map((artifact) => ({
         behavior: artifact.behavior,
         count: artifact.behavior === "domain" ? count("domain") : artifact.behavior === "ipcidr" ? count("ipcidr") : count("classical") + (artifact.includesDomains ? count("domain") : 0) + (artifact.includesIpCidr ? count("ipcidr") : 0)
       })),
@@ -417,20 +468,20 @@ export async function buildCompiledRuleSetReferencePlan(
   for (const item of items) {
     if (item.kind === "direct") {
       if (target !== "surge" && tailscalePolicies.has(item.rule.policy.trim())) {
-        plan.errors.push(`${item.rule.name}: Tailscale 策略 ${item.rule.policy} 仅支持 Surge，已从 ${targetName(target)} 输出过滤。`);
+        plan.errors.push(`${item.rule.id}: Tailscale 策略 ${item.rule.policy} 仅支持 Surge，已从 ${targetName(target)} 输出过滤。`);
         continue;
       }
       if (!isRulePolicyCompatibleWithTarget(item.rule.policy, target)) {
-        plan.errors.push(`${item.rule.name}: 策略 ${item.rule.policy} 不受 ${targetName(target)} 支持，已过滤。`);
+        plan.errors.push(`${item.rule.id}: 策略 ${item.rule.policy} 不受 ${targetName(target)} 支持，已过滤。`);
         continue;
       }
       const line = renderDirectRuleForTarget(item.rule, target);
       if (!line) {
-        plan.errors.push(`${item.rule.name}: 规则语法不受 ${targetName(target)} 支持，已过滤。`);
+        plan.errors.push(`${item.rule.id}: 规则语法不受 ${targetName(target)} 支持，已过滤。`);
         continue;
       }
       if (!isFinalRuleLine(line) && directRuleMatchSignature(item.rule.rule) !== directRuleMatchSignature(line)) {
-        plan.warnings.push(`${item.rule.name}: 规则语法已映射为 ${targetName(target)} 兼容格式。`);
+        plan.warnings.push(`${item.rule.id}: 规则语法已映射为 ${targetName(target)} 兼容格式。`);
       }
       if (isFinalRuleLine(line)) {
         finalDirectRules.push(line);
@@ -450,13 +501,28 @@ export async function buildCompiledRuleSetReferencePlan(
         plan.errors.push(`${output.name}: 策略 ${output.policy} 不受 ${targetName(target)} 支持，已过滤。`);
         continue;
       }
+      const direct = directRuleSetSource(config.ruleSets, output, target);
+      if (direct) {
+        if (target === "surge") {
+          plan.surgeRules.push([direct.surgeType!, direct.url, output.policy, ...output.surgeOptions].join(","));
+        } else {
+          const providerName = compiledRuleProviderName(output.name, "combined");
+          plan.clashRuleProviders[providerName] = {
+            type: "http", behavior: output.provider!.behavior, format: direct.format,
+            url: direct.url, path: `./rules/${providerName}.${direct.format === "yaml" ? "yaml" : "txt"}`,
+            interval: output.provider!.interval
+          };
+          plan.clashRules.push(`RULE-SET,${providerName},${output.policy}${output.surgeOptions.includes("no-resolve") ? ",no-resolve" : ""}`);
+        }
+        continue;
+      }
       const manifest = await ensureCompiledRuleSet(env, config, output);
       const compatibleCount = manifest.buckets.reduce((sum, bucket) => sum + (bucket.targetCounts?.[target] ?? 0), 0);
       if (compatibleCount !== manifest.ruleCount) throw new Error("规则集中存在当前输出端无法等价表达的规则。");
       const surgeStart = plan.surgeRules.length;
       const clashStart = plan.clashRules.length;
       appendCompiledOutputReferences(plan, config, output, manifest, target, requestUrl);
-      if (config.ruleSets.aggregateByPolicy) {
+      if (config.ruleSets.aggregateByPolicy && !output.provider && !output.surgeType) {
         const comment = ruleSetAggregationComment(output.policy, includedOutputNames);
         if (target === "surge" && plan.surgeRules.length > surgeStart) {
           plan.surgeRules.splice(surgeStart, 0, `# ${comment}`);
@@ -487,7 +553,7 @@ function appendCompiledOutputReferences(
   target: RuleSetOutputTarget,
   requestUrl: string
 ): void {
-  const artifacts = planRuleSetArtifacts(manifest.buckets, target);
+  const artifacts = planRuleSetArtifacts(manifest.buckets, target, manifest.provider?.behavior, manifest.surgeType);
   if (target === "surge") {
     for (const artifact of artifacts) {
       const url = managedRuleSetUrlForRequest(config, requestUrl, output.name, artifact.bucket, target);
@@ -505,9 +571,9 @@ function appendCompiledOutputReferences(
       behavior: artifact.behavior,
       url,
       path: `./rules/${providerName}.yaml`,
-      interval: RULE_SET_UPDATE_INTERVAL_SECONDS
+      interval: output.provider?.interval ?? RULE_SET_UPDATE_INTERVAL_SECONDS
     };
-    plan.clashRules.push(`RULE-SET,${providerName},${output.policy}${output.surgeOptions.includes("no-resolve") && !(target === "clash" && config.ruleSets.aggregateByPolicy) ? ",no-resolve" : ""}`);
+    plan.clashRules.push(`RULE-SET,${providerName},${output.policy}${output.surgeOptions.includes("no-resolve") && !(target === "clash" && config.ruleSets.aggregateByPolicy && !output.provider) ? ",no-resolve" : ""}`);
   }
 }
 
@@ -610,6 +676,8 @@ function changedRuleSetOutputs(previousConfig: RenderConfig, config: RenderConfi
     return JSON.stringify(nativeOutputMembers(previousConfig, previous)) !== JSON.stringify(nativeOutputMembers(config, output))
       || previous.policy !== output.policy
       || previous.enabled !== output.enabled
+      || JSON.stringify(previous.provider) !== JSON.stringify(output.provider)
+      || previous.surgeType !== output.surgeType
       || !sameStringList(previous.sourceIds, output.sourceIds)
       || !sameStringList(previous.inlineRules, output.inlineRules)
       || !sameStringList(previous.surgeOptions, output.surgeOptions);
@@ -648,7 +716,7 @@ function isPlainDomainRule(rule: CompiledRuleSetRule): boolean {
 }
 
 function nativeOutputMembers(config: RenderConfig, output: RuleSetOutput): unknown {
-  if (config.renderTarget !== "clash" || !config.ruleSets.aggregateByPolicy) return undefined;
-  return config.ruleSets.outputs.filter((item) => item.enabled && item.policy.trim() === output.policy.trim())
+  if (config.renderTarget !== "clash" || !config.ruleSets.aggregateByPolicy || output.provider) return undefined;
+  return config.ruleSets.outputs.filter((item) => item.enabled && !item.provider && item.policy.trim() === output.policy.trim())
     .map((item) => ({ sourceIds: item.sourceIds, inlineRules: item.inlineRules, options: item.surgeOptions, order: item.order }));
 }

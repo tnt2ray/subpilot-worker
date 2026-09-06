@@ -22,7 +22,9 @@ interface RuleSetBucketCount {
 
 export function planRuleSetArtifacts(
   buckets: readonly RuleSetBucketCount[],
-  target: RuleSetOutputTarget
+  target: RuleSetOutputTarget,
+  providerBehavior?: RuleSetBucket,
+  surgeType?: "RULE-SET" | "DOMAIN-SET"
 ): RuleSetArtifact[] {
   const countByBucket = new Map(buckets.map((item) => [
     item.bucket,
@@ -31,6 +33,16 @@ export function planRuleSetArtifacts(
   const domainCount = countByBucket.get("domain") ?? 0;
   const ipCidrCount = countByBucket.get("ipcidr") ?? 0;
   const classicalCount = countByBucket.get("classical") ?? 0;
+  if (target === "surge" && surgeType) {
+    if (domainCount + ipCidrCount + classicalCount === 0) return [];
+    return [{ bucket: surgeType === "DOMAIN-SET" ? "domain" : "combined", behavior: surgeType === "DOMAIN-SET" ? "domain" : "classical",
+      includesDomains: true, includesIpCidr: surgeType === "RULE-SET" && ipCidrCount > 0 }];
+  }
+  if (target === "clash" && providerBehavior) {
+    if (domainCount + ipCidrCount + classicalCount === 0) return [];
+    return [{ bucket: providerBehavior === "classical" ? "combined" : providerBehavior, behavior: providerBehavior,
+      includesDomains: providerBehavior !== "ipcidr", includesIpCidr: providerBehavior !== "domain" }];
+  }
   const useDomainProvider = domainCount > SPECIALIZED_RULE_SET_MIN_RULES;
   const useIpCidrProvider = target !== "surge" && ipCidrCount > SPECIALIZED_RULE_SET_MIN_RULES;
   const artifacts: RuleSetArtifact[] = [];

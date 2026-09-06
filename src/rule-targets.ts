@@ -209,6 +209,16 @@ export function clashRuleWithNoResolve(rule: string): string {
   return parts.join(",");
 }
 
+/** Main rules may retain a legacy policy; the plan's separate policy wins. */
+export function isNativeClashDirectRule(rule: string): boolean {
+  const parts = splitRuleLine(rule);
+  const type = parts[0]?.toUpperCase() ?? "";
+  if (FINAL_RULE_TYPES.has(type)) return compiledFinalRuleOptions(parts).length === 0;
+  if (!parts[1]) return false;
+  // Keep provider validation strict after removing only the main rule's policy.
+  return isNativeClashRule([type, parts[1], ...directRuleOptions(parts)].join(","));
+}
+
 /** Validate native provider syntax without translating another client's rules. */
 export function isNativeClashRule(rule: string): boolean {
   const parts = splitRuleLine(rule);

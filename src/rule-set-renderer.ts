@@ -72,5 +72,20 @@ function normalizeDomain(value: string): string {
 }
 
 function renderSingboxRules(rules: CompiledRuleSetRule[]): string {
-  return JSON.stringify({ version: 4, rules: rules.map((rule) => convertRule(rule.raw, true).rule) }, null, 2) + "\n";
+  // Merge values only within the same field. Separate headless rules retain OR
+  // semantics across fields such as process_name, domain_suffix and ip_cidr.
+  const groups = new Map<string, unknown[]>();
+  const remaining = [];
+  for (const rule of rules) {
+    const converted = convertRule(rule.raw, true).rule!;
+    const entries = Object.entries(converted);
+    const [field, values] = entries[0] ?? [];
+    if (entries.length === 1 && field && Array.isArray(values)) {
+      const group = groups.get(field);
+      if (group) group.push(...values);
+      else groups.set(field, [...values]);
+    } else remaining.push(converted);
+  }
+  const merged = [...groups].map(([field, values]) => ({ [field]: [...new Set(values)] }));
+  return JSON.stringify({ version: 4, rules: [...merged, ...remaining] }, null, 2) + "\n";
 }

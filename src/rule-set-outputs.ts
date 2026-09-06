@@ -1,4 +1,4 @@
-import type { RuleSetConfig, RuleSetOutput } from "./rule-set-types";
+import type { RuleSetConfig, RuleSetOutput, RuleSetOutputTarget } from "./rule-set-types";
 
 export interface PlannedRuleSetOutput {
   output: RuleSetOutput;
@@ -16,10 +16,16 @@ export function planRuleSetOutputs(ruleSets: RuleSetConfig, enabledOnly = true):
 
   const plans = new Map<string, PlannedRuleSetOutput>();
   for (const { output } of outputs) {
+    // Explicit providers merge URLs within their own row, retaining behavior,
+    // refresh interval and matching position even when legacy aggregation is on.
+    if (output.provider || output.surgeType) {
+      plans.set(`provider\0${output.name}`, { output, includedOutputNames: [output.name] });
+      continue;
+    }
     const policy = output.policy.trim();
-    const existing = plans.get(policy);
+    const existing = plans.get(`policy\0${policy}`);
     if (!existing) {
-      plans.set(policy, {
+      plans.set(`policy\0${policy}`, {
         output: {
           name: policy,
           enabled: true,
@@ -54,4 +60,32 @@ function appendUnique(current: string[], additions: string[]): string[] {
     values.push(value);
   }
   return values;
+}
+
+/** A single native source can be downloaded and refreshed by the client itself. */
+export function directRuleSetSource(ruleSets: RuleSetConfig, output: RuleSetOutput, target: RuleSetOutputTarget): { url: string; format: "yaml" | "text"; surgeType?: "RULE-SET" | "DOMAIN-SET" } | null {
+  if (output.inlineRules.length || !output.sourceIds.length) return null;
+  const sources = output.sourceIds.map((id) => ruleSets.sources.find((source) => source.id === id));
+  if (sources.some((source) => !source?.enabled || !source.url)) return null;
+  const urls = new Set(sources.map((source) => source!.url));
+  const formats = new Set(sources.map((source) => source!.format));
+  if (urls.size !== 1 || formats.size !== 1) return null;
+  const source = sources[0]!;
+  const pathname = new URL(source.url).pathname;
+  if (target === "clash" && output.provider) {
+    if (source.format === "clash-yaml") return { url: source.url, format: "yaml" };
+    if (source.format === "auto") return { url: source.url, format: /\.(?:txt|list)$/i.test(pathname) ? "text" : "yaml" };
+    const behavior = source.format.replace(/^plain-/, "");
+    if (source.format.startsWith("plain-") && behavior === output.provider.behavior) return { url: source.url, format: "text" };
+  }
+  if (target === "surge" && !/[,\r\n]/.test(source.url)) {
+    const surgeType = output.surgeType ?? (source.format === "surge-domain-set" ? "DOMAIN-SET" : source.format === "surge-rule-set" ? "RULE-SET" : undefined);
+    if (surgeType && (source.format.startsWith("surge-") || source.format === "auto")) return { url: source.url, format: "text", surgeType };
+  }
+  return null;
+}
+
+export function compiledRuleSetSources(ruleSets: RuleSetConfig, target: RuleSetOutputTarget): RuleSetConfig["sources"] {
+  const ids = new Set(effectiveRuleSetOutputs(ruleSets).filter((output) => !directRuleSetSource(ruleSets, output, target)).flatMap((output) => output.sourceIds));
+  return ruleSets.sources.filter((source) => source.enabled && source.url && ids.has(source.id));
 }

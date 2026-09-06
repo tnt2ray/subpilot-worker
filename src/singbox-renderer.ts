@@ -15,7 +15,7 @@ type JsonObject = Record<string, ProxyParamValue>;
 export async function buildSingbox(env: Env, config: RenderConfig, nodes: ProxyNode[], hosts: HostEntry[], requestUrl: string, diagnostics: ConfigDiagnostic[]): Promise<string> {
   const client = config.document!.clients.singbox;
   diagnostics.push(...client.migrationIssues);
-  const outbounds: JsonObject[] = [{ type: "direct", tag: "DIRECT" }];
+  let outbounds: JsonObject[] = [{ type: "direct", tag: "DIRECT" }];
   for (const node of nodes) {
     try {
       const outbound = toSingboxOutbound(node, toClashProxy(node) as JsonObject);
@@ -31,6 +31,19 @@ export async function buildSingbox(env: Env, config: RenderConfig, nodes: ProxyN
   for (const endpoint of Array.isArray(client.endpoints) ? client.endpoints : []) {
     if (typeof endpoint?.tag === "string") available.add(endpoint.tag);
   }
+  // A generated chain only exists when its selected upstream node survives conversion.
+  // Explicit user-authored detours are still checked by the output diagnostics.
+  const omittedChains = new Set<string>();
+  for (const node of nodes) {
+    if (!node.generatedChain || !available.has(node.name)) continue;
+    const upstream = node.params["dialer-proxy"] ?? node.params["underlying-proxy"];
+    if (typeof upstream === "string" && !available.has(upstream)) {
+      omittedChains.add(node.name);
+      available.delete(node.name);
+      diagnostics.push(issue(`proxyNodes.${node.name}`, "chain-node-omitted", "warning", `${node.name}：前置节点 ${upstream} 未能输出为 sing-box 节点，已跳过此自动生成的链式节点。`));
+    }
+  }
+  outbounds = outbounds.filter((outbound) => !omittedChains.has(String(outbound.tag)));
   const activeGroups = Object.entries(config.groups).filter(([name]) => !config.disabledGroups.includes(name) && (!config.groupTargets?.[name] || config.groupTargets[name]!.includes("sing-box")));
   const groupNames = new Set(activeGroups.map(([name]) => name));
   for (const [name, spec] of activeGroups) {
@@ -91,7 +104,7 @@ export async function buildSingbox(env: Env, config: RenderConfig, nodes: ProxyN
           }
           else if (converted.rule) rules.push({ ...converted.rule, ...policyAction(item.direct.policy) });
         } else {
-          if (item.output.surgeOptions.length) throw new Error(`${item.output.name} 的 Surge 规则选项无法等价转换，请在当前客户端规则计划中移除或改写。`);
+          if (item.output.surgeOptions.some((option) => option !== "no-resolve")) throw new Error(`${item.output.name} 的 Surge 规则选项无法等价转换，请在当前客户端规则计划中移除或改写。`);
           const manifest = await ensureCompiledRuleSet(env, config, item.output);
           diagnostics.push(...manifest.warnings.map((message) => issue("clients.singbox.ruleSets", "rule-cache", "warning", message)));
           const compatible = manifest.buckets.reduce((sum, bucket) => sum + (bucket.targetCounts?.["sing-box"] ?? 0), 0);

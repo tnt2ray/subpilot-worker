@@ -246,7 +246,7 @@ export function parseSurgeLine(line: string): ProxyNode | null {
     server,
     port,
     password: asString(params.password),
-    uuid: asString(params.username) || asString(params.uuid),
+    uuid: (clashUsesUsername(type) ? "" : asString(params.username)) || asString(params.uuid),
     cipher: asString(params["encrypt-method"]),
     params,
     surgeDetail: paramsNormalized || type !== sourceType ? undefined : detail,

@@ -392,7 +392,12 @@ async function decryptConfigSnapshot(env: Env, stored: string): Promise<RenderCo
   const snapshot = await decryptJson<unknown>(requireSecret(env, "CONFIG_ENCRYPTION_KEY"), stored);
   if (!isConfigSnapshot(snapshot)) throw new Error("Unsupported config snapshot");
   const value = snapshot as { version: number; config: StoredConfigDocument | RenderConfig };
-  if (value.version === 2 && (value.config.version === 2 || value.config.version === 3)) return canonicalizeConfigSources(env, renderConfig(normalizeConfigDocument(value.config)));
+  if (value.version === 2 && (value.config.version === 2 || value.config.version === 3)) {
+    const ruleNamesPendingSave = Object.values(value.config.clients).some((client) =>
+      client.ruleSets.directRules.some((rule) => Object.hasOwn(rule, "name")));
+    const config = await canonicalizeConfigSources(env, renderConfig(normalizeConfigDocument(value.config)));
+    return { ...config, ...(ruleNamesPendingSave ? { ruleNamesPendingSave: true } : {}) };
+  }
   if (value.config.version !== 1) throw new Error("Unsupported configuration document version");
   return { ...renderConfig(migrateConfigDocument(await canonicalizeConfigSources(env, normalizeConfig(value.config as RenderConfig)))), migrationRequired: true };
 }

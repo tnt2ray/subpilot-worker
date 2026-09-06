@@ -2,7 +2,7 @@ import { parseClashRuleProvidersYaml, validateClashRuleProvidersYaml } from "./c
 import { parseRuleSetContent } from "./rule-set-parser";
 import { splitRuleLine } from "./rule-line";
 import type { AppConfig } from "./types";
-import type { RuleSetSourceFormat } from "./rule-set-types";
+import type { RuleSetSourceFormat, RuleSetOutput, RuleSetBucket } from "./rule-set-types";
 
 /** Build a draft only. Unconvertible providers never disappear from saved configuration. */
 export function migrateClashRouting(original: AppConfig["clients"]["clash"]): {
@@ -27,18 +27,33 @@ export function migrateClashRouting(original: AppConfig["clients"]["clash"]): {
   // Preserve dormant compiled entries without making them part of the active native rules.
   plan.outputs.forEach((item) => { item.enabled = false; });
   plan.directRules.forEach((item) => { item.enabled = false; });
-  const names = new Set(plan.outputs.map((item) => item.name));
+  // Reserve native provider names before parking dormant entries. Legacy client
+  // splits copied Surge outputs here; they must not force active Clash URLs to
+  // gain a numeric suffix merely because the inactive copy has the same name.
+  const providerNames = new Set(Object.keys(providers));
+  const names = new Set([...providerNames, ...plan.outputs.map((item) => item.name)]);
   const uniqueName = (base: string): string => {
     let name = base;
     for (let i = 2; names.has(name); i += 1) name = `${base} ${i}`;
     names.add(name);
     return name;
   };
-  const resources = new Map<string, { sourceIds: string[]; inlineRules: string[] }>();
+  for (const output of plan.outputs) {
+    if (providerNames.has(output.name)) output.name = uniqueName(`${output.name}-inactive`);
+  }
+  names.clear();
+  for (const output of plan.outputs) names.add(output.name);
+  const resources = new Map<string, { sourceIds: string[]; inlineRules: string[]; provider: NonNullable<RuleSetOutput["provider"]> }>();
   for (const [name, provider] of Object.entries(providers)) {
     const type = String(provider.type).trim().toLowerCase();
     const behavior = String(provider.behavior).trim().toLowerCase();
     const format = String(provider.format || "yaml").trim().toLowerCase();
+    const interval = provider.interval ?? 86400;
+    if (typeof interval !== "number" || !Number.isSafeInteger(interval) || interval <= 0) {
+      issues.push(`${name}: interval 必须为正整数秒数。`);
+      continue;
+    }
+    const settings = { behavior: behavior as RuleSetBucket, interval };
     const extra = Object.keys(provider).filter((key) => !["type", "behavior", "format", "url", "path", "interval", "payload"].includes(key));
     if (type === "file" || !["yaml", "text"].includes(format) || extra.length) {
       issues.push(`${name}: ${type === "file" ? "本地文件需要替换为 HTTP(S) 地址或内联规则" : !["yaml", "text"].includes(format) ? "请替换为 YAML 或文本来源，不支持 MRS 二进制来源" : `请处理无法转换的参数：${extra.join("、")}`}。`);
@@ -52,7 +67,7 @@ export function migrateClashRouting(original: AppConfig["clients"]["clash"]): {
         source = { id: nextId("source"), name, url, enabled: true, format: selectedFormat, order: plan.sources.length };
         plan.sources.push(source);
       }
-      resources.set(name, { sourceIds: [source.id], inlineRules: [] });
+      resources.set(name, { sourceIds: [source.id], inlineRules: [], provider: settings });
     } else if (type === "inline") {
       if (!Array.isArray(provider.payload) || provider.payload.some((item) => typeof item !== "string")) {
         issues.push(`${name}: 内联 payload 必须是字符串数组。`);
@@ -60,7 +75,7 @@ export function migrateClashRouting(original: AppConfig["clients"]["clash"]): {
       }
       const parsed = parseRuleSetContent(provider.payload.join("\n"), behavior === "domain" ? "plain-domain" : behavior === "ipcidr" ? "plain-ipcidr" : "plain-classical", name, undefined, true);
       issues.push(...parsed.warnings);
-      resources.set(name, { sourceIds: [], inlineRules: parsed.rules.map((item) => item.raw) });
+      resources.set(name, { sourceIds: [], inlineRules: parsed.rules.map((item) => item.raw), provider: settings });
     }
   }
   const used = new Set<string>();
@@ -90,7 +105,7 @@ export function migrateClashRouting(original: AppConfig["clients"]["clash"]): {
       const policy = parts[policyIndex];
       if (!policy) { issues.push(`第 ${index + 1} 条规则缺少出口。`); continue; }
       parts.splice(policyIndex, 1);
-      plan.directRules.push({ id: nextId("rule"), name: type, rule: parts.join(","), policy, enabled: true, order: order++ });
+      plan.directRules.push({ id: nextId("rule"), rule: parts.join(","), policy, enabled: true, order: order++ });
     }
   }
   // Unreferenced providers remain editable, but do not start matching traffic.

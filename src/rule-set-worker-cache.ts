@@ -5,7 +5,7 @@ import {
   type CompiledRuleSetManifest
 } from "./rule-set-cache";
 import { RULE_SET_TARGETS, type RuleSetOutput, type RuleSetOutputTarget } from "./rule-set-types";
-import { effectiveRuleSetOutputs } from "./rule-set-outputs";
+import { directRuleSetSource, effectiveRuleSetOutputs } from "./rule-set-outputs";
 import { planRuleSetArtifacts } from "./rule-set-artifacts";
 import type { RenderConfig } from "./types";
 import { sha256Hex } from "./util";
@@ -69,7 +69,7 @@ export async function warmCompiledRuleSetWorkerCache(
   options: RuleSetWorkerCacheWarmOptions = {}
 ): Promise<{ cached: number }> {
   if (!token || !workerCacheAvailable()) return { cached: 0 };
-  const enabledOutputs = outputs ?? effectiveRuleSetOutputs(config.ruleSets);
+  const enabledOutputs = (outputs ?? effectiveRuleSetOutputs(config.ruleSets)).filter((output) => !directRuleSetSource(config.ruleSets, output, config.renderTarget ?? "surge"));
   let cursor = 0;
   let cached = 0;
 
@@ -100,7 +100,7 @@ async function warmCompiledRuleSetCacheForOutput(
 ): Promise<number> {
   let cached = 0;
   for (const target of config.renderTarget ? [config.renderTarget] : RULE_SET_TARGETS) {
-    for (const artifact of planRuleSetArtifacts(manifest.buckets, target)) {
+    for (const artifact of planRuleSetArtifacts(manifest.buckets, target, manifest.provider?.behavior, manifest.surgeType)) {
       if (workerCacheWarmDeadlineExceeded(deadline)) return cached;
       const content = await readCompiledRuleSetBucket(env, manifest.outputName, artifact.bucket, target, manifest);
       if (content === null) continue;

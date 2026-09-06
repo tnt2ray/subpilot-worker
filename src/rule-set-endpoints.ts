@@ -113,9 +113,9 @@ function manifestSupportsDownload(
   target: RuleSetOutputTarget
 ): boolean {
   if (bucket === "combined") {
-    return planRuleSetArtifacts(manifest.buckets, target).some((artifact) => artifact.bucket === "combined");
+    return planRuleSetArtifacts(manifest.buckets, target, manifest.provider?.behavior, manifest.surgeType).some((artifact) => artifact.bucket === "combined");
   }
-  return planRuleSetArtifacts(manifest.buckets, target).some((artifact) => artifact.bucket === bucket);
+  return planRuleSetArtifacts(manifest.buckets, target, manifest.provider?.behavior, manifest.surgeType).some((artifact) => artifact.bucket === bucket);
 }
 
 function resolveRuleSetDownload(config: RenderConfig, path: RuleSetSyncPath): {

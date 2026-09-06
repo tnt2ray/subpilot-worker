@@ -1,5 +1,5 @@
 import { parseInlineRuleSetLines } from "./rule-set-parser";
-import { isNativeClashRule } from "./rule-targets";
+import { isNativeClashDirectRule } from "./rule-targets";
 import { normalizeManagedBasePath, ruleSetPathName } from "./managed-url";
 import { isValidSingboxOutbound } from "./singbox-validation";
 import { isProxyNodeSupportedForTarget } from "./node-transforms";
@@ -176,7 +176,11 @@ export function validateConfigEntityLimits(config: RenderConfig, options: { allo
     if (source.url && !isHttpUrl(source.url)) return `规则来源 ${source.id} URL 必须使用 http 或 https`;
   }
   for (const output of config.ruleSets.outputs) {
-    const nameError = validateSizedString(output?.name, MAX_NAME_LENGTH, "规则输出名称");
+    if (output.surgeType !== undefined && (config.renderTarget !== "surge" || !["RULE-SET", "DOMAIN-SET"].includes(output.surgeType))) return `规则输出 ${output.name} 的 Surge 类型无效。`;
+    if (output.provider !== undefined && config.renderTarget !== "clash") return `规则输出 ${output.name} 的 provider 设置仅适用于 Clash。`;
+    if (output.provider !== undefined && (!output.provider || !["domain", "ipcidr", "classical"].includes(output.provider.behavior)
+      || !Number.isSafeInteger(output.provider.interval) || output.provider.interval <= 0)) return `规则输出 ${output.name} 的 behavior 或 interval 无效；interval 必须为正整数秒数。`;
+    const nameError = validateSizedString(output?.name, MAX_NAME_LENGTH, "规则集下载名称");
     if (nameError) return nameError;
     const policyError = validatePolicyName(output?.policy, `规则输出 ${output.name} 策略`);
     if (policyError) return policyError;
@@ -188,6 +192,7 @@ export function validateConfigEntityLimits(config: RenderConfig, options: { allo
     if (inlineError) return inlineError;
     const optionsError = validateStringList(output?.surgeOptions, `规则输出 ${output.name} Surge 参数`, 100, 512);
     if (optionsError) return optionsError;
+    if (output.surgeType === "DOMAIN-SET" && output.surgeOptions.some((option) => option.toLowerCase() === "no-resolve")) return `DOMAIN-SET ${output.name} 不支持 no-resolve。`;
     if (config.renderTarget === "clash" && config.ruleSets.mode === "compiled" && output.enabled) {
       if (output.surgeOptions.some((option) => option !== "no-resolve")) return `Clash 规则输出 ${output.name} 仅支持 no-resolve 选项。`;
       const parsed = parseInlineRuleSetLines(output.inlineRules, output.name, undefined, true);
@@ -210,7 +215,7 @@ export function validateConfigEntityLimits(config: RenderConfig, options: { allo
     const ruleError = validateSizedString(rule?.rule, MAX_RULE_LENGTH, `主配置单条规则 ${rule.id}`);
     if (ruleError) return ruleError;
     if (/[\r\n]/.test(rule.rule)) return `主配置单条规则 ${rule.id} 不能包含换行`;
-    if (config.renderTarget === "clash" && config.ruleSets.mode === "compiled" && rule.enabled && rule.rule.trim().toUpperCase() !== "MATCH" && rule.rule.trim().toUpperCase() !== "FINAL" && !isNativeClashRule(rule.rule)) return `主配置单条规则 ${rule.id} 含有不支持的 Clash 类型或参数。`;
+    if (config.renderTarget === "clash" && config.ruleSets.mode === "compiled" && rule.enabled && !isNativeClashDirectRule(rule.rule)) return `主配置单条规则 ${rule.id}（${splitRuleLine(rule.rule)[0]}）含有不支持的 Clash 类型或参数。`;
     const policyError = validatePolicyName(rule?.policy, `主配置单条规则 ${rule.id} 策略`);
     if (policyError) return policyError;
   }
@@ -499,7 +504,7 @@ export function validateCompiledRulePolicies(config: RenderConfig): string | nul
   for (const rule of config.ruleSets.directRules.filter((item) => item.enabled)) {
     const policy = rule.policy.trim();
     if (/^DEVICE:/i.test(policy) || !configuredPolicies.has(policy)) {
-      return `主配置单条规则 ${rule.name || rule.id} 的策略 ${policy} 不存在或不可用`;
+      return `主配置单条规则 ${rule.id} 的策略 ${policy} 不存在或不可用`;
     }
   }
   return null;
@@ -682,6 +687,8 @@ function validateCompiledFallback(ruleSets: RenderConfig["ruleSets"]): string | 
   });
   if (finalRules.length === 0) return "编译规则模式必须保留一个 FINAL 或 MATCH 兜底规则";
   if (finalRules.length > 1) return "编译规则模式只能保留一个 FINAL 或 MATCH 兜底规则";
+  const final = finalRules[0]!;
+  if ([...ruleSets.outputs, ...ruleSets.directRules].some((item) => item !== final && item.enabled && item.order >= final.order)) return "兜底规则必须位于所有分流规则的最后";
   return null;
 }
 
@@ -709,7 +716,7 @@ function validateRuleProviderNameCollisions(outputs: RenderConfig["ruleSets"]["o
       const providerName = compiledRuleProviderName(output.name, bucket);
       const owner = owners.get(providerName);
       if (owner && owner !== output.name) {
-        return `规则集名称 ${owner} 与 ${output.name} 会生成冲突的 Clash rule-provider 名称`;
+        return `规则集下载名称 ${owner} 与 ${output.name} 会生成冲突的 Clash rule-provider 名称`;
       }
       owners.set(providerName, output.name);
     }

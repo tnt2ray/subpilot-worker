@@ -22,9 +22,7 @@ Subscription sources, manual nodes, and chain exits are shared. Policy groups, d
 
 The admin UI provides migration issue resolution, a universal subscription link, token rotation, cache refresh, GeoIP renaming, and Telegram notifications. Version 2 retires Stash and Shadowrocket output. See [architecture and ablation decisions](./docs/architecture.md) and the [UI design specification](./docs/ui-design.md) for design details.
 
-The overview lists recent subscription requests newest first, with the request date and time in the configured display time zone. Each page shows 10 requests, with pagination for the latest 50. Reloading the page returns to the first page. The overview retains the application version display; the Refresh status and Check updates buttons have been removed.
-
-Subscription cache appears before recent subscription requests and shows cached source coverage, total nodes, the last update time, and each source's cache status and protocol counts. **Force refresh** fetches saved, enabled sources again and prevents duplicate submissions while running. Failures show the reason and whether previous cached content was retained.
+The overview shows the latest 50 subscription requests, node counts, and subscription cache status. **Force refresh** fetches saved, enabled sources again. Refresh failures show the reason and whether cached content remains available.
 
 ## Deployment
 
@@ -127,16 +125,14 @@ Open the deployment URL and sign in with the admin token.
 2. In **Sources**, add upstream subscriptions and their fetch User-Agents. In **Proxy nodes**, add manual nodes and chain exits as needed. The node editor shows **Upstream node selection** only when **Chain exit** is enabled; turning it off hides the field while retaining its values. Enter one keyword per line: a case-insensitive substring match against any keyword in a node name or label selects that node; regular expressions are not supported. Only matching non-exit nodes generate chained nodes; unmatched nodes do not participate, and an empty selection generates none. The path is device → matching node → current exit node → destination.
 3. In **Policy groups**, select a client, then configure its members, filters, and options.
 4. In **Client configuration**, choose Surge, clash, or sing-box and edit its network, DNS, routing, and advanced settings.
-5. For compiled routing, enter source URLs directly in the selected client’s routing tab and choose a policy. Sources are linked automatically within that client; move rule sets and direct rules up/down in one list. Manage source names, formats, and enabled states under **Source settings** in the rule-set editor; there is no separate Rule sources page.
+5. For compiled routing, enter source URLs directly in the selected client’s routing tab and choose a policy. Sources are linked automatically within that client; move rule sets and direct rules up/down in one list. Select RULE-SET or DOMAIN-SET in Surge, behavior and interval in Clash, and the source format in sing-box.
 6. Review the configuration and resolve pending **Migration issues**, save, and copy the universal URL from **Configuration links**.
 
 To update an existing subscription source, proxy node, or policy group, click its name or the row’s **Edit** button. Choose **Apply changes** in the dialog, then **Save configuration** at the bottom of the page to persist the changes. On narrow screens, the action column remains visible while other details scroll horizontally.
 
 The page header and bottom action bar remain visible. Long content scrolls within the space between them, keeping the last items clear of the action bar.
 
-Configuration export, backup downloads, and migration draft downloads have been removed. Legacy migration requires review and confirmation without downloading a backup.
-
-Drafts stay in the current page's memory while navigating between pages and clients. Reloading or closing the page loses unsaved edits. Save writes the full document while retaining independent client settings; subscription requests use saved configuration and perform compatibility validation during generation. The output preview page, related buttons, and preview API have been removed.
+Drafts stay in the current page's memory while navigating between pages and clients. Reloading or closing the page loses unsaved edits. Subscription requests use saved configuration and check compatibility before generating output.
 
 If an older deployment shows a migration banner, follow [Updates and migration](#updates-and-migration) first.
 
@@ -170,18 +166,18 @@ Managed Base URL must include a non-root path and cannot occupy `/api`, `/vendor
 
 ### Shared resources and client settings
 
-Older `clients.mihomo` documents are accepted and normalized to `clients.clash` when loaded; saving writes the new key. Existing `mihomo` User-Agents remain supported. No manual KV migration is required.
+Subscription sources, manual nodes, and chain exits are shared by all three clients. Policy groups, rule sources, routing, network, DNS, and advanced settings are maintained separately. Changes to one client do not update the others, and group names resolve within their own client.
 
-Document version 3 shares subscription sources, nodes, and chain settings. Each client in `clients.surge`, `clients.clash`, and `clients.singbox` owns `groups`, `disabledGroups`, and `ruleSets.sources`, alongside its network, DNS, rule plan, default policy, and advanced settings. Group names and source IDs resolve only within their owning client; shared `groupTargets` is removed. Subsequent changes to one client do not update the others.
-
-Save APIs use the complete version 3 document; older configuration is converted on load. The User-Agent of a universal subscription request selects the output client. Migrate existing legacy configuration through the admin UI; do not write client JSON directly into KV.
+The Surge `FINAL`, Clash `MATCH`, and sing-box `FINAL` / `MATCH` fallback entries stay last. They cannot be deleted, disabled, or changed into ordinary rules; their outbound policy remains editable. New rules are inserted before the fallback. Clash displays `MATCH` as the last table row, with an editable outbound; native sing-box configuration uses its separate **Default outbound** setting.
 
 ### Nodes and policy groups
 
 - Subscription input supports the recognized Surge/Clash and proxy-link formats, including Base64 subscriptions. Native sing-box JSON accepts an object containing `outbounds`, an outbound array, or a single outbound. It imports nodes, not the input file's complete DNS, routes, or groups.
 - Manual nodes accept Surge syntax, Clash YAML/JSON with `name` and `port`, or native sing-box JSON with `tag` and `server_port`. Native SSH uses port 22 when omitted. Native fields are preserved for sing-box; conversions that cannot retain TLS, transport, or authentication options skip the node with a diagnostic.
-- Group members can use `{all}`, filters, or explicit names. Keep `Proxy` enabled; its type is not limited to `select` and may be any group type supported by the target client. Configure each client’s groups independently: `select` and `url-test` have equivalents across clients; `fallback` and `load-balance` apply to Surge/clash; `subnet` and `smart` are Surge only. Migrating shared groups converts Surge `url-test` to `smart`. Surge output also retains this conversion for compatibility; clash and sing-box use their own automatic-testing types. Surge smart groups require proxy-node members; built-in policies and nested groups block that output. Smart uses its own testing schedule, so `interval` has no effect.
+- Group members can use `{all}`, filters, or explicit names. `Proxy` cannot be deleted or renamed and must remain enabled; its type is not limited to `select` and may be any group type supported by the target client. Configure each client’s groups independently: `select` and `url-test` have equivalents across clients; `fallback` and `load-balance` apply to Surge/clash; `subnet` and `smart` are Surge only. Migrating shared groups converts Surge `url-test` to `smart`. Surge output also retains this conversion for compatibility; clash and sing-box use their own automatic-testing types. Surge smart groups require proxy-node members; built-in policies and nested groups block that output. Smart uses its own testing schedule, so `interval` has no effect.
 - sing-box groups can reference `endpoints` tags, preserving member order; manage Tailscale endpoints in their dedicated tab. Configure these groups in the sing-box tab. Routing `preferred_by` references outbounds or endpoints, while DNS `preferred_by` references DNS servers.
+
+Groups with no available members after filtering are omitted, and other groups drop references to them. Routing rules targeting these empty groups fall back to `Proxy`. Saved filters remain intact, so groups return when matching nodes become available. An empty `Proxy` still blocks subscription output.
 
 The policy groups page includes a **Syntax guide and examples** with types and options for the selected client. Enter one line in the form `type, member or selector, option=value`, using ASCII commas. Enter the group name separately; omit the `group name =` prefix.
 
@@ -224,7 +220,7 @@ Platform restrictions still apply: [Android](https://sing-box.sagernet.org/clien
 
 ### Tailscale
 
-Surge and sing-box each have a **Tailscale** tab beside **Routing**. Add, edit, and delete nodes through the list; forms cover authentication, routing, and connection settings, with masked auth-key inputs. The two clients keep independent configurations.
+Surge and sing-box each have a **Tailscale** tab beside **Routing rules**. Add, edit, and delete nodes through the list; forms cover authentication, routing, and connection settings, with masked auth-key inputs. The two clients keep independent configurations.
 
 - Surge retains all existing section-name, DERP, idle-keepalive, DNS, MTU, upstream-proxy, and probe settings. Enabled nodes require an auth key.
 - sing-box uses native 1.14 `endpoints` with `type: "tailscale"`, including subnet and exit-node advertisement, interfaces, relay, SSH, Taildrop, DNS, and dial options. Optional switches offer **Use default**; untouched optional fields are preserved. Other endpoint types remain unchanged.
@@ -233,41 +229,38 @@ Surge and sing-box each have a **Tailscale** tab beside **Routing**. Add, edit, 
 
 See the [sing-box Tailscale endpoint documentation](https://sing-box.sagernet.org/configuration/endpoint/tailscale/).
 
-### Routing and compilation
+### Routing rules
 
-In compiled mode, enter source URLs (one per line) directly in the selected client’s routing page and choose a policy from the dropdown. New URLs are linked to that client automatically. Rule sets and direct rules share one list with up/down ordering. Source names, formats, and enabled states are edited under **Source settings** in the rule-set dialog. On mobile, the plan uses cards so source URLs and actions do not require horizontal scrolling. Surge’s native editor provides dedicated match types and `no-resolve`, `extended-matching`, and `dns-failed` options. FINAL stays last in structured editing; new rules are inserted before it. Native text editing checks that exactly one FINAL remains at the end when applied.
+Open **Client configuration**, select a client, and choose **Routing rules**. Each client has its own rules, outbound policies, and matching order.
 
-Clash’s **Routing** page only requires a rule-set URL and an outbound policy; individual rules can also be added. Rule-set names are generated automatically and source formats default to automatic detection. Source format, name, enabled state, `no-resolve`, and inline content live in collapsed settings. Policy groups themselves remain editable on the **Policy groups** page.
+1. Choose **Add rule set**, enter download URLs (one per line), and select an outbound policy and format.
+2. The client downloads a single compatible URL directly, without Worker fetching or caching. Multiple URLs within one rule set are merged and deduplicated. For an individual condition, choose **Add direct rule** and enter its match type, value, and outbound.
+3. Place higher-priority rules first. Surge and Clash need one final `FINAL` / `MATCH` rule at the end; sing-box can use `route.final` in its native settings.
+4. Choose **Apply changes**, then **Save configuration**, and update the subscription in your client.
 
-- Client configurations are independent. Clash sources accept only Clash YAML `payload` arrays and domain, ipcidr, or classical text; auto-detection follows the same restrictions. Surge formats, configuration sections, policies inside provider entries, and other clients' options produce explicit errors instead of conversion or silent removal.
-- Aggregation preserves each source's `no-resolve` behavior by applying it only to that source's IP conditions, including conditions inside logical rules. Other sources sharing the policy retain their DNS behavior. Direct IP rules support `src` and `no-resolve`; `IN-PORT` matching is also supported.
-- With **Aggregate by policy before bucketing** enabled, enabled rule sets sharing an outbound are merged, normalized, deduplicated, and rebucketed at that outbound’s first position. Rules are not deduplicated across different outbounds.
-- With it disabled, each rule set is deduplicated and bucketed separately, retaining its position. Toggling does not rewrite individual order. **Reorder matching** shows effective blocks or individual entries; moving a block moves its members together. Direct rules retain separate positions, and the final rule always matches last.
-- `domain` and `ipcidr` are emitted separately only above 1,000 rules each; smaller buckets join `classical`, and empty buckets are omitted. IP rules with `no-resolve` or `src` remain in `classical` to preserve options. Clash loads the providers generated by this project. Rule sources no longer have fixed download-size, total-input-size, or rule-count caps. Large inputs are deduplicated during parsing, and artifacts are generated for the current client. Worker resources and KV value capacity still apply; failures are reported without truncating rules.
-- New Clash configurations use compilation with aggregation enabled; existing compiled configurations retain their switch value. For native configurations, choose **Convert routing configuration**, review the draft, and save. Unreferenced providers and dormant compiled entries remain as disabled entries. Files, MRS, extra native parameters, and nested native rule-set references require resolution; nothing is silently discarded. Migration saves check compilation before activation. On failure, the saved configuration remains active and the draft and reasons remain available.
-- After conversion, this project manages source refreshes using its existing schedule; native per-provider refresh intervals and client cache paths no longer apply. Collapsed compilation results show actual cache state, duplicate counts, and emitted buckets. Changed drafts must be saved before reading results again; refresh failures and stale-cache fallback are reported.
+| Client | Rule-set settings | Supported sources |
+| --- | --- | --- |
+| Surge | `RULE-SET` or `DOMAIN-SET` | Typed rules for RULE-SET; domain lists for DOMAIN-SET, with a leading dot to include subdomains |
+| Clash | `behavior` and `interval` in seconds | Clash YAML `payload`, or domain / ipcidr / classical text |
+| sing-box | Automatic detection or an explicit source format | Clash and Surge rule sets, plus domain, IP-CIDR, and classical text |
 
-Surge and sing-box keep their existing native or compiled editors. Sources, policies, order, inline content, and direct rules remain independent per client. Identical URLs can reuse cached bodies; generated artifacts are isolated by target. Removing a source preserves bodies still used by another client. No KV schema migration or additional Secrets are required. After deployment, the revised compiler fingerprint regenerates required artifacts.
+Download filenames for merged or converted rule sets are managed automatically. The three clients may share a name, using `.list`, `.yaml`, and `.json` respectively. Existing rule-set download names and your upstream URLs are preserved.
 
-Native Surge FINAL rows display their existing options; use Edit to set `dns-failed`. Compiled rules accept both `FINAL,dns-failed` with a separately selected policy and `FINAL,Proxy,dns-failed`, including the `MATCH` alias. Displaying, editing, saving, and generating a Surge subscription preserve the option. This parameter is unsupported by clash and sing-box and is not silently dropped for those targets. See the [official Surge FINAL manual](https://manual.nssurge.com/rules/final.html).
+**Clash:** Choose domain, ipcidr, or classical for `behavior`; use classical for mixed rule types. `interval` controls how often the client downloads the rule set, defaulting to 86400 seconds. SubPilot creates `rule-providers` and outbound references automatically. To convert native configuration, choose **Use rule-set form**, review the draft, and save. Unsupported content requires correction; a failed conversion leaves the saved configuration active.
 
-Editing rule-set source URLs preserves the enabled state of existing sources; only new sources default to enabled. The sing-box compiled-rule editor blocks rewriting legacy rules with options such as `no-resolve`; express their intended behavior in the native routing form first so editing cannot silently discard options. Policy suggestions include enabled manual shared nodes supported by the selected client in the current draft, plus chains generated from those nodes. Names use the backend parser and deduplication logic. Loading suggestions neither saves configuration nor fetches subscription sources.
+Clash and sing-box match each entry independently, merging only URLs within the same entry. Surge’s **Aggregate by policy** combines rule sets at the outbound’s first occurrence, so review matching priority before enabling it. Entries with an explicit RULE-SET / DOMAIN-SET type remain independent.
 
-sing-box `netns` accepts configured namespace tags as well as Linux namespace names or paths on the client device. OS names and paths do not have to appear in `network_namespaces`; their existence is checked by the device running sing-box.
+**Surge:** Select options such as `no-resolve` and `extended-matching` where the rule type supports them. DOMAIN-SET does not support `no-resolve`. FINAL supports the Surge-only `dns-failed` option. See the [rule-set guide](https://manual.nssurge.com/rules/ruleset.html) and [FINAL guide](https://manual.nssurge.com/rules/final.html).
 
-| Routing concern | Required behavior |
-| --- | --- |
-| Final policy | Surge/clash compiled plans need one final `FINAL`/`MATCH`; sing-box can instead use explicit `route.final` or a final unconditional route/reject rule. Place the final rule last. |
-| Direct final rules | `FINAL`, `MATCH`, or full rule text with optional comma whitespace are accepted. The separate policy field determines the output policy. |
-| Same-policy aggregation | Optional; merges outputs at the policy's first occurrence and can change precedence across policies. Review rule order before enabling it. |
-| Native clash providers | Add explicit `RULE-SET` references and policies in `rules`; providers only supply data. |
-| sing-box remote rule sets | Uses 1.14 `http_client`; generated JSON source files use version 4. |
+**sing-box:** For native configurations, choose **Use rule-set URLs** to enable the URL form. Existing native rules match first and remain editable under **Native routing and advanced settings**. An unconditional native rule may prevent later rules from matching.
 
-Surge output validation recognizes only complete section headers. Nodes named `[Source] Node name` remain proxy declarations, and subsequent Tailscale policies participate in availability and dependency checks.
+Clash or Surge sources require conversion for sing-box even with a single URL. During conversion, `IP-ASN` expands to IPv4/IPv6 CIDRs using periodically refreshed data. Failed lookups use cached data where available, or skip the ASN with a warning. Unsupported rules such as `USER-AGENT` and `URL-REGEX` are skipped and reported in diagnostics; download and format failures produce errors. Incompatible native settings still require manual correction. To resolve domains before IP routing, configure a native `resolve` action.
 
-Unsupported ordinary extras or nodes are skipped with diagnostics. Missing policies or detours, dependency cycles, referenced empty groups, and incompatible critical rule semantics block that target. Renaming, disabling, or deleting resources preserves references so diagnostics can locate them. For example, legacy GEOIP data rules, Surge IN-PORT, and no-resolve semantics need suitable sing-box native rules or rule sets; they are not silently dropped or broadened.
+### Subscription checks
 
-Native sing-box fields are checked against the pinned official JSON Schema. See the [sing-box rule-set documentation](https://sing-box.sagernet.org/configuration/rule-set/).
+Open **Configuration links → Subscription check** and select a client to inspect its saved configuration. Referenced empty groups, missing outbounds, dependency cycles, and incompatible critical settings can cause **HTTP 422**. Use the configuration locations in the log to correct the problems, save, and check again.
+
+Rule sets requiring merging or conversion are processed automatically and refreshed on schedule. After importing sing-box configuration, run `sing-box check` on the actual device to check compatibility with its client version, permissions, and local files.
 
 ### Advanced settings
 
@@ -305,7 +298,7 @@ Version 1 deployments still require explicit migration:
 2. Confirm migration. Unconvertible critical DNS/routing behavior remains flagged: sing-box downloads stay blocked until you fix the issue or explicitly mark it resolved after reviewing the omitted behavior.
 3. The Worker writes and reads back the new encrypted snapshot before scheduling legacy data cleanup after at least five minutes. After commit, reads cannot fall back to a legacy snapshot.
 
-Reviewing the migration draft does not delete legacy configuration. Confirmation checks the legacy revision fingerprint. If that revision changes, submission is blocked and the page keeps the draft in memory. Note any edits you want to retain, reload, and review migration again.
+Reviewing the migration draft does not delete legacy configuration. If the saved configuration changes during migration, you must review it again; the page keeps your draft in memory. Note any edits you want to retain, reload, and review migration again.
 
 <details>
 <summary>Command-line migration</summary>
@@ -342,7 +335,7 @@ The default schedules in local `wrangler.jsonc` are:
 
 The first entry refreshes subscriptions every 12 hours; keep your chosen interval if different. Keep `0 16 * * *` for daily compiled rule-set refresh. Other cron entries run upstream refreshes. Without the daily rule task, manual refresh and on-demand generation remain available. Schedule changes require a new deployment using `wrangler deploy`.
 
-Use **Refresh subscriptions** on the status page and the rule refresh action in the selected client's routing settings. Save drafts before refreshing. Admin and Telegram times use the configured display time zone in `yyyy-mm-dd hh:mm:ss`; stored timestamps remain UTC.
+Use **Force refresh** on the overview to refresh subscriptions. Save drafts before refreshing. Admin and Telegram times use the configured display time zone in `yyyy-mm-dd hh:mm:ss`; stored timestamps remain UTC.
 
 | Scope | Limit |
 | --- | --- |
@@ -357,9 +350,9 @@ Use **Refresh subscriptions** on the status page and the rule refresh action in 
 | GeoIP completion | 100 distinct IP lookups per generation |
 | Rule coverage diagnostics | 24 external sources, 8 × 1024 × 1024 input characters, and 5,000 rules in aggregate |
 
-Configuration snapshots, read-token records, and compiled artifacts use complete, append-only versions. Readers select the newest valid version and can fall back when a new write is incomplete or corrupt. Workers KV is eventually consistent, so changes may take time to become visible and old versions or failed-write artifacts are cleaned up later in bounded batches. Do not edit or delete runtime data based on assumed fixed KV key names.
+Saved changes may take a short time to appear in all requests. Manage configuration through the admin UI rather than editing or deleting runtime data directly in KV.
 
-The admin serializes saves. KV write rejection or throttling returns HTTP 429; retain the page draft and retry later instead of writing repeatedly from multiple tabs. For changes involving a Telegram webhook, the new snapshot is committed after the remote operation succeeds; if commit cannot be confirmed, SubPilot retains the old configuration and attempts to restore the old webhook.
+If saving returns **HTTP 429**, keep the page draft and retry later. Avoid repeated saves from multiple admin tabs.
 
 ## Telegram and GeoIP
 

@@ -194,6 +194,7 @@ export interface RenderConfig {
   document?: AppConfig;
   renderTarget?: Target;
   migrationRequired?: boolean;
+  ruleNamesPendingSave?: boolean;
   groupTargets?: Record<string, Target[]>;
   settings: {
     managedBaseUrl: string;
@@ -258,6 +259,8 @@ export interface ProxyNode {
   matchLabels?: string[] | undefined;
   manual?: boolean | undefined;
   chainExit?: boolean | undefined;
+  /** Transient marker for nodes created by buildChainNodes, never stored in configuration. */
+  generatedChain?: boolean | undefined;
   chainFilter?: string[] | undefined;
   includeInGroups?: boolean | undefined;
 }

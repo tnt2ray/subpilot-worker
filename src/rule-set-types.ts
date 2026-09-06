@@ -28,6 +28,10 @@ export interface RuleSetSource {
 }
 
 export interface RuleSetOutput {
+  surgeType?: "RULE-SET" | "DOMAIN-SET";
+  /** Explicit Clash provider settings; all URLs in this row share one artifact. */
+  provider?: { behavior: RuleSetBucket; interval: number };
+  /** Stable download name used by published URLs and compiled caches. */
   name: string;
   enabled: boolean;
   policy: string;
@@ -40,7 +44,6 @@ export interface RuleSetOutput {
 
 export interface RuleSetDirectRule {
   id: string;
-  name: string;
   enabled: boolean;
   rule: string;
   policy: string;

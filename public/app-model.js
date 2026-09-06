@@ -34,7 +34,7 @@ const LABELS = {
   mapLocal: "Map Local",
   scripts: "脚本",
   mitm: "MITM",
-  rules: "路由规则",
+  rules: "分流规则",
   port: "HTTP 端口",
   socksPort: "SOCKS 端口",
   mixedPort: "混合端口",

@@ -23,11 +23,12 @@ const label = (key) => state.lang === "zh" ? LABELS[key] || key : key.replace(/(
 const paths = { grid: "M3 3h6v6H3zm12 0h6v6h-6zM3 15h6v6H3zm12 0h6v6h-6z", source: "M6 3h8l4 4v14H6zM14 3v5h4M9 12h6m-6 4h6", nodes: "M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18M3 12h18M12 3c-5 5-5 13 0 18 5-5 5-13 0-18", settings: "m9 3-1 3-3 1v4l-2 1 2 2v4l3 1 1 2h6l1-2 3-1v-4l2-2-2-1V7l-3-1-1-3zM15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0", code: "m8 6-6 6 6 6m8-12 6 6-6 6m-3-15-2 18", link: "m10 14 4-4M8 16l-2 2a4 4 0 0 1-6-6l5-5a4 4 0 0 1 6 0m2 10 5-5a4 4 0 0 0-6-6l-2 2", edit: "m4 15 11-11 5 5-11 11H4zM13 6l5 5", trash: "M4 6h16M9 6V3h6v3M6 6l1 15h10l1-15M10 10v7m4-7v7", up: "m6 15 6-6 6 6", down: "m6 9 6 6 6-6", copy: "M8 8h13v13H8zM16 8V3H3v13h5", plus: "M12 4v16M4 12h16" };
 const icon = (name) => `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="${paths[name] || paths.settings}"/></svg>`;
 const btn = (text, action2, attrs = "", className = "") => `<button type="button" data-action="${action2}" class="${className}" ${attrs}>${text}</button>`;
+const iconButton = (name, action, attrs = "", title = "") => btn(icon(name), action, `${attrs} aria-label="${esc(title || name)}" title="${esc(title || name)}"`, "icon-button");
 const smallButton = (name, action2, attrs = "", title = "") => btn(icon(name) + (name === "edit" ? esc(title || t("编辑", "Edit")) : ""), action2, `${attrs} aria-label="${esc(title || name)}" title="${esc(title || name)}"`, name === "edit" ? "edit-button" : "icon-button");
 const target = () => CLIENTS[state.client].target;
 const basePath = () => `clients.${state.client}`;
 const currentClient = () => state.config.clients[state.client];
-const clashRouting = createClashRoutingUi({ state, t, esc, btn, field, section, modal, closeModal, localField, readLocal, policyChoices, selectOptions, orderedPlan, isFinalRule, splitRule, appendPlanItem, changed, render, api });
+const clashRouting = createClashRoutingUi({ state, t, esc, btn, iconButton, field, section, modal, closeModal, localField, readLocal, policyChoices, selectOptions, orderedPlan, isFinalRule, splitRule, appendPlanItem, changed, render, api });
 const dirty = () => state.config && JSON.stringify(state.config) !== state.saved;
 const isObject = (value) => Boolean(value) && typeof value === "object" && !Array.isArray(value);
 function validateNativeShape(value, path = "clients.singbox") {
@@ -73,6 +74,8 @@ function updateStatus() {
   if (caStatus) caStatus.textContent = state.config.clients.surge.mitm.caP12 ? t("已配置 CA 证书", "CA certificate configured") : t("尚未配置 CA 证书", "No CA certificate configured");
 }
 function changed() {
+  const plan = currentClient()?.ruleSets;
+  if (plan?.mode === "compiled") orderedPlan(plan).forEach(({ item }, order) => { item.order = order; });
   updateStatus();
 }
 function isTextList(key, value) {
@@ -84,18 +87,19 @@ function field(path, value, options = {}) {
   const title = options.label || label(key);
   let control;
   const common = `id="${id}" data-field="${esc(path)}" ${state.invalid.has(path) ? 'aria-invalid="true"' : ""}`;
-  if (typeof value === "boolean") control = `<input class="toggle" type="checkbox" ${common} ${value ? "checked" : ""}>`;
+  if (typeof value === "boolean") control = `<input class="toggle" type="checkbox" ${common} ${value ? "checked" : ""} ${options.disabled ? "disabled" : ""}>`;
   else if (typeof value === "number") control = `<input type="number" ${common} data-kind="number" value="${esc(value)}">`;
   else if (options.options) control = `<select ${common}>${options.options.map((item) => `<option value="${esc(item)}" ${item === value ? "selected" : ""}>${esc(item)}</option>`).join("")}</select>`;
   else if (isTextList(key, value)) control = `<textarea ${common} data-kind="lines" rows="${Math.min(8, Math.max(3, value.length))}" spellcheck="false">${esc(value.join("\n"))}</textarea><div class="help">${esc(options.help || t("每行一项", "One item per line"))}</div>`;
   else if (value && typeof value === "object") control = `<textarea ${common} data-kind="json" class="code" rows="${Math.min(13, Math.max(4, JSON.stringify(value, null, 2).split("\n").length))}" spellcheck="false">${esc(JSON.stringify(value, null, 2))}</textarea><div class="help">JSON · ${t("保留完整原生字段", "Preserves native fields")}</div>`;
   else if (options.multiline || String(value).includes("\n")) control = `<textarea ${common} data-kind="text" class="code" rows="7" spellcheck="false">${esc(value)}</textarea>`;
-  else control = `<input ${common} type="${/token|secret|password|passphrase|authKey/i.test(key) ? "password" : "text"}" value="${esc(value)}" autocomplete="off" spellcheck="false">`;
+  else control = `<input ${common} ${options.readonly ? "readonly" : ""} type="${/token|secret|password|passphrase|authKey/i.test(key) ? "password" : "text"}" value="${esc(value)}" autocomplete="off" spellcheck="false">`;
   if (state.invalid.has(path) && control.includes("<textarea")) control = control.replace(/(<textarea[^>]*>)[\s\S]*?(<\/textarea>)/, (_, open, close) => open + esc(state.invalid.get(path)) + close);
   return `<div class="form-row"><label for="${id}">${esc(title)}</label><div class="field">${control}</div></div>`;
 }
 function section(title, content, extra = "") {
-  return `<section class="section"><div class="section-heading"><h2>${esc(title)}</h2>${extra}</div>${content}</section>`;
+  const heading = title || extra ? `<div class="section-heading">${title ? `<h2>${esc(title)}</h2>` : ""}${extra}</div>` : "";
+  return `<section class="section">${heading}${content}</section>`;
 }
 function clientTabs() {
   return `<div class="client-tabs">${Object.entries(CLIENTS).map(([id, client]) => btn(client.label, "client", `data-client="${id}"`, state.client === id ? "selected" : "")).join("")}</div>`;
@@ -222,7 +226,7 @@ function renderGroups() {
 function renderClient() {
   const client = state.config.clients[state.client];
   const fields = CLIENT_SECTIONS[state.client][state.section] || [];
-  const tabs = [["network", "网络与 TUN", "Network & TUN"], ["dns", "DNS", "DNS"], ["rules", state.client === "clash" ? "分流配置" : "路由规则", "Routing"], ...state.client !== "clash" ? [["tailscale", "Tailscale", "Tailscale"]] : [], ...state.client === "singbox" ? [["endpoints", "VPN 端点", "VPN endpoints"], ["outbounds", "原生出站", "Native outbounds"], ["services", "服务", "Services"]] : [], ["advanced", "高级设置", "Advanced"], ...state.client === "surge" ? [["mitm", "MITM 证书", "MITM certificates"]] : []];
+  const tabs = [["network", "网络与 TUN", "Network & TUN"], ["dns", "DNS", "DNS"], ["rules", "分流规则", "Routing rules"], ...state.client !== "clash" ? [["tailscale", "Tailscale", "Tailscale"]] : [], ...state.client === "singbox" ? [["endpoints", "VPN 端点", "VPN endpoints"], ["outbounds", "原生出站", "Native outbounds"], ["services", "服务", "Services"]] : [], ["advanced", "高级设置", "Advanced"], ...state.client === "surge" ? [["mitm", "MITM 证书", "MITM certificates"]] : []];
   let content = "";
   if (state.client === "surge" && state.section === "mitm") content = renderMitm();
   else if (state.section === "tailscale") content = renderTailscale();
@@ -293,7 +297,7 @@ function renderTailscale() {
     const exit = surge ? node.exitNode : node.exit_node;
     return [`<tr><td>${btn(esc(name || t("未命名", "Unnamed")), "edit-tailscale", `data-index="${index}"`, "link")}</td><td>${esc(node.hostname || "—")}</td><td>${esc(exit && exit !== "none" ? exit : t("未指定", "Not selected"))}</td><td>${surge ? node.enabled ? t("启用", "Enabled") : t("停用", "Disabled") : t("已配置", "Configured")}</td><td class="actions">${smallButton("edit", "edit-tailscale", `data-index="${index}"`, t("编辑", "Edit"))}${smallButton("trash", "delete-tailscale", `data-index="${index}"`, t("删除", "Delete"))}</td></tr>`];
   }).join("");
-  return section(t("Tailscale 节点", "Tailscale nodes"), `<p class="help">${surge ? t("节点可在当前端的策略组和路由规则中使用。认证密钥仅在编辑时以密码框显示。", "Use nodes in this client's policy groups and routing rules. Auth keys are masked in the editor.") : t("使用 sing-box 1.14 原生 Tailscale endpoint。认证密钥可留空，通过客户端日志中的登录地址授权；每个实例应使用独立的状态目录。", "Uses native sing-box 1.14 Tailscale endpoints. Leave the auth key empty to sign in through the URL in client logs; use a separate state directory for each instance.")}</p><div class="table-wrap"><table class="editable-table tailscale-table"><thead><tr><th>${t("名称", "Name")}</th><th>${t("设备主机名", "Hostname")}</th><th>${t("出口节点", "Exit node")}</th><th>${t("状态", "Status")}</th><th class="actions">${t("操作", "Actions")}</th></tr></thead><tbody>${rows || `<tr><td colspan="5" class="empty">${t("尚未添加 Tailscale 节点", "No Tailscale nodes yet")}</td></tr>`}</tbody></table></div>`, btn(t("添加节点", "Add node"), "add-tailscale", "", "primary"));
+  return section(t("Tailscale 节点", "Tailscale nodes"), `<p class="help">${surge ? t("节点可在当前端的策略组和分流规则中使用。认证密钥仅在编辑时以密码框显示。", "Use nodes in this client's policy groups and routing rules. Auth keys are masked in the editor.") : t("使用 sing-box 1.14 原生 Tailscale endpoint。认证密钥可留空，通过客户端日志中的登录地址授权；每个实例应使用独立的状态目录。", "Uses native sing-box 1.14 Tailscale endpoints. Leave the auth key empty to sign in through the URL in client logs; use a separate state directory for each instance.")}</p><div class="table-wrap"><table class="editable-table tailscale-table"><thead><tr><th>${t("名称", "Name")}</th><th>${t("设备主机名", "Hostname")}</th><th>${t("出口节点", "Exit node")}</th><th>${t("状态", "Status")}</th><th class="actions">${t("操作", "Actions")}</th></tr></thead><tbody>${rows || `<tr><td colspan="5" class="empty">${t("尚未添加 Tailscale 节点", "No Tailscale nodes yet")}</td></tr>`}</tbody></table></div>`, btn(t("添加节点", "Add node"), "add-tailscale", "", "primary"));
 }
 function editTailscale(index) {
   const client = state.client, surge = client === "surge";
@@ -329,9 +333,12 @@ function renderRules() {
   const rules = Array.isArray(rawRules) ? rawRules : [];
   const compiled = client.ruleSets.mode === "compiled";
   let html = "";
-  if (native) return html + renderSingboxSections(["route"]) + (compiled ? renderRulePlan(client.ruleSets) : "");
+  if (native) {
+    if (!compiled) return section("", `<p class="help">${t("启用后，已有原生规则仍优先匹配，已保存的编排规则也会启用。", "Existing native rules keep priority. Previously saved rule-plan entries will also become active.")}</p>`, btn(t("使用规则集地址配置", "Use rule-set URLs"), "enable-singbox-rule-plan", "", "primary")) + renderSingboxSections(["route"]);
+    return renderRulePlan(client.ruleSets) + `<details><summary>${t("原生路由与高级设置", "Native routing and advanced settings")}</summary>${renderSingboxSections(["route"])}</details>`;
+  }
   if (!compiled) {
-    html += section(t("路由规则", "Routing rules"), `<div class="toolbar">${btn(native ? "JSON" : t("文本", "Text"), "edit-json", `data-path="${path}" data-lines="${native ? "false" : "true"}"`)}</div><div class="table-wrap"><table class="rule-table"><thead><tr><th>${t("顺序", "Order")}</th><th>${t("匹配类型", "Match")}</th><th>${t("匹配值", "Value")}</th><th>${t("出站策略", "Outbound")}</th><th>${t("操作", "Actions")}</th></tr></thead><tbody>${rules.map((rule, index) => ruleRow(rule, index, path, native)).join("") || `<tr><td colspan="5" class="empty">${t("还没有规则", "No rules")}</td></tr>`}</tbody></table></div>${btn(icon("plus") + t("添加规则", "Add rule"), "add-rule", `data-path="${path}"`)}${native ? `<div class="toolbar"></div>${field(`${basePath()}.route.final`, client.route.final || "", { label: t("默认出站", "Default outbound"), options: policyChoices(client.route.final || "") })}` : ""}<div class="toolbar"><span>${t("当前端策略组：", "Client groups:")}</span>${Object.keys(currentClient().groups).slice(0, 7).map((name) => `<span class="chip">${esc(name)}</span>`).join("")}<a href="#groups">${t("管理策略组", "Manage groups")}</a></div>`);
+    html += section("", `<div class="toolbar">${btn(native ? "JSON" : t("文本", "Text"), "edit-json", `data-path="${path}" data-lines="${native ? "false" : "true"}"`)}</div><div class="table-wrap"><table class="rule-table"><thead><tr><th>${t("顺序", "Order")}</th><th>${t("匹配类型", "Match")}</th><th>${t("匹配值", "Value")}</th><th>${t("出站策略", "Outbound")}</th><th>${t("操作", "Actions")}</th></tr></thead><tbody>${rules.map((rule, index) => ruleRow(rule, index, path, native)).join("") || `<tr><td colspan="5" class="empty">${t("还没有规则", "No rules")}</td></tr>`}</tbody></table></div>${btn(icon("plus") + t("添加规则", "Add rule"), "add-rule", `data-path="${path}"`)}${native ? `<div class="toolbar"></div>${field(`${basePath()}.route.final`, client.route.final || "", { label: t("默认出站", "Default outbound"), options: policyChoices(client.route.final || "") })}` : ""}<div class="toolbar"><span>${t("当前端策略组：", "Client groups:")}</span>${Object.keys(currentClient().groups).slice(0, 7).map((name) => `<span class="chip">${esc(name)}</span>`).join("")}<a href="#groups">${t("管理策略组", "Manage groups")}</a></div>`);
   }
   if (native) html += section(t("其他路由设置", "Other route settings"), Object.entries(client.route).filter(([key]) => !["rules", "final"].includes(key)).map(([key, value]) => field(`${basePath()}.route.${key}`, value)).join(""), btn(t("完整 JSON", "Full JSON"), "edit-json", `data-path="${basePath()}.route"`));
   if (state.client === "clash") html += section(t("原生规则提供者", "Native rule providers"), field(`${basePath()}.ruleProviders`, client.ruleProviders, { multiline: true }));
@@ -356,17 +363,20 @@ function ruleRow(rule, index, path, native) {
     policy = parts[isFinal ? 1 : 2] || "—";
     simple = (state.client === "surge" ? SURGE_RULE_TYPES : LEGACY_RULE_FIELDS).includes(type);
   }
-  const lockedFinal = state.client === "surge" && type === "FINAL";
+  const lockedFinal = !native && isFinalRule(rule);
   const types = native ? Object.keys(RULE_FIELDS) : state.client === "surge" ? SURGE_RULE_TYPES : LEGACY_RULE_FIELDS;
   const choices = [...new Set([...policyChoices(policy), ...(native ? ["hijack-dns", "sniff", "reject"] : [])])];
   const select = (kind, values, current) => `<select ${lockedFinal && kind === "type" ? "disabled" : ""} data-rule-field="${kind}" data-path="${path}" data-index="${index}" aria-label="${t("规则", "Rule")} ${index + 1} ${kind}">${values.map((item) => `<option value="${esc(item)}" ${item === current ? "selected" : ""}>${esc(kind === "type" && native ? t(...RULE_FIELDS[item]) : item)}</option>`).join("")}</select>`;
-  return `<tr><td>${index + 1}</td><td>${simple ? select("type", types, type) : esc(type)}</td><td class="truncate">${esc(value)}</td><td>${simple ? select("policy", choices, policy) : esc(policy)}</td><td class="actions"><span class="order">${smallButton("up", "move-rule", `data-path="${path}" data-index="${index}" data-direction="-1" ${lockedFinal || index === 0 ? "disabled" : ""}`, t("上移", "Move up"))}${smallButton("down", "move-rule", `data-path="${path}" data-index="${index}" data-direction="1" ${lockedFinal || index === getPath(state.config, path).length - 1 || (state.client === "surge" && isFinalRule(getPath(state.config, path)[index + 1])) ? "disabled" : ""}`, t("下移", "Move down"))}</span>${smallButton("edit", simple ? "edit-rule" : "edit-rule-json", `data-path="${path}" data-index="${index}"`, t("编辑", "Edit"))}${smallButton("trash", "delete-rule", `data-path="${path}" data-index="${index}" ${lockedFinal ? "disabled" : ""}`, t("删除", "Delete"))}</td></tr>`;
+  return `<tr><td>${index + 1}</td><td>${simple && !lockedFinal ? select("type", types, type) : esc(type)}</td><td class="truncate">${esc(value)}</td><td>${simple ? select("policy", choices, policy) : esc(policy)}</td><td class="actions"><span class="order">${smallButton("up", "move-rule", `data-path="${path}" data-index="${index}" data-direction="-1" ${lockedFinal || index === 0 ? "disabled" : ""}`, t("上移", "Move up"))}${smallButton("down", "move-rule", `data-path="${path}" data-index="${index}" data-direction="1" ${lockedFinal || index === getPath(state.config, path).length - 1 || isFinalRule(getPath(state.config, path)[index + 1]) ? "disabled" : ""}`, t("下移", "Move down"))}</span>${iconButton("edit", simple ? "edit-rule" : "edit-rule-json", `data-path="${path}" data-index="${index}"`, t("编辑", "Edit"))}${smallButton("trash", "delete-rule", `data-path="${path}" data-index="${index}" ${lockedFinal ? "disabled" : ""}`, t("删除", "Delete"))}</td></tr>`;
 }
 function orderedPlan(plan) {
-  return [...plan.outputs.map((item, index) => ({ kind: "output", item, index })), ...plan.directRules.map((item, index) => ({ kind: "direct", item, index }))].sort((a, b) => a.item.order - b.item.order);
+  return [...plan.outputs.map((item, index) => ({ kind: "output", item, index })), ...plan.directRules.map((item, index) => ({ kind: "direct", item, index }))].sort((a, b) => Number(isFinalEntry(a)) - Number(isFinalEntry(b)) || a.item.order - b.item.order);
+}
+function isFinalEntry(entry) {
+  return entry?.kind === "direct" && isFinalRule(entry.item.rule);
 }
 function isFinalRule(rule) {
-  return ["FINAL", "MATCH"].includes(splitRule(rule)[0]?.toUpperCase());
+  return typeof rule === "string" && ["FINAL", "MATCH"].includes(splitRule(rule)[0]?.toUpperCase());
 }
 function nextPlanOrder(plan) {
   return Math.max(-1, ...orderedPlan(plan).map(({ item }) => item.order)) + 1;
@@ -381,7 +391,7 @@ function appendPlanItem(plan, kind, item) {
 function outputSourceUrls(output) {
   return output.sourceIds.map((id) => currentClient().ruleSets.sources.find((source) => source.id === id)?.url).filter(Boolean).join("\n");
 }
-function sourcesForUrls(plan, text) {
+function sourcesForUrls(plan, text, preferredIds = []) {
   const urls = [...new Set(text.split("\n").map((url) => url.trim()).filter(Boolean))];
   for (const url of urls) {
     let parsed;
@@ -390,7 +400,7 @@ function sourcesForUrls(plan, text) {
   }
   const sources = structuredClone(plan.sources);
   const ids = urls.map((url) => {
-    let source = sources.find((entry) => entry.url === url);
+    let source = sources.find((entry) => entry.url === url && preferredIds.includes(entry.id)) || sources.find((entry) => entry.url === url);
     if (!source) {
       const parsed = new URL(url);
       source = { id: crypto.randomUUID(), name: parsed.pathname.split("/").filter(Boolean).at(-1) || parsed.hostname, url, enabled: true, format: "auto", order: Math.max(-1, ...sources.map((entry) => entry.order)) + 1 };
@@ -409,6 +419,8 @@ function selectOptions(choices, selected) {
   return [...new Set([...choices, selected])].map((value) => `<option value="${esc(value)}" ${value === selected ? "selected" : ""}>${esc(value || t("无", "None"))}</option>`).join("");
 }
 const SURGE_RULE_TYPES = ["DOMAIN", "DOMAIN-SUFFIX", "DOMAIN-KEYWORD", "IP-CIDR", "IP-CIDR6", "GEOIP", "IP-ASN", "PROCESS-NAME", "USER-AGENT", "URL-REGEX", "SCRIPT", "SUBNET", "SRC-IP", "IN-PORT", "DEST-PORT", "PROTOCOL", "DEVICE-NAME", "CELLULAR-RADIO", "WIFI-SSID", "RULE-SET", "DOMAIN-SET", "AND", "OR", "NOT", "FINAL"];
+const SURGE_RULE_SET_TYPES = ["RULE-SET", "DOMAIN-SET"];
+const SURGE_DIRECT_RULE_TYPES = SURGE_RULE_TYPES.filter((type) => !SURGE_RULE_SET_TYPES.includes(type));
 function surgeOptionChoices(type) {
   if (type === "RULE-SET") return ["", "no-resolve", "extended-matching", "no-resolve,extended-matching"];
   if (["IP-CIDR", "IP-CIDR6", "GEOIP", "IP-ASN"].includes(type)) return ["", "no-resolve"];
@@ -428,22 +440,28 @@ function compiledFinalOptions(parts) {
   return parts.slice(option ? 1 : 2);
 }
 function renderRulePlan(plan) {
+  const surge = state.client === "surge";
   const ordered = orderedPlan(plan);
   const rows = ordered.map(({ kind, item, index }, position) => {
     const output = kind === "output";
+    const lockedFinal = !output && isFinalRule(item.rule);
     const attrs = `data-plan-kind="${kind}" data-index="${index}"`;
     const control = (field, tag, content, extra = "") => `<${tag} data-plan-field="${field}" ${attrs} ${extra}>${content}</${tag}>`;
-    const value = output ? `<label class="small">${t("来源地址（每行一个）", "Source URLs (one per line)")}${control("sourceUrls", "textarea", esc(state.invalid.get(`plan.${state.client}.output.${index}.sourceUrls`) ?? outputSourceUrls(item)), `rows="3" spellcheck="false" ${state.invalid.has(`plan.${state.client}.output.${index}.sourceUrls`) ? 'aria-invalid="true"' : ""}`)}</label>${item.inlineRules.length ? `<span class="small muted">${t(`另含 ${item.inlineRules.length} 条内联规则`, `Also includes ${item.inlineRules.length} inline rules`)}</span>` : ""}` : `<code>${esc(directMatchText(item.rule))}</code>`;
-    return `<tr><td>${position + 1}</td><td><strong>${esc(item.name)}</strong><div class="small muted">${output ? t("规则集", "Rule set") : t("单条规则", "Direct rule")}</div></td><td class="plan-match">${value}</td><td>${control("policy", "select", selectOptions(policyChoices(item.policy), item.policy), `aria-label="${t("策略", "Policy")}"`)}${output && state.client === "surge" ? `<label class="small">${t("附加选项", "Options")}${control("surgeOptions", "select", selectOptions(surgeOptionChoices("RULE-SET"), item.surgeOptions.join(",")))}</label>` : ""}</td><td><label class="plan-enabled"><input type="checkbox" data-plan-field="enabled" ${attrs} ${item.enabled ? "checked" : ""} aria-label="${t("启用", "Enabled")}"><span class="plan-enabled-label">${t("启用", "Enabled")}</span></label></td><td class="actions"><span class="order">${smallButton("up", "move-plan", `data-position="${position}" data-direction="-1" ${position === 0 ? "disabled" : ""}`, t("上移", "Move up"))}${smallButton("down", "move-plan", `data-position="${position}" data-direction="1" ${position === ordered.length - 1 ? "disabled" : ""}`, t("下移", "Move down"))}</span>${smallButton("edit", `edit-${kind}`, `data-index="${index}"`, t("编辑", "Edit"))}${smallButton("trash", `delete-${kind}`, `data-index="${index}"`, t("删除", "Delete"))}</td></tr>`;
+    const urls = output ? state.invalid.get(`plan.${state.client}.output.${index}.sourceUrls`) ?? outputSourceUrls(item) : "";
+    const content = output ? urls.split("\n").filter(Boolean).map((url) => `<div class="routing-url">${esc(url)}</div>`).join("") + (item.inlineRules.length ? `<span class="small muted">${t(`保留 ${item.inlineRules.length} 条已有规则`, `${item.inlineRules.length} existing rules retained`)}</span>` : "") : `<code>${esc(directMatchText(item.rule))}</code>`;
+    const kindLabel = output ? (surge ? item.surgeType || t("规则集（自动类型）", "Rule set (automatic type)") : t("规则集", "Rule set")) : t("单条规则", "Direct rule");
+    const policy = control("policy", "select", selectOptions(policyChoices(item.policy), item.policy), `aria-label="${t("出口策略", "Outbound policy")}"`);
+    const options = output && surge ? `<label class="small">${t("Surge 选项", "Surge options")}${control("surgeOptions", "select", selectOptions(surgeOptionChoices(item.surgeType || "RULE-SET"), item.surgeOptions.join(",")))}</label>` : "";
+    return `<tr><td>${position + 1}</td><td class="routing-content"><span class="small muted">${esc(kindLabel)}</span>${content}</td><td>${policy}${options}</td><td><label class="routing-enabled"><input type="checkbox" data-plan-field="enabled" ${attrs} ${item.enabled ? "checked" : ""} ${lockedFinal ? "disabled" : ""}>${t("启用", "Enabled")}</label></td><td class="actions"><span class="routing-actions"><span class="order">${iconButton("up", "move-plan", `data-position="${position}" data-direction="-1" ${lockedFinal || position === 0 ? "disabled" : ""}`, t("上移", "Move up"))}${iconButton("down", "move-plan", `data-position="${position}" data-direction="1" ${lockedFinal || position === ordered.length - 1 || isFinalEntry(ordered[position + 1]) ? "disabled" : ""}`, t("下移", "Move down"))}</span>${iconButton("edit", `edit-${kind}`, `data-index="${index}"`, t("编辑", "Edit"))}${iconButton("trash", `delete-${kind}`, `data-index="${index}" ${lockedFinal ? "disabled" : ""}`, t("删除", "Delete"))}</span></td></tr>`;
   }).join("");
-  return section(t("规则编排", "Rule plan"), `<p class="help">${t("在规则行填写来源地址并选择策略；新地址会自动添加到当前客户端的规则来源。规则集与单条规则一起排序，上方优先匹配，兜底规则放在最后。", "Enter source URLs and select a policy in each row. New URLs are added to this client's sources automatically. Rule sets and direct rules share one order: top first, final last.")}</p>${field(`${basePath()}.ruleSets.aggregateByPolicy`, plan.aggregateByPolicy)}<p class="help">${t("按策略聚合会在该策略首次出现的位置合并规则集，可能改变跨策略的匹配顺序。", "Same-policy aggregation merges rule sets at the policy's first occurrence and may change precedence across policies.")}</p><div class="toolbar">${btn(t("添加规则集", "Add rule set"), "add-output")}${btn(t("添加单条规则", "Add direct rule"), "add-direct")}${btn(t("刷新编译缓存", "Refresh compiled cache"), "refresh-rules")}</div><div class="table-wrap"><table class="editable-table rule-plan-table"><thead><tr><th>${t("顺序", "Order")}</th><th>${t("名称 / 类型", "Name / Type")}</th><th>${t("匹配内容", "Match")}</th><th>${t("策略", "Policy")}</th><th>${t("启用", "Enabled")}</th><th class="actions">${t("操作", "Actions")}</th></tr></thead><tbody>${rows || `<tr><td colspan="6" class="empty">${t("还没有规则", "No rules")}</td></tr>`}</tbody></table></div>`);
+  return section("", `${state.client === "surge" ? `${field(`${basePath()}.ruleSets.aggregateByPolicy`, plan.aggregateByPolicy)}<p class="help">${t("按策略聚合会在该策略首次出现的位置合并规则集，可能改变跨策略的匹配顺序。", "Same-policy aggregation merges rule sets at the policy's first occurrence and may change precedence across policies.")}</p>` : ""}<div class="toolbar">${btn(t("添加规则集", "Add rule set"), "add-output")}${btn(t("添加单条规则", "Add direct rule"), "add-direct")}</div><div class="table-wrap"><table class="routing-table surge-routing-table"><thead><tr><th>${t("匹配顺序", "Match order")}</th><th>${t("规则集地址 / 单条规则", "Rule-set URL / Direct rule")}</th><th>${t("出口策略", "Outbound policy")}</th><th>${t("状态", "Status")}</th><th class="actions">${t("操作", "Actions")}</th></tr></thead><tbody>${rows || `<tr><td colspan="5" class="empty">${t("还没有规则", "No rules")}</td></tr>`}</tbody></table></div>`);
 }
 function editDirect(index) {
   if (state.client === "surge") { editSurgeRule(null, index, true); return; }
   if (state.client === "singbox") { editSingboxDirect(index); return; }
   const rules = state.config.clients[state.client].ruleSets.directRules;
-  const original = index === null ? { id: crypto.randomUUID(), name: "", rule: "DOMAIN-SUFFIX,example.com", policy: "Proxy", order: nextPlanOrder(currentClient().ruleSets), enabled: true } : rules[index];
-  modal(t("编辑单条规则", "Edit direct rule"), Object.entries(original).filter(([key]) => !["id", "order"].includes(key)).map(([key, value]) => localField(key, value, key === "policy" ? { options: policyChoices(value) } : {})).join(""), () => {
+  const original = index === null ? { id: crypto.randomUUID(), rule: "DOMAIN-SUFFIX,example.com", policy: "Proxy", order: nextPlanOrder(currentClient().ruleSets), enabled: true } : rules[index];
+  modal(t("编辑单条规则", "Edit direct rule"), Object.entries(original).filter(([key]) => !["id", "order", "name"].includes(key)).map(([key, value]) => localField(key, value, key === "policy" ? { options: policyChoices(value) } : {})).join(""), () => {
     const value = readLocal(original);
     if (!value.rule.trim()) throw Error(t("请填写规则", "Enter a rule"));
     if (index === null) appendPlanItem(currentClient().ruleSets, "direct", value); else rules[index] = value;
@@ -454,9 +472,11 @@ function editSingboxDirect(index) {
   const plan = currentClient().ruleSets, original = index === null ? null : plan.directRules[index];
   const parts = splitRule(original?.rule || "DOMAIN-SUFFIX,example.com");
   const types = ["DOMAIN", "DOMAIN-SUFFIX", "DOMAIN-KEYWORD", "DOMAIN-REGEX", "IP-CIDR", "IP-CIDR6", "SRC-IP", "SRC-IP-CIDR", "PROCESS-NAME", "PROCESS-PATH", "PROCESS-PATH-REGEX", "DST-PORT", "DEST-PORT", "SRC-PORT", "NETWORK", "PROTOCOL", "FINAL", "MATCH"];
-  const form = { name: original?.name || "", matchType: parts[0].toUpperCase(), matchValue: ["FINAL", "MATCH"].includes(parts[0].toUpperCase()) ? "" : parts[1] || "", policy: original?.policy || "Proxy", enabled: original?.enabled ?? true };
-  modal(t("编辑编排规则", "Edit compiled rule"), localField("name", form.name) + localField("matchType", form.matchType, { label: t("匹配类型", "Match type"), options: [...new Set([...types, form.matchType])] }) + localField("matchValue", form.matchValue, { label: t("匹配值（FINAL / MATCH 留空）", "Match value (empty for FINAL / MATCH)") }) + localField("policy", form.policy, { options: policyChoices(form.policy) }) + localField("enabled", form.enabled) + `<p class="help">${t("每条编排规则填写一个匹配值；复杂逻辑和原生动作可在上方“路由与规则集”表单中配置。", "Use one match value per compiled rule. Configure complex logic and native actions in the Routing & rule sets form above.")}</p>`, () => {
+  const form = { matchType: parts[0].toUpperCase(), matchValue: ["FINAL", "MATCH"].includes(parts[0].toUpperCase()) ? "" : parts[1] || "", policy: original?.policy || "Proxy", enabled: original?.enabled ?? true };
+  modal(t("编辑 sing-box 单条规则", "Edit sing-box direct rule"), localField("matchType", form.matchType, { label: t("匹配类型", "Match type"), options: isFinalRule(original?.rule) ? [form.matchType] : types.filter((type) => !isFinalRule(type) || !plan.directRules.some((item) => isFinalRule(item.rule))) }) + localField("matchValue", form.matchValue, { label: t("匹配值（FINAL / MATCH 留空）", "Match value (empty for FINAL / MATCH)") }) + localField("policy", form.policy, { options: policyChoices(form.policy) }) + localField("enabled", form.enabled, { disabled: isFinalRule(original?.rule) }) + `<p class="help">${t("每条编排规则填写一个匹配值；复杂逻辑和原生动作可在上方“路由与规则集”表单中配置。", "Use one match value per compiled rule. Configure complex logic and native actions in the Routing & rule sets form above.")}</p>`, () => {
     const value = readLocal(form), final = ["FINAL", "MATCH"].includes(value.matchType);
+    if (isFinalRule(original?.rule) && (!final || !value.enabled)) throw Error(t("兜底规则必须保留并启用", "The final rule must remain enabled"));
+    if (final && plan.directRules.some((item) => item !== original && isFinalRule(item.rule))) throw Error(t("已有兜底规则", "A final rule already exists"));
     if (!types.includes(value.matchType)) throw Error(t("此编排类型无法等价转换，请使用原生路由表单", "This compiled type cannot be converted; use the native routing form"));
     if (!final && (!value.matchValue.trim() || /[,\r\n]/.test(value.matchValue))) throw Error(t("请填写单个有效匹配值", "Enter one valid match value"));
     const originalFinal = ["FINAL", "MATCH"].includes(parts[0].toUpperCase());
@@ -464,7 +484,7 @@ function editSingboxDirect(index) {
       || parts.slice(originalFinal ? 1 : 2).some((part) => ["no-resolve", "src", "extended-matching", "dns-failed"].includes(part.toLowerCase()));
     if (hasOptions) throw Error(t("此旧规则含附加选项，请通过原生路由表单改写后删除旧规则", "This legacy rule has extra options; rewrite it in the native routing form, then delete the old rule"));
     const rule = final ? value.matchType : `${value.matchType},${value.matchValue.trim()},${value.policy}`;
-    const next = { ...(original || { id: crypto.randomUUID(), order: nextPlanOrder(plan) }), name: value.name.trim() || value.matchType, rule, policy: value.policy, enabled: value.enabled };
+    const next = { ...(original || { id: crypto.randomUUID(), order: nextPlanOrder(plan) }), rule, policy: value.policy, enabled: value.enabled };
     if (index === null) appendPlanItem(plan, "direct", next); else plan.directRules[index] = next;
     closeModal(); changed(); render();
   });
@@ -568,7 +588,6 @@ async function uploadMmdb() {
 }
 function modal(title, body, onSave, saveLabel = t("应用更改", "Apply changes")) {
   $("#modal").classList.remove("routing-order-dialog");
-  modal.updateRuleSources = null;
   $("#modal-title").textContent = title;
   $("#modal-body").innerHTML = body;
   $("#modal-actions").innerHTML = btn(t("取消", "Cancel"), "close-modal") + (onSave ? btn(saveLabel, "modal-save", "", "primary") : "");
@@ -626,7 +645,7 @@ function editEntity(kind, index) {
 function editGroup(name) {
   if (state.client === "singbox") { editSingboxGroup(name); return; }
   const original = name ? { name, spec: currentClient().groups[name], enabled: !currentClient().disabledGroups.includes(name) } : { name: "", spec: "select, {all}", enabled: true };
-  modal(t("编辑策略组", "Edit policy group"), localField("name", original.name) + localField("spec", original.spec, { label: t("组配置", "Group definition"), multiline: true }) + localField("enabled", original.enabled) + `<p class="help">${state.client === "surge" ? t("可使用 smart；兼容将 url-test 输出为 smart。smart 成员必须是代理节点，hidden=true 可隐藏组。", "Use smart; url-test is also emitted as smart for compatibility. Smart requires proxy-node members; hidden=true hides a group.") : state.client === "clash" ? t("支持 select、url-test、fallback 和 load-balance；hidden=true 的显示效果需要客户端或面板支持。", "Supports select, url-test, fallback and load-balance. hidden=true requires client or dashboard support.") : t("支持 select 和 url-test，分别输出为 selector 和 urltest；不支持 hidden。", "Supports select and url-test, emitted as selector and urltest. hidden is unsupported.")} ${t("修改名称不会自动重写规则引用。", "Renaming does not rewrite rule references.")}</p>`, () => {
+  modal(t("编辑策略组", "Edit policy group"), localField("name", original.name, { readonly: name === "Proxy" }) + localField("spec", original.spec, { label: t("组配置", "Group definition"), multiline: true }) + localField("enabled", original.enabled) + `<p class="help">${state.client === "surge" ? t("可使用 smart；兼容将 url-test 输出为 smart。smart 成员必须是代理节点，hidden=true 可隐藏组。", "Use smart; url-test is also emitted as smart for compatibility. Smart requires proxy-node members; hidden=true hides a group.") : state.client === "clash" ? t("支持 select、url-test、fallback 和 load-balance；hidden=true 的显示效果需要客户端或面板支持。", "Supports select, url-test, fallback and load-balance. hidden=true requires client or dashboard support.") : t("支持 select 和 url-test，分别输出为 selector 和 urltest；不支持 hidden。", "Supports select and url-test, emitted as selector and urltest. hidden is unsupported.")} ${t("修改名称不会自动重写规则引用。", "Renaming does not rewrite rule references.")}</p>`, () => {
     const value = readLocal(original);
     value.name = value.name.trim();
     if (!value.name || /[\r\n,=]/.test(value.name)) throw Error(t("策略组名称无效", "Invalid group name"));
@@ -647,7 +666,7 @@ function editSingboxGroup(name) {
   const client = currentClient();
   const original = { name: name || "", enabled: !client.disabledGroups.includes(name) };
   let form;
-  modal(t("编辑 sing-box 策略组", "Edit sing-box group"), localField("name", original.name) + localField("enabled", original.enabled) + '<div id="singbox-group-form" class="sb-form"></div>', () => {
+  modal(t("编辑 sing-box 策略组", "Edit sing-box group"), localField("name", original.name, { readonly: name === "Proxy" }) + localField("enabled", original.enabled) + '<div id="singbox-group-form" class="sb-form"></div>', () => {
     const value = readLocal(original), spec = form.read();
     value.name = value.name.trim();
     if (!value.name || /[\r\n,=]/.test(value.name)) throw Error(t("策略组名称无效", "Invalid group name"));
@@ -699,18 +718,25 @@ function editSurgeRule(path, index, compiled = false, selectedType) {
   const final = type === "FINAL";
   const optionStart = final ? 2 : compiled && ["no-resolve", "src", "extended-matching"].includes(parts[2]?.toLowerCase()) ? 2 : 3;
   const options = final && compiled ? compiledFinalOptions(parts) : parts.slice(optionStart);
-  const form = { type: selectedType || type, value: final ? "" : parts[1] || "", policy: compiled ? original?.policy || "Proxy" : parts[final ? 1 : 2] || "Proxy", options: options.join(","), ...(compiled ? { name: original?.name || "", enabled: original?.enabled ?? true } : {}) };
+  const form = { type: selectedType || type, value: final ? "" : parts[1] || "", policy: compiled ? original?.policy || "Proxy" : parts[final ? 1 : 2] || "Proxy", options: options.join(","), ...(compiled ? { enabled: original?.enabled ?? true } : {}) };
   if (selectedType && selectedType !== type && !surgeOptionChoices(selectedType).includes(form.options)) form.options = "";
   const hasFinal = rules.some((rule, i) => i !== index && isFinalRule(compiled ? rule.rule : rule));
-  const choices = SURGE_RULE_TYPES.filter((entry) => entry !== "FINAL" || !hasFinal);
-  modal(t("编辑 Surge 规则", "Edit Surge rule"), (compiled ? localField("name", form.name) : "") + localField("type", form.type, { label: t("匹配类型", "Match type"), options: final && !compiled ? ["FINAL"] : [...new Set([...choices, form.type])] }) + localField("value", form.value, { label: t("匹配值 / 规则集地址", "Match value / Rule-set URL"), multiline: true }) + localField("policy", form.policy, { options: policyChoices(form.policy) }) + `<div data-surge-options>${localField("options", form.options, { label: t("附加选项", "Options"), options: [...new Set([...surgeOptionChoices(form.type), form.options])] })}</div>` + (compiled ? localField("enabled", form.enabled) : "") + `<p class="help">${t("一条规则填写一个匹配值；RULE-SET / DOMAIN-SET 填写地址。逻辑规则可填写括号表达式。FINAL 在末尾匹配剩余请求。", "Use one match value per rule, a URL for RULE-SET / DOMAIN-SET, or a parenthesized logical expression. FINAL matches remaining requests at the end.")}</p>`, () => {
+  const legacyRuleSet = compiled && original && SURGE_RULE_SET_TYPES.includes(type);
+  const direct = compiled && !legacyRuleSet;
+  const types = direct ? SURGE_DIRECT_RULE_TYPES : legacyRuleSet ? SURGE_RULE_SET_TYPES : SURGE_RULE_TYPES;
+  const choices = types.filter((entry) => entry !== "FINAL" || !hasFinal);
+  const title = direct ? t("编辑 Surge 单条规则", "Edit Surge direct rule") : legacyRuleSet ? t("编辑 Surge 规则集引用", "Edit Surge rule-set reference") : t("编辑 Surge 规则", "Edit Surge rule");
+  const help = direct ? t("一条规则填写一个匹配值。逻辑规则可填写括号表达式。FINAL 在末尾匹配剩余请求。", "Use one match value per rule or a parenthesized logical expression. FINAL matches remaining requests at the end.") : legacyRuleSet ? t("此条目是已有的规则集引用。新增规则集请使用“添加规则集”。", "This entry is an existing rule-set reference. Use Add rule set for new rule sets.") : t("一条规则填写一个匹配值；RULE-SET / DOMAIN-SET 填写地址。逻辑规则可填写括号表达式。FINAL 在末尾匹配剩余请求。", "Use one match value per rule, a URL for RULE-SET / DOMAIN-SET, or a parenthesized logical expression. FINAL matches remaining requests at the end.");
+  modal(title, localField("type", form.type, { label: t("匹配类型", "Match type"), options: final ? ["FINAL"] : [...new Set([...choices, form.type])] }) + localField("value", form.value, { label: direct ? t("匹配值", "Match value") : legacyRuleSet ? t("规则集地址", "Rule-set URL") : t("匹配值 / 规则集地址", "Match value / Rule-set URL"), multiline: true }) + localField("policy", form.policy, { options: policyChoices(form.policy) }) + `<div data-surge-options>${localField("options", form.options, { label: t("附加选项", "Options"), options: [...new Set([...surgeOptionChoices(form.type), form.options])] })}</div>` + (compiled ? localField("enabled", form.enabled, { disabled: final }) : "") + `<p class="help">${help}</p>`, () => {
     const value = readLocal(form);
+    if (final && (value.type !== "FINAL" || compiled && !value.enabled)) throw Error(t("兜底规则必须保留并启用", "The final rule must remain enabled"));
+    if (direct && SURGE_RULE_SET_TYPES.includes(value.type)) throw Error(t("规则集请使用“添加规则集”。", "Use Add rule set for rule sets."));
     if (!value.value.trim() && value.type !== "FINAL") throw Error(t("请填写匹配值", "Enter a match value"));
     if (/[\r\n]/.test(value.value.trim())) throw Error(t("每条规则只能填写一个匹配值，请分别添加多条规则。", "Use one match value per rule; add separate rules for multiple values."));
     if (value.type === "FINAL" && hasFinal) throw Error(t("已有 FINAL 兜底规则。", "A FINAL rule already exists."));
     const line = [value.type, ...(value.type === "FINAL" ? [] : [value.value.trim()]), value.policy, ...value.options.split(",").filter(Boolean)].join(",");
     if (compiled) {
-      const next = { ...(original || { id: crypto.randomUUID(), order: nextPlanOrder(plan) }), name: value.name.trim() || value.type, enabled: value.enabled, policy: value.policy, rule: line };
+      const next = { ...(original || { id: crypto.randomUUID(), order: nextPlanOrder(plan) }), enabled: value.enabled, policy: value.policy, rule: line };
       if (index === null) appendPlanItem(plan, "direct", next); else rules[index] = next;
     } else {
       const next = [...rules];
@@ -724,7 +750,7 @@ function editSurgeRule(path, index, compiled = false, selectedType) {
     closeModal(); changed(); render();
   });
   $('#modal-body [data-local="value"]').disabled = form.type === "FINAL";
-  if (final && !compiled) $('#modal-body [data-local="type"]').disabled = true;
+  if (final) $('#modal-body [data-local="type"]').disabled = true;
 }
 function editRule(path, index, forceJson = false, selectedType) {
   if (state.client === "surge" && !forceJson) { editSurgeRule(path, index, false, selectedType); return; }
@@ -735,6 +761,7 @@ function editRule(path, index, forceJson = false, selectedType) {
     modal(t("编辑原生规则", "Edit native rule"), `<textarea id="rule-native" class="code code-editor" rows="12">${esc(native ? JSON.stringify(original, null, 2) : original)}</textarea>`, () => {
       const text = $("#rule-native").value;
       const value2 = native ? JSON.parse(text) : text;
+      if (isFinalRule(original) && !isFinalRule(value2)) throw Error(t("不能修改兜底规则类型", "Cannot change the final rule type"));
       if (native && (!value2 || typeof value2 !== "object" || Array.isArray(value2))) throw Error(t("规则必须是对象", "A rule must be an object"));
       if (state.client === "surge") validateSurgeFinal(rules.map((rule, i) => i === index ? value2 : rule));
       if (index === null) rules.push(value2);
@@ -759,8 +786,9 @@ function editRule(path, index, forceJson = false, selectedType) {
   const originalForm = { type: selectedType || type, value, policy };
   const types = native ? Object.keys(RULE_FIELDS) : state.client === "surge" ? SURGE_RULE_TYPES : LEGACY_RULE_FIELDS;
   const choices = [...policyChoices(policy), ...native ? ["hijack-dns", "sniff", "reject"] : []];
-  modal(t("编辑路由规则", "Edit routing rule"), localField("type", selectedType || type, { label: t("匹配类型", "Match type"), options: types }) + localField("value", value, { label: t("匹配值（每行一项）", "Match values (one per line)"), multiline: true }) + localField("policy", policy, { options: [.../* @__PURE__ */ new Set([...choices, policy])] }) + `<p class="help">${t("高级匹配请使用原生文本编辑，原有附加字段会保留。", "Use native editing for advanced matching. Existing additional fields are preserved.")}</p>`, () => {
+  modal(t("编辑分流规则", "Edit routing rule"), localField("type", selectedType || type, { label: t("匹配类型", "Match type"), options: isFinalRule(original) ? [type] : types }) + localField("value", value, { label: t("匹配值（每行一项）", "Match values (one per line)"), multiline: true }) + localField("policy", policy, { options: [.../* @__PURE__ */ new Set([...choices, policy])] }) + `<p class="help">${t("高级匹配请使用原生文本编辑，原有附加字段会保留。", "Use native editing for advanced matching. Existing additional fields are preserved.")}</p>`, () => {
     const form = readLocal(originalForm);
+    if (isFinalRule(original) && form.type !== type) throw Error(t("不能修改兜底规则类型", "Cannot change the final rule type"));
     let next;
     if (native) {
       next = { ...original };
@@ -786,67 +814,89 @@ function editRule(path, index, forceJson = false, selectedType) {
       if (!final && !form.value.trim()) throw Error(t("请填写匹配值", "Enter a match value"));
       next = [form.type, ...final ? [] : [form.value.trim()], form.policy, ...parts.slice(["FINAL", "MATCH"].includes(parts[0]) ? 2 : 3)].join(",");
     }
-    if (index === null) rules.push(next);
+    if (index === null) { const finalIndex = rules.findIndex(isFinalRule); rules.splice(!native && !isFinalRule(next) && finalIndex >= 0 ? finalIndex : rules.length, 0, next); }
     else rules[index] = next;
     closeModal();
     changed();
     render();
   });
 }
+function ruleSetDownloadName(plan, urls) {
+  const first = urls.split("\n").map((url) => url.trim()).find(Boolean);
+  let base = "rules";
+  if (first) {
+    const url = new URL(first);
+    const filename = url.pathname.split("/").filter(Boolean).at(-1) || url.hostname;
+    let decoded = filename;
+    try { decoded = decodeURIComponent(filename); } catch { /* Keep the encoded filename. */ }
+    base = decoded.replace(/\.(?:ya?ml|list|txt|json|srs|mrs)$/i, "").replace(/[^\p{L}\p{N}_-]+/gu, "-").replace(/^-+|-+$/g, "").slice(0, 100) || "rules";
+  }
+  const names = new Set(plan.outputs.map((output) => output.name));
+  let name = base;
+  for (let suffix = 2; [name, `${name}-domain`, `${name}-ipcidr`].some((value) => names.has(value)) || names.has(name.replace(/-(domain|ipcidr)$/, "")); suffix += 1) name = `${base}-${suffix}`;
+  return name;
+}
 function editOutput(index) {
   const plan = currentClient().ruleSets;
+  const surge = state.client === "surge";
+  const singbox = state.client === "singbox";
   const original = index === null ? { name: "", enabled: true, policy: "Proxy", sourceIds: [], inlineRules: [], order: nextPlanOrder(plan), surgeOptions: [] } : plan.outputs[index];
   const initialUrls = outputSourceUrls(original);
   const displayedUrls = state.invalid.get(`plan.${state.client}.output.${index}.sourceUrls`) ?? initialUrls;
-  const form = { ...original, sourceUrls: initialUrls, surgeOptions: original.surgeOptions.join(",") };
-  const formats = state.client === "clash" ? ["auto", "clash-yaml", "plain-domain", "plain-ipcidr", "plain-classical"] : ["auto", "surge-rule-set", "surge-domain-set", "clash-yaml", "plain-domain", "plain-ipcidr", "plain-classical"];
-  const sourceDrafts = new Map();
-  const readSourceSettings = () => {
-    for (const row of document.querySelectorAll("#output-source-settings [data-source-url]")) {
-      const value = {};
-      for (const input of row.querySelectorAll("[data-source-setting]")) value[input.dataset.sourceSetting] = input.type === "checkbox" ? input.checked : input.value;
-      sourceDrafts.set(row.dataset.sourceUrl, value);
-    }
-  };
+  const domainSources = original.sourceIds.length > 0 && original.sourceIds.every((id) => ["surge-domain-set", "plain-domain"].includes(plan.sources.find((source) => source.id === id)?.format));
+  const sourceFormats = [...new Set(original.sourceIds.map((id) => plan.sources.find((source) => source.id === id)?.format || "auto"))];
+  const form = { ...original, sourceUrls: initialUrls, sourceFormat: sourceFormats.length > 1 ? "existing" : sourceFormats[0] || "auto", surgeType: original.surgeType || (domainSources ? "DOMAIN-SET" : "RULE-SET"), surgeOptions: original.surgeOptions.join(","), behavior: original.provider?.behavior || (index === null ? "classical" : "auto"), interval: original.provider?.interval ?? 86400 };
+  const formats = [["auto", t("自动识别", "Automatic")], ["surge-rule-set", "Surge RULE-SET"], ["surge-domain-set", "Surge DOMAIN-SET"], ["clash-yaml", "Clash YAML"], ["plain-domain", t("域名文本", "Domain text")], ["plain-ipcidr", t("IP-CIDR 文本", "IP-CIDR text")], ["plain-classical", t("规则文本（classical）", "Rule text (classical)")]];
+  if (form.sourceFormat === "existing") formats.unshift(["existing", t("保留各地址已有格式", "Keep each URL’s existing format")]);
   const clash = state.client === "clash";
-  modal(t("编辑规则集", "Edit rule set"), (clash ? "" : localField("name", form.name)) + localField("sourceUrls", displayedUrls, { label: t("规则集地址（每行一个）", "Rule-set URLs (one per line)"), multiline: true }) + (clash ? clashRouting.policyField(form.policy) : localField("policy", form.policy, { options: policyChoices(form.policy) })) + (state.client === "surge" ? localField("surgeOptions", form.surgeOptions, { options: [...new Set([...surgeOptionChoices("RULE-SET"), form.surgeOptions])] }) : "") + (clash ? "" : localField("enabled", form.enabled)) + `<details><summary>${t("来源设置", "Source settings")}</summary><p class="help">${t("每个地址可分别设置解析格式，默认自动识别。修改会影响当前客户端中复用该地址来源的规则集。", "Set the format for each URL; automatic detection is the default. Changes affect rule sets reusing this source within the current client.")}</p>${clash ? localField("name", form.name, { label: t("名称（自动生成）", "Name (generated automatically)") }) + localField("enabled", form.enabled) + localField("surgeOptions", form.surgeOptions, { label: t("解析 IP 前不查询 DNS", "Do not resolve IP matches"), options: ["", "no-resolve"] }) : ""}<div id="output-source-settings"></div></details><details><summary>${t("内联规则", "Inline rules")}</summary>${localField("inlineRules", form.inlineRules)}</details>`, () => {
+  const simple = clash || state.client === "singbox";
+  const sourceSettings = singbox ? `<div class="form-row"><label for="output-source-format">${t("来源格式", "Source format")}</label><select id="output-source-format" data-local="sourceFormat">${formats.map(([value, label]) => `<option value="${esc(value)}" ${value === form.sourceFormat ? "selected" : ""}>${esc(label)}</option>`).join("")}</select></div><p class="help">${t("可自动识别 Clash 或 Surge 来源，也可明确选择格式。所选格式用于本行所有地址，合并后转换为 sing-box 规则集。", "Detect Clash or Surge sources automatically, or choose a format for all URLs in this row. Merged rules are converted to a sing-box rule set.")}</p>` : "";
+  const providerSettings = clash ? localField("behavior", form.behavior, { label: "behavior", options: [...(form.behavior === "auto" ? ["auto"] : []), "domain", "ipcidr", "classical"] }) + localField("interval", form.interval, { label: t("interval（秒）", "interval (seconds)") }) + `<p class="help">${t("单个 URL 由 Clash 直接下载；多个 URL 由系统合并去重。interval 为客户端下载间隔。", "Clash downloads a single URL directly. Multiple URLs are merged and deduplicated. interval controls client downloads.")}</p>` : "";
+  const advancedSettings = simple ? `<details><summary>${t("规则集其他设置", "Other rule-set settings")}</summary>${localField("enabled", form.enabled, { label: t("启用此规则集", "Enable this rule set") })}${clash ? localField("surgeOptions", form.surgeOptions, { label: t("解析 IP 前不查询 DNS", "Do not resolve IP matches"), options: ["", "no-resolve"] }) : ""}</details>` : "";
+  const intro = surge ? t("选择规则集类型并填写下载地址。多个地址合并去重，共用一个出口策略。RULE-SET 包含规则类型和匹配值；DOMAIN-SET 每行填写域名，以点开头表示包含子域名。", "Choose the set type and enter download URLs. Multiple URLs are merged and deduplicated under one outbound policy. RULE-SET contains typed rules; DOMAIN-SET lists domains, with a leading dot to include subdomains.") : t("填写规则下载地址并选择出口策略。多个地址的规则合并去重，使用同一个出口策略。", "Enter rule download URLs and choose an outbound policy. Rules from multiple URLs are merged and deduplicated under one outbound policy.");
+  const surgeSettings = surge ? localField("surgeType", form.surgeType, { label: t("规则集类型", "Rule-set type"), options: SURGE_RULE_SET_TYPES }) : "";
+  const legacyInline = form.inlineRules.length ? `<p class="help">${t(`保留已有的 ${form.inlineRules.length} 条手填规则。新增独立规则请使用“添加单条规则”。`, `The ${form.inlineRules.length} existing manual rules are retained. Use Add direct rule for new individual rules.`)}</p>` : "";
+  const title = surge ? t("编辑 Surge 规则集", "Edit Surge rule set") : clash ? t("编辑 Clash 规则集", "Edit Clash rule set") : t("编辑 sing-box 规则集", "Edit sing-box rule set");
+  modal(title, `<p class="help">${intro}</p>` + surgeSettings + sourceSettings + localField("sourceUrls", displayedUrls, { label: t("规则下载地址（每行一个）", "Rule download URLs (one per line)"), multiline: true }) + providerSettings + legacyInline + (clash ? clashRouting.policyField(form.policy) : localField("policy", form.policy, { label: t("出口策略（作用于全部规则）", "Outbound policy (for all rules)"), options: policyChoices(form.policy) })) + (surge ? localField("surgeOptions", form.surgeOptions, { options: [...new Set([...surgeOptionChoices(form.surgeType), form.surgeOptions])] }) : "") + (simple ? "" : localField("enabled", form.enabled, { label: t("启用此规则集", "Enable this rule set") })) + advancedSettings, () => {
     const value = readLocal(form);
-    if (clash) {
-      value.policy = clashRouting.checkPolicy(value.policy);
-      value.name = value.name.trim() || `rules-${crypto.randomUUID().slice(0, 8)}`;
-      if (!value.sourceUrls.trim() && !value.inlineRules.length) throw Error(t("请填写规则集地址或内联规则。", "Enter a rule-set URL or inline rules."));
+    if (clash) value.policy = clashRouting.checkPolicy(value.policy);
+    if (!value.sourceUrls.trim() && !value.inlineRules.length) throw Error(t("请填写规则下载地址。", "Enter a rule download URL."));
+    const linked = value.sourceUrls === initialUrls ? null : sourcesForUrls(plan, value.sourceUrls, original.sourceIds);
+    const next = { ...original, name: original.name || ruleSetDownloadName(plan, value.sourceUrls), policy: value.policy, enabled: value.enabled, inlineRules: value.inlineRules, surgeOptions: value.surgeOptions.split(",").filter(Boolean), sourceIds: linked ? linked.ids : original.sourceIds };
+    if (surge) {
+      if (!SURGE_RULE_SET_TYPES.includes(value.surgeType)) throw Error(t("请选择 RULE-SET 或 DOMAIN-SET。", "Choose RULE-SET or DOMAIN-SET."));
+      if (!surgeOptionChoices(value.surgeType).includes(value.surgeOptions)) throw Error(t("附加选项与规则集类型不兼容，请重新选择。", "Select options compatible with the rule-set type."));
+      next.surgeType = value.surgeType;
     }
-    if (!value.name.trim()) throw Error(t("请填写名称", "Enter a name"));
-    if (plan.outputs.some((item, i) => i !== index && item.name === value.name)) throw Error(t("规则集名称重复", "Duplicate rule-set name"));
-    const linked = value.sourceUrls === initialUrls ? null : sourcesForUrls(plan, value.sourceUrls);
-    const next = { ...original, name: value.name, policy: value.policy, enabled: value.enabled, inlineRules: value.inlineRules, surgeOptions: value.surgeOptions.split(",").filter(Boolean), sourceIds: linked ? linked.ids : original.sourceIds };
-    readSourceSettings();
+    if (clash) {
+      if (!Number.isSafeInteger(value.interval) || value.interval <= 0) throw Error(t("interval 必须为正整数秒数。", "interval must be a positive integer in seconds."));
+      if (value.behavior === "auto") {
+        if (original.provider || value.interval !== 86400) throw Error(t("请先选择 domain、ipcidr 或 classical。", "Choose domain, ipcidr or classical first."));
+      } else {
+        if (!["domain", "ipcidr", "classical"].includes(value.behavior)) throw Error(t("behavior 无效。", "Invalid behavior."));
+        next.provider = { behavior: value.behavior, interval: value.interval };
+      }
+    }
     const sources = linked ? linked.sources : structuredClone(plan.sources);
-    for (const source of sources.filter((source) => next.sourceIds.includes(source.id))) {
-      const settings = sourceDrafts.get(source.url);
-      if (!settings) continue;
-      if (!settings.name.trim()) throw Error(t("请填写来源名称", "Enter a source name"));
-      if (!formats.includes(settings.format)) throw Error(t("来源格式无效", "Invalid source format"));
-      Object.assign(source, settings, { name: settings.name.trim() });
+    if (singbox) {
+      if (!formats.some(([format]) => format === value.sourceFormat)) throw Error(t("来源格式无效", "Invalid source format"));
+      if (value.sourceFormat !== "existing") {
+        const sharedIds = new Set(plan.outputs.filter((_, i) => i !== index).flatMap((output) => output.sourceIds));
+        next.sourceIds = next.sourceIds.map((id) => {
+          const source = sources.find((item) => item.id === id);
+          if (!source || source.format === value.sourceFormat) return id;
+          if (!sharedIds.has(id)) { source.format = value.sourceFormat; return id; }
+          const copy = { ...source, id: crypto.randomUUID(), format: value.sourceFormat, order: Math.max(-1, ...sources.map((item) => item.order)) + 1 };
+          sources.push(copy);
+          return copy.id;
+        });
+      }
     }
     plan.sources = sources;
     state.invalid.delete(`plan.${state.client}.output.${index}.sourceUrls`);
     if (index === null) appendPlanItem(plan, "output", next); else plan.outputs[index] = next;
     closeModal(); changed(); render();
   });
-  modal.updateRuleSources = () => {
-    readSourceSettings();
-    const urls = [...new Set($('#modal-body [data-local="sourceUrls"]').value.split("\n").map((url) => url.trim()).filter(Boolean))];
-    $("#output-source-settings").innerHTML = urls.map((url, i) => {
-      const existing = plan.sources.find((source) => source.url === url);
-      let name = "";
-      try { const parsed = new URL(url); name = parsed.pathname.split("/").filter(Boolean).at(-1) || parsed.hostname; } catch { /* URL validation runs when applying the dialog. */ }
-      const value = sourceDrafts.get(url) || existing || { name, format: "auto", enabled: true };
-      const setting = (key, options = {}) => localField(key, value[key], options).replaceAll('data-local=', 'data-source-setting=').replaceAll(`field-${key}`, `output-source-${i}-${key}`);
-      return `<div class="output-source-settings" data-source-url="${esc(url)}"><p class="help">${esc(url)}</p>${setting("name")}${setting("format", { options: formats, label: t("解析格式", "Parse format") })}${setting("enabled")}</div>`;
-    }).join("") || `<p class="muted">${t("填写来源地址后可设置解析格式。", "Enter source URLs to configure their formats.")}</p>`;
-  };
-  modal.updateRuleSources();
 }
 function confirmDelete(message, operation) {
   modal(t("确认删除", "Confirm deletion"), `<p>${esc(message)}</p>`, () => {
@@ -868,7 +918,7 @@ async function save() {
     toast(t("配置已保存", "Configuration saved"));
     render();
   } catch (error) {
-    if (error.issues?.length) modal(t("分流配置尚未保存", "Routing configuration not saved"), `<p>${esc(error.message)}</p><ul>${error.issues.map((issue) => `<li>${esc(typeof issue === "string" ? issue : `${issue.outputName}: ${issue.reason}`)}</li>`).join("")}</ul>`, null);
+    if (error.issues?.length) modal(t("分流规则尚未保存", "Routing rules not saved"), `<p>${esc(error.message)}</p><ul>${error.issues.map((issue) => `<li>${esc(typeof issue === "string" ? issue : `${issue.outputName}: ${issue.reason}`)}</li>`).join("")}</ul>`, null);
     else throw error;
   } finally {
     state.busy = false;
@@ -993,7 +1043,7 @@ async function action(button) {
   if (name === "upload-mmdb") { await uploadMmdb(); return; }
   if (name === "refresh-mmdb") { await loadMmdbStatus(); return; }
   if (name === "add-direct" || name === "edit-direct") { editDirect(index); return; }
-  if (name === "delete-direct") { state.config.clients[state.client].ruleSets.directRules.splice(index, 1); changed(); render(); return; }
+  if (name === "delete-direct") { if (isFinalRule(currentClient().ruleSets.directRules[index]?.rule)) return; state.config.clients[state.client].ruleSets.directRules.splice(index, 1); changed(); render(); return; }
   if (name === "generate-ca") {
     const mitm = state.config.clients.surge.mitm;
     const initialPassphrase = mitm.caPassphrase || crypto.randomUUID().replaceAll("-", "");
@@ -1091,6 +1141,7 @@ async function action(button) {
   }
   if (name === "delete-group") {
     const group = button.dataset.name;
+    if (group === "Proxy") throw Error(t("Proxy 不能删除", "Proxy cannot be deleted"));
     confirmDelete(t(`删除 ${group}？引用它的规则不会被自动替换。`, `Delete ${group}? Referencing rules will not be rewritten.`), () => {
       delete currentClient().groups[group];
       currentClient().disabledGroups = currentClient().disabledGroups.filter((item) => item !== group);
@@ -1106,7 +1157,7 @@ async function action(button) {
     return;
   }
   if (name === "delete-rule") {
-    if (state.client === "surge" && isFinalRule(getPath(state.config, path)[index])) return;
+    if (isFinalRule(getPath(state.config, path)[index])) return;
     getPath(state.config, path).splice(index, 1);
     changed();
     render();
@@ -1114,7 +1165,7 @@ async function action(button) {
   }
   if (name === "move-rule") {
     const rules = getPath(state.config, path), other = index + Number(button.dataset.direction);
-    if (state.client === "surge" && (isFinalRule(rules[index]) || (rules[other] && isFinalRule(rules[other])))) return;
+    if (isFinalRule(rules[index]) || isFinalRule(rules[other])) return;
     if (other >= 0 && other < rules.length) [rules[index], rules[other]] = [rules[other], rules[index]];
     changed();
     render();
@@ -1128,9 +1179,13 @@ async function action(button) {
   if (name === "move-plan") {
     const entries = orderedPlan(currentClient().ruleSets);
     const position = Number(button.dataset.position), other = position + Number(button.dataset.direction);
-    if (other < 0 || other >= entries.length) return;
+    if (other < 0 || other >= entries.length || isFinalEntry(entries[position]) || isFinalEntry(entries[other])) return;
     [entries[position], entries[other]] = [entries[other], entries[position]];
     entries.forEach(({ item }, order) => item.order = order);
+    changed(); render(); return;
+  }
+  if (name === "enable-singbox-rule-plan" && state.client === "singbox") {
+    currentClient().ruleSets.mode = "compiled";
     changed(); render(); return;
   }
   if (name === "add-output" || name === "edit-output") {
@@ -1231,14 +1286,6 @@ async function action(button) {
     }
     return;
   }
-  if (name === "refresh-rules") {
-    if (dirty()) {
-      toast(t("请先保存配置再刷新缓存", "Save the configuration before refreshing caches"));
-      return;
-    }
-    showMessage(t("规则刷新结果", "Rule refresh result"), await api(`/api/rule-sets/refresh?target=${target()}`, { method: "POST" }));
-    return;
-  }
   if (name === "telegram-bind") {
     if (dirty()) {
       toast(t("请先保存通知设置", "Save notification settings first"));
@@ -1294,16 +1341,22 @@ document.addEventListener("change", (event) => {
     return;
   }
   if (inline.dataset.tsField) { updateTailscaleForm($("#modal-body")); return; }
-  if (inline.dataset.local === "sourceUrls" && modal.updateRuleSources) { modal.updateRuleSources(); return; }
+  if (inline.dataset.local === "surgeType") {
+    const options = $('#modal-body [data-local="surgeOptions"]');
+    const choices = surgeOptionChoices(inline.value);
+    options.innerHTML = selectOptions(choices, choices.includes(options.value) ? options.value : "");
+    return;
+  }
   if (inline.dataset.local === "type" && $('#modal-body [data-surge-options]')) { updateSurgeRuleForm(); return; }
   if (inline.dataset.planField) {
     const { planField, planKind, index } = inline.dataset;
     const plan = currentClient().ruleSets;
     const item = plan[planKind === "output" ? "outputs" : "directRules"][Number(index)];
+    if (planKind === "direct" && isFinalRule(item.rule) && planField === "enabled") { inline.checked = true; return; }
     const invalidKey = `plan.${state.client}.${planKind}.${index}.${planField}`;
     try {
       if (planField === "sourceUrls") {
-        const linked = sourcesForUrls(plan, inline.value);
+        const linked = sourcesForUrls(plan, inline.value, item.sourceIds);
         plan.sources = linked.sources; item.sourceIds = linked.ids;
       } else item[planField] = planField === "enabled" ? inline.checked : planField === "surgeOptions" ? inline.value.split(",").filter(Boolean) : inline.value;
       state.invalid.delete(invalidKey); inline.removeAttribute("aria-invalid"); changed();
@@ -1404,6 +1457,8 @@ document.addEventListener("keydown", (event) => {
 });
 async function load() {
   let config = await api("/api/config");
+  const ruleNamesPendingSave = Boolean(config.ruleNamesPendingSave);
+  delete config.ruleNamesPendingSave;
   state.migration = Boolean(config.migrationRequired);
   delete config.migrationRequired;
   if (state.migration) {
@@ -1413,7 +1468,7 @@ async function load() {
     config = migration.config;
   }
   state.config = config;
-  state.saved = JSON.stringify(config);
+  state.saved = ruleNamesPendingSave ? "" : JSON.stringify(config);
   await loadSharedProxyNames().catch((error) => toast(error.message));
   state.page = navigationPage();
   render();

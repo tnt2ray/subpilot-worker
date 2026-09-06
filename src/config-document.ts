@@ -37,7 +37,7 @@ export function defaultConfigDocument(): AppConfig {
   const clash = migrateClashRouting(doc.clients.clash);
   if (clash.issues.length) throw new Error("默认 Clash 分流配置无法转换。");
   doc.clients.clash = clash.client;
-  doc.clients.clash.ruleSets.aggregateByPolicy = true;
+  doc.clients.clash.ruleSets.aggregateByPolicy = false;
   doc.clients.singbox = { ...doc.clients.singbox, ...defaultSingboxConfig(), ruleSets: { mode: "manual", aggregateByPolicy: false, sources: [], outputs: [], directRules: [] } };
   return doc;
 }
@@ -75,9 +75,9 @@ export function normalizeConfigDocument(stored: StoredConfigDocument): AppConfig
   }
   const view = normalizeConfig({ ...DEFAULT_CONFIG, ...input, settings: { ...DEFAULT_CONFIG.settings, ...input.settings }, version: 1, groups: input.clients.surge.groups, disabledGroups: input.clients.surge.disabledGroups, surge: input.clients.surge, clash: input.clients.clash });
   if (view.proxyNodes.length !== input.proxyNodes.length) throw new Error("代理节点配置存在空项或无效内容。");
-  const resources = (client: ClientRuleSettings): ClientRuleSettings => {
+  const resources = (client: ClientRuleSettings, allowPolicyAggregation = true): ClientRuleSettings => {
     const normalized = normalizeConfig({ ...view, groups: client.groups, disabledGroups: client.disabledGroups, ruleSets: client.ruleSets });
-    return { groups: normalized.groups, disabledGroups: normalized.disabledGroups, ruleSets: normalized.ruleSets };
+    return { groups: normalized.groups, disabledGroups: normalized.disabledGroups, ruleSets: { ...normalized.ruleSets, aggregateByPolicy: allowPolicyAggregation && normalized.ruleSets.aggregateByPolicy } };
   };
   const singbox = input.clients.singbox;
   if (singbox.coreVersion !== "1.14.0" || !Array.isArray(singbox.inbounds)) throw new Error("无效的 sing-box 配置版本或入站配置。");
@@ -103,8 +103,8 @@ export function normalizeConfigDocument(stored: StoredConfigDocument): AppConfig
     proxyNodes: view.proxyNodes, chain: view.chain,
     clients: {
       surge: { ...normalizeSurge(input.clients.surge), ...resources(input.clients.surge) },
-      clash: { ...normalizeClash(input.clients.clash), ...resources(input.clients.clash) },
-      singbox: { ...structuredClone(singbox), migrationIssues: Array.isArray(singbox.migrationIssues) ? singbox.migrationIssues : [], ...resources(singbox) }
+      clash: { ...normalizeClash(input.clients.clash), ...resources(input.clients.clash, false) },
+      singbox: { ...structuredClone(singbox), migrationIssues: Array.isArray(singbox.migrationIssues) ? singbox.migrationIssues : [], ...resources(singbox, false) }
     },
     updatedAt: input.updatedAt
   };
@@ -120,7 +120,7 @@ export function renderConfig(document: AppConfig, target: Target = "surge"): Ren
     settings: { ...DEFAULT_CONFIG.settings, ...document.settings }, groups: client.groups, disabledGroups: client.disabledGroups,
     sources: document.sources, proxyNodes: document.proxyNodes, chain: document.chain,
     surge: document.clients.surge, clash: document.clients.clash,
-    ruleSets: client.ruleSets,
+    ruleSets: target === "surge" ? client.ruleSets : { ...client.ruleSets, aggregateByPolicy: false },
     document, renderTarget: target, updatedAt: document.updatedAt
   };
 }

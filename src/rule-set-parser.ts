@@ -24,6 +24,7 @@ export interface ParsedRuleSetRule {
 export interface ParseRuleSetResult {
   rules: ParsedRuleSetRule[];
   warnings: string[];
+  fatal?: boolean;
 }
 
 export type CompiledRuleSetRule = Pick<ParsedRuleSetRule, "type" | "value" | "raw" | "clashDomainPattern">;
@@ -36,11 +37,11 @@ interface ParseLineOptions {
   clashOnly?: boolean;
 }
 
-export function parseRuleSetContent(content: string, format: RuleSetSourceFormat, sourceLabel: string, visit?: RuleVisitor, clashOnly = false): ParseRuleSetResult {
+export function parseRuleSetContent(content: string, format: RuleSetSourceFormat, sourceLabel: string, visit?: RuleVisitor, clashOnly = false, strictClashYaml = false): ParseRuleSetResult {
   if (clashOnly && format.startsWith("surge-")) return { rules: [], warnings: [`${sourceLabel}: Clash 不支持 Surge 来源格式。`] };
   const inferred = inferRuleSetFormat(content, format);
   const selectedFormat = clashOnly && inferred === "surge-rule-set" ? "plain-classical" : inferred;
-  if (selectedFormat === "clash-yaml") return parseClashYamlRuleSet(content, sourceLabel, visit, clashOnly);
+  if (selectedFormat === "clash-yaml") return parseClashYamlRuleSet(content, sourceLabel, visit, clashOnly || strictClashYaml);
   if (selectedFormat === "surge-domain-set") return parsePlainRuleSetLines(content, sourceLabel, "surge-domain-set", visit, clashOnly);
   if (selectedFormat === "plain-domain") return parsePlainRuleSetLines(content, sourceLabel, "plain-domain", visit, clashOnly);
   if (selectedFormat === "plain-ipcidr") return parsePlainRuleSetLines(content, sourceLabel, "plain-ipcidr", visit, clashOnly);
@@ -67,7 +68,7 @@ export function parseInlineRuleSetLines(lines: string[], sourceLabel: string, vi
 function inferRuleSetFormat(content: string, format: RuleSetSourceFormat): RuleSetSourceFormat {
   if (format !== "auto") return format;
   const trimmed = content.trimStart();
-  if (/^(payload|rules|rule-providers)\s*:/m.test(trimmed) || trimmed.startsWith("- ")) return "clash-yaml";
+  if (/^(payload|rules|rule-providers)\s*:/m.test(trimmed) || trimmed.startsWith("- ") || trimmed.startsWith("{")) return "clash-yaml";
   const effectiveLines = content.split(/\r?\n/).map((line) => line.trim()).filter((line) => line && !isCommentLine(line));
   if (effectiveLines.length > 0 && effectiveLines.every((line) => !line.includes(",") && looksLikeDomain(line))) return "plain-domain";
   if (effectiveLines.length > 0 && effectiveLines.every((line) => !line.includes(",") && looksLikeCidr(line))) return "plain-ipcidr";
@@ -75,10 +76,10 @@ function inferRuleSetFormat(content: string, format: RuleSetSourceFormat): RuleS
 }
 
 function parseClashYamlRuleSet(content: string, sourceLabel: string, visit?: RuleVisitor, clashOnly = false): ParseRuleSetResult {
-  const parsed = parseQuotedClashPayload(content) ?? YAML.parse(content);
+  const parsed = parseFlatClashPayload(content) ?? YAML.parse(content);
   const payload = clashOnly ? (parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>).payload : undefined) : clashPayload(parsed);
   if (!Array.isArray(payload)) {
-    return { rules: [], warnings: [`${sourceLabel}: Clash YAML 缺少 payload 数组。`] };
+    return { rules: [], warnings: [`${sourceLabel}: Clash YAML 缺少 payload 数组。`], fatal: true };
   }
   const behavior = clashBehavior(parsed);
   const defaultFormat = behavior === "domain"
@@ -102,8 +103,8 @@ function parseClashYamlRuleSet(content: string, sourceLabel: string, visit?: Rul
   return { rules, warnings };
 }
 
-/** Common provider files are a flat quoted sequence; avoid a large YAML syntax tree. */
-function parseQuotedClashPayload(content: string): { payload: string[] } | null {
+/** Common providers use flat string sequences; avoid a large YAML syntax tree. */
+function parseFlatClashPayload(content: string): { payload: string[] } | null {
   const payload: string[] = [];
   let header = false;
   let indent: string | undefined;
@@ -115,16 +116,24 @@ function parseQuotedClashPayload(content: string): { payload: string[] } | null 
       header = true;
       continue;
     }
-    const item = /^( +)- ('(?:[^']|'')*'|"(?:[^"\\]|\\.)*")(?:[ \t]+#.*)?[ \t]*$/.exec(match[0]);
+    const item = /^( +)- (.+?)[ \t]*$/.exec(match[0]);
     if (!item) return null;
     if (indent !== undefined && indent !== item[1]) return null;
     indent = item[1];
     const scalar = item[2]!;
-    if (scalar.startsWith("'")) payload.push(scalar.slice(1, -1).replace(/''/g, "'"));
-    else {
-      try { payload.push(JSON.parse(scalar) as string); }
+    if (scalar.startsWith("'")) {
+      const quoted = /^'((?:[^']|'')*)'(?:[ \t]+#.*)?$/.exec(scalar);
+      if (!quoted) return null;
+      payload.push(quoted[1]!.replace(/''/g, "'"));
+    } else if (scalar.startsWith('"')) {
+      const quoted = /^("(?:[^"\\]|\\.)*")(?:[ \t]+#.*)?$/.exec(scalar);
+      if (!quoted) return null;
+      try { payload.push(JSON.parse(quoted[1]!) as string); }
       catch { return null; }
-    }
+    } else if (/^[\[\]{},&*!|>'"%@`#]/.test(scalar) || /^[-?:](?:\s|$)/.test(scalar)
+      || /:(?:\s|$)|\s#/.test(scalar) || /^(?:null|true|false|~|[-+]?\.inf|\.nan)$/i.test(scalar)
+      || /^[-+]?(?:0[xob][0-9a-f]+|(?:\d+(?:\.\d*)?|\.\d+)(?:e[-+]?\d+)?)$/i.test(scalar)) return null;
+    else payload.push(scalar);
   }
   return header ? { payload } : null;
 }

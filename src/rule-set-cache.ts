@@ -2,7 +2,7 @@ import { decryptText, encryptText } from "./crypto-store";
 import { listKvKeys, readKvJson } from "./kv-helpers";
 import { renderCombinedRuleSet, renderCompiledRuleSetBucket } from "./rule-set-renderer";
 import type { CompiledRuleSetRule } from "./rule-set-parser";
-import { effectiveRuleSetOutputs } from "./rule-set-outputs";
+import { compiledRuleSetSources, effectiveRuleSetOutputs } from "./rule-set-outputs";
 import type { RuleSetBucket, RuleSetDownloadBucket, RuleSetOutputTarget, RuleSetSource } from "./rule-set-types";
 import { RULE_SET_BUCKETS, RULE_SET_TARGETS } from "./rule-set-types";
 import { planRuleSetArtifacts } from "./rule-set-artifacts";
@@ -81,6 +81,9 @@ export interface CompiledRuleSetBucketMeta {
 }
 
 export interface CompiledRuleSetManifest {
+  provider?: { behavior: RuleSetBucket; interval: number };
+  surgeType?: "RULE-SET" | "DOMAIN-SET";
+  asnExpiresAt?: number;
   outputName: string;
   outputFingerprint: string;
   policy: string;
@@ -94,6 +97,7 @@ export interface CompiledRuleSetManifest {
 }
 
 export interface CompiledRuleSetStatusItem {
+  direct?: boolean;
   outputName: string;
   enabled: boolean;
   updatedAt: string | null;
@@ -130,6 +134,16 @@ export async function scopeRuleSetSourceRefresh(result: RuleSetSourceCacheRefres
     }
   }
   return { refreshed: [...contentByKey.values()].filter((item) => !item.usedCachedContent).length, cached: [...contentByKey.values()].filter((item) => item.usedCachedContent).length, failed: failures.length, deleted: 0, warnings, failures, contentByKey, errorsByKey };
+}
+
+export function allCompiledRuleSetSources(config: RenderConfig): RuleSetSource[] {
+  if (!config.document) return compiledRuleSetSources(config.ruleSets, config.renderTarget ?? "surge");
+  const sources = Object.entries(config.document.clients).flatMap(([id, client]) => {
+    const target = id === "singbox" ? "sing-box" : id === "clash" ? "clash" : "surge";
+    const plan = { ...client.ruleSets, aggregateByPolicy: target === "surge" && client.ruleSets.aggregateByPolicy };
+    return plan.mode === "compiled" ? compiledRuleSetSources(plan, target) : [];
+  });
+  return [...new Map(sources.map((source) => [source.url, source])).values()];
 }
 
 export async function fetchCachedRuleSetSource(
@@ -423,7 +437,7 @@ export async function writeCompiledRuleSet(
     }
   }
   for (const target of RULE_SET_TARGETS) {
-    const combined = planRuleSetArtifacts(manifest.buckets, target).find((artifact) => artifact.bucket === "combined");
+    const combined = planRuleSetArtifacts(manifest.buckets, target, manifest.provider?.behavior, manifest.surgeType).find((artifact) => artifact.bucket === "combined");
     if (!combined) continue;
     const key = compiledRuleSetContentKey(manifest.outputName, "combined", target, storageId);
     const content = renderCombinedRuleSet(buckets, target, combined);
@@ -603,7 +617,7 @@ function compiledManifestContentKeys(manifest: CompiledRuleSetManifest): string[
     }
   }
   for (const target of RULE_SET_TARGETS) {
-    if (planRuleSetArtifacts(manifest.buckets, target).some((artifact) => artifact.bucket === "combined")) {
+    if (planRuleSetArtifacts(manifest.buckets, target, manifest.provider?.behavior, manifest.surgeType).some((artifact) => artifact.bucket === "combined")) {
       keys.add(compiledRuleSetContentKey(manifest.outputName, "combined", target, manifest.storageId));
     }
   }
@@ -924,6 +938,9 @@ function normalizeCompiledManifest(value: unknown): CompiledRuleSetManifest | nu
     sourceIds: Array.isArray(record.sourceIds) ? record.sourceIds.filter((item): item is string => typeof item === "string") : [],
     ruleCount: typeof record.ruleCount === "number" ? record.ruleCount : 0,
     duplicateCount: typeof record.duplicateCount === "number" ? record.duplicateCount : 0,
+    ...(record.provider && RULE_SET_BUCKETS.includes(record.provider.behavior) && Number.isSafeInteger(record.provider.interval) && record.provider.interval > 0 ? { provider: record.provider } : {}),
+    ...(["RULE-SET", "DOMAIN-SET"].includes(record.surgeType ?? "") ? { surgeType: record.surgeType } : {}),
+    ...(typeof record.asnExpiresAt === "number" && Number.isFinite(record.asnExpiresAt) ? { asnExpiresAt: record.asnExpiresAt } : {}),
     buckets: Array.isArray(record.buckets) ? record.buckets.flatMap(normalizeBucketMeta) : [],
     warnings: Array.isArray(record.warnings) ? record.warnings.filter((item): item is string => typeof item === "string") : [],
     ...(typeof record.storageId === "string" && /^[A-Za-z0-9_-]+$/.test(record.storageId)

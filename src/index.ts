@@ -1,4 +1,4 @@
-import { allEnabledRuleSetSources, refreshRuleSetSourceCaches } from "./rule-set-cache";
+import { allCompiledRuleSetSources, refreshRuleSetSourceCaches } from "./rule-set-cache";
 import { configDocument, normalizeConfigDocument, renderConfig, OUTPUT_TARGETS } from "./config-document";
 import { migrateClashRouting } from "./clash-routing-migration";
 import { exportConfigBeforeMigration, loadConfigMigration, completeDocumentMigration } from "./config-store";
@@ -53,7 +53,7 @@ export default {
     if (controller.cron === RULE_SET_REFRESH_CRON) {
       const deadline = Date.now() + SCHEDULED_REFRESH_DEADLINE_MS;
       if (!OUTPUT_TARGETS.some((target) => renderConfig(configDocument(config), target).ruleSets.mode === "compiled")) return;
-      const sourceRefresh = await refreshRuleSetSourceCaches(env, config, allEnabledRuleSetSources(config), { deadline, pruneUnexpected: true });
+      const sourceRefresh = await refreshRuleSetSourceCaches(env, config, allCompiledRuleSetSources(config), { deadline, pruneUnexpected: true });
       for (const target of OUTPUT_TARGETS) {
         const selected = renderConfig(configDocument(config), target);
         if (selected.ruleSets.mode !== "compiled") continue;
@@ -153,7 +153,7 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
 
   if (url.pathname === "/api/config" && request.method === "GET") {
     const loaded = withInferredManagedBaseUrl(await loadConfig(env), request.url);
-    return jsonResponse({ ...configDocument(loaded), migrationRequired: Boolean(loaded.migrationRequired) });
+    return jsonResponse({ ...configDocument(loaded), migrationRequired: Boolean(loaded.migrationRequired), ruleNamesPendingSave: Boolean(loaded.ruleNamesPendingSave) });
   }
   if (url.pathname === "/api/config/check" && request.method === "POST") {
     const target = normalizeTarget(url.searchParams.get("target"));
@@ -270,8 +270,9 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
     } catch { return badRequest("配置格式无效或超过大小限制。"); }
     if (configDocument(current).clients.clash.ruleSets.mode === "manual" && document.clients.clash.ruleSets.mode === "compiled") {
       const selected = renderConfig(document, "clash");
-      const refresh = await refreshRuleSetCaches(ruleSetEnv(env, "clash"), selected, undefined, { deadline: Date.now() + MANUAL_REFRESH_DEADLINE_MS });
-      if (refresh.outputFailures.length) return jsonResponse({ error: "Clash 规则集尚不可编译，旧配置继续生效。请处理来源后重新保存。", issues: refresh.outputFailures }, { status: 400 });
+      // Validate the active plan using matching compiled caches or compile each
+      // needed output on demand. A forced refresh also fetches dormant sources
+      // and can exhaust the batch deadline before any output is compiled.
       const compiled = await buildCompiledRuleSetReferencePlan(ruleSetEnv(env, "clash"), selected, "clash", request.url);
       if (compiled.errors.length) return jsonResponse({ error: "Clash 分流转换校验失败，旧配置继续生效。", issues: compiled.errors }, { status: 400 });
     }
@@ -383,8 +384,8 @@ function scheduleChangedCacheRefresh(
   ctx.waitUntil((async () => {
     const sourceResult = await refreshChangedSourceCache(env, previousConfig, config, { deadline });
     if (sourceResult) await notifySourceRefreshFailures(env, config, sourceResult, "config");
-    const oldSourceUrls = new Set(allEnabledRuleSetSources(previousConfig).map((source) => source.url));
-    const changedSources = allEnabledRuleSetSources(config).filter((source) => !oldSourceUrls.has(source.url));
+    const oldSourceUrls = new Set(allCompiledRuleSetSources(previousConfig).map((source) => source.url));
+    const changedSources = allCompiledRuleSetSources(config).filter((source) => !oldSourceUrls.has(source.url));
     const sourceRefresh = await refreshRuleSetSourceCaches(env, config, changedSources, { deadline, pruneUnexpected: false });
     for (const target of OUTPUT_TARGETS) {
       if (Date.now() >= deadline) break;

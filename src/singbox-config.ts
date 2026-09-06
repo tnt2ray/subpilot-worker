@@ -123,17 +123,24 @@ export function convertRule(line: string, headless = false): { rule?: JsonObject
     return { final: policy };
   }
   if (["AND", "OR", "NOT"].includes(type)) throw new Error("逻辑规则需手动转换为 sing-box logical 规则");
-  if (parts.slice((targetIndex ?? 1) + 1).some((part) => part && part !== "no-resolve")) throw new Error("规则选项无法等价转换");
-  if (parts.includes("no-resolve")) throw new Error("no-resolve 需显式配置解析与路由顺序");
+  const headlessIp = headless && ["IP-CIDR", "IP-CIDR6"].includes(type);
+  if (parts.slice((targetIndex ?? 1) + 1).some((part) => part && part !== "no-resolve" && !(headlessIp && part === "src"))) throw new Error("规则选项无法等价转换");
+  // Headless IP matches use available addresses; they never trigger DNS resolution.
+  if (parts.includes("no-resolve") && !headlessIp) throw new Error("no-resolve 需显式配置解析与路由顺序");
   if (type === "GEOIP" && parts[1]?.toLowerCase() === "private") return { rule: { ip_is_private: true, ...policyAction(policy) } };
-  const field = RULE_FIELDS[type];
+  let field = headlessIp && parts.includes("src") ? "source_ip_cidr" : RULE_FIELDS[type];
   if (!field) throw new Error(`${type || "未知"} 需要手动转换或关联支持的规则来源`);
   const value = parts[1]?.trim();
   if (!value) throw new Error("缺少匹配值");
   let match: ProxyParamValue = [value];
   if (field === "port" || field === "source_port") {
-    if (!/^\d+$/.test(value)) throw new Error("端口范围需要手动转换");
-    match = [Number(value)];
+    const values = value.split("/");
+    if (values.some((item) => !/^\d+(?:-\d+)?$/.test(item) || item.split("-").some((port) => Number(port) > 65535)
+      || item.includes("-") && Number(item.split("-")[0]) > Number(item.split("-")[1]))) throw new Error("端口或范围无效");
+    if (values.some((item) => item.includes("-"))) {
+      field += "_range";
+      match = values.map((item) => item.includes("-") ? item.replace("-", ":") : `${item}:${item}`);
+    } else match = values.map(Number);
   }
   if (field === "network" && !["tcp", "udp"].includes(value.toLowerCase())) throw new Error("网络协议无法等价转换");
   return { rule: { [field]: field === "network" ? [value.toLowerCase()] : match, ...(headless ? {} : policyAction(policy)) } };
