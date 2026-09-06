@@ -17,7 +17,7 @@ export function createClashRoutingUi(ui) {
     const output = plan().outputs.find((item) => item.name === name);
     return output ? sourceUrls(output).join(" / ") || t("手动填写的规则", "Manually entered rules") : name;
   };
-  const policyField = (value) => localField("policy", value, { label: t("出口策略", "Outbound policy") }).replace("<input ", '<input list="clash-policy-choices" autocomplete="off" ') + `<datalist id="clash-policy-choices">${policyChoices(value).map((name) => `<option value="${esc(name)}"></option>`).join("")}</datalist>`;
+  const policyField = (value) => localField("policy", value, { label: t("出口策略", "Outbound policy"), options: policyChoices(value) });
   const checkPolicy = (value) => {
     if (!policyChoices().includes(value.trim())) throw Error(t("请选择已有且可用的出口策略。", "Choose an existing available outbound policy."));
     return value.trim();
@@ -33,7 +33,7 @@ export function createClashRoutingUi(ui) {
   }
 
   function renderPage() {
-    if (plan().mode !== "compiled") return section("", `<p>${t("将现有规则集载入表单，保留 behavior、interval、出口和顺序。每条规则可填写多个 URL，系统合并去重并生成 rule-providers。应用后仍需保存配置。", "Load existing rule sets into URL, behavior, interval and outbound fields, preserving their order. Multiple URLs in each row are merged and deduplicated into a generated provider. Save the draft to activate it.")}</p>${btn(t("使用规则集表单", "Use rule-set form"), "clash-migrate", pending ? "disabled" : "", "primary")}<div class="routing-errors">${failures.map((message) => `<p>${esc(message)}</p>`).join("")}</div><details class="routing-legacy"><summary>${t("检查或修正旧原生配置", "Review or repair native configuration")}</summary>${field("clients.clash.rules", client().rules)}${field("clients.clash.ruleProviders", client().ruleProviders, { multiline: true })}</details>`);
+    if (plan().mode !== "compiled") return section("", `<p>${t("将现有规则集载入表单，保留 behavior、interval、出口和顺序。每条规则可填写多个 URL，系统合并去重并生成 rule-providers。应用后仍需保存配置。", "Load existing rule sets into URL, behavior, interval and outbound fields, preserving their order. Multiple URLs in each row are merged and deduplicated into a generated provider. Save the draft to activate it.")}</p>${btn(t("使用规则集表单", "Use rule-set form"), "clash-migrate", pending ? "disabled" : "", "primary")}<div class="routing-errors">${failures.map((message) => `<p>${esc(message)}</p>`).join("")}</div>`);
     const ordered = effectiveOrder();
     const positions = new Map(ordered.flatMap((row, index) => row.entries.map((entry) => [entry.item, index + 1])));
     const available = new Set(policyChoices());

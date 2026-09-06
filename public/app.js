@@ -1,3 +1,5 @@
+import { ADDRESS_TOKEN, DOMAIN_TOKEN } from "./config-address-syntax.js";
+import "./vendor/codemirror/codemirror.js";
 import { newTailscaleNode, tailscaleForm, updateTailscaleForm, readTailscaleForm } from "./tailscale-ui.js";
 import { createSingboxForm, createSingboxGroupForm, singboxSections, singboxTitle } from "./singbox-ui.js";
 import { createClashRoutingUi } from "./clash-routing-ui.js";
@@ -85,6 +87,17 @@ function field(path, value, options = {}) {
   const key = path.split(".").at(-1);
   const id = `field-${path.replaceAll(".", "-")}`;
   const title = options.label || label(key);
+  if (path === "clients.surge.ipv6Vif") options = { ...options, options: ["off", "auto", "always"] };
+  if (path === "clients.clash.mode") options = { ...options, options: ["rule", "global", "direct"] };
+  if (path === "clients.clash.tun.stack") options = { ...options, options: ["system", "gvisor", "mixed"] };
+  if (path === "clients.clash.dnsEnhancedMode") options = { ...options, options: ["fake-ip", "redir-host"] };
+  const textList = isTextList(key, value);
+  const structured = value && typeof value === "object";
+  const multiline = options.multiline || typeof value === "string" && value.includes("\n");
+  if (!options.local && !/token|secret|password|passphrase|authKey|caP12/i.test(key) && (textList || structured || multiline)) {
+    const text = textList ? value.join("\n") : structured ? JSON.stringify(value, null, 2) : value;
+    return `<div class="config-preview-field"><div class="section-heading"><span>${esc(title)}</span>${iconButton("edit", "edit-json", `data-path="${esc(path)}" data-lines="${textList}"`, t("编辑", "Edit"))}</div>${text ? renderConfigLines(text.split("\n")) : `<p class="help">${t("未配置", "Not configured")}</p>`}</div>`;
+  }
   let control;
   const common = `id="${id}" data-field="${esc(path)}" ${state.invalid.has(path) ? 'aria-invalid="true"' : ""}`;
   if (typeof value === "boolean") control = `<input class="toggle" type="checkbox" ${common} ${value ? "checked" : ""} ${options.disabled ? "disabled" : ""}>`;
@@ -92,9 +105,10 @@ function field(path, value, options = {}) {
   else if (options.options) control = `<select ${common}>${options.options.map((item) => `<option value="${esc(item)}" ${item === value ? "selected" : ""}>${esc(item)}</option>`).join("")}</select>`;
   else if (isTextList(key, value)) control = `<textarea ${common} data-kind="lines" rows="${Math.min(8, Math.max(3, value.length))}" spellcheck="false">${esc(value.join("\n"))}</textarea><div class="help">${esc(options.help || t("每行一项", "One item per line"))}</div>`;
   else if (value && typeof value === "object") control = `<textarea ${common} data-kind="json" class="code" rows="${Math.min(13, Math.max(4, JSON.stringify(value, null, 2).split("\n").length))}" spellcheck="false">${esc(JSON.stringify(value, null, 2))}</textarea><div class="help">JSON · ${t("保留完整原生字段", "Preserves native fields")}</div>`;
-  else if (options.multiline || String(value).includes("\n")) control = `<textarea ${common} data-kind="text" class="code" rows="7" spellcheck="false">${esc(value)}</textarea>`;
+  else if (options.multiline || String(value).includes("\n")) control = `<textarea ${common} data-kind="text" class="code" rows="${options.rows || 7}" spellcheck="false">${esc(value)}</textarea>`;
   else control = `<input ${common} ${options.readonly ? "readonly" : ""} type="${/token|secret|password|passphrase|authKey/i.test(key) ? "password" : "text"}" value="${esc(value)}" autocomplete="off" spellcheck="false">`;
   if (state.invalid.has(path) && control.includes("<textarea")) control = control.replace(/(<textarea[^>]*>)[\s\S]*?(<\/textarea>)/, (_, open, close) => open + esc(state.invalid.get(path)) + close);
+  if (options.local && !/token|secret|password|passphrase|authKey|caP12/i.test(key)) control = control.replace(/<textarea([^>]*?)class="code"/, '<textarea$1class="code code-editor"').replace(/<textarea(?![^>]*class=)/, '<textarea class="code-editor"');
   return `<div class="form-row"><label for="${id}">${esc(title)}</label><div class="field">${control}</div></div>`;
 }
 function section(title, content, extra = "") {
@@ -113,16 +127,23 @@ function render() {
   $("#header-actions").innerHTML = state.page === "clients" && state.client === "singbox" ? `<span class="muted small">sing-box 1.14.0</span>${btn(t("迁移问题", "Migration issues"), "diagnostics")}` : "";
   $("#language").textContent = state.lang === "zh" ? "中文 / EN" : "EN / 中文";
   $("#logout").textContent = t("退出登录", "Sign out");
+  renderSidebarVersion();
   $("#migration-banner").hidden = !state.migration;
-  $("#migration-banner").innerHTML = state.migration ? `<div class="notice warning"><h2>${t("配置升级待确认", "Configuration migration required")}</h2><p>${t("Surge 与 clash 保留原设置，sing-box 从 Surge 转换。确认迁移后移除 Stash 和 Shadowrocket。", "Surge and clash retain their settings. sing-box is converted from Surge. Confirm migration to remove Stash and Shadowrocket.")}</p><div class="toolbar">${btn(t("查看并确认迁移", "Review migration"), "migration")}</div></div>` : "";
+  $("#migration-banner").innerHTML = state.migration ? `<div class="notice warning"><h2>${t("配置升级待确认", "Configuration migration required")}</h2><p>${t("Surge 与 clash 保留原设置；sing-box 从 Clash 初始化 DNS、策略组和分流规则，并迁移 Surge 的 Tailscale。确认迁移后移除 Stash 和 Shadowrocket。", "Surge and clash retain their settings. sing-box initializes DNS, groups and routing from Clash, and Tailscale from Surge. Confirm migration to remove Stash and Shadowrocket.")}</p><div class="toolbar">${btn(t("查看并确认迁移", "Review migration"), "migration")}</div></div>` : "";
   const views = { status: renderStatus, sources: () => renderEntities("sources"), nodes: () => renderEntities("nodes"), groups: renderGroups, clients: renderClient, links: renderLinks, system: renderSystem };
   $("#content").innerHTML = (views[state.page] || renderStatus)();
   updateStatus();
   updateSourceRefreshButtons();
   updateMmdbView();
 }
+function renderSidebarVersion() {
+  const element = $("#sidebar-version");
+  const available = state.system?.update?.updateAvailable === true;
+  element.textContent = available ? t("有更新", "Update available") : (state.system?.app?.version || "");
+  element.classList.toggle("has-update", available);
+}
 function renderStatus() {
-  return section(t("运行状态", "Service status"), `<div class="status-row"><span>${t("项目版本", "Application version")}</span><strong class="value">${esc(state.system?.app?.version || "2.0.0")}</strong></div>`) + section(t("订阅缓存", "Subscription cache"), renderSourceCache(), btn(t("强制刷新", "Force refresh"), "refresh-sources")) + section(t("最近订阅请求", "Recent subscription requests"), renderRecentRequests());
+  return section(t("订阅缓存", "Subscription cache"), renderSourceCache(), btn(t("强制刷新", "Force refresh"), "refresh-sources")) + section(t("最近订阅请求", "Recent subscription requests"), renderRecentRequests());
 }
 function renderSourceCache() {
   const cache = state.stats?.sourceCache;
@@ -223,44 +244,142 @@ function renderGroups() {
   const client = currentClient();
   return clientTabs() + groupSyntaxHelp() + `<p class="muted">${t("策略组仅用于当前客户端，同名组可在不同客户端分别配置。", "Policy groups belong to this client. Groups with the same name can have different settings in other clients.")}</p><div class="toolbar">${btn(icon("plus") + t("添加策略组", "Add group"), "add-group", "", "primary")}</div><div class="table-wrap"><table class="editable-table"><thead><tr><th>${t("名称", "Name")}</th><th>${t("组配置", "Group definition")}</th><th class="actions">${t("操作", "Actions")}</th></tr></thead><tbody>${Object.entries(client.groups).map(([name, spec]) => `<tr><td class="entity-name">${btn(esc(name), "edit-group", `data-name="${esc(name)}"`, "link entity-link")}${client.disabledGroups.includes(name) ? ` <span class="chip">${t("停用", "Disabled")}</span>` : ""}</td><td class="truncate">${esc(spec)}</td><td class="actions">${smallButton("edit", "edit-group", `data-name="${esc(name)}"`, t("编辑", "Edit"))}${name !== "Proxy" ? smallButton("trash", "delete-group", `data-name="${esc(name)}"`, t("删除", "Delete")) : ""}</td></tr>`).join("")}</tbody></table></div>`;
 }
+function highlightConfigLine(line) {
+  if (/^\s*(?:#|;|\/\/)/.test(line)) return `<span class="config-token-comment">${esc(line)}</span>`;
+  // Tokenize only for display. Escape every token before adding trusted markup.
+  const tokens = /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|https?:\/\/[^\s,]+|\^\S+|[\w-]+(?=\s*=)|\b(?:true|false|auto|reject(?:-\w+)?|DIRECT|REJECT|Proxy|http-request|http-response)\b|\b\d+(?:\.\d+)*(?:\/\d+)?\b/g;
+  const combinedTokens = new RegExp(`${ADDRESS_TOKEN.source}|${DOMAIN_TOKEN.source}|${tokens.source}`, "gi");
+  let html = "", offset = 0;
+  for (const match of line.matchAll(combinedTokens)) {
+    const token = match[0];
+    html += esc(line.slice(offset, match.index));
+    const kind = new RegExp(`^(?:${ADDRESS_TOKEN.source})$`, "i").test(token) ? "number" : new RegExp(`^(?:${DOMAIN_TOKEN.source})$`, "i").test(token) ? "pattern" : /^['"]/.test(token) ? "string" : /^(?:https?:|\^)/.test(token) ? "pattern" : /^\d/.test(token) ? "number" : /^\s*=/.test(line.slice(match.index + token.length)) ? "key" : "keyword";
+    html += `<span class="config-token-${kind}">${esc(token)}</span>`;
+    offset = match.index + token.length;
+  }
+  return html + esc(line.slice(offset));
+}
+function renderConfigLines(lines) {
+  return `<div class="client-config-values" role="region" aria-label="${t("配置内容（含行号）", "Configuration with line numbers")}" tabindex="0">${lines.flatMap((line) => line.split("\n")).map((line, index) => `<div class="client-config-line"><span class="config-line-number" aria-hidden="true">${index + 1}</span><code class="client-config-value">${highlightConfigLine(line)}</code></div>`).join("")}</div>`;
+}
 function renderClient() {
+  if (state.client === "singbox" && ["services", "outbounds", "endpoints"].includes(state.section)) state.section = "network";
+  if (state.client === "clash" && state.section === "advanced") state.section = "network";
   const client = state.config.clients[state.client];
   const fields = CLIENT_SECTIONS[state.client][state.section] || [];
-  const tabs = [["network", "网络与 TUN", "Network & TUN"], ["dns", "DNS", "DNS"], ["rules", "分流规则", "Routing rules"], ...state.client !== "clash" ? [["tailscale", "Tailscale", "Tailscale"]] : [], ...state.client === "singbox" ? [["endpoints", "VPN 端点", "VPN endpoints"], ["outbounds", "原生出站", "Native outbounds"], ["services", "服务", "Services"]] : [], ["advanced", "高级设置", "Advanced"], ...state.client === "surge" ? [["mitm", "MITM 证书", "MITM certificates"]] : []];
+  const tabs = [["network", "网络与 TUN", "Network & TUN"], ["dns", "DNS", "DNS"], ["rules", "分流规则", "Routing rules"], ...state.client !== "clash" ? [["tailscale", "Tailscale", "Tailscale"]] : [], ...state.client === "singbox" ? [["wireguard", "WireGuard", "WireGuard"], ["openconnect", "OpenConnect", "OpenConnect"], ["openvpn-client", "OpenVPN", "OpenVPN"]] : [], ...state.client !== "clash" ? [["advanced", "高级设置", "Advanced"]] : [], ...state.client === "surge" ? [["mitm", "MITM 证书", "MITM certificates"]] : []];
   let content = "";
   if (state.client === "surge" && state.section === "mitm") content = renderMitm();
   else if (state.section === "tailscale") content = renderTailscale();
   else if (state.section === "rules") content = renderRules();
+  else if (state.client === "singbox" && state.section === "dns") content = renderSingboxDns() + renderSingboxConnectionSettings("dns");
+  else if (state.client === "singbox" && ["wireguard", "openconnect", "openvpn-client"].includes(state.section)) content = renderSingboxVpn(state.section);
+  else if (state.client === "singbox" && state.section === "network") content = renderSingboxNetwork() + renderSingboxConnectionSettings("network");
   else if (state.client === "singbox") content = renderSingboxSections(singboxSections[state.section] || []);
-  else content = fields.map((key) => {
-    const value = client[key], path = `${basePath()}.${key}`;
-    const lines = isTextList(key, value);
-    const body = isObject(value) ? Object.entries(value).map(([sub, item]) => field(`${path}.${sub}`, item)).join("") : field(path, value);
-    const editor = value && typeof value === "object" ? btn(lines ? t("文本编辑", "Edit text") : t("完整 JSON", "Full JSON"), "edit-json", `data-path="${path}" data-lines="${lines}"`) : "";
-    return section(label(key), body, editor);
-  }).join("");
+  else {
+    const simple = fields.filter((key) => !isObject(client[key]) && !Array.isArray(client[key]));
+    const complex = fields.filter((key) => !simple.includes(key));
+    const basics = simple.length ? `<div class="client-settings-basics">${simple.map((key) => field(`${basePath()}.${key}`, client[key])).join("")}</div>` : "";
+    const details = complex.map((key) => {
+      const value = client[key], path = `${basePath()}.${key}`, lines = isTextList(key, value);
+      const body = lines
+        ? (value.length ? renderConfigLines(value) : `<p class="help">${t("未配置", "Not configured")}</p>`)
+        : isObject(value) ? `<div class="client-settings-nested">${Object.entries(value).map(([sub, item]) => field(`${path}.${sub}`, item)).join("")}</div>` : field(path, value);
+      const editor = iconButton("edit", "edit-json", `data-path="${path}" data-lines="${lines}"`, t("编辑", "Edit"));
+      return `<div class="client-settings-block ${isObject(value) ? "client-settings-object" : "client-settings-list"}">${section(label(key), body, editor)}</div>`;
+    }).join("");
+    content = `<div class="client-settings ${state.section === "advanced" ? "client-settings-advanced" : ""}">${basics}<div class="client-settings-details">${details}</div></div>`;
+  }
   if (!content) content = `<p class="empty">${t("此客户端的设置均在其他分栏中提供。", "All settings for this client are available in the other tabs.")}</p>`;
-  return clientTabs() + `<div class="section-tabs">${tabs.map(([id, zh, en]) => btn(t(zh, en), "section", `data-section="${id}"`, state.section === id ? "selected" : "")).join("")}</div>` + content;
+  return `<div class="client-config-page">` + clientTabs() + `<div class="section-tabs">${tabs.map(([id, zh, en]) => btn(t(zh, en), "section", `data-section="${id}"`, state.section === id ? "selected" : "")).join("")}</div>` + content + `</div>`;
+}
+function renderSingboxDns() {
+  const dns = currentClient().dns;
+  const servers = dns.servers || [], rules = dns.rules || [];
+  const actions = (kind, index) => iconButton("edit", "edit-sb-dns", `data-kind="${kind}" data-index="${index}"`, t("编辑", "Edit")) + iconButton("trash", "delete-sb-dns", `data-kind="${kind}" data-index="${index}"`, t("删除", "Delete"));
+  const serverRows = servers.map((server, index) => {
+    const address = server.server || server.endpoint || (server.type === "local" ? t("系统 DNS", "System DNS") : "—");
+    return `<tr><td><strong>${esc(server.tag || "—")}</strong></td><td>${esc(server.type || "—")}</td><td><code>${esc(address)}${server.server_port ? ` : ${esc(server.server_port)}` : ""}${server.path ? esc(server.path) : ""}</code></td><td>${esc(server.detour || t("默认连接", "Default connection"))}</td><td class="actions">${actions("servers", index)}</td></tr>`;
+  }).join("");
+  const ruleRows = rules.map((rule, index) => {
+    const match = Object.fromEntries(Object.entries(rule).filter(([key]) => !["server", "action", "disable_cache", "rewrite_ttl", "client_subnet"].includes(key)));
+    return `<tr><td>${index + 1}</td><td>${Object.keys(match).length ? renderConfigLines(JSON.stringify(match, null, 2).split("\n")) : t("所有请求", "All requests")}</td><td>${esc(rule.server || rule.action || "route")}</td><td class="actions">${iconButton("up", "move-sb-dns", `data-index="${index}" data-direction="-1" ${index === 0 ? "disabled" : ""}`, t("上移", "Move up"))}${iconButton("down", "move-sb-dns", `data-index="${index}" data-direction="1" ${index === rules.length - 1 ? "disabled" : ""}`, t("下移", "Move down"))}${actions("rules", index)}</td></tr>`;
+  }).join("");
+  const table = (headers, rows) => `<div class="table-wrap"><table><thead><tr>${headers.map((heading) => `<th>${heading}</th>`).join("")}</tr></thead><tbody>${rows || `<tr><td colspan="${headers.length}" class="empty">${t("尚未配置", "Not configured")}</td></tr>`}</tbody></table></div>`;
+  return `<div class="sb-dns-page">${section(t("解析服务器", "DNS servers"), table([t("名称", "Name"), t("协议", "Protocol"), t("服务器地址", "Server address"), t("连接出口", "Connection outbound"), t("操作", "Actions")], serverRows), btn(t("添加服务器", "Add server"), "edit-sb-dns", 'data-kind="servers"', "primary"))}${section(t("默认解析", "Default resolution"), field("clients.singbox.dns.final", dns.final || "", { label: t("默认 DNS 服务器", "Default DNS server"), options: [...servers.map((server) => server.tag).filter(Boolean), ""] }) + `<p class="help">${t("未命中 DNS 分流规则时使用；留空使用第一个服务器。", "Used when no DNS rule matches; empty uses the first server.")}</p>`)}${section(t("DNS 分流规则", "DNS routing rules"), table([t("顺序", "Order"), t("匹配条件", "Match conditions"), t("解析目标 / 动作", "DNS target / action"), t("操作", "Actions")], ruleRows), btn(t("添加规则", "Add rule"), "edit-sb-dns", 'data-kind="rules"'))}<div class="toolbar">${btn(t("缓存与其他设置", "Cache and other settings"), "edit-sb-dns", 'data-kind="options"')}</div></div>`;
+}
+async function editSingboxDns(kind, index) {
+  singboxSchema ||= await api("/api/singbox/schema");
+  const raw = singboxSchema.properties.dns;
+  const dnsSchema = raw.$ref ? singboxSchema.$defs[raw.$ref.split("/").at(-1)] : raw;
+  const dns = currentClient().dns;
+  const options = kind === "options";
+  const original = options ? Object.fromEntries(Object.entries(dns).filter(([key]) => !["servers", "rules", "final"].includes(key))) : index === null ? (kind === "servers" ? { type: "udp", tag: "", server: "" } : { domain_suffix: [""], action: "route", server: dns.final || dns.servers?.[0]?.tag || "" }) : dns[kind][index];
+  const property = options ? { ...dnsSchema, properties: Object.fromEntries(Object.entries(dnsSchema.properties).filter(([key]) => !["servers", "rules", "final"].includes(key))), required: (dnsSchema.required || []).filter((key) => !["servers", "rules", "final"].includes(key)) } : dnsSchema.properties[kind].items;
+  let form;
+  modal(options ? t("DNS 缓存与其他设置", "DNS cache and other settings") : kind === "servers" ? t("DNS 服务器", "DNS server") : t("DNS 分流规则", "DNS routing rule"), '<div id="singbox-form"></div>', async () => {
+    const value = form.read(), next = structuredClone(dns);
+    if (options) { for (const key of Object.keys(next)) if (!["servers", "rules", "final"].includes(key)) delete next[key]; Object.assign(next, value); }
+    else { next[kind] ||= []; if (index === null) next[kind].push(value); else next[kind][index] = value; }
+    const result = await api("/api/singbox/validate", { method: "POST", body: JSON.stringify({ section: "dns", value: next }) });
+    if (!result.valid) { form.error(result.errors.join("; ")); return; }
+    currentClient().dns = next; closeModal(); changed(); render();
+  });
+  form = createSingboxForm($("#singbox-form"), { ...singboxSchema, properties: { ...singboxSchema.properties, dns: property } }, "dns", original, { t, esc, references: { dns_server: (dns.servers || []).map((server) => server.tag), outbound: policyChoices(), endpoint: (currentClient().endpoints || []).map((endpoint) => endpoint.tag) } });
+}
+function renderSingboxNetwork() {
+  const inbounds = currentClient().inbounds || [];
+  const rows = inbounds.map((item, index) => {
+    const tun = item.type === "tun";
+    const address = tun ? (Array.isArray(item.address) ? item.address : []) : [item.listen && `${item.listen}${item.listen_port !== undefined ? ` : ${item.listen_port}` : ""}`].filter(Boolean);
+    const route = item.auto_route === undefined ? t("未指定", "Not specified") : item.auto_route ? t("开启", "On") : t("关闭", "Off");
+    return `<tr><td><strong>${esc(item.tag || t("未命名入站", "Unnamed inbound"))}</strong><div class="help">${esc(item.type || "—")}</div></td><td>${tun ? t("接管设备流量", "Capture device traffic") : ["mixed", "http", "socks"].includes(item.type) ? t("本地代理端口", "Local proxy port") : t("接收入站连接", "Accept inbound connections")}</td><td><div class="help">${tun ? t("虚拟网卡地址", "Virtual interface addresses") : t("监听地址 / 端口", "Listen address / port")}</div>${address.length ? address.map((value) => `<code class="sb-network-address">${esc(value)}</code>`).join("") : "—"}</td><td>${tun ? `<dl><dt>${t("网络栈", "Network stack")}</dt><dd>${esc(item.stack || t("未指定", "Not specified"))}</dd><dt>${t("自动路由", "Automatic routing")}</dt><dd>${route}</dd>${item.interface_name ? `<dt>${t("接口", "Interface")}</dt><dd>${esc(item.interface_name)}</dd>` : ""}</dl>` : "—"}</td><td class="actions">${iconButton("edit", "edit-singbox-inbound", `data-index="${index}"`, t("编辑入站", "Edit inbound"))}${iconButton("trash", "delete-singbox-inbound", `data-index="${index}"`, t("删除入站", "Delete inbound"))}</td></tr>`;
+  }).join("");
+  return `<section class="sb-network"><div class="section-heading"><div><h2>${t("入站管理", "Inbound connections")}</h2><p class="help">${t("TUN 接管设备流量；HTTP / SOCKS 端口供应用连接代理。", "TUN captures device traffic; HTTP / SOCKS ports accept proxy connections from apps.")}</p></div>${btn(t("添加入站", "Add inbound"), "edit-singbox-inbound", "", "primary")}</div><div class="table-wrap"><table><thead><tr><th>${t("入站", "Inbound")}</th><th>${t("用途", "Purpose")}</th><th>${t("地址", "Address")}</th><th>${t("网络设置", "Network settings")}</th><th>${t("操作", "Actions")}</th></tr></thead><tbody>${rows || `<tr><td colspan="5" class="empty">${t("尚未配置入站，点击「添加入站」设置流量入口。", "No inbounds configured. Add an inbound to receive traffic.")}</td></tr>`}</tbody></table></div></section>`;
+}
+function renderSingboxConnectionSettings(group) {
+  const title = group === "dns" ? t("连接域名解析", "Connection hostname resolution") : t("出口连接设置", "Outbound connection settings");
+  const route = currentClient().route;
+  const keys = group === "dns" ? ["default_domain_resolver"] : ["auto_detect_interface", "default_interface", "default_network_strategy"];
+  const names = { default_domain_resolver: t("默认域名解析器", "Default domain resolver"), auto_detect_interface: t("自动检测出口网卡", "Detect outbound interface"), default_interface: t("指定出口网卡", "Outbound interface"), default_network_strategy: t("网络选择策略", "Network strategy") };
+  const summary = keys.filter((key) => route[key] !== undefined).map((key) => `<div><span class="muted">${names[key]}：</span>${esc(typeof route[key] === "boolean" ? route[key] ? t("开启", "On") : t("关闭", "Off") : typeof route[key] === "object" ? JSON.stringify(route[key]) : route[key])}</div>`).join("");
+  return section(title, summary || `<p class="help">${t("使用默认设置", "Using defaults")}</p>`, btn(t("配置", "Configure"), "edit-singbox-section", `data-key="route" data-route-group="${group}"`));
+}
+function renderSingboxVpn(type) {
+  const title = { wireguard: "WireGuard", openconnect: "OpenConnect", "openvpn-client": "OpenVPN" }[type];
+  const items = (currentClient().endpoints || []).filter((item) => item.type === type);
+  return section(title, `<p class="help">${t("连接 VPN 服务器，可在策略组和分流规则中选择此连接。", "Connect to a VPN server and use the connection in policy groups and routing rules.")}</p><div class="table-wrap"><table><thead><tr><th>${t("名称", "Name")}</th><th>${t("服务器 / 地址", "Server / Address")}</th></tr></thead><tbody>${items.map((item) => `<tr><td>${esc(item.tag || "—")}</td><td>${esc(item.server || (item.address || []).join(", ") || "—")}</td></tr>`).join("") || `<tr><td colspan="2" class="empty">${t("尚未配置连接", "No connections configured")}</td></tr>`}</tbody></table></div>`, btn(t("配置连接", "Configure connections"), "edit-singbox-section", `data-key="endpoints" data-endpoint-type="${type}"`));
 }
 function renderSingboxSections(keys) {
   const client = currentClient();
-  const help = t("逐字段配置；嵌套设置和列表也可通过表单编辑。未添加的可选字段使用内核默认值。", "Edit fields, nested settings and lists with forms. Omitted optional fields use core defaults.");
   const notes = {
     inbounds: t("Android / Apple 的 TUN 由系统 VPN 接口管理；接口名、进程匹配等能力受平台权限限制。应用选择、Always On 等客户端自身设置需在客户端中操作。", "Android / Apple TUN uses the system VPN interface. Interface names and process matching depend on platform permissions. App selection overrides and Always On are configured in the client itself."),
-    endpoints: t("支持 WireGuard、Tailscale、OpenConnect、OpenVPN Client / Server。文件路径与接口属于运行 sing-box 的设备。", "Supports WireGuard, Tailscale, OpenConnect and OpenVPN Client / Server. File paths and interfaces belong to the device running sing-box."),
-    outbounds: t("添加仅供 sing-box 使用的原生协议、直连、Bridge、Tor 或策略组；与共享节点和策略组一起输出，标签必须唯一。", "Add sing-box native protocols, direct dialers, Bridge, Tor or groups. They are emitted alongside shared nodes and groups; tags must be unique."),
+    endpoints: t("配置 WireGuard、Tailscale、OpenConnect 和 OpenVPN 客户端连接。", "Configure WireGuard, Tailscale, OpenConnect and OpenVPN client connections."),
     route: client.ruleSets.mode === "compiled" ? t("来源编排模式下，原生规则先匹配，再匹配编排规则；原生规则集与生成规则集合并，标签不可重复。", "In compiled mode, native rules match before compiled rules. Native and generated rule sets are merged; tags must be unique.") : "",
-    network_namespaces: t("仅 Linux 支持；其他平台请勿添加。", "Supported only on Linux; omit on other platforms."),
     http_clients: t("Apple HTTP 引擎仅 Apple 平台可用，支持字段与 Go 引擎不同。", "The Apple HTTP engine is available only on Apple platforms and supports a different set of options from Go.")
   };
-  return `<p class="help">${help} <a href="https://sing-box.sagernet.org/configuration/" target="_blank" rel="noreferrer">${t("官方手册", "Official manual")}</a></p>` + keys.map((key) => {
+  return `<div class="client-settings singbox-settings"><div class="client-settings-details">` + keys.map((key) => {
     const value = client[key];
     const summary = value === undefined ? t("使用默认值", "Using defaults") : Array.isArray(value) ? t(`已配置 ${value.length} 项`, `${value.length} items configured`) : isObject(value) ? Object.keys(value).join(" · ") || t("使用默认值", "Using defaults") : t("已配置", "Configured");
+    const purpose = {
+      inbounds: t("接管设备流量或开放本地代理端口", "Capture device traffic or expose a local proxy port"),
+      dns: t("配置域名解析服务器和解析规则", "Configure DNS servers and resolution rules"),
+      route: t("设置流量匹配条件和默认出口", "Configure traffic matching and the default outbound"),
+      endpoints: t("配置 VPN 隧道连接", "Configure VPN tunnel connections"),
+      log: t("设置日志级别和输出位置", "Set log verbosity and destination")
+    };
+    const items = Array.isArray(value) ? value : null;
+    const overview = items ? (items.length ? `<div class="sb-overview-list">${items.map((item, index) => {
+      const type = item.type || "—";
+      const role = type === "tun" ? t("设备流量接管", "Device traffic capture") : ["mixed", "http", "socks"].includes(type) ? t("本地代理入口", "Local proxy listener") : type;
+      const details = [[t("虚拟网卡地址", "Virtual interface addresses"), (Array.isArray(item.address) ? item.address : []).join(" · ")], [t("网络栈", "Network stack"), item.stack], [t("接口名称", "Interface name"), item.interface_name], [t("监听地址", "Listen address"), item.listen], [t("监听端口", "Listen port"), item.listen_port]].filter(([, value]) => value !== undefined && value !== "");
+      return `<div class="sb-overview-item"><div class="section-heading"><strong>${esc(item.tag || role)}</strong>${key === "inbounds" ? `<div class="toolbar">${iconButton("edit", "edit-singbox-inbound", `data-index="${index}"`, t("编辑入站", "Edit inbound"))}${iconButton("trash", "delete-singbox-inbound", `data-index="${index}"`, t("删除入站", "Delete inbound"))}</div>` : ""}</div><span>${esc(role)} · ${esc(type)}</span><dl class="sb-overview-details">${details.map(([label, value]) => `<dt>${esc(label)}</dt><dd><code>${esc(value)}</code></dd>`).join("")}</dl></div>`;
+    }).join("")}</div>` : `<p class="help">${t("尚未配置", "Not configured")}</p>`) : `<p class="sb-summary">${esc(summary)}</p>`;
     const removable = value !== undefined && !["inbounds", "dns", "route", "log", "experimental"].includes(key);
-    return section(singboxTitle(key, t), `<p class="sb-summary">${esc(summary)}</p>${notes[key] ? `<p class="help">${notes[key]}</p>` : ""}`, `<div class="toolbar">${btn(t("配置", "Configure"), "edit-singbox-section", `data-key="${key}"`)}${removable ? btn(t("恢复默认", "Use defaults"), "remove-singbox-section", `data-key="${key}"`) : ""}</div>`);
-  }).join("");
+    return section(singboxTitle(key, t), `<p class="help">${purpose[key] || ""}</p>${overview}${notes[key] ? `<p class="help">${notes[key]}</p>` : ""}`, `<div class="toolbar">${key === "inbounds" ? btn(t("添加入站", "Add inbound"), "edit-singbox-inbound") : btn(t("配置", "Configure"), "edit-singbox-section", `data-key="${key}"`)}${removable ? btn(t("恢复默认", "Use defaults"), "remove-singbox-section", `data-key="${key}"`) : ""}</div>`);
+  }).join("") + `</div></div>`;
 }
-async function editSingboxSection(key) {
+async function editSingboxSection(key, inboundIndex, endpointType, routeGroup) {
   singboxSchema ||= await api("/api/singbox/schema");
   if (!Object.hasOwn(singboxSchema.properties, key)) throw Error(t("未知配置分类", "Unknown configuration section"));
   const client = state.config.clients.singbox;
@@ -270,9 +389,32 @@ async function editSingboxSection(key) {
     inbound: tags(client.inbounds), dns_server: tags(client.dns.servers), rule_set: tags(client.route.rule_set),
     http_client: tags(client.http_clients), certificate_provider: tags(client.certificate_providers), network_namespace: tags(client.network_namespaces), endpoint: tags(client.endpoints)
   };
+  let viewSchema = singboxSchema;
+  let routeKeys;
+  if (routeGroup) {
+    const node = singboxSchema.$defs.RouteOptions;
+    routeKeys = Object.keys(node.properties).filter((name) => routeGroup === "dns" ? name === "default_domain_resolver" : !["rules", "rule_set", "final", "default_domain_resolver"].includes(name));
+    viewSchema = { ...singboxSchema, properties: { ...singboxSchema.properties, route: { ...node, properties: Object.fromEntries(routeKeys.map((name) => [name, node.properties[name]])), required: (node.required || []).filter((name) => routeKeys.includes(name)) } } };
+  }
   let form;
-  modal(singboxTitle(key, t), `<p class="help">${t("通过“添加字段”选择可选设置，移除字段恢复默认。切换类型或动作会保留兼容字段、移除不兼容字段；取消可放弃本次编辑。", "Use Add field for optional settings; remove fields to restore defaults. Switching type or action keeps compatible fields and removes incompatible ones. Cancel discards this draft.")}</p><div id="singbox-form"></div>`, async () => {
-    const value = form.read();
+  modal(endpointType ? { wireguard: "WireGuard", openconnect: "OpenConnect", "openvpn-client": "OpenVPN" }[endpointType] : routeGroup ? (routeGroup === "dns" ? t("连接域名解析", "Connection hostname resolution") : t("出口连接设置", "Outbound connection settings")) : singboxTitle(key, t), `<p class="help">${t("先选择类型，再填写常用设置。更多参数在「高级设置」和「添加可选设置」中；应用后请保存配置。", "Choose a type and edit its common settings. Additional parameters are under Advanced settings and Add optional settings. Save configuration after applying.")}</p><div id="singbox-form"></div>`, async () => {
+    const edited = form.read();
+    let value = inboundIndex === undefined ? edited : [...client.inbounds];
+    if (routeKeys) {
+      value = { ...client.route };
+      for (const name of routeKeys) delete value[name];
+      Object.assign(value, edited);
+    }
+    if (endpointType) {
+      if (edited.some((item) => item.type !== endpointType)) throw Error(t("连接类型不匹配", "Connection type mismatch"));
+      const remaining = [...edited];
+      value = (client.endpoints || []).flatMap((item) => item.type === endpointType ? (remaining.length ? [remaining.shift()] : []) : [item]);
+      value.push(...remaining);
+    }
+    if (inboundIndex !== undefined) {
+      if (inboundIndex === null) value.push(edited[0]);
+      else value[inboundIndex] = edited[0];
+    }
     const root = $("#singbox-form"), saveButton = $('#modal-actions [data-action="modal-save"]');
     root.inert = true; saveButton.disabled = true;
     try {
@@ -284,7 +426,8 @@ async function editSingboxSection(key) {
       closeModal(); changed(); render();
     } finally { root.inert = false; saveButton.disabled = false; }
   });
-  form = createSingboxForm($("#singbox-form"), singboxSchema, key, client[key], { t, esc, references });
+  const original = routeKeys ? Object.fromEntries(routeKeys.filter((name) => client.route[name] !== undefined).map((name) => [name, client.route[name]])) : endpointType ? (client.endpoints || []).filter((item) => item.type === endpointType) : inboundIndex === undefined ? client[key] : [inboundIndex === null ? { type: "mixed", tag: "mixed-in", listen: "127.0.0.1", listen_port: 7890 } : client.inbounds[inboundIndex]];
+  form = createSingboxForm($("#singbox-form"), viewSchema, key, original, { t, esc, references, endpointType, singleItem: inboundIndex !== undefined });
 }
 function tailscaleCollection() {
   return state.client === "surge" ? currentClient().tailscaleNodes : currentClient().endpoints || [];
@@ -335,13 +478,12 @@ function renderRules() {
   let html = "";
   if (native) {
     if (!compiled) return section("", `<p class="help">${t("启用后，已有原生规则仍优先匹配，已保存的编排规则也会启用。", "Existing native rules keep priority. Previously saved rule-plan entries will also become active.")}</p>`, btn(t("使用规则集地址配置", "Use rule-set URLs"), "enable-singbox-rule-plan", "", "primary")) + renderSingboxSections(["route"]);
-    return renderRulePlan(client.ruleSets) + `<details><summary>${t("原生路由与高级设置", "Native routing and advanced settings")}</summary>${renderSingboxSections(["route"])}</details>`;
+    return renderRulePlan(client.ruleSets);
   }
   if (!compiled) {
     html += section("", `<div class="toolbar">${btn(native ? "JSON" : t("文本", "Text"), "edit-json", `data-path="${path}" data-lines="${native ? "false" : "true"}"`)}</div><div class="table-wrap"><table class="rule-table"><thead><tr><th>${t("顺序", "Order")}</th><th>${t("匹配类型", "Match")}</th><th>${t("匹配值", "Value")}</th><th>${t("出站策略", "Outbound")}</th><th>${t("操作", "Actions")}</th></tr></thead><tbody>${rules.map((rule, index) => ruleRow(rule, index, path, native)).join("") || `<tr><td colspan="5" class="empty">${t("还没有规则", "No rules")}</td></tr>`}</tbody></table></div>${btn(icon("plus") + t("添加规则", "Add rule"), "add-rule", `data-path="${path}"`)}${native ? `<div class="toolbar"></div>${field(`${basePath()}.route.final`, client.route.final || "", { label: t("默认出站", "Default outbound"), options: policyChoices(client.route.final || "") })}` : ""}<div class="toolbar"><span>${t("当前端策略组：", "Client groups:")}</span>${Object.keys(currentClient().groups).slice(0, 7).map((name) => `<span class="chip">${esc(name)}</span>`).join("")}<a href="#groups">${t("管理策略组", "Manage groups")}</a></div>`);
   }
   if (native) html += section(t("其他路由设置", "Other route settings"), Object.entries(client.route).filter(([key]) => !["rules", "final"].includes(key)).map(([key, value]) => field(`${basePath()}.route.${key}`, value)).join(""), btn(t("完整 JSON", "Full JSON"), "edit-json", `data-path="${basePath()}.route"`));
-  if (state.client === "clash") html += section(t("原生规则提供者", "Native rule providers"), field(`${basePath()}.ruleProviders`, client.ruleProviders, { multiline: true }));
   if (compiled) html += renderRulePlan(client.ruleSets);
   return html;
 }
@@ -442,7 +584,7 @@ function compiledFinalOptions(parts) {
 function renderRulePlan(plan) {
   const surge = state.client === "surge";
   const ordered = orderedPlan(plan);
-  const rows = ordered.map(({ kind, item, index }, position) => {
+  let rows = ordered.map(({ kind, item, index }, position) => {
     const output = kind === "output";
     const lockedFinal = !output && isFinalRule(item.rule);
     const attrs = `data-plan-kind="${kind}" data-index="${index}"`;
@@ -454,6 +596,12 @@ function renderRulePlan(plan) {
     const options = output && surge ? `<label class="small">${t("Surge 选项", "Surge options")}${control("surgeOptions", "select", selectOptions(surgeOptionChoices(item.surgeType || "RULE-SET"), item.surgeOptions.join(",")))}</label>` : "";
     return `<tr><td>${position + 1}</td><td class="routing-content"><span class="small muted">${esc(kindLabel)}</span>${content}</td><td>${policy}${options}</td><td><label class="routing-enabled"><input type="checkbox" data-plan-field="enabled" ${attrs} ${item.enabled ? "checked" : ""} ${lockedFinal ? "disabled" : ""}>${t("启用", "Enabled")}</label></td><td class="actions"><span class="routing-actions"><span class="order">${iconButton("up", "move-plan", `data-position="${position}" data-direction="-1" ${lockedFinal || position === 0 ? "disabled" : ""}`, t("上移", "Move up"))}${iconButton("down", "move-plan", `data-position="${position}" data-direction="1" ${lockedFinal || position === ordered.length - 1 || isFinalEntry(ordered[position + 1]) ? "disabled" : ""}`, t("下移", "Move down"))}</span>${iconButton("edit", `edit-${kind}`, `data-index="${index}"`, t("编辑", "Edit"))}${iconButton("trash", `delete-${kind}`, `data-index="${index}" ${lockedFinal ? "disabled" : ""}`, t("删除", "Delete"))}</span></td></tr>`;
   }).join("");
+  if (state.client === "singbox" && !plan.directRules.some((item) => item.enabled && isFinalRule(item.rule))) {
+    const selected = currentClient().route.final || "";
+    const choices = policyChoices(selected).filter((name) => !["REJECT", "REJECT-DROP"].includes(name));
+    const options = `${selected ? "" : `<option value="">${t("内核默认（第一个出站）", "Core default (first outbound)")}</option>`}${selectOptions(choices, selected)}`;
+    rows += `<tr><td>${ordered.length + 1}</td><td class="routing-content"><span class="small muted">${t("兜底规则", "Final rule")}</span><code>FINAL</code><div class="small muted">${t("未命中以上规则时使用", "Used when no preceding rule matches")}</div></td><td><select data-field="clients.singbox.route.final" aria-label="${t("兜底出口策略", "Final outbound policy")}">${options}</select></td><td><label class="routing-enabled"><input type="checkbox" checked disabled>${t("启用", "Enabled")}</label></td><td class="actions">${iconButton("trash", "delete-direct", "disabled", t("兜底规则不能删除", "The final rule cannot be deleted"))}</td></tr>`;
+  }
   return section("", `${state.client === "surge" ? `${field(`${basePath()}.ruleSets.aggregateByPolicy`, plan.aggregateByPolicy)}<p class="help">${t("按策略聚合会在该策略首次出现的位置合并规则集，可能改变跨策略的匹配顺序。", "Same-policy aggregation merges rule sets at the policy's first occurrence and may change precedence across policies.")}</p>` : ""}<div class="toolbar">${btn(t("添加规则集", "Add rule set"), "add-output")}${btn(t("添加单条规则", "Add direct rule"), "add-direct")}</div><div class="table-wrap"><table class="routing-table surge-routing-table"><thead><tr><th>${t("匹配顺序", "Match order")}</th><th>${t("规则集地址 / 单条规则", "Rule-set URL / Direct rule")}</th><th>${t("出口策略", "Outbound policy")}</th><th>${t("状态", "Status")}</th><th class="actions">${t("操作", "Actions")}</th></tr></thead><tbody>${rows || `<tr><td colspan="5" class="empty">${t("还没有规则", "No rules")}</td></tr>`}</tbody></table></div>`);
 }
 function editDirect(index) {
@@ -586,21 +734,33 @@ async function uploadMmdb() {
     updateMmdbView();
   }
 }
+function destroyModalEditors() {
+  for (const editor of modal.editors || []) editor.destroy();
+  modal.editors = [];
+}
 function modal(title, body, onSave, saveLabel = t("应用更改", "Apply changes")) {
+  destroyModalEditors();
   $("#modal").classList.remove("routing-order-dialog");
   $("#modal-title").textContent = title;
   $("#modal-body").innerHTML = body;
   $("#modal-actions").innerHTML = btn(t("取消", "Cancel"), "close-modal") + (onSave ? btn(saveLabel, "modal-save", "", "primary") : "");
   modal.save = onSave;
   $("#modal").showModal();
+  modal.editors = [...$("#modal-body").querySelectorAll("textarea.code-editor")].map((textarea) => {
+    const editor = window.SubPilotCodeMirror.fromTextArea(textarea, { mode: "proxy-config", lineWrapping: true, indentUnit: 2, policyTokens: policyChoices });
+    editor.on("change", () => editor.save());
+    editor.view.contentDOM.setAttribute("aria-label", title);
+    return editor;
+  });
 }
 function closeModal() {
   if (modal.generatingCa) return;
+  destroyModalEditors();
   $("#modal").close();
   modal.save = null;
 }
 function localField(key, value, options = {}) {
-  return field(key, value, options).replaceAll("data-field=", "data-local=");
+  return field(key, value, { ...options, local: true }).replaceAll("data-field=", "data-local=");
 }
 function readLocal(original) {
   const result = structuredClone(original);
@@ -681,9 +841,9 @@ function editSingboxGroup(name) {
 }
 function editJson(path, lines = false) {
   const value = getPath(state.config, path);
-  modal(label(path.split(".").at(-1)), `<textarea id="json-editor" class="code code-editor" rows="20" spellcheck="false">${esc(lines ? value.join("\n") : JSON.stringify(value, null, 2))}</textarea><p class="help">${t("文本模式保留原生内容。应用时只检查格式，生成订阅时检查目标兼容性。", "Text mode preserves native content. Format is checked on apply; target compatibility is checked when generating subscriptions.")}</p>`, () => {
+  modal(label(path.split(".").at(-1)), `<textarea id="json-editor" class="code code-editor" rows="20" spellcheck="false">${esc(lines ? value.join("\n") : typeof value === "string" ? value : JSON.stringify(value, null, 2))}</textarea><p class="help">${t("应用更改后，请点击页面底部的「保存配置」。", "After applying changes, click Save configuration at the bottom of the page.")}</p>`, () => {
     const text = $("#json-editor").value;
-    const next = lines ? text.split("\n").map((line) => line.trim()).filter(Boolean) : JSON.parse(text);
+    const next = lines ? text.split("\n").map((line) => line.trim()).filter(Boolean) : typeof value === "string" ? text : JSON.parse(text);
     if (Array.isArray(value) !== Array.isArray(next) || typeof value !== typeof next) throw Error(t("数据类型必须保持一致", "The value must retain its data type"));
     if (path.startsWith("clients.singbox")) validateNativeShape(next, path);
     if (isObject(value) && !isObject(next)) throw Error(t("需要 JSON 对象", "A JSON object is required"));
@@ -857,7 +1017,7 @@ function editOutput(index) {
   const surgeSettings = surge ? localField("surgeType", form.surgeType, { label: t("规则集类型", "Rule-set type"), options: SURGE_RULE_SET_TYPES }) : "";
   const legacyInline = form.inlineRules.length ? `<p class="help">${t(`保留已有的 ${form.inlineRules.length} 条手填规则。新增独立规则请使用“添加单条规则”。`, `The ${form.inlineRules.length} existing manual rules are retained. Use Add direct rule for new individual rules.`)}</p>` : "";
   const title = surge ? t("编辑 Surge 规则集", "Edit Surge rule set") : clash ? t("编辑 Clash 规则集", "Edit Clash rule set") : t("编辑 sing-box 规则集", "Edit sing-box rule set");
-  modal(title, `<p class="help">${intro}</p>` + surgeSettings + sourceSettings + localField("sourceUrls", displayedUrls, { label: t("规则下载地址（每行一个）", "Rule download URLs (one per line)"), multiline: true }) + providerSettings + legacyInline + (clash ? clashRouting.policyField(form.policy) : localField("policy", form.policy, { label: t("出口策略（作用于全部规则）", "Outbound policy (for all rules)"), options: policyChoices(form.policy) })) + (surge ? localField("surgeOptions", form.surgeOptions, { options: [...new Set([...surgeOptionChoices(form.surgeType), form.surgeOptions])] }) : "") + (simple ? "" : localField("enabled", form.enabled, { label: t("启用此规则集", "Enable this rule set") })) + advancedSettings, () => {
+  modal(title, `<p class="help">${intro}</p>` + surgeSettings + sourceSettings + localField("sourceUrls", displayedUrls, { label: t("规则下载地址（每行一个）", "Rule download URLs (one per line)"), multiline: true, rows: 5 }) + providerSettings + legacyInline + (clash ? clashRouting.policyField(form.policy) : localField("policy", form.policy, { label: t("出口策略（作用于全部规则）", "Outbound policy (for all rules)"), options: policyChoices(form.policy) })) + (surge ? localField("surgeOptions", form.surgeOptions, { options: [...new Set([...surgeOptionChoices(form.surgeType), form.surgeOptions])] }) : "") + (simple ? "" : localField("enabled", form.enabled, { label: t("启用此规则集", "Enable this rule set") })) + advancedSettings, () => {
     const value = readLocal(form);
     if (clash) value.policy = clashRouting.checkPolicy(value.policy);
     if (!value.sourceUrls.trim() && !value.inlineRules.length) throw Error(t("请填写规则下载地址。", "Enter a rule download URL."));
@@ -973,8 +1133,7 @@ async function reviewMigration() {
   if (!state.migration) return;
   if (!state.migrationData) throw Error(t("请刷新页面后重新检查迁移。", "Reload the page and review migration again."));
   if (state.invalid.size) throw Error(t("请先修正格式无效的输入。", "Correct invalid inputs first."));
-  const issues = state.config.clients.singbox.migrationIssues;
-  modal(t("确认配置迁移", "Confirm configuration migration"), `<p>${t("迁移保留 Surge 与 clash 设置，sing-box 的转换问题可在迁移后继续修复。新配置写入并验证成功后，旧版配置将进入延迟清理。", "Migration preserves Surge and clash settings. sing-box conversion issues can be resolved afterward. Old configuration is scheduled for cleanup after the new configuration is written and verified.")}</p><p>${t(`sing-box 有 ${issues.filter((item) => item.severity === "error").length} 项待处理。`, `${issues.filter((item) => item.severity === "error").length} sing-box items require attention.`)}</p>`, async () => {
+  modal(t("确认配置迁移", "Confirm configuration migration"), `<p>${t("迁移保留 Surge 与 clash 设置。sing-box 从 Clash 初始化 DNS、策略组和分流规则，自动配置 TUN 和出口接口检测，并迁移 Surge 已启用的 Tailscale。请核对迁移诊断。新配置写入并验证成功后，旧版配置将进入延迟清理。", "Migration preserves Surge and clash settings. sing-box initializes DNS, groups and routing from Clash, configures TUN and interface detection, and migrates enabled Surge Tailscale connections. Review migration diagnostics. Old configuration is scheduled for cleanup after the new configuration is written and verified.")}</p>`, async () => {
     const config = await api("/api/config/migration", { method: "POST", body: JSON.stringify({ config: state.config, fingerprint: state.migrationData.fingerprint }) });
     state.config = config;
     state.saved = JSON.stringify(config);
@@ -1000,6 +1159,7 @@ async function refreshStatus() {
     state.requestPage = 0;
   }
   if (values[1].status === "fulfilled") state.system = values[1].value;
+  renderSidebarVersion();
   if (state.page === "status") render();
 }
 async function action(button) {
@@ -1009,7 +1169,20 @@ async function action(button) {
     await clashRouting.action(button);
     return;
   }
-  if (button.dataset.action === "edit-singbox-section") { await editSingboxSection(button.dataset.key); return; }
+  if (button.dataset.action === "edit-sb-dns") { await editSingboxDns(button.dataset.kind, button.dataset.index === undefined ? null : Number(button.dataset.index)); return; }
+  if (button.dataset.action === "delete-sb-dns") {
+    const { kind, index } = button.dataset, dns = currentClient().dns;
+    if (kind === "servers") {
+      const tag = dns.servers[Number(index)]?.tag;
+      const referenced = (value) => value && typeof value === "object" && Object.entries(value).some(([key, item]) => (["server", "final", "domain_resolver", "default_domain_resolver"].includes(key) && item === tag) || (key === "preferred_by" && (item === tag || Array.isArray(item) && item.includes(tag))) || referenced(item));
+      if (tag && referenced({ ...currentClient(), dns: { ...dns, servers: dns.servers.filter((_, i) => i !== Number(index)) } })) throw Error(t("此 DNS 服务器仍被引用，请先修改默认解析或关联设置。", "This DNS server is referenced. Update the default resolver or related settings first."));
+    }
+    confirmDelete(t("删除此 DNS 配置？", "Delete this DNS entry?"), () => dns[kind].splice(Number(index), 1)); return;
+  }
+  if (button.dataset.action === "move-sb-dns") { const rules = currentClient().dns.rules, index = Number(button.dataset.index), other = index + Number(button.dataset.direction); if (other >= 0 && other < rules.length) { [rules[index], rules[other]] = [rules[other], rules[index]]; changed(); render(); } return; }
+  if (button.dataset.action === "edit-singbox-inbound") { await editSingboxSection("inbounds", button.dataset.index === undefined ? null : Number(button.dataset.index)); return; }
+  if (button.dataset.action === "delete-singbox-inbound") { const index = Number(button.dataset.index); confirmDelete(t("删除此入站？", "Delete this inbound?"), () => currentClient().inbounds.splice(index, 1)); return; }
+  if (button.dataset.action === "edit-singbox-section") { await editSingboxSection(button.dataset.key, undefined, button.dataset.endpointType, button.dataset.routeGroup); return; }
   if (button.dataset.action === "remove-singbox-section") {
     confirmDelete(t("恢复默认会移除此分类的配置；已有引用需要手动调整。", "Restoring defaults removes this section; update any references manually."), () => { delete currentClient()[button.dataset.key]; }); return;
   }
@@ -1403,6 +1576,7 @@ document.addEventListener("change", (event) => {
 $("#save").addEventListener("click", () => save().catch((error) => toast(error.message)));
 
 $("#close-diagnostics").addEventListener("click", closeDiagnostics);
+$("#modal").addEventListener("cancel", destroyModalEditors);
 $("#close-modal").addEventListener("click", closeModal);
 $("#modal").addEventListener("cancel", (event) => { if (modal.generatingCa) event.preventDefault(); });
 $("#menu").addEventListener("click", () => document.body.classList.toggle("menu-open"));

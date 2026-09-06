@@ -1,3 +1,4 @@
+import { ADDRESS_TOKEN, DOMAIN_TOKEN } from "../public/config-address-syntax.js";
 import { EditorState, Compartment } from "@codemirror/state";
 import { EditorView, Decoration, ViewPlugin, keymap } from "@codemirror/view";
 import { indentMore } from "@codemirror/commands";
@@ -125,6 +126,8 @@ function configToken(stream, parserState, policies) {
   if (stream.match(/\[[^\]]+\]/)) return "header";
   if (stream.match(/"(?:[^"\\]|\\.)*"/) || stream.match(/'(?:[^'\\]|\\.)*'/)) return "string";
   if (stream.match(/https?:\/\/[^\s,]+/i)) return "link";
+  if (stream.match(ADDRESS_TOKEN)) return "number";
+  if (stream.match(DOMAIN_TOKEN)) return "link";
   if (matchConfigProxyParamKey(stream)) {
     parserState.afterProxyParamKey = true;
     return "attribute";

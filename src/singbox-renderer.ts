@@ -14,7 +14,13 @@ import type { ConfigDiagnostic, HostEntry, ProxyNode, ProxyParamValue, RenderCon
 type JsonObject = Record<string, ProxyParamValue>;
 export async function buildSingbox(env: Env, config: RenderConfig, nodes: ProxyNode[], hosts: HostEntry[], requestUrl: string, diagnostics: ConfigDiagnostic[]): Promise<string> {
   const client = config.document!.clients.singbox;
-  diagnostics.push(...client.migrationIssues);
+  // Source-only migration notices do not describe the current sing-box output.
+  const sourceOnlyNotices = new Set([
+    "surge-urlRewrite", "surge-mapLocal", "surge-scripts", "surge-tailscaleNodes",
+    "surge-alwaysRealIp", "surge-skipProxy", "surge-mitm"
+  ]);
+  diagnostics.push(...client.migrationIssues.filter((item) =>
+    item.path !== "clients.singbox" || !sourceOnlyNotices.has(item.code)));
   let outbounds: JsonObject[] = [{ type: "direct", tag: "DIRECT" }];
   for (const node of nodes) {
     try {
@@ -106,12 +112,12 @@ export async function buildSingbox(env: Env, config: RenderConfig, nodes: ProxyN
         } else {
           if (item.output.surgeOptions.some((option) => option !== "no-resolve")) throw new Error(`${item.output.name} 的 Surge 规则选项无法等价转换，请在当前客户端规则计划中移除或改写。`);
           const manifest = await ensureCompiledRuleSet(env, config, item.output);
-          diagnostics.push(...manifest.warnings.map((message) => issue("clients.singbox.ruleSets", "rule-cache", "warning", message)));
+          diagnostics.push(...manifest.warnings.filter((message) => !/^AS\d+ 已展开为 \d+ 条 IPv4\/IPv6 CIDR（RIPE RIS 快照）。$/.test(message)).map((message) => issue("clients.singbox.ruleSets", "rule-cache", "warning", message)));
           const compatible = manifest.buckets.reduce((sum, bucket) => sum + (bucket.targetCounts?.["sing-box"] ?? 0), 0);
           if (compatible !== manifest.ruleCount) throw new Error("规则集中存在 sing-box 无法等价表达的规则");
           for (const artifact of planRuleSetArtifacts(manifest.buckets, "sing-box")) {
             const tag = `${item.output.name}-${artifact.bucket}`;
-            ruleSets.push({ type: "remote", tag, format: "source", url: managedRuleSetUrlForRequest(config, requestUrl, item.output.name, artifact.bucket, "sing-box"), http_client: { detour: "DIRECT" }, update_interval: "1d" });
+            ruleSets.push({ type: "remote", tag, format: "source", url: managedRuleSetUrlForRequest(config, requestUrl, item.output.name, artifact.bucket, "sing-box"), http_client: { engine: "go" }, update_interval: "1d" });
             rules.push({ rule_set: [tag], ...policyAction(item.output.policy) });
           }
         }

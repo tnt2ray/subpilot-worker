@@ -276,7 +276,7 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
       const compiled = await buildCompiledRuleSetReferencePlan(ruleSetEnv(env, "clash"), selected, "clash", request.url);
       if (compiled.errors.length) return jsonResponse({ error: "Clash 分流转换校验失败，旧配置继续生效。", issues: compiled.errors }, { status: 400 });
     }
-    const saved = await saveConfigWithTelegramWebhook(env, current, renderConfig(document), request.url);
+    const saved = await saveConfigWithTelegramWebhook(env, current, renderConfig(document), request.url, ctx);
     scheduleChangedCacheRefresh(env, ctx, current, saved, request.url);
     return jsonResponse(configDocument(saved));
   }

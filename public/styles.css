@@ -173,6 +173,15 @@ nav a.active {
 .sidebar-bottom button {
   justify-content: flex-start;
 }
+.sidebar-version {
+  padding: 0 12px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+.sidebar-version.has-update {
+  color: #15803d;
+}
 .workspace {
   padding: 0 25px;
   flex: 1;
@@ -1085,3 +1094,108 @@ dialog.routing-order-dialog { margin: 0 0 0 auto; width: min(600px, 100vw); max-
   .sb-add select, .sb-add input { flex-basis: 100%; }
   .sb-field > details { margin-right: 0; padding-top: 30px; }
 }
+
+/* Compact client settings, scoped away from rule tables and resource editors. */
+.client-config-page .client-tabs { margin-bottom: 8px; }
+.client-config-page .section-tabs { gap: 16px; margin-bottom: 16px; }
+.client-config-page .section-tabs button { height: 38px; }
+.client-settings-basics,
+.client-settings-nested { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0 24px; }
+.client-settings-basics { border-bottom: 1px solid var(--border); padding-bottom: 12px; margin-bottom: 16px; }
+.client-settings .form-row { grid-template-columns: minmax(0, 1fr) minmax(100px, 1.2fr); gap: 12px; padding: 7px 0; min-height: 44px; align-items: center; }
+.client-settings .form-row > label { padding-top: 0; line-height: 1.4; }
+.client-settings .form-row:has(.toggle) .field { justify-self: end; }
+.client-settings-details { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px 24px; align-items: start; }
+.client-settings-block { min-width: 0; }
+.client-settings-object { grid-column: 1 / -1; }
+.client-settings .section { margin: 0; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
+.client-settings .section-heading { min-height: 32px; margin-bottom: 6px; }
+.client-settings .section-heading h2 { font-size: 15px; }
+.client-settings .section-heading button { padding: 5px 10px; font-size: 12px; }
+.client-settings-list .form-row { display: block; padding: 0; }
+.client-settings-list .form-row > label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+.client-settings textarea { min-height: 96px; height: 132px; resize: vertical; }
+.client-settings input:not([type=checkbox]), .client-settings select { min-height: 32px; padding: 5px 9px; }
+.client-settings .help { font-size: 12px; margin: 5px 0; }
+.singbox-settings > .help { margin: 0 0 12px; }
+.singbox-settings .sb-summary { font-size: 13px; line-height: 1.5; margin: 6px 0; }
+.singbox-settings .toolbar { margin: 0; gap: 6px; }
+@media (max-width: 1200px) {
+  .client-settings-basics, .client-settings-nested { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 760px) {
+  .client-settings-basics, .client-settings-nested, .client-settings-details { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+  .client-settings .form-row { grid-template-columns: minmax(0, 1fr) minmax(120px, 1.2fr); }
+  .client-config-page .section-tabs { gap: 4px; }
+  .client-settings textarea { height: 112px; }
+}
+
+.client-config-values { min-width: 0; background: #f8fafc; border: 1px solid var(--border); border-radius: 5px; padding: 4px 0; }
+.client-config-values:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+.client-config-line { display: grid; grid-template-columns: 4.5ch minmax(0, 1fr); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; line-height: 1.65; }
+.client-config-line:hover { background: #eef2f7; }
+.config-line-number { color: #64748b; text-align: right; padding: 2px 8px 2px 0; border-right: 1px solid var(--border); user-select: none; }
+.client-config-value { padding: 2px 10px; font: inherit; color: #334155; white-space: pre-wrap; overflow-wrap: anywhere; min-width: 0; }
+.config-token-comment { color: #64748b; font-style: italic; }
+.config-token-string { color: #166534; }
+.config-token-pattern { color: #0e7490; }
+.config-token-number { color: #9a3412; }
+.config-token-key { color: #1d4ed8; }
+.config-token-keyword { color: #7e22ce; }
+.client-settings-advanced .client-settings-details { grid-template-columns: minmax(0, 1fr); gap: 14px; }
+
+#modal .config-code-editor { height: min(52vh, 560px); min-height: 180px; border: 1px solid var(--border); border-radius: 5px; background: #f8fafc; color: #334155; }
+#modal .form-row:has(.config-code-editor) { grid-template-columns: minmax(0, 1fr); gap: 6px; }
+#modal .form-row .config-code-editor { height: 160px; min-height: 100px; max-height: 28vh; min-width: 0; }
+#modal .form-row:has([data-local="sourceUrls"]) { grid-template-columns: minmax(0, 1fr); gap: 6px; }
+#modal .form-row:has([data-local="sourceUrls"]) .field { width: 100%; max-width: none; }
+#modal .form-row:has([data-local="sourceUrls"]) .config-code-editor { height: calc(5 * 13px * 1.65 + 10px); min-height: 0; max-height: none; }
+#modal .config-code-editor .cm-scroller { overflow: auto; font: 13px/1.65 ui-monospace, SFMono-Regular, Consolas, monospace; }
+#modal .config-code-editor .cm-gutters { background: #f1f5f9; color: #64748b; border-right: 1px solid var(--border); }
+#modal .config-code-editor .cm-activeLine, #modal .config-code-editor .cm-activeLineGutter { background: #e8eef6; }
+#modal .config-code-editor .cm-cursor { border-left-color: #334155; }
+#modal .config-code-editor .cm-selectionBackground { background: #c7d9fc; }
+#modal .config-code-editor .cm-comment { color: #64748b; }
+#modal .config-code-editor .cm-string { color: #166534; }
+#modal .config-code-editor .cm-link { color: #0e7490; }
+#modal .config-code-editor .cm-number { color: #9a3412; }
+#modal .config-code-editor .cm-attribute { color: #1d4ed8; }
+#modal .config-code-editor .cm-keyword, #modal .config-code-editor .cm-variable-2 { color: #7e22ce; }
+#modal .config-code-editor .cm-header { color: #1d4ed8; font-weight: 600; }
+
+.config-preview-field { min-width: 0; margin: 8px 0 14px; }
+.config-preview-field > .section-heading { margin-bottom: 6px; font-size: 14px; }
+.client-settings-nested > .config-preview-field { grid-column: 1 / -1; }
+.config-preview-field .client-config-values { max-height: 360px; overflow: auto; }
+.sb-basic-fields > .sb-field { padding: 9px 0; }
+.sb-basic-fields > .sb-field:not(:has(details)) { display: grid; grid-template-columns: minmax(130px, 180px) minmax(0, 1fr); align-items: center; gap: 12px; }
+.sb-basic-fields .sb-label { margin: 0; padding-right: 0; font-size: 13px; }
+.sb-basic-fields .sb-label code { display: block; font-size: 11px; }
+.sb-basic-fields .sb-remove { top: 9px; }
+.sb-advanced-fields, .sb-more-options { border-top: 1px solid var(--border); margin-top: 12px; padding: 10px 0; }
+.sb-advanced-fields > summary, .sb-more-options > summary { cursor: pointer; font-weight: 600; font-size: 13px; }
+.sb-scalar-item { display: grid; grid-template-columns: 24px minmax(0, 1fr) auto; align-items: center; gap: 8px; margin: 6px 0; }
+.sb-scalar-index { font-size: 12px; color: var(--muted); }
+.sb-scalar-item button { padding: 5px 8px; font-size: 12px; }
+.sb-overview-item { display: grid; gap: 4px; padding: 9px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
+.sb-overview-item span { color: var(--muted); }
+.sb-overview-item code { overflow-wrap: anywhere; font-size: 12px; }
+@media (max-width: 760px) { .sb-basic-fields > .sb-field:not(:has(details)) { grid-template-columns: minmax(0, 1fr); gap: 6px; } }
+.sb-overview-details { display: grid; grid-template-columns: 130px minmax(0, 1fr); gap: 5px 12px; margin: 4px 0; }
+.sb-overview-details dt { color: var(--muted); }
+.sb-overview-details dd { margin: 0; min-width: 0; }
+.sb-network .section-heading h2 { font-size: 16px; margin: 0; }
+.sb-network .section-heading .help { margin: 5px 0 0; }
+.sb-network table { width: 100%; min-width: 700px; }
+.sb-network th, .sb-network td { padding: 10px 14px; vertical-align: top; }
+.sb-network td:last-child { width: 96px; white-space: nowrap; }
+.sb-network-address { display: block; overflow-wrap: anywhere; font-size: 13px; line-height: 1.7; }
+.sb-network dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 0; font-size: 13px; }
+.sb-network dt { color: var(--muted); }
+.sb-network dd { margin: 0; }
+.sb-dns-page .section-heading h2 { font-size: 16px; }
+.sb-dns-page table { width: 100%; min-width: 640px; }
+.sb-dns-page td { vertical-align: top; }
+.sb-dns-page .actions { white-space: nowrap; width: 168px; }
+.sb-dns-page .client-config-values { max-height: 180px; overflow: auto; }
+.sb-dns-page .section { margin-bottom: 18px; padding-bottom: 18px; }

@@ -53,7 +53,11 @@ export function validateSingboxSection(section: string, value: unknown): string[
   if (!Object.hasOwn(schema.properties, section)) return ["Unknown sing-box section"];
   const property = schema.properties[section as keyof typeof schema.properties];
   const result = new Validator({ $id: schema.$id, $defs: schema.$defs, ...property } as Schema, "2020-12", true).validate(value);
-  if (result.valid) return [];
+  if (result.valid) {
+    return section === "outbounds" && Array.isArray(value)
+      ? value.flatMap((item, index) => unsupportedAnyTlsFastOpen(item) ? [`outbounds/${index}/tcp_fast_open: AnyTLS 不支持启用 TCP Fast Open。`] : [])
+      : [];
+  }
   return [...new Set([...result.errors].reverse().map((error) => `${section}${error.instanceLocation.replace(/^#/, "")}: ${error.keyword}`))].slice(0, 12);
 }
 
@@ -61,13 +65,25 @@ export function isValidSingboxHeadlessRule(value: unknown): boolean {
   return headlessValidator.validate(value).valid;
 }
 
+function unsupportedAnyTlsFastOpen(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+  const outbound = value as Record<string, unknown>;
+  return outbound.type === "anytls" && outbound.tcp_fast_open === true;
+}
+
 export function isValidSingboxOutbound(value: unknown): boolean {
-  return outboundValidator.validate(value).valid;
+  return outboundValidator.validate(value).valid && !unsupportedAnyTlsFastOpen(value);
 }
 
 export function validateSingboxOutput(value: unknown): ConfigDiagnostic[] {
   const result = validator.validate(value);
-  if (result.valid) return [];
+  if (result.valid) {
+    const outbounds = (value as { outbounds?: unknown[] }).outbounds ?? [];
+    return outbounds.flatMap((outbound, index): ConfigDiagnostic[] => unsupportedAnyTlsFastOpen(outbound) ? [{
+      target: "sing-box", severity: "error", code: "anytls-fast-open", path: `clients.singbox.outbounds.${index}.tcp_fast_open`,
+      message: "AnyTLS 不支持启用 TCP Fast Open，请关闭此选项。"
+    }] : []);
+  }
   const locations = new Set<string>();
   return [...result.errors].reverse().flatMap((error): ConfigDiagnostic[] => {
     const path = `clients.singbox${error.instanceLocation.replace(/^#/, "").replaceAll("/", ".")}`;

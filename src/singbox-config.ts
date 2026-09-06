@@ -7,16 +7,19 @@ type JsonObject = Record<string, ProxyParamValue>;
 
 export function defaultSingboxConfig(): SingboxConfig {
   return {
-    coreVersion: "1.14.0", log: { level: "info", timestamp: true },
-    dns: { servers: [{ type: "udp", tag: "dns-direct", server: "1.1.1.1" }], final: "dns-direct" },
-    inbounds: [{ type: "tun", tag: "tun-in", address: ["172.19.0.1/30"], auto_route: true, stack: "system" }],
-    route: { auto_detect_interface: true, default_domain_resolver: "dns-direct", rules: [{ protocol: "dns", action: "hijack-dns" }], final: "Proxy" },
-    experimental: { cache_file: { enabled: true } }, migrationIssues: []
+    coreVersion: "1.14.0", log: {}, dns: {}, inbounds: [], route: {},
+    experimental: {}, migrationIssues: []
   };
 }
 
 export function convertSurgeToSingbox(config: RenderConfig): SingboxConfig {
-  const result = defaultSingboxConfig();
+  const result: SingboxConfig = {
+    ...defaultSingboxConfig(), log: { level: "info", timestamp: true },
+    dns: { servers: [{ type: "udp", tag: "dns-direct", server: "1.1.1.1" }], final: "dns-direct" },
+    inbounds: [{ type: "tun", tag: "tun-in", address: ["172.19.0.1/30"], auto_route: true, stack: "system" }],
+    route: { auto_detect_interface: true, default_domain_resolver: "dns-direct", final: "Proxy" },
+    experimental: { cache_file: { enabled: true } }
+  };
   const issues = result.migrationIssues;
   const surge = config.surge;
   const servers: JsonObject[] = [];
@@ -67,7 +70,7 @@ export function convertSurgeToSingbox(config: RenderConfig): SingboxConfig {
     return [{ host: line.slice(0, at).trim(), value: line.slice(at + 1).trim() }];
   }), issues);
   for (const field of ["urlRewrite", "mapLocal", "scripts", "tailscaleNodes", "alwaysRealIp", "skipProxy"] as const) {
-    if (surge[field].length) issues.push(issue(`clients.singbox`, `surge-${field}`, field === "skipProxy" ? "error" : "warning", `Surge ${field} 未自动转换，请检查 sing-box 对应设置。`));
+    if (surge[field].length) issues.push(issue(`clients.singbox`, `surge-${field}`, "warning", `Surge ${field} 未自动转换，请检查 sing-box 对应设置。`));
   }
   if (surge.mitm.hostname.length) issues.push(issue("clients.singbox", "surge-mitm", "warning", "sing-box 不输出 MITM 配置。"));
   return result;

@@ -134,7 +134,8 @@ export async function saveConfigWithTelegramWebhook(
   env: Env,
   current: LoadedConfig,
   next: LoadedConfig,
-  requestUrl: string
+  requestUrl: string,
+  context?: Pick<ExecutionContext, "waitUntil">
 ): Promise<LoadedConfig> {
   const currentToken = current.settings.notificationTelegramBotToken.trim();
   const nextToken = next.settings.notificationTelegramBotToken.trim();
@@ -162,7 +163,7 @@ export async function saveConfigWithTelegramWebhook(
   const needsDeletePrevious = Boolean(currentToken) && (!nextToken || currentToken !== nextToken);
 
   const staged = await prepareConfigSave(env, prepared);
-  if (!needsSet && !needsDeletePrevious) return commitPreparedConfigSave(env, staged);
+  if (!needsSet && !needsDeletePrevious) return commitPreparedConfigSave(env, staged, context);
 
   let commitAttempted = false;
   try {
@@ -171,7 +172,7 @@ export async function saveConfigWithTelegramWebhook(
     }
     if (needsDeletePrevious) await deleteTelegramWebhook(currentToken);
     commitAttempted = true;
-    return await commitPreparedConfigSave(env, staged);
+    return await commitPreparedConfigSave(env, staged, context);
   } catch (error) {
     if (commitAttempted) {
       const committed = await recoverCommittedPreparedConfigSave(env, staged).catch((recoveryError) => {

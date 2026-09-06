@@ -240,12 +240,14 @@ export async function prepareConfigSave(env: Env, config: RenderConfig): Promise
   };
 }
 
-export async function commitPreparedConfigSave(env: Env, prepared: PreparedConfigSave): Promise<RenderConfig> {
+export async function commitPreparedConfigSave(env: Env, prepared: PreparedConfigSave, context?: Pick<ExecutionContext, "waitUntil">): Promise<RenderConfig> {
   await writeConfigSnapshot(env, prepared.config, prepared.snapshotKey);
   const verified = await env.SUBPILOT_CONFIG.get(prepared.snapshotKey);
   if (!verified || !(await tryDecryptConfigSnapshot(env, verified))) throw new Error("新配置写入校验失败，请重试。");
   await markDocumentCommitted(env);
-  await finishCommittedConfigSave(env, prepared);
+  const cleanup = finishCommittedConfigSave(env, prepared);
+  if (context) context.waitUntil(cleanup);
+  else await cleanup;
   return prepared.config;
 }
 
@@ -395,8 +397,10 @@ async function decryptConfigSnapshot(env: Env, stored: string): Promise<RenderCo
   if (value.version === 2 && (value.config.version === 2 || value.config.version === 3)) {
     const ruleNamesPendingSave = Object.values(value.config.clients).some((client) =>
       client.ruleSets.directRules.some((rule) => Object.hasOwn(rule, "name")));
-    const config = await canonicalizeConfigSources(env, renderConfig(normalizeConfigDocument(value.config)));
-    return { ...config, ...(ruleNamesPendingSave ? { ruleNamesPendingSave: true } : {}) };
+    const document = normalizeConfigDocument(value.config);
+    const fallbackCleanupPendingSave = value.config.version === 3 && document.clients.clash.ruleSets.directRules.length !== value.config.clients.clash.ruleSets.directRules.length;
+    const config = await canonicalizeConfigSources(env, renderConfig(document));
+    return { ...config, ...(ruleNamesPendingSave || fallbackCleanupPendingSave ? { ruleNamesPendingSave: true } : {}) };
   }
   if (value.config.version !== 1) throw new Error("Unsupported configuration document version");
   return { ...renderConfig(migrateConfigDocument(await canonicalizeConfigSources(env, normalizeConfig(value.config as RenderConfig)))), migrationRequired: true };

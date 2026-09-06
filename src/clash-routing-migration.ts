@@ -2,7 +2,14 @@ import { parseClashRuleProvidersYaml, validateClashRuleProvidersYaml } from "./c
 import { parseRuleSetContent } from "./rule-set-parser";
 import { splitRuleLine } from "./rule-line";
 import type { AppConfig } from "./types";
-import type { RuleSetSourceFormat, RuleSetOutput, RuleSetBucket } from "./rule-set-types";
+import type { RuleSetSourceFormat, RuleSetOutput, RuleSetBucket, RuleSetDirectRule } from "./rule-set-types";
+
+/** Remove inactive migration leftovers only when an active fallback exists. */
+export function cleanClashFallbacks(rules: RuleSetDirectRule[]): RuleSetDirectRule[] {
+  const isFallback = (item: RuleSetDirectRule): boolean => /^(MATCH|FINAL)(,|$)/i.test(item.rule.trim());
+  if (!rules.some((item) => item.enabled !== false && isFallback(item))) return rules;
+  return rules.filter((item) => item.enabled !== false || !isFallback(item));
+}
 
 /** Build a draft only. Unconvertible providers never disappear from saved configuration. */
 export function migrateClashRouting(original: AppConfig["clients"]["clash"]): {
@@ -118,6 +125,7 @@ export function migrateClashRouting(original: AppConfig["clients"]["clash"]): {
   const last = original.rules.filter((line) => line.trim() && !line.trim().startsWith("#")).at(-1) || "";
   if (!/^(MATCH|FINAL)\s*,/i.test(last.trim())) issues.push("兜底规则必须位于最后，请先修正原生规则顺序。");
   if (issues.length) return { client: structuredClone(original), issues };
+  plan.directRules = cleanClashFallbacks(plan.directRules);
   plan.mode = "compiled";
   client.rules = [];
   client.ruleProviders = "";

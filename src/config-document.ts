@@ -1,8 +1,9 @@
 import { DEFAULT_CONFIG } from "./default-config";
-import { migrateClashRouting } from "./clash-routing-migration";
+import { cleanClashFallbacks, migrateClashRouting } from "./clash-routing-migration";
 import { parseGroupOption, splitGroupSpec } from "./policy-group-spec";
 import { normalizeConfig, normalizeSurge, normalizeClash } from "./config-normalize";
-import { convertSurgeToSingbox, defaultSingboxConfig } from "./singbox-config";
+import { defaultSingboxConfig } from "./singbox-config";
+import { initializeSingbox } from "./singbox-migration";
 import type { AppConfig, ClientId, ClientRuleSettings, RenderConfig, SharedConfigDocument, StoredConfigDocument, Target } from "./types";
 
 export const OUTPUT_TARGETS: Target[] = ["surge", "clash", "sing-box"];
@@ -13,7 +14,7 @@ export function clientId(target: Target): ClientId {
 export function migrateConfigDocument(input: RenderConfig): AppConfig {
   const legacy = normalizeConfig(input);
   const { sources, ...plan } = legacy.ruleSets;
-  return splitSharedConfigDocument({
+  const document = splitSharedConfigDocument({
     version: 2,
     settings: currentSettings(legacy.settings),
     groups: legacy.groups,
@@ -26,10 +27,12 @@ export function migrateConfigDocument(input: RenderConfig): AppConfig {
     clients: {
       surge: { ...legacy.surge, ruleSets: structuredClone(plan) },
       clash: { ...legacy.clash, ruleSets: structuredClone(plan) },
-      singbox: { ...convertSurgeToSingbox(legacy), ruleSets: structuredClone(plan) }
+      singbox: { ...defaultSingboxConfig(), ruleSets: structuredClone(plan) }
     },
     updatedAt: legacy.updatedAt
   });
+  document.clients.singbox = initializeSingbox(document.clients.clash, legacy.surge);
+  return document;
 }
 
 export function defaultConfigDocument(): AppConfig {
@@ -38,7 +41,6 @@ export function defaultConfigDocument(): AppConfig {
   if (clash.issues.length) throw new Error("默认 Clash 分流配置无法转换。");
   doc.clients.clash = clash.client;
   doc.clients.clash.ruleSets.aggregateByPolicy = false;
-  doc.clients.singbox = { ...doc.clients.singbox, ...defaultSingboxConfig(), ruleSets: { mode: "manual", aggregateByPolicy: false, sources: [], outputs: [], directRules: [] } };
   return doc;
 }
 
@@ -77,6 +79,7 @@ export function normalizeConfigDocument(stored: StoredConfigDocument): AppConfig
   if (view.proxyNodes.length !== input.proxyNodes.length) throw new Error("代理节点配置存在空项或无效内容。");
   const resources = (client: ClientRuleSettings, allowPolicyAggregation = true): ClientRuleSettings => {
     const normalized = normalizeConfig({ ...view, groups: client.groups, disabledGroups: client.disabledGroups, ruleSets: client.ruleSets });
+    if (client === input.clients.clash) normalized.ruleSets.directRules = cleanClashFallbacks(normalized.ruleSets.directRules);
     return { groups: normalized.groups, disabledGroups: normalized.disabledGroups, ruleSets: { ...normalized.ruleSets, aggregateByPolicy: allowPolicyAggregation && normalized.ruleSets.aggregateByPolicy } };
   };
   const singbox = input.clients.singbox;

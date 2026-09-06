@@ -17,7 +17,7 @@ const LABELS = {
   type: "类型", tag: "名称", server: "服务器", server_port: "服务器端口", listen: "监听地址", listen_port: "监听端口",
   enabled: "启用", password: "密码", private_key: "私钥", public_key: "公钥", auth_key: "认证密钥", username: "用户名",
   tls: "TLS 加密", transport: "传输", multiplex: "多路复用", detour: "前置出站", domain_resolver: "域名解析器",
-  address: "接口地址", mtu: "MTU", stack: "协议栈", auto_route: "自动路由", strict_route: "严格路由", auto_detect_interface: "自动检测接口",
+  address: "虚拟网卡地址", mtu: "MTU", stack: "协议栈", auto_route: "自动路由", strict_route: "严格路由", auto_detect_interface: "自动检测接口",
   route_address: "包含路由", route_exclude_address: "排除路由", include_package: "包含应用包", exclude_package: "排除应用包",
   platform: "平台配置", http_proxy: "系统 HTTP 代理", rules: "规则", rule_set: "规则集", action: "动作", mode: "逻辑模式",
   domain: "完整域名", domain_suffix: "域名后缀", domain_keyword: "域名关键词", domain_regex: "域名正则",
@@ -34,9 +34,9 @@ const LABELS = {
   level: "日志级别", timestamp: "时间戳", output: "输出路径", disabled: "禁用", store: "信任库", secret: "密钥"
 };
 export const singboxSections = {
-  network: ["inbounds", "network_namespaces"], dns: ["dns"], rules: ["route"],
-  endpoints: ["endpoints"], outbounds: ["outbounds"], services: ["services"],
-  advanced: ["log", "ntp", "certificate", "certificate_providers", "http_clients", "experimental", "$schema"]
+  network: ["inbounds"], dns: ["dns"], rules: ["route"],
+  endpoints: ["endpoints"],
+  advanced: ["log", "http_clients"]
 };
 export const singboxTitle = (key, t) => TITLES[key] ? t(...TITLES[key]) : key;
 
@@ -101,11 +101,12 @@ export function createSingboxGroupForm(root, spec, choices, { t, esc }) {
   } };
 }
 
-export function createSingboxForm(root, schema, section, original, { t, esc, references = {} }) {
+export function createSingboxForm(root, schema, section, original, { t, esc, references = {}, singleItem = false, endpointType }) {
   let draft = structuredClone(original);
   const variantsCache = new WeakMap();
   const selections = new Map();
   const expanded = new Set(["[]"]);
+  if (Array.isArray(original) && original.length === 1) expanded.add("[0]");
   let controls = [];
   const title = (key) => t(LABELS[key] || TITLES[key]?.[0] || key, TITLES[key]?.[1] || key.replaceAll("_", " "));
   const deref = (node) => node?.$ref ? { ...schema.$defs[node.$ref.split("/").at(-1)], ...Object.fromEntries(Object.entries(node).filter(([key]) => key !== "$ref")) } : node || {};
@@ -160,6 +161,15 @@ export function createSingboxForm(root, schema, section, original, { t, esc, ref
   }
   function register(data) { controls.push(data); return controls.length - 1; }
   const button = (label, op, id, disabled = false) => `<button type="button" data-sb-op="${op}" data-sb-id="${id}" ${disabled ? "disabled" : ""}>${label}</button>`;
+  function clientBranch(node, path) {
+    if (path.length !== 1 || typeof path[0] !== "number") return true;
+    const type = deref(node.properties?.type);
+    const protocol = type.const ?? type.enum?.[0];
+    if (!protocol) return true;
+    if (section === "inbounds") return ["tun", "mixed", "http", "socks"].includes(protocol);
+    if (section === "endpoints") return endpointType ? protocol === endpointType : ["wireguard", "tailscale", "openconnect", "openvpn-client"].includes(protocol);
+    return true;
+  }
   function branchName(node) {
     const parts = Object.entries(node.properties || {}).flatMap(([key, value]) => Object.hasOwn(value, "const") ? [`${key}: ${value.const}`] : ["type", "action"].includes(key) && value.enum ? [`${key}: ${value.enum[0] || "default"}`] : []);
     return parts.join(" · ") || (Object.hasOwn(node, "const") ? String(node.const) : node.enum?.join(" / ") || t(({ object: "对象", array: "列表", string: "文本", integer: "整数", number: "数值", boolean: "开关" })[node.type] || node.type || "对象", node.type || "object"));
@@ -168,31 +178,40 @@ export function createSingboxForm(root, schema, section, original, { t, esc, ref
     const { list, selected, node } = active(raw, value, path);
     const id = register({ path, raw, node });
     const data = `data-sb-id="${id}" aria-label="${esc(name)}"`;
-    let html = list.length > 1 ? `<label class="sb-variant">${t("类型 / 动作", "Type / action")}<select data-sb-variant ${data}>${list.map((item, i) => `<option value="${i}" ${selected === i ? "selected" : ""}>${esc(branchName(item))}</option>`).join("")}</select></label>` : "";
+    let html = list.length > 1 ? `<label class="sb-variant">${t("类型 / 动作", "Type / action")}<select data-sb-variant ${data}>${list.map((item, i) => !clientBranch(item, path) && i !== selected ? "" : `<option ${!clientBranch(item, path) ? "disabled" : ""} value="${i}" ${selected === i ? "selected" : ""}>${esc(branchName(item))}</option>`).join("")}</select></label>` : "";
     if (value === undefined) return html + button(t("配置此项", "Configure"), "create", id);
     const type = node.type || kind(value);
+    if (singleItem && !path.length && type === "array") return renderValue(node.items || {}, value[0], [0], name);
     if (type === "object" && object(value)) {
       const props = node.properties || {};
+      const basicKeys = new Set(["type", "tag", "action", "address", "interface_name", "stack", "auto_route", "strict_route", "mtu", "listen", "listen_port", "server", "server_port", "outbound", "outbounds", "final", "servers", "rules"]);
+      let basicHtml = "", advancedHtml = "";
       for (const key of Object.keys(value)) {
         const child = props[key] || (object(node.additionalProperties) ? node.additionalProperties : { type: kind(value[key]) });
         const childPath = [...path, key], pathKey = JSON.stringify(childPath);
         const childId = register({ path: childPath });
         const complex = value[key] !== null && typeof value[key] === "object";
+        if (complex && ["address", "outbounds"].includes(key)) expanded.add(pathKey);
         const body = complex && !expanded.has(pathKey) ? `<div data-sb-lazy="${register({ path: childPath, raw: child, name: title(key) })}"></div>` : renderValue(child, value[key], childPath, title(key));
         const required = node.required?.includes(key);
-        html += `<div class="sb-field">${complex ? `<details data-sb-path="${esc(pathKey)}" ${expanded.has(pathKey) ? "open" : ""}><summary>${esc(title(key))} <code>${esc(key)}</code></summary>${body}</details>` : `<label class="sb-label">${esc(title(key))} <code>${esc(key)}</code></label><div class="sb-control">${body}</div>`}<div class="sb-remove">${button(t("移除", "Remove"), "remove", childId, required)}</div></div>`;
+        const fieldHtml = `<div class="sb-field">${complex ? `<details data-sb-path="${esc(pathKey)}" ${expanded.has(pathKey) ? "open" : ""}><summary>${esc(title(key))} <code>${esc(key)}</code></summary>${body}</details>` : `<label class="sb-label">${esc(title(key))} <code>${esc(key)}</code></label><div class="sb-control">${body}</div>`}<div class="sb-remove">${button(t("移除", "Remove"), "remove", childId, required)}</div></div>`;
+        if (basicKeys.has(key) || required) basicHtml += fieldHtml;
+        else advancedHtml += fieldHtml;
       }
+      html += `<div class="sb-basic-fields">${basicHtml}</div>`;
+      if (advancedHtml) html += `<details class="sb-advanced-fields"><summary>${t("高级设置（已配置）", "Advanced settings (configured)")}</summary>${advancedHtml}</details>`;
       const missing = Object.keys(props).filter((key) => !Object.hasOwn(value, key));
-      if (missing.length) html += `<div class="sb-add"><select data-sb-property="${id}" aria-label="${esc(t("选择配置字段", "Choose a field"))}">${missing.map((key) => `<option value="${esc(key)}">${esc(title(key))} · ${esc(key)}${node.required?.includes(key) ? " *" : ""}</option>`).join("")}</select>${button(t("添加字段", "Add field"), "property", id)}</div>`;
+      if (missing.length) html += `<details class="sb-more-options"><summary>${t("添加可选设置", "Add optional settings")}</summary><div class="sb-add"><select data-sb-property="${id}" aria-label="${esc(t("选择配置字段", "Choose a field"))}">${missing.map((key) => `<option value="${esc(key)}">${esc(title(key))} · ${esc(key)}${node.required?.includes(key) ? " *" : ""}</option>`).join("")}</select>${button(t("添加", "Add"), "property", id)}</div></details>`;
       if (node.additionalProperties !== false && (node.additionalProperties || !Object.keys(props).length)) html += `<div class="sb-add"><input data-sb-key="${id}" placeholder="${esc(t("键名，例如域名或请求头", "Key, e.g. domain or header"))}" aria-label="${esc(t("新键名", "New key"))}">${button(t("添加条目", "Add entry"), "entry", id)}</div>`;
     } else if (type === "array" && Array.isArray(value)) {
       html += `<div class="sb-list">${value.map((item, index) => {
         const childPath = [...path, index], key = JSON.stringify(childPath);
         const childId = register({ path: childPath });
+        if (item === null || typeof item !== "object") return `<div class="sb-scalar-item"><span class="sb-scalar-index">${index + 1}</span><div>${renderValue(node.items || {}, item, childPath, `${name} ${index + 1}`)}</div>${button(t("删除", "Delete"), "remove", childId)}</div>`;
         const summary = object(item) ? [item.tag, item.type, item.action].filter(Boolean).join(" · ") : t("条目", "Item");
         const body = expanded.has(key) ? renderValue(node.items || {}, item, childPath, `${name} ${index + 1}`) : `<div data-sb-lazy="${register({ path: childPath, raw: node.items || {}, name: `${name} ${index + 1}` })}"></div>`;
         return `<details class="sb-item" data-sb-path="${esc(key)}" ${expanded.has(key) ? "open" : ""}><summary>${index + 1}. ${esc(summary || t("条目", "Item"))}</summary><div class="sb-item-actions">${button(t("上移", "Move up"), "up", childId, index === 0)}${button(t("下移", "Move down"), "down", childId, index === value.length - 1)}${button(t("删除", "Delete"), "remove", childId)}</div>${body}</details>`;
-      }).join("")}</div>${button(t("添加条目", "Add item"), "append", id)}`;
+      }).join("")}</div>${button((!path.length && section === "inbounds" ? t("添加入站", "Add inbound") : t("添加条目", "Add item")), "append", id)}`;
     } else if (Object.hasOwn(node, "const")) html += `<input ${data} value="${esc(value)}" readonly>`;
     else if (node.enum || type === "boolean") {
       const choices = node.enum || [false, true];
@@ -253,6 +272,7 @@ export function createSingboxForm(root, schema, section, original, { t, esc, ref
       readInputs();
       const { path, raw } = controls[Number(input.dataset.sbId)];
       const next = variants(raw)[Number(input.value)], current = get(path);
+      if (!clientBranch(next, path)) throw Error(t("此页面仅配置客户端功能", "This page configures client features only"));
       let value = seed(next);
       if (object(current) && object(value)) {
         for (const [key, item] of Object.entries(current)) {
@@ -279,7 +299,7 @@ export function createSingboxForm(root, schema, section, original, { t, esc, ref
         const raw = node.properties?.[key] || (object(node.additionalProperties) ? node.additionalProperties : { type: "string" });
         own(current, key, seed(variants(raw)[0])); expanded.add(JSON.stringify([...path, key]));
       }
-      if (op === "append") { current.push(seed(variants(node.items || {})[0])); expanded.add(JSON.stringify([...path, current.length - 1])); }
+      if (op === "append") { current.push(seed(variants(node.items || {}).find((variant) => clientBranch(variant, [...path, current.length])) || variants(node.items || {})[0])); expanded.add(JSON.stringify([...path, current.length - 1])); }
       if (["remove", "up", "down"].includes(op)) {
         const parent = get(path.slice(0, -1)), key = path.at(-1);
         if (op === "remove") Array.isArray(parent) ? parent.splice(key, 1) : delete parent[key];

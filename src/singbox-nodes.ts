@@ -59,7 +59,21 @@ export function toSingboxOutbound(node: ProxyNode, canonical: JsonObject): JsonO
   if (!SINGBOX_PROTOCOLS.has(type)) throw new Error("协议不受 sing-box 支持");
   const mapped: Record<string,string> = { ss: "shadowsocks", https: "http", socks5: "socks", "socks5-tls": "socks", "tuic-v5": "tuic", hy2: "hysteria2" };
   const output: JsonObject = { type: mapped[type] ?? type, tag: node.name, server: node.server, server_port: node.port ?? 0 };
-  const p = canonical;
+  const p = { ...canonical };
+  const usesTls = p.tls === true || ["trojan", "hysteria2", "hy2", "tuic-v5", "anytls", "https", "socks5-tls"].includes(type);
+  // Some subscription links use peer as the TLS server-name alias.
+  if (usesTls && typeof p.peer === "string") {
+    if (!p.sni && !p.servername && p.peer) p.sni = p.peer;
+    delete p.peer;
+  }
+  if (usesTls && typeof p.insecure === "boolean") {
+    if (p["skip-cert-verify"] === undefined) p["skip-cert-verify"] = p.insecure;
+    delete p.insecure;
+  }
+  if (typeof p.fastopen === "boolean") {
+    if (p.tfo === undefined && p["fast-open"] === undefined) p.tfo = p.fastopen;
+    delete p.fastopen;
+  }
   const convertedFields = new Set(["name", "type", "server", "port", "password", "uuid", "cipher", "username", "psk", "version", "userkey", "reuse", "mode", "obfs-opts", "obfs", "obfs-password", "up", "down", "alterId", "alter-id", "flow", "congestion-controller", "udp-relay-mode", "zero-rtt-handshake", "private-key", "tls", "sni", "servername", "skip-cert-verify", "alpn", "client-fingerprint", "reality-opts", "network", "ws", "ws-path", "ws-headers", "ws-opts", "grpc-opts", "dialer-proxy", "underlying-proxy", "plugin", "plugin-opts", "udp", "udp-relay", "tfo", "fast-open"]);
   for (const [key, value] of Object.entries(p)) if (value !== undefined && value !== "" && !convertedFields.has(key)) throw new Error(`节点选项 ${key} 无法等价转换，请使用原生 sing-box 节点配置`);
   if (node.password || type === "snell" && p.psk) output[type === "snell" ? "psk" : "password"] = node.password || p.psk!;
@@ -97,7 +111,7 @@ export function toSingboxOutbound(node: ProxyNode, canonical: JsonObject): JsonO
     if (p["zero-rtt-handshake"]) output.zero_rtt_handshake = p["zero-rtt-handshake"];
   }
   if (type === "ssh") { output.user = p.username ?? "root"; delete output.username; if (p["private-key"]) output.private_key = p["private-key"]; }
-  if (p.tls === true || ["trojan", "hysteria2", "hy2", "tuic-v5", "anytls", "https", "socks5-tls"].includes(type)) {
+  if (usesTls) {
     const tls: JsonObject = { enabled: true };
     if (p.sni || p.servername) tls.server_name = p.sni ?? p.servername!;
     if (p["skip-cert-verify"] !== undefined) tls.insecure = p["skip-cert-verify"];
@@ -119,7 +133,7 @@ export function toSingboxOutbound(node: ProxyNode, canonical: JsonObject): JsonO
   const detour = p["dialer-proxy"] ?? p["underlying-proxy"];
   if (detour) output.detour = detour;
   if ((p.udp === false || p["udp-relay"] === false) && !["http", "https", "ssh"].includes(type)) output.network = "tcp";
-  if (p.tfo !== undefined || p["fast-open"] !== undefined) output.tcp_fast_open = p.tfo ?? p["fast-open"]!;
+  if (type !== "anytls" && (p.tfo !== undefined || p["fast-open"] !== undefined)) output.tcp_fast_open = p.tfo ?? p["fast-open"]!;
   return output;
 }
 

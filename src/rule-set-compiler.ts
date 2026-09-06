@@ -199,7 +199,6 @@ export async function compileRuleSetOutput(
       asnExpiresAt = Math.min(asnExpiresAt ?? Infinity, result.expiresAt);
       usedCachedSource ||= result.stale;
       if (result.warning) warnings.push(result.warning);
-      if (result.prefixes.length) warnings.push(`AS${rule.value.replace(/^AS/i, "")} 已展开为 ${result.prefixes.length} 条 IPv4/IPv6 CIDR（RIPE RIS 快照）。`);
       const options = splitRuleLine(rule.raw).slice(2);
       parseInlineRuleSetLines(result.prefixes.map((prefix) => [prefix.includes(":") ? "IP-CIDR6" : "IP-CIDR", prefix, ...options].join(",")), rule.label, acceptRule);
     }

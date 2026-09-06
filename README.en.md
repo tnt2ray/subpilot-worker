@@ -20,7 +20,7 @@ Subscription sources, manual nodes, and chain exits are shared. Policy groups, d
 | Rewrite / Map Local / MITM / scripts | Retained | Omitted | Omitted |
 | Tailscale | Dedicated native form | Omitted | Native endpoint with a dedicated form |
 
-The admin UI provides migration issue resolution, a universal subscription link, token rotation, cache refresh, GeoIP renaming, and Telegram notifications. Version 2 retires Stash and Shadowrocket output. See [architecture and ablation decisions](./docs/architecture.md) and the [UI design specification](./docs/ui-design.md) for design details.
+The admin UI provides migration issue resolution, a universal subscription link, token rotation, cache refresh, GeoIP renaming, and Telegram notifications. Version 2 retires Stash and Shadowrocket output.
 
 The overview shows the latest 50 subscription requests, node counts, and subscription cache status. **Force refresh** fetches saved, enabled sources again. Refresh failures show the reason and whether cached content remains available.
 
@@ -126,7 +126,7 @@ Open the deployment URL and sign in with the admin token.
 3. In **Policy groups**, select a client, then configure its members, filters, and options.
 4. In **Client configuration**, choose Surge, clash, or sing-box and edit its network, DNS, routing, and advanced settings.
 5. For compiled routing, enter source URLs directly in the selected client’s routing tab and choose a policy. Sources are linked automatically within that client; move rule sets and direct rules up/down in one list. Select RULE-SET or DOMAIN-SET in Surge, behavior and interval in Clash, and the source format in sing-box.
-6. Review the configuration and resolve pending **Migration issues**, save, and copy the universal URL from **Configuration links**.
+6. Save the configuration, run a subscription check in **Configuration links**, and copy the universal subscription URL.
 
 To update an existing subscription source, proxy node, or policy group, click its name or the row’s **Edit** button. Choose **Apply changes** in the dialog, then **Save configuration** at the bottom of the page to persist the changes. On narrow screens, the action column remains visible while other details scroll horizontally.
 
@@ -166,109 +166,72 @@ Managed Base URL must include a non-root path and cannot occupy `/api`, `/vendor
 
 ### Shared resources and client settings
 
-Subscription sources, manual nodes, and chain exits are shared by all three clients. Policy groups, rule sources, routing, network, DNS, and advanced settings are maintained separately. Changes to one client do not update the others, and group names resolve within their own client.
+Subscriptions, static nodes and chain nodes are shared. Policy groups, rule sources, routing, networking and DNS are independent for each client. Names may be reused across clients.
 
-The Surge `FINAL`, Clash `MATCH`, and sing-box `FINAL` / `MATCH` fallback entries stay last. They cannot be deleted, disabled, or changed into ordinary rules; their outbound policy remains editable. New rules are inserted before the fallback. Clash displays `MATCH` as the last table row, with an editable outbound; native sing-box configuration uses its separate **Default outbound** setting.
+Fresh installations and migrations from 1.4.0 initialize sing-box groups, DNS and routing from Clash, with an automatic TUN inbound and outbound interface detection. Proxy outbounds come from shared nodes and groups. Enabled Surge Tailscale connections are migrated; without any, the endpoint list stays empty. Clients remain independent after initialization, and existing sing-box settings are not overwritten.
+
+Resolver addresses, Fake IP and domain exclusions are retained. Multiple resolvers are tried in order; fallback CIDR filters are migrated, while GeoIP country filtering requires manual adjustment. Migration diagnostics identify group types, DNS and Tailscale options without equivalent behavior. Review these before use.
+
+Configuration previews and modal editors include line numbers and syntax highlighting. Apply changes in the editor, then click Save configuration.
 
 ### Nodes and policy groups
 
-- Subscription input supports the recognized Surge/Clash and proxy-link formats, including Base64 subscriptions. Native sing-box JSON accepts an object containing `outbounds`, an outbound array, or a single outbound. It imports nodes, not the input file's complete DNS, routes, or groups.
-- Manual nodes accept Surge syntax, Clash YAML/JSON with `name` and `port`, or native sing-box JSON with `tag` and `server_port`. Native SSH uses port 22 when omitted. Native fields are preserved for sing-box; conversions that cannot retain TLS, transport, or authentication options skip the node with a diagnostic.
-- Group members can use `{all}`, filters, or explicit names. `Proxy` cannot be deleted or renamed and must remain enabled; its type is not limited to `select` and may be any group type supported by the target client. Configure each client’s groups independently: `select` and `url-test` have equivalents across clients; `fallback` and `load-balance` apply to Surge/clash; `subnet` and `smart` are Surge only. Migrating shared groups converts Surge `url-test` to `smart`. Surge output also retains this conversion for compatibility; clash and sing-box use their own automatic-testing types. Surge smart groups require proxy-node members; built-in policies and nested groups block that output. Smart uses its own testing schedule, so `interval` has no effect.
-- sing-box groups can reference `endpoints` tags, preserving member order; manage Tailscale endpoints in their dedicated tab. Configure these groups in the sing-box tab. Routing `preferred_by` references outbounds or endpoints, while DNS `preferred_by` references DNS servers.
+Proxy nodes accepts Surge node syntax, Clash YAML/JSON and native sing-box JSON. sing-box input may be one node, an array or an object containing `outbounds`; DNS, routing and groups from that input are not imported.
 
-Groups with no available members after filtering are omitted, and other groups drop references to them. Routing rules targeting these empty groups fall back to `Proxy`. Saved filters remain intact, so groups return when matching nodes become available. An empty `Proxy` still blocks subscription output.
+Configure groups separately for each client. Definitions use `type, members or filter, option=value`, with English commas and no `group-name =` prefix. The page's syntax guide lists the available types and options.
 
-The policy groups page includes a **Syntax guide and examples** with types and options for the selected client. Enter one line in the form `type, member or selector, option=value`, using ASCII commas. Enter the group name separately; omit the `group name =` prefix.
+- `{all}` selects proxy nodes, not other groups.
+- `{all filter=Hong Kong,Japan exclude=via,DMIT}` performs case-insensitive substring matching against names and tags, filtering before exclusion. It is not a regular expression.
+- Named members may reference nodes, groups and supported built-in policies. Self-references and cycles are invalid.
+- `Proxy` must stay enabled and cannot be deleted or renamed. Other empty groups are omitted; routing policies referencing them fall back to `Proxy`. An empty `Proxy` blocks the subscription.
+- Update references manually after deleting or renaming a resource.
 
-- Explicit members use exact existing node/group names or built-in policies supported by the client. Self-references and dependency cycles are invalid.
-- `{all}` expands eligible nodes, not other groups. `fallback` requires explicit members and `subnet` uses condition mappings; neither accepts `{all}`.
-- `{all filter=香港,日本 exclude=via,DMIT}` keeps nodes matching 香港 or 日本, then excludes nodes matching via or DMIT. Matching uses case-insensitive substrings in node names and matching labels, not regular expressions.
-- Both `filter` and `exclude` are optional. Separate keywords with ASCII commas; put `filter` before `exclude`, separated by a space. `{all exclude=via,DMIT}` excludes nodes matching either keyword.
-- Referenced groups with no matching nodes or unavailable members may cause HTTP 422; use **Configuration links → Subscription check** to locate the cause.
+Surge supports types including `select` and `smart`, with `url-test` converted to `smart`. Clash supports `select`, `url-test`, `fallback` and `load-balance`. sing-box emits `selector` and `urltest`. Options are not interchangeable across clients. Snell 6 is not downgraded to Clash Snell 5; sing-box supports Snell 4/6 conversion. AnyTLS conversion preserves the TLS server name and certificate verification choice, omitting unsupported TCP Fast Open.
 
-`hidden=true` is emitted for Surge and clash; clash requires client or dashboard support. sing-box omits it and reports a diagnostic when enabled.
+### Client configuration
 
-Surge ignores group-level `url`; use its proxy test URL setting. Snell 6 is not downgraded to clash Snell 5; automatic sing-box conversion supports Snell 4/6. See the [Surge group documentation](https://manual.nssurge.com/policy-groups/url-test.html) and [clash Snell documentation](https://wiki.metacubex.one/en/config/proxies/snell/).
-
-Use **Edit text** at the top right of text-list sections such as Surge scripts, URL rewrites, and local mappings to edit native lines. Apply changes, then save the configuration.
-
-Surge Ponte support has been removed. Legacy Ponte device lists are ignored when loading configurations. Existing `DEVICE:` policy references are retained and must be replaced with valid policies before that subscription can be generated. No KV schema change is required.
-
-### Complete sing-box configuration forms
-
-The compatibility baseline remains **sing-box 1.14.0**. The UI and output validator share the pinned [official JSON Schema](https://github.com/SagerNet/sing-box/blob/v1.14.0/docs/schema.json); removed legacy fields are not offered as new options. Consult the [configuration manual](https://sing-box.sagernet.org/configuration/) and the build installed on your device for runtime support.
-
-| Tab | Configuration coverage |
+| Page | Purpose |
 | --- | --- |
-| Network & TUN | All inbound types, TUN addresses/routes/app filters/platform options, listen fields, Linux network namespaces |
-| DNS | All 15 server types: UDP/TCP/TLS/QUIC/HTTPS/HTTP3, Local/Hosts/DHCP/mDNS/FakeIP, Tailscale/OpenConnect/OpenVPN/Resolved; cache, optimistic cache, timeouts, logical rules and all DNS actions |
-| Routing | All match fields, logical combinations, route/route-options/direct/bypass/reject/hijack-dns/sniff/resolve actions; local/remote/inline rule sets, resolvers, HTTP clients, interfaces and neighbor discovery |
-| VPN endpoints | WireGuard, Tailscale, OpenConnect, OpenVPN Client / Server; peers, authentication, routes, TLS and dial fields |
-| Native outbounds | All 1.14 outbound types, including Naive, Hysteria, ShadowTLS, Tor, SSH, Bridge, Snell 4/6 and native selector/urltest; protocol-specific TLS/ECH/Reality/uTLS, transports, multiplex and dial fields |
-| Services | Schema-supported API, DERP, Resolved, SSM API, CCM, OCM, Hysteria Realm, USB/IP, OOM killer and related services |
-| Advanced | Logs, NTP, certificate trust/providers, shared HTTP clients, cache files, Clash API, V2Ray API and debugging |
-| Policy groups | Named members, shared-node filters and ordering, selector default member, urltest URL/interval/tolerance/idle timeout, connection interruption on switch |
+| Network & TUN | Local proxy ports, TUN, interfaces and connection settings; sing-box offers TUN, HTTP, SOCKS and mixed inbounds |
+| DNS | Resolvers, DNS rules and caching; includes sing-box's default resolver for connection hostnames |
+| Routing rules | Rule-set URLs, individual matches, outbound policies and matching order |
+| Tailscale | Initially migrated from Surge to sing-box, then maintained independently |
+| WireGuard / OpenConnect / OpenVPN | Separate sing-box client connection tabs |
+| Advanced | Surge URL Rewrite, Map Local and scripts; sing-box logging and HTTP clients; no Clash tab |
+| MITM certificates | Surge only: generate, import or export a CA and configure MITM hostnames |
 
-Open **Configure** in each section. **Add field** exposes optional fields; expand nested objects and add, remove or reorder list items. Text, numbers, booleans, enums, scalar/list choices and object variants use dedicated controls, including certificates, keys and header maps, without requiring JSON. Remove optional fields to restore core defaults. Unchanged values and list order are preserved. Switching type or action keeps compatible fields and removes incompatible ones; Cancel discards the draft. Apply validates the section against the server's schema; save the configuration to persist it. Unknown imported fields remain visible and preserved until corrected or removed.
-
-Native outbounds are emitted alongside shared nodes and generated groups. Their tags and endpoint tags must be unique and must not collide with built-in `DIRECT` or existing groups. Use their tags in groups and routing rules. Diagnostics check outbound, DNS, inbound, rule-set, HTTP-client, certificate-provider and network-namespace references, group/dial cycles, selector default membership and VPN DNS endpoint types.
-
-**Compiled mode emits native routing rules before compiled rules and preserves both native and generated rule sets.** An unconditional native rule can therefore stop matching before compiled rules are reached; use explicit conditions for native rules intended to run first. Compiled FINAL/MATCH still sets the final outbound. `{all}` continues to filter shared nodes; add client-native outbounds and endpoints as named members. No KV schema migration or additional Secrets are required.
-
-Platform restrictions still apply: [Android](https://sing-box.sagernet.org/clients/android/features/) uses VpnService and distinguishes app filters from privileged process/interface features; [Apple](https://sing-box.sagernet.org/clients/apple/features/) uses NetworkExtension with restrictions on package and process matching. Network namespaces require Linux; the Apple HTTP engine requires an Apple platform. Client preferences such as Always On, notification display and app-selection overrides cannot be delivered through subscription JSON and must be set in the client. Schema validation does not check local files, system permissions, protocol credentials, every cross-field constraint or connectivity. Run `sing-box check` and verify runtime behavior on the intended device.
+The sing-box baseline is **1.14.0**. Add optional settings through forms; removing an optional field restores core behavior. Device permissions, Always On and application selection must be configured in the actual client.
 
 ### Tailscale
 
-Surge and sing-box each have a **Tailscale** tab beside **Routing rules**. Add, edit, and delete nodes through the list; forms cover authentication, routing, and connection settings, with masked auth-key inputs. The two clients keep independent configurations.
+Connection names can be used in the current client's groups and routing rules. Surge requires an authentication key for enabled nodes. sing-box may leave it empty and authorize through the login URL in client logs; use a separate state directory for each instance. Authentication keys are masked in the editor.
 
-- Surge retains all existing section-name, DERP, idle-keepalive, DNS, MTU, upstream-proxy, and probe settings. Enabled nodes require an auth key.
-- sing-box uses native 1.14 `endpoints` with `type: "tailscale"`, including subnet and exit-node advertisement, interfaces, relay, SSH, Taildrop, DNS, and dial options. Optional switches offer **Use default**; untouched optional fields are preserved. Other endpoint types remain unchanged.
-- For sing-box, leave the key empty to authorize through the login URL in client logs. Use separate state directories for separate instances. This service generates configurations; Tailscale login happens in the client.
-- Use each node's name in that client's policy groups and rules; sing-box also offers endpoints as the default outbound. Update existing references manually after renaming or deleting. Surge settings are not copied or converted to sing-box automatically.
-
-See the [sing-box Tailscale endpoint documentation](https://sing-box.sagernet.org/configuration/endpoint/tailscale/).
+SubPilot generates configuration and does not log into Tailscale on the client's behalf. See the [sing-box Tailscale documentation](https://sing-box.sagernet.org/configuration/endpoint/tailscale/).
 
 ### Routing rules
 
-Open **Client configuration**, select a client, and choose **Routing rules**. Each client has its own rules, outbound policies, and matching order.
+1. Select a client and open Routing rules. Add a rule set or direct rule.
+2. Enter rule-set URLs, one per line, then select the format and outbound policy.
+3. Arrange rules by matching priority. Surge uses `FINAL`, Clash uses `MATCH`, and sing-box's `FINAL` row represents `route.final`. The final row cannot be deleted, disabled or moved; its outbound can be changed.
+4. Apply changes, save, then update the subscription in the client.
 
-1. Choose **Add rule set**, enter download URLs (one per line), and select an outbound policy and format.
-2. The client downloads a single compatible URL directly, without Worker fetching or caching. Multiple URLs within one rule set are merged and deduplicated. For an individual condition, choose **Add direct rule** and enter its match type, value, and outbound.
-3. Place higher-priority rules first. Surge and Clash need one final `FINAL` / `MATCH` rule at the end; sing-box can use `route.final` in its native settings.
-4. Choose **Apply changes**, then **Save configuration**, and update the subscription in your client.
+| Client | Rule-set settings |
+| --- | --- |
+| Surge | `RULE-SET` or `DOMAIN-SET`, plus supported rule options |
+| Clash | `behavior`: domain / ipcidr / classical; `interval` in seconds, default 86400 |
+| sing-box | Automatic or explicit Clash, Surge, domain, IP-CIDR or classical source format |
 
-| Client | Rule-set settings | Supported sources |
-| --- | --- | --- |
-| Surge | `RULE-SET` or `DOMAIN-SET` | Typed rules for RULE-SET; domain lists for DOMAIN-SET, with a leading dot to include subdomains |
-| Clash | `behavior` and `interval` in seconds | Clash YAML `payload`, or domain / ipcidr / classical text |
-| sing-box | Automatic detection or an explicit source format | Clash and Surge rule sets, plus domain, IP-CIDR, and classical text |
+A single compatible Surge or Clash source is downloaded by the client without Worker fetching or caching. Multiple URLs within one entry are merged and deduplicated. Clash `rule-providers` are generated automatically. Separate Clash and sing-box entries remain independent; Surge optionally aggregates by policy, which can change matching order.
 
-Download filenames for merged or converted rule sets are managed automatically. The three clients may share a name, using `.list`, `.yaml`, and `.json` respectively. Existing rule-set download names and your upstream URLs are preserved.
+Clash and Surge sources require conversion for sing-box even with one URL. `IP-ASN` expands into IPv4/IPv6 CIDRs and updates periodically. Resolution failures use cached data when possible; otherwise the ASN is skipped with a notice. Unsupported rules such as `USER-AGENT` and `URL-REGEX` are skipped. Download failures and invalid source formats are reported as errors. Generated remote rule sets use a direct HTTP client for downloading.
 
-**Clash:** Choose domain, ipcidr, or classical for `behavior`; use classical for mixed rule types. `interval` controls how often the client downloads the rule set, defaulting to 86400 seconds. SubPilot creates `rule-providers` and outbound references automatically. To convert native configuration, choose **Use rule-set form**, review the draft, and save. Unsupported content requires correction; a failed conversion leaves the saved configuration active.
-
-Clash and sing-box match each entry independently, merging only URLs within the same entry. Surge’s **Aggregate by policy** combines rule sets at the outbound’s first occurrence, so review matching priority before enabling it. Entries with an explicit RULE-SET / DOMAIN-SET type remain independent.
-
-**Surge:** Select options such as `no-resolve` and `extended-matching` where the rule type supports them. DOMAIN-SET does not support `no-resolve`. FINAL supports the Surge-only `dns-failed` option. See the [rule-set guide](https://manual.nssurge.com/rules/ruleset.html) and [FINAL guide](https://manual.nssurge.com/rules/final.html).
-
-**sing-box:** For native configurations, choose **Use rule-set URLs** to enable the URL form. Existing native rules match first and remain editable under **Native routing and advanced settings**. An unconditional native rule may prevent later rules from matching.
-
-Clash or Surge sources require conversion for sing-box even with a single URL. During conversion, `IP-ASN` expands to IPv4/IPv6 CIDRs using periodically refreshed data. Failed lookups use cached data where available, or skip the ASN with a warning. Unsupported rules such as `USER-AGENT` and `URL-REGEX` are skipped and reported in diagnostics; download and format failures produce errors. Incompatible native settings still require manual correction. To resolve domains before IP routing, configure a native `resolve` action.
+Generated files use `.list`, `.yaml` and `.json` for Surge, Clash and sing-box respectively. The same name can be used independently across clients.
 
 ### Subscription checks
 
-Open **Configuration links → Subscription check** and select a client to inspect its saved configuration. Referenced empty groups, missing outbounds, dependency cycles, and incompatible critical settings can cause **HTTP 422**. Use the configuration locations in the log to correct the problems, save, and check again.
+Under Configuration links, select a client in Subscription checks to inspect the saved configuration. Missing outbounds, cycles and incompatible settings can produce HTTP 422. Unsupported nodes may be omitted with a diagnostic. Correct the configuration, save and check again.
 
-Rule sets requiring merging or conversion are processed automatically and refreshed on schedule. After importing sing-box configuration, run `sing-box check` on the actual device to check compatibility with its client version, permissions, and local files.
-
-### Advanced settings
-
-Surge keeps Hosts, DNS outbound following, Map Local, and scripts in its DNS/advanced settings. Tailscale and MITM each have a dedicated tab. Simple IP Hosts can convert to sing-box; aliases, wildcard hosts, and resolver directives need manual handling.
-
-Use **Client settings → Surge → MITM certificates** to generate, import, or export a CA certificate. Generation fills in an editable CA passphrase, runs in the browser, and shows its working state. Save the configuration afterward, then update the client subscription. Expand the certificate data to view or edit it; MITM hostnames and other options are in the same tab.
-
-sing-box settings provide field-level forms for all native top-level sections. Native outbounds are combined with shared nodes and the current client’s generated groups. Verify device permissions, file paths, certificates, and connectivity in the actual client after importing the subscription.
+Configuration validation is not a connectivity test. Check sing-box startup logs, permissions, certificates and node connectivity on the actual device.
 
 ## Updates and migration
 
@@ -284,21 +247,19 @@ For a Git clone, it requires clean tracked files and pulls the current branch wi
 
 `npm run update -- --no-deploy` skips only the final deployment. It still updates code, dependencies, and local configuration, so it is not a read-only check.
 
-Confirm both refresh schedules are present after upgrading; see [Cache and operational limits](#cache-and-operational-limits). Scheduled version checks are disabled by default; when enabled, GitHub Releases is checked at most daily and a bound Telegram chat receives one notification for each newly detected version.
+Confirm both refresh schedules are present after upgrading; see [Cache and operational limits](#cache-and-operational-limits). The current version appears below “Sign out” in the sidebar, replaced by green “Update available” text when a new version is detected. Scheduled version checks are disabled by default; when enabled, GitHub Releases is checked at most daily and a bound Telegram chat receives one notification for each newly detected version.
 
-### Configuration document migration
+### Upgrading from 1.4.0 to 2.0.0
 
-**Use the universal subscription URL in every client after upgrading.** `/sync/<read_token>/` is available again; existing universal URLs continue to work if the base path and token are unchanged. Replace `/surge/`, `/clash/`, `/sing-box/`, and any `stable` / `tf` tagged URLs with the universal URL copied from the dashboard, then refresh the subscription. See [Subscription URLs](#subscription-urls).
+1. Retain `wrangler.jsonc`, the KV namespace, `ADMIN_TOKEN_HASH` and `CONFIG_ENCRYPTION_KEY`. Update the application as described above; do not generate a replacement encryption key.
+2. Reload the dashboard, review the migration draft and confirm. Version 1 documents from 1.4.0 migrate to document version 3; the KV schema is 12.
+3. Surge, Clash and shared nodes are retained with independent groups and rule sources. **sing-box initializes groups, DNS and routing from Clash, with an automatic TUN inbound and outbound interface detection. Enabled Surge Tailscale connections are migrated; otherwise the endpoint list stays empty.**
+4. Review migration diagnostics and sing-box inbounds, DNS, groups and routing before use. Existing version 3 sing-box settings saved in 2.0 are not cleared by an application update.
+5. Copy the universal URL from Configuration links and update your clients. Existing `/sync/<read_token>/` URLs remain usable if the base path and token are unchanged. Replace old client-specific or tagged URLs. Stash and Shadowrocket output is no longer available.
 
-Fresh installations use document version 3; **KV schema remains 12**. Version 2 documents are split automatically on read and saved as version 3. Groups are copied according to their former target selections, retaining disabled states. Legacy shared `hidden` remains Surge-only; configure hiding independently in clash after the split; the complete rule-source list is copied to each client with IDs and references intact. Subsequent edits are independent. Reload any open admin pages after upgrading before editing. No manual KV changes or subscription URL changes are required.
+Reviewing a draft does not commit it. After confirmation, the Worker writes and reads back the new snapshot, then schedules legacy cleanup after a grace period of at least five minutes. If the old configuration changes during migration, reload and review the draft again.
 
-Version 1 deployments still require explicit migration:
-
-1. Review the migration draft. Surge and clash keep their settings and shared nodes; groups, rule sources, and plans become independent per client. sing-box is initialized once from Surge.
-2. Confirm migration. Unconvertible critical DNS/routing behavior remains flagged: sing-box downloads stay blocked until you fix the issue or explicitly mark it resolved after reviewing the omitted behavior.
-3. The Worker writes and reads back the new encrypted snapshot before scheduling legacy data cleanup after at least five minutes. After commit, reads cannot fall back to a legacy snapshot.
-
-Reviewing the migration draft does not delete legacy configuration. If the saved configuration changes during migration, you must review it again; the page keeps your draft in memory. Note any edits you want to retain, reload, and review migration again.
+Existing development version 2 documents are automatically split into version 3 while retaining their sing-box settings; they are not treated as first-time migrations from 1.4.0.
 
 <details>
 <summary>Command-line migration</summary>
@@ -315,7 +276,7 @@ After review, this command **writes the migrated configuration to the deployment
 npm run migrate -- --url "https://your-worker.example" --apply
 ```
 
-Replace the example domain, or use `SUBPILOT_BASE_URL` to provide the URL. The script does not export configuration files; the former `--backup` option and `SUBPILOT_BACKUP_PATH` environment variable have been removed. Conversion issues remain available in the admin UI after migration.
+Replace the example domain, or use `SUBPILOT_BASE_URL` to provide the URL. The script does not export configuration files; the former `--backup` option and `SUBPILOT_BACKUP_PATH` environment variable have been removed. Review and save each client’s settings after migration.
 
 </details>
 

@@ -54,9 +54,9 @@ const LABELS = {
   dnsIpv6: "DNS IPv6",
   dnsEnhancedMode: "DNS 模式",
   dnsFakeIpRange: "Fake IP 网段",
-  defaultNameservers: "引导解析器",
-  nameservers: "默认解析器",
-  fallbackNameservers: "备用解析器",
+  defaultNameservers: "DNS 服务器域名解析",
+  nameservers: "常规 DNS 解析",
+  fallbackNameservers: "备用 DNS 解析",
   fallbackFilterGeoip: "备用 DNS GeoIP 过滤",
   fallbackFilterIpcidr: "备用 DNS IP 过滤",
   fakeIpFilter: "绕过 Fake IP 的域名",
@@ -134,8 +134,7 @@ const CLIENT_SECTIONS = {
   clash: {
     network: ["port", "socksPort", "mixedPort", "allowLan", "mode", "logLevel", "ipv6", "unifiedDelay", "tcpConcurrent", "externalController", "tun"],
     dns: ["dnsEnabled", "dnsListen", "dnsIpv6", "dnsEnhancedMode", "dnsFakeIpRange", "defaultNameservers", "nameservers", "fallbackNameservers", "fallbackFilterGeoip", "fallbackFilterIpcidr", "fakeIpFilter"],
-    rules: ["rules", "ruleProviders"],
-    advanced: []
+    rules: ["rules", "ruleProviders"]
   },
   singbox: { network: ["inbounds"], dns: ["dns"], rules: ["route"], tailscale: ["endpoints"], advanced: ["log", "experimental"] }
 };
