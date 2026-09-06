@@ -1,5 +1,6 @@
+import { clashRuleWithNoResolve } from "./rule-targets";
 import { managedRuleSetUrlForRequest } from "./managed-url";
-import { parseInlineRuleSetLines, parseRuleSetContent, type ParsedRuleSetRule } from "./rule-set-parser";
+import { parseInlineRuleSetLines, parseRuleSetContent, type ParsedRuleSetRule, type CompiledRuleSetRule } from "./rule-set-parser";
 import {
   fetchCachedRuleSetSource,
   pruneCompiledRuleSetCaches,
@@ -71,9 +72,7 @@ interface CompileOptions {
 
 const FINAL_RULE_TYPES = new Set(["FINAL", "MATCH"]);
 const RULE_SET_UPDATE_INTERVAL_SECONDS = 24 * 60 * 60;
-const RULE_SET_COMPILER_REVISION = 6;
-const MAX_RULE_SET_OUTPUT_SOURCE_CHARACTERS = 8 * 1024 * 1024;
-const MAX_RULE_SET_OUTPUT_RULES = 50_000;
+const RULE_SET_COMPILER_REVISION = 9;
 
 export async function compileRuleSetOutput(
   env: Env,
@@ -86,11 +85,46 @@ export async function compileRuleSetOutput(
   const warnings: string[] = [];
   const sourceErrors: string[] = [];
   const sourceById = new Map(config.ruleSets.sources.map((source) => [source.id, source]));
-  const parsedRules: ParsedRuleSetRule[] = [];
+  const seen = new Set<string>();
+  const suffixes = new Set<string>();
+  const compatibility = new Map<string, CompatibilitySummary>();
+  const targets = config.renderTarget ? [config.renderTarget] : RULE_SET_TARGETS;
+  let duplicateCount = 0;
+  const acceptRule = (rule: ParsedRuleSetRule): void => {
+    recordTargetCompatibility(rule, compatibility, targets);
+    if (seen.has(rule.normalizedKey)) { duplicateCount += 1; return; }
+    seen.add(rule.normalizedKey);
+    if (rule.type === "DOMAIN") {
+      let suffix = normalizeDomain(rule.value);
+      while (suffix) {
+        if (suffixes.has(suffix)) {
+          warnings.push(`${rule.label} DOMAIN,${rule.value} 可能已被前面的 DOMAIN-SUFFIX 覆盖。`);
+          break;
+        }
+        const dot = suffix.indexOf(".");
+        if (dot < 0) break;
+        suffix = suffix.slice(dot + 1);
+      }
+    }
+    if (rule.type === "DOMAIN-SUFFIX") suffixes.add(normalizeDomain(rule.value));
+    buckets[rule.bucket].push({ type: rule.type, value: rule.value, raw: rule.raw,
+      ...(rule.clashDomainPattern ? { clashDomainPattern: rule.clashDomainPattern } : {}) });
+  };
   let usedCachedSource = false;
-  let sourceCharacters = 0;
+  const nativeAggregation = config.renderTarget === "clash" && config.ruleSets.aggregateByPolicy;
+  const memberNames = nativeAggregation
+    ? planRuleSetOutputs(config.ruleSets).find((plan) => plan.output.name === output.name)?.includedOutputNames
+    : undefined;
+  const members = memberNames ? memberNames.map((name) => config.ruleSets.outputs.find((item) => item.name === name)!) : [output];
+  const visitorFor = (member: RuleSetOutput) => !nativeAggregation || !member.surgeOptions.includes("no-resolve") ? acceptRule : (rule: ParsedRuleSetRule): void => {
+    if (isPlainDomainRule(rule)) { acceptRule(rule); return; }
+    const raw = clashRuleWithNoResolve(rule.raw);
+    if (raw === rule.raw) { acceptRule(rule); return; }
+    const parsed = parseInlineRuleSetLines([raw], rule.label, acceptRule, true);
+    for (const warning of parsed.warnings) sourceErrors.push(warning);
+  };
 
-  for (const sourceId of output.sourceIds) {
+  for (const { sourceId, member } of members.flatMap((member) => member.sourceIds.map((sourceId) => ({ sourceId, member })))) {
     if (refreshDeadlineExceeded(options.deadline)) {
       sourceErrors.push("规则集刷新已超过截止时间");
       break;
@@ -123,28 +157,17 @@ export async function compileRuleSetOutput(
         warnings.push(`${output.name}: ${result.warning}`);
       }
       const { content } = result;
-      if (sourceCharacters + content.length > MAX_RULE_SET_OUTPUT_SOURCE_CHARACTERS) {
-        throw new Error(`${output.name}: 规则来源内容总量超过 ${MAX_RULE_SET_OUTPUT_SOURCE_CHARACTERS} 字符限制`);
-      }
-      sourceCharacters += content.length;
-      const parsed = parseRuleSetContent(content, source.format, source.name);
-      if (parsedRules.length + parsed.rules.length > MAX_RULE_SET_OUTPUT_RULES) {
-        throw new Error(`${output.name}: 编译规则数量超过 ${MAX_RULE_SET_OUTPUT_RULES} 条限制`);
-      }
-      parsedRules.push(...parsed.rules);
-      sourceErrors.push(...parsed.warnings);
+      const parsed = parseRuleSetContent(content, source.format, source.name, visitorFor(member), config.renderTarget === "clash");
+      for (const warning of parsed.warnings) sourceErrors.push(warning);
     } catch (error) {
       sourceErrors.push(error instanceof Error ? error.message : String(error));
     }
   }
 
-  const inline = parseInlineRuleSetLines(output.inlineRules, `${output.name} 内联规则`);
-  if (parsedRules.length + inline.rules.length > MAX_RULE_SET_OUTPUT_RULES) {
-    sourceErrors.push(`${output.name}: 编译规则数量超过 ${MAX_RULE_SET_OUTPUT_RULES} 条限制`);
-  } else {
-    parsedRules.push(...inline.rules);
+  for (const member of members) {
+    const inline = parseInlineRuleSetLines(member.inlineRules, `${member.name} 内联规则`, visitorFor(member), config.renderTarget === "clash");
+    for (const warning of inline.warnings) sourceErrors.push(warning);
   }
-  sourceErrors.push(...inline.warnings);
 
   if (sourceErrors.length > 0) {
     const existing = options.allowStaleFallback && !refreshDeadlineExceeded(options.deadline)
@@ -165,18 +188,13 @@ export async function compileRuleSetOutput(
     throw new Error(sourceErrors.join("; "));
   }
 
-  const seen = new Set<string>();
-  let duplicateCount = 0;
-  for (const rule of parsedRules) {
-    if (seen.has(rule.normalizedKey)) {
-      duplicateCount += 1;
-      continue;
-    }
-    seen.add(rule.normalizedKey);
-    buckets[rule.bucket].push(rule);
-  }
-  warnings.push(...collectDomainContainmentWarnings(buckets.domain));
-  warnings.push(...collectTargetCompatibilityWarnings(parsedRules));
+  for (const warning of compatibilityWarnings(compatibility)) warnings.push(warning);
+  // Drop deduplication-only indexes before serializing large output buckets.
+  seen.clear();
+  suffixes.clear();
+  const targetCounts = (bucket: RuleSetBucket): Partial<Record<RuleSetOutputTarget, number>> => Object.fromEntries(targets.map((target) => [
+    target, buckets[bucket].reduce((count, rule) => count + Number(isPlainDomainRule(rule) || renderRuleSetRuleForTarget(rule.raw, target) !== null), 0)
+  ]));
 
   const manifest: CompiledRuleSetManifest = {
     outputName: output.name,
@@ -186,17 +204,11 @@ export async function compileRuleSetOutput(
     sourceIds: output.sourceIds,
     ruleCount: RULE_SET_BUCKETS.reduce((sum, bucket) => sum + buckets[bucket].length, 0),
     duplicateCount,
-    buckets: RULE_SET_BUCKETS.flatMap((bucket) => buckets[bucket].length > 0
-      ? [{
-        bucket,
-        count: buckets[bucket].length,
-        targets: RULE_SET_TARGETS.filter((target) => buckets[bucket].some((rule) => renderRuleSetRuleForTarget(rule.raw, target) !== null)),
-        targetCounts: Object.fromEntries(RULE_SET_TARGETS.map((target) => [
-          target,
-          buckets[bucket].filter((rule) => renderRuleSetRuleForTarget(rule.raw, target) !== null).length
-        ]))
-      }]
-      : []),
+    buckets: RULE_SET_BUCKETS.flatMap((bucket) => {
+      if (!buckets[bucket].length) return [];
+      const counts = targetCounts(bucket);
+      return [{ bucket, count: buckets[bucket].length, targets: targets.filter((target) => (counts[target] ?? 0) > 0), targetCounts: counts }];
+    }),
     warnings
   };
   try {
@@ -243,6 +255,7 @@ async function ruleSetOutputFingerprint(config: RenderConfig, output: RuleSetOut
       const source = sources.get(id);
       return source ? { id, url: source.url, enabled: source.enabled, format: source.format } : { id, missing: true };
     }),
+    nativeMembers: nativeOutputMembers(config, output),
     inlineRules: output.inlineRules,
     surgeOptions: output.surgeOptions
   }));
@@ -357,7 +370,10 @@ function refreshDeadlineExceeded(deadline: number | undefined): boolean {
 
 export async function readRuleSetStatus(env: Env, config: RenderConfig): Promise<CompiledRuleSetStatusItem[]> {
   return Promise.all(effectiveRuleSetOutputs(config.ruleSets).map(async (output) => {
-    const manifest = await readCompiledRuleSetManifest(env, output.name);
+    const stored = await readCompiledRuleSetManifest(env, output.name);
+    const manifest = stored?.outputFingerprint === await ruleSetOutputFingerprint(config, output) ? stored : null;
+    const target = config.renderTarget ?? "surge";
+    const count = (bucket: RuleSetBucket): number => manifest?.buckets.find((item) => item.bucket === bucket)?.targetCounts?.[target] ?? 0;
     return {
       outputName: output.name,
       enabled: output.enabled,
@@ -365,6 +381,10 @@ export async function readRuleSetStatus(env: Env, config: RenderConfig): Promise
       ruleCount: manifest?.ruleCount ?? 0,
       duplicateCount: manifest?.duplicateCount ?? 0,
       buckets: manifest?.buckets ?? [],
+      artifacts: planRuleSetArtifacts(manifest?.buckets ?? [], target).map((artifact) => ({
+        behavior: artifact.behavior,
+        count: artifact.behavior === "domain" ? count("domain") : artifact.behavior === "ipcidr" ? count("ipcidr") : count("classical") + (artifact.includesDomains ? count("domain") : 0) + (artifact.includesIpCidr ? count("ipcidr") : 0)
+      })),
       warnings: manifest?.warnings ?? [],
       cached: Boolean(manifest)
     };
@@ -444,7 +464,7 @@ export async function buildCompiledRuleSetReferencePlan(
           plan.clashRuleComments[plan.clashRules[clashStart]!] = comment;
         }
       }
-      plan.warnings.push(...manifest.warnings);
+      for (const warning of manifest.warnings) plan.warnings.push(warning);
     } catch (error) {
       plan.errors.push(`${item.outputPlan.output.name}: 规则集尚未可用：${error instanceof Error ? error.message : String(error)}`);
     }
@@ -487,7 +507,7 @@ function appendCompiledOutputReferences(
       path: `./rules/${providerName}.yaml`,
       interval: RULE_SET_UPDATE_INTERVAL_SECONDS
     };
-    plan.clashRules.push(`RULE-SET,${providerName},${output.policy}`);
+    plan.clashRules.push(`RULE-SET,${providerName},${output.policy}${output.surgeOptions.includes("no-resolve") && !(target === "clash" && config.ruleSets.aggregateByPolicy) ? ",no-resolve" : ""}`);
   }
 }
 
@@ -518,7 +538,7 @@ function surgeRuleSetOptions(output: RuleSetOutput, includesIpCidr: boolean): st
   return options;
 }
 
-function emptyBuckets(): Record<RuleSetBucket, ParsedRuleSetRule[]> {
+function emptyBuckets(): Record<RuleSetBucket, CompiledRuleSetRule[]> {
   return {
     domain: [],
     ipcidr: [],
@@ -526,39 +546,33 @@ function emptyBuckets(): Record<RuleSetBucket, ParsedRuleSetRule[]> {
   };
 }
 
-function collectDomainContainmentWarnings(rules: ParsedRuleSetRule[]): string[] {
-  const suffixes: string[] = [];
-  const warnings: string[] = [];
-  for (const rule of rules) {
-    const value = normalizeDomain(rule.value);
-    if (rule.type === "DOMAIN" && suffixes.some((suffix) => value === suffix || value.endsWith(`.${suffix}`))) {
-      warnings.push(`${rule.label} DOMAIN,${rule.value} 可能已被前面的 DOMAIN-SUFFIX 覆盖。`);
-    }
-    if (rule.type === "DOMAIN-SUFFIX") suffixes.push(value);
-  }
-  return warnings;
-}
-
 function normalizeDomain(value: string): string {
   return value.trim().replace(/^\+\./, "").replace(/^\*\./, "").replace(/^\./, "").replace(/\.$/, "").toLowerCase();
 }
 
-function collectTargetCompatibilityWarnings(rules: ParsedRuleSetRule[]): string[] {
-  const summaries = new Map<string, { label: string; type: string; target: RuleSetOutputTarget; renderedType: string | null; count: number }>();
-  for (const rule of rules) {
-    const diagnosticType = rule.clashDomainPattern ? "Clash domain-provider 模式" : rule.type;
-    for (const target of RULE_SET_TARGETS) {
-      const rendered = renderRuleSetRuleForTarget(rule.raw, target);
-      const renderedType = rendered === null
-        ? null
-        : (splitRuleLine(rendered)[0] || "").trim().toUpperCase();
-      if (rendered !== null && canonicalRuleForComparison(rendered, renderedType || rule.type) === canonicalRuleForComparison(rule.raw, rule.type)) continue;
-      const key = `${diagnosticType}\0${target}\0${renderedType ?? "filtered"}`;
-      const existing = summaries.get(key);
-      if (existing) existing.count += 1;
-      else summaries.set(key, { label: rule.label, type: diagnosticType, target, renderedType, count: 1 });
-    }
+interface CompatibilitySummary {
+  label: string;
+  type: string;
+  target: RuleSetOutputTarget;
+  renderedType: string | null;
+  count: number;
+}
+
+function recordTargetCompatibility(rule: ParsedRuleSetRule, summaries: Map<string, CompatibilitySummary>, targets: readonly RuleSetOutputTarget[]): void {
+  if (isPlainDomainRule(rule)) return;
+  const diagnosticType = rule.clashDomainPattern ? "Clash domain-provider 模式" : rule.type;
+  for (const target of targets) {
+    const rendered = renderRuleSetRuleForTarget(rule.raw, target);
+    const renderedType = rendered === null ? null : (splitRuleLine(rendered)[0] || "").trim().toUpperCase();
+    if (rendered !== null && canonicalRuleForComparison(rendered, renderedType || rule.type) === canonicalRuleForComparison(rule.raw, rule.type)) continue;
+    const key = `${diagnosticType}\0${target}\0${renderedType ?? "filtered"}`;
+    const existing = summaries.get(key);
+    if (existing) existing.count += 1;
+    else summaries.set(key, { label: rule.label, type: diagnosticType, target, renderedType, count: 1 });
   }
+}
+
+function compatibilityWarnings(summaries: Map<string, CompatibilitySummary>): string[] {
   return [...summaries.values()].map((item) => item.renderedType === null
     ? `${item.label}${item.type} 不受 ${targetName(item.target)} 支持，已从该目标规则集过滤${item.count > 1 ? `（共 ${item.count} 条）` : ""}。`
     : `${item.label}${item.type} 在 ${targetName(item.target)} 输出中映射为 ${item.renderedType}${item.count > 1 ? `（共 ${item.count} 条）` : ""}。`);
@@ -571,6 +585,7 @@ function canonicalRuleForComparison(rule: string, type: string): string {
 
 function targetName(target: RuleSetOutputTarget): string {
   if (target === "surge") return "Surge";
+  if (target === "sing-box") return "sing-box";
   return target === "stash" ? "Stash" : "Clash";
 }
 
@@ -585,13 +600,15 @@ function ruleSetSourcesForOutputs(config: RenderConfig, outputs: RuleSetOutput[]
 function changedRuleSetOutputs(previousConfig: RenderConfig, config: RenderConfig): RuleSetOutput[] {
   const outputs = effectiveRuleSetOutputs(config.ruleSets);
   if (previousConfig.ruleSets.mode !== "compiled") return outputs;
+  if (config.renderTarget === "clash" && previousConfig.ruleSets.aggregateByPolicy !== config.ruleSets.aggregateByPolicy) return outputs;
   const changedSourceIds = changedRuleSetSourceIds(previousConfig, config);
   const previousByName = new Map(effectiveRuleSetOutputs(previousConfig.ruleSets).map((output) => [output.name, output]));
   return outputs.filter((output) => {
     const previous = previousByName.get(output.name);
     if (!previous || !previous.enabled) return true;
     if (output.sourceIds.some((sourceId) => changedSourceIds.has(sourceId))) return true;
-    return previous.policy !== output.policy
+    return JSON.stringify(nativeOutputMembers(previousConfig, previous)) !== JSON.stringify(nativeOutputMembers(config, output))
+      || previous.policy !== output.policy
       || previous.enabled !== output.enabled
       || !sameStringList(previous.sourceIds, output.sourceIds)
       || !sameStringList(previous.inlineRules, output.inlineRules)
@@ -624,4 +641,14 @@ function changedRuleSetSourceIds(previousConfig: RenderConfig, config: RenderCon
 function sameStringList(left: string[], right: string[]): boolean {
   if (left.length !== right.length) return false;
   return left.every((item, index) => item === right[index]);
+}
+
+function isPlainDomainRule(rule: CompiledRuleSetRule): boolean {
+  return (rule.type === "DOMAIN" || rule.type === "DOMAIN-SUFFIX") && rule.raw === `${rule.type},${rule.value}`;
+}
+
+function nativeOutputMembers(config: RenderConfig, output: RuleSetOutput): unknown {
+  if (config.renderTarget !== "clash" || !config.ruleSets.aggregateByPolicy) return undefined;
+  return config.ruleSets.outputs.filter((item) => item.enabled && item.policy.trim() === output.policy.trim())
+    .map((item) => ({ sourceIds: item.sourceIds, inlineRules: item.inlineRules, options: item.surgeOptions, order: item.order }));
 }

@@ -1,17 +1,16 @@
 import { convertRule } from "./singbox-config";
-import YAML from "yaml";
-import type { ParsedRuleSetRule } from "./rule-set-parser";
+import type { CompiledRuleSetRule } from "./rule-set-parser";
 import { renderRuleSetRuleForTarget } from "./rule-targets";
 import type { RuleSetBucket, RuleSetOutputTarget } from "./rule-set-types";
 
 export function renderCompiledRuleSetBucket(
-  rules: ParsedRuleSetRule[],
+  rules: CompiledRuleSetRule[],
   bucket: RuleSetBucket,
   target: RuleSetOutputTarget
 ): string {
   const compatible = rules.flatMap((rule) => {
     const rendered = renderRuleSetRuleForTarget(rule.raw, target);
-    return rendered ? [{ ...rule, raw: rendered }] : [];
+    return rendered ? [rendered === rule.raw ? rule : { ...rule, raw: rendered }] : [];
   });
   if (target === "sing-box") return renderSingboxRules(compatible);
   if (target === "surge") return renderSurgeRuleSetBucket(compatible, bucket);
@@ -19,7 +18,7 @@ export function renderCompiledRuleSetBucket(
 }
 
 export function renderCombinedRuleSet(
-  buckets: Record<RuleSetBucket, ParsedRuleSetRule[]>,
+  buckets: Record<RuleSetBucket, CompiledRuleSetRule[]>,
   target: RuleSetOutputTarget,
   options: { includesDomains: boolean; includesIpCidr: boolean }
 ): string {
@@ -29,35 +28,40 @@ export function renderCombinedRuleSet(
     ...buckets.classical
   ].flatMap((rule) => {
     const rendered = renderRuleSetRuleForTarget(rule.raw, target);
-    return rendered ? [{ ...rule, raw: rendered }] : [];
+    return rendered ? [rendered === rule.raw ? rule : { ...rule, raw: rendered }] : [];
   });
   if (target === "sing-box") return renderSingboxRules(rules);
   if (target === "surge") return `${rules.map((rule) => rule.raw).join("\n")}\n`;
-  return YAML.stringify({ payload: rules.map((rule) => rule.raw) });
+  return renderYamlPayload(rules.map((rule) => rule.raw));
 }
 
-function renderSurgeRuleSetBucket(rules: ParsedRuleSetRule[], bucket: RuleSetBucket): string {
+function renderSurgeRuleSetBucket(rules: CompiledRuleSetRule[], bucket: RuleSetBucket): string {
   const lines = bucket === "domain"
     ? rules.map(renderSurgeDomainSetLine)
     : rules.map((rule) => rule.raw);
   return `${lines.join("\n")}\n`;
 }
 
-function renderClashLikeRuleSetBucket(rules: ParsedRuleSetRule[], bucket: RuleSetBucket): string {
+function renderClashLikeRuleSetBucket(rules: CompiledRuleSetRule[], bucket: RuleSetBucket): string {
   const payload = bucket === "domain"
     ? rules.map(renderClashDomainPayloadLine)
     : bucket === "ipcidr"
       ? rules.map((rule) => rule.value)
       : rules.map((rule) => rule.raw);
-  return YAML.stringify({ payload });
+  return renderYamlPayload(payload);
 }
 
-function renderSurgeDomainSetLine(rule: ParsedRuleSetRule): string {
+function renderYamlPayload(payload: string[]): string {
+  // JSON string literals are valid YAML scalars and need no document-sized AST.
+  return payload.length ? `payload:\n${payload.map((line) => `  - ${JSON.stringify(line)}`).join("\n")}\n` : "payload: []\n";
+}
+
+function renderSurgeDomainSetLine(rule: CompiledRuleSetRule): string {
   if (rule.type === "DOMAIN") return normalizeDomain(rule.value);
   return `.${normalizeDomain(rule.value)}`;
 }
 
-function renderClashDomainPayloadLine(rule: ParsedRuleSetRule): string {
+function renderClashDomainPayloadLine(rule: CompiledRuleSetRule): string {
   if (rule.clashDomainPattern) return rule.clashDomainPattern;
   if (rule.type === "DOMAIN") return normalizeDomain(rule.value);
   return `+.${normalizeDomain(rule.value)}`;
@@ -67,6 +71,6 @@ function normalizeDomain(value: string): string {
   return value.trim().replace(/^\+\./, "").replace(/^\*\./, "").replace(/^\./, "").replace(/\.$/, "").toLowerCase();
 }
 
-function renderSingboxRules(rules: ParsedRuleSetRule[]): string {
+function renderSingboxRules(rules: CompiledRuleSetRule[]): string {
   return JSON.stringify({ version: 4, rules: rules.map((rule) => convertRule(rule.raw, true).rule) }, null, 2) + "\n";
 }

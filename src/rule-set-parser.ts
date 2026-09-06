@@ -1,4 +1,5 @@
 import YAML from "yaml";
+import { isNativeClashRule } from "./rule-targets";
 import { splitRuleLine } from "./rule-line";
 import { isValidCidrForRuleType, looksLikeCidr } from "./rule-value-validation";
 import type { RuleSetBucket, RuleSetSourceFormat } from "./rule-set-types";
@@ -25,32 +26,39 @@ export interface ParseRuleSetResult {
   warnings: string[];
 }
 
+export type CompiledRuleSetRule = Pick<ParsedRuleSetRule, "type" | "value" | "raw" | "clashDomainPattern">;
+type RuleVisitor = (rule: ParsedRuleSetRule) => void;
+
 interface ParseLineOptions {
   sourceLabel: string;
   lineNumber: number;
   defaultFormat: RuleSetSourceFormat;
+  clashOnly?: boolean;
 }
 
-export function parseRuleSetContent(content: string, format: RuleSetSourceFormat, sourceLabel: string): ParseRuleSetResult {
-  const selectedFormat = inferRuleSetFormat(content, format);
-  if (selectedFormat === "clash-yaml") return parseClashYamlRuleSet(content, sourceLabel);
-  if (selectedFormat === "surge-domain-set") return parsePlainRuleSetLines(content, sourceLabel, "surge-domain-set");
-  if (selectedFormat === "plain-domain") return parsePlainRuleSetLines(content, sourceLabel, "plain-domain");
-  if (selectedFormat === "plain-ipcidr") return parsePlainRuleSetLines(content, sourceLabel, "plain-ipcidr");
-  if (selectedFormat === "plain-classical") return parsePlainRuleSetLines(content, sourceLabel, "plain-classical");
-  return parsePlainRuleSetLines(content, sourceLabel, "surge-rule-set");
+export function parseRuleSetContent(content: string, format: RuleSetSourceFormat, sourceLabel: string, visit?: RuleVisitor, clashOnly = false): ParseRuleSetResult {
+  if (clashOnly && format.startsWith("surge-")) return { rules: [], warnings: [`${sourceLabel}: Clash 不支持 Surge 来源格式。`] };
+  const inferred = inferRuleSetFormat(content, format);
+  const selectedFormat = clashOnly && inferred === "surge-rule-set" ? "plain-classical" : inferred;
+  if (selectedFormat === "clash-yaml") return parseClashYamlRuleSet(content, sourceLabel, visit, clashOnly);
+  if (selectedFormat === "surge-domain-set") return parsePlainRuleSetLines(content, sourceLabel, "surge-domain-set", visit, clashOnly);
+  if (selectedFormat === "plain-domain") return parsePlainRuleSetLines(content, sourceLabel, "plain-domain", visit, clashOnly);
+  if (selectedFormat === "plain-ipcidr") return parsePlainRuleSetLines(content, sourceLabel, "plain-ipcidr", visit, clashOnly);
+  if (selectedFormat === "plain-classical") return parsePlainRuleSetLines(content, sourceLabel, "plain-classical", visit, clashOnly);
+  return parsePlainRuleSetLines(content, sourceLabel, "surge-rule-set", visit, clashOnly);
 }
 
-export function parseInlineRuleSetLines(lines: string[], sourceLabel: string): ParseRuleSetResult {
+export function parseInlineRuleSetLines(lines: string[], sourceLabel: string, visit?: RuleVisitor, clashOnly = false): ParseRuleSetResult {
   const rules: ParsedRuleSetRule[] = [];
   const warnings: string[] = [];
   lines.forEach((line, index) => {
     const parsed = parseRuleLineForRuleSet(line, {
       sourceLabel,
       lineNumber: index + 1,
-      defaultFormat: "surge-rule-set"
+      defaultFormat: clashOnly ? "plain-classical" : "surge-rule-set",
+      clashOnly
     });
-    if (parsed.rule) rules.push(parsed.rule);
+    if (parsed.rule) { if (visit) visit(parsed.rule); else rules.push(parsed.rule); }
     if (parsed.warning) warnings.push(parsed.warning);
   });
   return { rules, warnings };
@@ -66,9 +74,9 @@ function inferRuleSetFormat(content: string, format: RuleSetSourceFormat): RuleS
   return "surge-rule-set";
 }
 
-function parseClashYamlRuleSet(content: string, sourceLabel: string): ParseRuleSetResult {
-  const parsed = YAML.parse(content);
-  const payload = clashPayload(parsed);
+function parseClashYamlRuleSet(content: string, sourceLabel: string, visit?: RuleVisitor, clashOnly = false): ParseRuleSetResult {
+  const parsed = parseQuotedClashPayload(content) ?? YAML.parse(content);
+  const payload = clashOnly ? (parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>).payload : undefined) : clashPayload(parsed);
   if (!Array.isArray(payload)) {
     return { rules: [], warnings: [`${sourceLabel}: Clash YAML 缺少 payload 数组。`] };
   }
@@ -81,28 +89,57 @@ function parseClashYamlRuleSet(content: string, sourceLabel: string): ParseRuleS
   const rules: ParsedRuleSetRule[] = [];
   const warnings: string[] = [];
   payload.forEach((item, index) => {
-    if (typeof item !== "string") return;
+    if (typeof item !== "string") { if (clashOnly) warnings.push(`${sourceLabel}: payload 第 ${index + 1} 项必须是字符串。`); return; }
     const parsedLine = parseRuleLineForRuleSet(item, {
       sourceLabel,
       lineNumber: index + 1,
-      defaultFormat
+      defaultFormat,
+      clashOnly
     });
-    if (parsedLine.rule) rules.push(parsedLine.rule);
+    if (parsedLine.rule) { if (visit) visit(parsedLine.rule); else rules.push(parsedLine.rule); }
     if (parsedLine.warning) warnings.push(parsedLine.warning);
   });
   return { rules, warnings };
 }
 
-function parsePlainRuleSetLines(content: string, sourceLabel: string, defaultFormat: RuleSetSourceFormat): ParseRuleSetResult {
+/** Common provider files are a flat quoted sequence; avoid a large YAML syntax tree. */
+function parseQuotedClashPayload(content: string): { payload: string[] } | null {
+  const payload: string[] = [];
+  let header = false;
+  let indent: string | undefined;
+  for (const match of content.matchAll(/[^\r\n]+/g)) {
+    const line = match[0].trim();
+    if (!line || line.startsWith("#")) continue;
+    if (!header) {
+      if (match[0] !== "payload:") return null;
+      header = true;
+      continue;
+    }
+    const item = /^( +)- ('(?:[^']|'')*'|"(?:[^"\\]|\\.)*")(?:[ \t]+#.*)?[ \t]*$/.exec(match[0]);
+    if (!item) return null;
+    if (indent !== undefined && indent !== item[1]) return null;
+    indent = item[1];
+    const scalar = item[2]!;
+    if (scalar.startsWith("'")) payload.push(scalar.slice(1, -1).replace(/''/g, "'"));
+    else {
+      try { payload.push(JSON.parse(scalar) as string); }
+      catch { return null; }
+    }
+  }
+  return header ? { payload } : null;
+}
+
+function parsePlainRuleSetLines(content: string, sourceLabel: string, defaultFormat: RuleSetSourceFormat, visit?: RuleVisitor, clashOnly = false): ParseRuleSetResult {
   const rules: ParsedRuleSetRule[] = [];
   const warnings: string[] = [];
   content.split(/\r?\n/).forEach((line, index) => {
     const parsed = parseRuleLineForRuleSet(line, {
       sourceLabel,
       lineNumber: index + 1,
-      defaultFormat
+      defaultFormat,
+      clashOnly
     });
-    if (parsed.rule) rules.push(parsed.rule);
+    if (parsed.rule) { if (visit) visit(parsed.rule); else rules.push(parsed.rule); }
     if (parsed.warning) warnings.push(parsed.warning);
   });
   return { rules, warnings };
@@ -110,7 +147,8 @@ function parsePlainRuleSetLines(content: string, sourceLabel: string, defaultFor
 
 function parseRuleLineForRuleSet(line: string, options: ParseLineOptions): { rule?: ParsedRuleSetRule; warning?: string } {
   const trimmed = String(line || "").trim();
-  if (!trimmed || isCommentLine(trimmed) || /^\[[^\]]+\]$/.test(trimmed)) return {};
+  if (!trimmed || isCommentLine(trimmed)) return {};
+  if (/^\[[^\]]+\]$/.test(trimmed)) return options.clashOnly ? { warning: `${lineLabel(options)}Clash 规则集不支持配置段落。` } : {};
 
   if (!trimmed.includes(",")) {
     if ((options.defaultFormat === "plain-domain" || options.defaultFormat === "surge-domain-set") && looksLikeDomain(trimmed)) {
@@ -132,7 +170,8 @@ function parseRuleLineForRuleSet(line: string, options: ParseLineOptions): { rul
   if (IPCIDR_RULE_TYPES.has(type) && !isValidCidrForRuleType(value, type)) {
     return { warning: `${lineLabel(options)}${type} 包含无效的 CIDR。` };
   }
-  const raw = ruleWithoutPolicy(parts, type);
+  const raw = options.clashOnly ? [type, ...parts.slice(1)].join(",") : ruleWithoutPolicy(parts, type);
+  if (options.clashOnly && !isNativeClashRule(raw)) return { warning: `${lineLabel(options)}不是受支持的 Clash 规则，规则集条目不能携带出口或其他客户端参数。` };
   const bucket = bucketForRuleType(type, raw);
   return {
     rule: {
@@ -183,7 +222,8 @@ function bucketForRuleType(type: string, raw?: string): RuleSetBucket {
   if (DOMAIN_RULE_TYPES.has(type)) return "domain";
   if (IPCIDR_RULE_TYPES.has(type)) {
     const options = raw ? splitRuleLine(raw).slice(2).map((option) => option.trim().toLowerCase()) : [];
-    return options.includes("src") ? "classical" : "ipcidr";
+    // A plain ipcidr payload cannot express per-rule resolution/source options.
+    return options.includes("src") || options.includes("no-resolve") ? "classical" : "ipcidr";
   }
   return "classical";
 }

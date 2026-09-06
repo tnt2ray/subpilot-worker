@@ -62,6 +62,7 @@ const AUTO_SURGE_ONLY_RULE_TYPES = new Set([
   "URL-REGEX"
 ]);
 const CLASH_ONLY_RULE_TYPES = new Set([
+  "IN-PORT",
   "DOMAIN-REGEX",
   "GEOSITE",
   "PROCESS-PATH",
@@ -182,6 +183,53 @@ export function renderDirectRuleForTarget(rule: RuleSetDirectRule, target: RuleS
   const value = (translatedParts[1] || "").trim();
   if (!value) return null;
   return [translatedType, value, rule.policy, ...filterDirectRuleOptions(translatedType, directRuleOptions(translatedParts), target)].join(",");
+}
+
+/** Preserve a provider-level no-resolve option when merging native Clash sources. */
+export function clashRuleWithNoResolve(rule: string): string {
+  const parts = splitRuleLine(rule);
+  const type = parts[0]?.trim().toUpperCase() ?? "";
+  if (TARGET_IP_RULE_TYPES.has(type)) {
+    return parts.slice(2).some((part) => part.toLowerCase() === "no-resolve") ? rule : `${rule},no-resolve`;
+  }
+  if (!LOGICAL_RULE_TYPES.has(type)) return rule;
+  const rewriteExpression = (value: string): string => {
+    let result = "";
+    for (let index = 0; index < value.length; index += 1) {
+      if (value[index] !== "(") { result += value[index]; continue; }
+      const end = findClosingParenthesis(value, index);
+      if (end < 0) return value;
+      const inner = value.slice(index + 1, end);
+      result += `(${logicalRuleParts(inner) ? clashRuleWithNoResolve(inner) : rewriteExpression(inner)})`;
+      index = end;
+    }
+    return result;
+  };
+  parts[1] = rewriteExpression(parts[1] ?? "");
+  return parts.join(",");
+}
+
+/** Validate native provider syntax without translating another client's rules. */
+export function isNativeClashRule(rule: string): boolean {
+  const parts = splitRuleLine(rule);
+  const type = parts[0]?.trim().toUpperCase() ?? "";
+  if (!parts[1]?.trim() || (!AUTO_SHARED_RULE_TYPES.has(type) && !CLASH_ONLY_RULE_TYPES.has(type))) return false;
+  const normalized = [type, ...parts.slice(1)].join(",");
+  if (translateRuleLineForTarget(normalized, "clash", false) !== normalized) return false;
+  if (!LOGICAL_RULE_TYPES.has(type)) return true;
+  const expression = parts[1] ?? "";
+  const validateExpression = (value: string): boolean => {
+    for (let index = 0; index < value.length; index += 1) {
+      if (value[index] !== "(") continue;
+      const end = findClosingParenthesis(value, index);
+      if (end < 0) return false;
+      const inner = value.slice(index + 1, end);
+      if (logicalRuleParts(inner) ? !isNativeClashRule(inner) : !validateExpression(inner)) return false;
+      index = end;
+    }
+    return true;
+  };
+  return validateExpression(expression);
 }
 
 export function renderRuleSetRuleForTarget(rule: string, target: RuleSetOutputTarget): string | null {

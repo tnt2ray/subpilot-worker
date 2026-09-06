@@ -1,5 +1,6 @@
 import { allEnabledRuleSetSources, refreshRuleSetSourceCaches } from "./rule-set-cache";
 import { configDocument, normalizeConfigDocument, renderConfig, OUTPUT_TARGETS } from "./config-document";
+import { migrateClashRouting } from "./clash-routing-migration";
 import { exportConfigBeforeMigration, loadConfigMigration, completeDocumentMigration } from "./config-store";
 import { ruleSetEnv } from "./rule-set-scope";
 import { validateManagedBaseUrl, validateConfigEntityLimits, validateProxyPolicyNameConflicts, validateRuleSetOutputNames } from "./config-validation";
@@ -13,7 +14,7 @@ import { handleGeoIpMmdbUpload, readGeoIpMmdbStatus } from "./geoip-admin";
 import { LOGIN_PAGE_HTML } from "./login-page";
 import { extractSubscriptionToken, isUnderManagedBasePath, managedBasePathFromConfig, parseSyncPath } from "./managed-url";
 import { notifyRuleSetRefreshFailures, notifySourceRefreshFailures, notifyVersionUpdateAvailable } from "./notifications";
-import { refreshChangedRuleSetCaches, refreshRuleSetCaches } from "./rule-set-compiler";
+import { buildCompiledRuleSetReferencePlan, refreshChangedRuleSetCaches, refreshRuleSetCaches } from "./rule-set-compiler";
 import { handleRuleSetApi, handleRuleSetDownload } from "./rule-set-endpoints";
 import { warmCompiledRuleSetWorkerCache } from "./rule-set-worker-cache";
 import { refreshChangedSourceCache, refreshSourceCache } from "./source-cache";
@@ -246,6 +247,14 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
   if (url.pathname === "/api/telegram/unbind" && request.method === "POST") {
     return handleTelegramUnbind(request, env);
   }
+  if (url.pathname === "/api/config/clash-routing" && request.method === "POST") {
+    try {
+      const document = normalizeConfigDocument(await readRequestJsonWithLimit<AppConfig>(request, MAX_CONFIG_REQUEST_BYTES));
+      const error = validateDocumentForSave(document);
+      if (error) return badRequest(error);
+      return jsonResponse(migrateClashRouting(document.clients.clash));
+    } catch { return badRequest("无法转换 Clash 配置，请检查原生规则和规则提供者格式。"); }
+  }
   if (url.pathname === "/api/config" && (request.method === "PUT" || request.method === "PATCH")) {
     const current = await loadConfig(env);
     if (current.migrationRequired) return jsonResponse({ error: "请先检查并完成旧配置迁移。" }, { status: 409 });
@@ -259,6 +268,13 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
       const error = validateDocumentForSave(document);
       if (error) return badRequest(error);
     } catch { return badRequest("配置格式无效或超过大小限制。"); }
+    if (configDocument(current).clients.clash.ruleSets.mode === "manual" && document.clients.clash.ruleSets.mode === "compiled") {
+      const selected = renderConfig(document, "clash");
+      const refresh = await refreshRuleSetCaches(ruleSetEnv(env, "clash"), selected, undefined, { deadline: Date.now() + MANUAL_REFRESH_DEADLINE_MS });
+      if (refresh.outputFailures.length) return jsonResponse({ error: "Clash 规则集尚不可编译，旧配置继续生效。请处理来源后重新保存。", issues: refresh.outputFailures }, { status: 400 });
+      const compiled = await buildCompiledRuleSetReferencePlan(ruleSetEnv(env, "clash"), selected, "clash", request.url);
+      if (compiled.errors.length) return jsonResponse({ error: "Clash 分流转换校验失败，旧配置继续生效。", issues: compiled.errors }, { status: 400 });
+    }
     const saved = await saveConfigWithTelegramWebhook(env, current, renderConfig(document), request.url);
     scheduleChangedCacheRefresh(env, ctx, current, saved, request.url);
     return jsonResponse(configDocument(saved));

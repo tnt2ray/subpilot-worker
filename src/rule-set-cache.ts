@@ -1,14 +1,14 @@
 import { decryptText, encryptText } from "./crypto-store";
 import { listKvKeys, readKvJson } from "./kv-helpers";
 import { renderCombinedRuleSet, renderCompiledRuleSetBucket } from "./rule-set-renderer";
-import type { ParsedRuleSetRule } from "./rule-set-parser";
+import type { CompiledRuleSetRule } from "./rule-set-parser";
 import { effectiveRuleSetOutputs } from "./rule-set-outputs";
 import type { RuleSetBucket, RuleSetDownloadBucket, RuleSetOutputTarget, RuleSetSource } from "./rule-set-types";
 import { RULE_SET_BUCKETS, RULE_SET_TARGETS } from "./rule-set-types";
 import { planRuleSetArtifacts } from "./rule-set-artifacts";
 import { requireSecret } from "./secrets";
 import type { RenderConfig } from "./types";
-import { randomToken, readResponseTextWithLimit, sha256Hex } from "./util";
+import { randomToken, sha256Hex } from "./util";
 import { fetchWithTimeout, waitForRetry } from "./upstream-fetch";
 
 export const RULE_SET_SOURCE_CACHE_PREFIX = "cache:ruleSetSource:";
@@ -17,7 +17,6 @@ export const RULE_SET_SOURCE_CACHE_META_INDEX_KEY = "cache:ruleSetSourceMeta:ind
 export const COMPILED_RULE_SET_PREFIX = "cache:compiledRuleSet:";
 export const COMPILED_RULE_SET_META_PREFIX = "cache:compiledRuleSetMeta:";
 
-const MAX_RULE_SET_SOURCE_BYTES = 2 * 1024 * 1024;
 const MAX_RULE_SET_SOURCE_FETCH_RETRIES = 1;
 const RULE_SET_SOURCE_FETCH_ATTEMPT_TIMEOUT_MS = 8_000;
 const RULE_SET_SOURCE_FETCH_TOTAL_TIMEOUT_MS = 25_000;
@@ -25,7 +24,6 @@ const RULE_SET_SOURCE_FETCH_RETRY_BASE_DELAY_MS = 100;
 const UNKNOWN_RULE_SET_SOURCE_FETCHED_AT = "1970-01-01T00:00:00.000Z";
 const ENCRYPTED_CACHE_STORAGE_PREFIX = "\u001fsubpilot-encrypted-cache:";
 const MAX_RULE_SET_SOURCE_CACHE_MIGRATIONS_PER_PRUNE = 100;
-const MAX_RULE_SET_REFRESH_CONTENT_CHARACTERS = 12 * 1024 * 1024;
 const MAX_COMPILED_RULE_SET_PLAINTEXT_CHARACTERS = 16 * 1024 * 1024;
 const MAX_COMPILED_RULE_SET_KV_VALUE_BYTES = 24 * 1024 * 1024;
 const RETAINED_COMPILED_RULE_SET_VERSIONS = 3;
@@ -102,6 +100,7 @@ export interface CompiledRuleSetStatusItem {
   ruleCount: number;
   duplicateCount: number;
   buckets: CompiledRuleSetBucketMeta[];
+  artifacts: Array<{ behavior: RuleSetBucket; count: number }>;
   warnings: string[];
   cached: boolean;
 }
@@ -226,7 +225,6 @@ export async function refreshRuleSetSourceCaches(
   const errorsByKey = new Map<string, string>();
   let refreshed = 0;
   let cached = 0;
-  let retainedCharacters = 0;
 
   for (const source of new Map(sourcesToRefresh.filter((source) => source.enabled && source.url).map((source) => [source.url, source])).values()) {
     if (!source.enabled || !source.url) continue;
@@ -262,14 +260,6 @@ export async function refreshRuleSetSourceCaches(
         sourceName: source.name
       }, { updateIndex: false });
       nextEntries.set(key, entry);
-      if (retainedCharacters + content.length > MAX_RULE_SET_REFRESH_CONTENT_CHARACTERS) {
-        const reason = `规则集来源内容总量超过 ${MAX_RULE_SET_REFRESH_CONTENT_CHARACTERS} 字符限制`;
-        errorsByKey.set(key, reason);
-        failures.push({ sourceId: source.id, sourceName: source.name, reason, usedCachedContent: false });
-        warnings.push(`${source.name}: ${reason}`);
-        continue;
-      }
-      retainedCharacters += content.length;
       contentByKey.set(key, { content, usedCachedContent: false });
       refreshed += 1;
     } catch (error) {
@@ -284,20 +274,14 @@ export async function refreshRuleSetSourceCaches(
           sourceName: source.name,
           contentAvailable: true
         });
-        if (retainedCharacters + cachedContent.length <= MAX_RULE_SET_REFRESH_CONTENT_CHARACTERS) {
-          retainedCharacters += cachedContent.length;
-          contentByKey.set(key, {
-            content: cachedContent,
-            usedCachedContent: true,
-            reason,
-            warning: `${source.name}: ${reason}`
-          });
-          cached += 1;
-          usedCachedContent = true;
-        } else {
-          reason = `规则集来源内容总量超过 ${MAX_RULE_SET_REFRESH_CONTENT_CHARACTERS} 字符限制`;
-          errorsByKey.set(key, reason);
-        }
+        contentByKey.set(key, {
+          content: cachedContent,
+          usedCachedContent: true,
+          reason,
+          warning: `${source.name}: ${reason}`
+        });
+        cached += 1;
+        usedCachedContent = true;
       } else {
         errorsByKey.set(key, reason);
       }
@@ -423,7 +407,7 @@ export async function readCompiledRuleSetBucket(
 export async function writeCompiledRuleSet(
   env: Env,
   manifest: CompiledRuleSetManifest,
-  buckets: Record<RuleSetBucket, ParsedRuleSetRule[]>
+  buckets: Record<RuleSetBucket, CompiledRuleSetRule[]>
 ): Promise<void> {
   const storageId = compiledRuleSetStorageId();
   manifest.storageId = storageId;
@@ -791,7 +775,7 @@ async function fetchRuleSetSourceContent(url: string, absoluteDeadline?: number)
             await response.body?.cancel().catch(() => undefined);
             throw new InvalidRuleSetSourceResponseError("规则来源返回了 HTML 页面，请改用原始规则文件 URL");
           }
-          const content = await readResponseTextWithLimit(response, MAX_RULE_SET_SOURCE_BYTES, "rule set source");
+          const content = await response.text();
           if (looksLikeHtmlDocument(content)) {
             throw new InvalidRuleSetSourceResponseError("规则来源返回了 HTML 页面，请改用原始规则文件 URL");
           }

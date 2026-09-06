@@ -34,7 +34,7 @@ export function planRuleSetOutputs(ruleSets: RuleSetConfig, enabledOnly = true):
       continue;
     }
     existing.output.sourceIds = appendUnique(existing.output.sourceIds, output.sourceIds);
-    existing.output.inlineRules.push(...output.inlineRules);
+    for (const rule of output.inlineRules) existing.output.inlineRules.push(rule);
     existing.output.surgeOptions = appendUnique(existing.output.surgeOptions, output.surgeOptions);
     existing.includedOutputNames.push(output.name);
   }

@@ -1,5 +1,6 @@
 import { newTailscaleNode, tailscaleForm, updateTailscaleForm, readTailscaleForm } from "./tailscale-ui.js";
 import { createSingboxForm, createSingboxGroupForm, singboxSections, singboxTitle } from "./singbox-ui.js";
+import { createClashRoutingUi } from "./clash-routing-ui.js";
 import { CLIENTS, NAV, LABELS, CLIENT_SECTIONS, RULE_FIELDS, LEGACY_RULE_FIELDS, getPath, setPath, splitRule } from "./app-model.js";
 const $ = (selector, root = document) => root.querySelector(selector);
 const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
@@ -26,6 +27,7 @@ const smallButton = (name, action2, attrs = "", title = "") => btn(icon(name) + 
 const target = () => CLIENTS[state.client].target;
 const basePath = () => `clients.${state.client}`;
 const currentClient = () => state.config.clients[state.client];
+const clashRouting = createClashRoutingUi({ state, t, esc, btn, field, section, modal, closeModal, localField, readLocal, policyChoices, selectOptions, orderedPlan, isFinalRule, splitRule, appendPlanItem, changed, render, api });
 const dirty = () => state.config && JSON.stringify(state.config) !== state.saved;
 const isObject = (value) => Boolean(value) && typeof value === "object" && !Array.isArray(value);
 function validateNativeShape(value, path = "clients.singbox") {
@@ -50,8 +52,13 @@ async function api(path, options = {}) {
     location.reload();
     throw Error(t("会话已过期", "Session expired"));
   }
+  if (!response.headers.get("content-type")?.includes("application/json")) throw Error(t(`服务暂时无法完成请求（${response.status}），请稍后重试。`, `The service could not complete this request (${response.status}). Please retry.`));
   const data = await response.json();
-  if (!response.ok) throw Error(data.error || `${response.status}`);
+  if (!response.ok) {
+    const error = Error(data.error || `${response.status}`);
+    error.issues = data.issues;
+    throw error;
+  }
   return data;
 }
 function updateStatus() {
@@ -215,7 +222,7 @@ function renderGroups() {
 function renderClient() {
   const client = state.config.clients[state.client];
   const fields = CLIENT_SECTIONS[state.client][state.section] || [];
-  const tabs = [["network", "网络与 TUN", "Network & TUN"], ["dns", "DNS", "DNS"], ["rules", "路由规则", "Routing"], ...state.client !== "clash" ? [["tailscale", "Tailscale", "Tailscale"]] : [], ...state.client === "singbox" ? [["endpoints", "VPN 端点", "VPN endpoints"], ["outbounds", "原生出站", "Native outbounds"], ["services", "服务", "Services"]] : [], ["advanced", "高级设置", "Advanced"], ...state.client === "surge" ? [["mitm", "MITM 证书", "MITM certificates"]] : []];
+  const tabs = [["network", "网络与 TUN", "Network & TUN"], ["dns", "DNS", "DNS"], ["rules", state.client === "clash" ? "分流配置" : "路由规则", "Routing"], ...state.client !== "clash" ? [["tailscale", "Tailscale", "Tailscale"]] : [], ...state.client === "singbox" ? [["endpoints", "VPN 端点", "VPN endpoints"], ["outbounds", "原生出站", "Native outbounds"], ["services", "服务", "Services"]] : [], ["advanced", "高级设置", "Advanced"], ...state.client === "surge" ? [["mitm", "MITM 证书", "MITM certificates"]] : []];
   let content = "";
   if (state.client === "surge" && state.section === "mitm") content = renderMitm();
   else if (state.section === "tailscale") content = renderTailscale();
@@ -314,6 +321,7 @@ function renderMitm() {
   return section(t("MITM 证书管理", "MITM certificate management"), `<p class="muted">${t("生成或导入 Surge 使用的 CA 证书。修改后保存配置，再在客户端更新订阅。", "Generate or import a CA certificate for Surge. Save changes, then update the subscription in your client.")}</p><p id="ca-status" role="status">${mitm.caP12 ? t("已配置 CA 证书", "CA certificate configured") : t("尚未配置 CA 证书", "No CA certificate configured")}</p><div class="toolbar">${btn(t("生成证书", "Generate certificate"), "generate-ca", "", "primary")}${btn(t("导入证书", "Import certificate"), "import-ca")}${btn(t("导出证书", "Export certificate"), "export-ca", mitm.caP12 ? "" : "disabled")}</div>${field(`${path}.caPassphrase`, mitm.caPassphrase)}<details><summary>${t("查看或编辑证书数据", "View or edit certificate data")}</summary>${field(`${path}.caP12`, mitm.caP12)}</details>`) + section(t("MITM 设置", "MITM settings"), Object.entries(mitm).filter(([key]) => !["caPassphrase", "caP12"].includes(key)).map(([key, value]) => field(`${path}.${key}`, value)).join(""));
 }
 function renderRules() {
+  if (state.client === "clash") return clashRouting.render();
   const client = state.config.clients[state.client];
   const native = state.client === "singbox";
   const path = native ? `${basePath()}.route.rules` : `${basePath()}.rules`;
@@ -559,6 +567,7 @@ async function uploadMmdb() {
   }
 }
 function modal(title, body, onSave, saveLabel = t("应用更改", "Apply changes")) {
+  $("#modal").classList.remove("routing-order-dialog");
   modal.updateRuleSources = null;
   $("#modal-title").textContent = title;
   $("#modal-body").innerHTML = body;
@@ -790,7 +799,7 @@ function editOutput(index) {
   const initialUrls = outputSourceUrls(original);
   const displayedUrls = state.invalid.get(`plan.${state.client}.output.${index}.sourceUrls`) ?? initialUrls;
   const form = { ...original, sourceUrls: initialUrls, surgeOptions: original.surgeOptions.join(",") };
-  const formats = ["auto", "surge-rule-set", "surge-domain-set", "clash-yaml", "plain-domain", "plain-ipcidr", "plain-classical"];
+  const formats = state.client === "clash" ? ["auto", "clash-yaml", "plain-domain", "plain-ipcidr", "plain-classical"] : ["auto", "surge-rule-set", "surge-domain-set", "clash-yaml", "plain-domain", "plain-ipcidr", "plain-classical"];
   const sourceDrafts = new Map();
   const readSourceSettings = () => {
     for (const row of document.querySelectorAll("#output-source-settings [data-source-url]")) {
@@ -799,8 +808,14 @@ function editOutput(index) {
       sourceDrafts.set(row.dataset.sourceUrl, value);
     }
   };
-  modal(t("编辑规则集", "Edit rule set"), localField("name", form.name) + localField("sourceUrls", displayedUrls, { label: t("来源地址（每行一个，自动关联）", "Source URLs (one per line, linked automatically)"), multiline: true }) + localField("policy", form.policy, { options: policyChoices(form.policy) }) + (state.client === "surge" ? localField("surgeOptions", form.surgeOptions, { options: [...new Set([...surgeOptionChoices("RULE-SET"), form.surgeOptions])] }) : "") + localField("enabled", form.enabled) + `<details><summary>${t("来源设置", "Source settings")}</summary><p class="help">${t("每个地址可分别设置解析格式，默认自动识别。修改会影响当前客户端中复用该地址来源的规则集。", "Set the format for each URL; automatic detection is the default. Changes affect rule sets reusing this source within the current client.")}</p><div id="output-source-settings"></div></details><details><summary>${t("内联规则", "Inline rules")}</summary>${localField("inlineRules", form.inlineRules)}</details>`, () => {
+  const clash = state.client === "clash";
+  modal(t("编辑规则集", "Edit rule set"), (clash ? "" : localField("name", form.name)) + localField("sourceUrls", displayedUrls, { label: t("规则集地址（每行一个）", "Rule-set URLs (one per line)"), multiline: true }) + (clash ? clashRouting.policyField(form.policy) : localField("policy", form.policy, { options: policyChoices(form.policy) })) + (state.client === "surge" ? localField("surgeOptions", form.surgeOptions, { options: [...new Set([...surgeOptionChoices("RULE-SET"), form.surgeOptions])] }) : "") + (clash ? "" : localField("enabled", form.enabled)) + `<details><summary>${t("来源设置", "Source settings")}</summary><p class="help">${t("每个地址可分别设置解析格式，默认自动识别。修改会影响当前客户端中复用该地址来源的规则集。", "Set the format for each URL; automatic detection is the default. Changes affect rule sets reusing this source within the current client.")}</p>${clash ? localField("name", form.name, { label: t("名称（自动生成）", "Name (generated automatically)") }) + localField("enabled", form.enabled) + localField("surgeOptions", form.surgeOptions, { label: t("解析 IP 前不查询 DNS", "Do not resolve IP matches"), options: ["", "no-resolve"] }) : ""}<div id="output-source-settings"></div></details><details><summary>${t("内联规则", "Inline rules")}</summary>${localField("inlineRules", form.inlineRules)}</details>`, () => {
     const value = readLocal(form);
+    if (clash) {
+      value.policy = clashRouting.checkPolicy(value.policy);
+      value.name = value.name.trim() || `rules-${crypto.randomUUID().slice(0, 8)}`;
+      if (!value.sourceUrls.trim() && !value.inlineRules.length) throw Error(t("请填写规则集地址或内联规则。", "Enter a rule-set URL or inline rules."));
+    }
     if (!value.name.trim()) throw Error(t("请填写名称", "Enter a name"));
     if (plan.outputs.some((item, i) => i !== index && item.name === value.name)) throw Error(t("规则集名称重复", "Duplicate rule-set name"));
     const linked = value.sourceUrls === initialUrls ? null : sourcesForUrls(plan, value.sourceUrls);
@@ -852,6 +867,9 @@ async function save() {
     state.saved = JSON.stringify(saved);
     toast(t("配置已保存", "Configuration saved"));
     render();
+  } catch (error) {
+    if (error.issues?.length) modal(t("分流配置尚未保存", "Routing configuration not saved"), `<p>${esc(error.message)}</p><ul>${error.issues.map((issue) => `<li>${esc(typeof issue === "string" ? issue : `${issue.outputName}: ${issue.reason}`)}</li>`).join("")}</ul>`, null);
+    else throw error;
   } finally {
     state.busy = false;
     updateStatus();
@@ -936,6 +954,11 @@ async function refreshStatus() {
 }
 async function action(button) {
   if (["client", "section", "add-rule", "edit-rule", "add-direct", "edit-direct", "add-output", "edit-output", "add-group", "edit-group", "add-tailscale", "edit-tailscale", "edit-singbox-section"].includes(button.dataset.action)) await loadSharedProxyNames().catch((error) => toast(error.message));
+  if (button.dataset.action.startsWith("clash-")) {
+    if (["clash-add-direct", "clash-edit-direct"].includes(button.dataset.action)) await loadSharedProxyNames().catch((error) => toast(error.message));
+    await clashRouting.action(button);
+    return;
+  }
   if (button.dataset.action === "edit-singbox-section") { await editSingboxSection(button.dataset.key); return; }
   if (button.dataset.action === "remove-singbox-section") {
     confirmDelete(t("恢复默认会移除此分类的配置；已有引用需要手动调整。", "Restoring defaults removes this section; update any references manually."), () => { delete currentClient()[button.dataset.key]; }); return;
@@ -1266,6 +1289,10 @@ document.addEventListener("input", (event) => {
 });
 document.addEventListener("change", (event) => {
   const inline = event.target;
+  if (inline.dataset.clashField) {
+    try { clashRouting.change(inline); } catch (error) { toast(error.message); render(); }
+    return;
+  }
   if (inline.dataset.tsField) { updateTailscaleForm($("#modal-body")); return; }
   if (inline.dataset.local === "sourceUrls" && modal.updateRuleSources) { modal.updateRuleSources(); return; }
   if (inline.dataset.local === "type" && $('#modal-body [data-surge-options]')) { updateSurgeRuleForm(); return; }

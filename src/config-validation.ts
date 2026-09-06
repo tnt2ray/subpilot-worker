@@ -1,3 +1,5 @@
+import { parseInlineRuleSetLines } from "./rule-set-parser";
+import { isNativeClashRule } from "./rule-targets";
 import { normalizeManagedBasePath, ruleSetPathName } from "./managed-url";
 import { isValidSingboxOutbound } from "./singbox-validation";
 import { isProxyNodeSupportedForTarget } from "./node-transforms";
@@ -166,6 +168,7 @@ export function validateConfigEntityLimits(config: RenderConfig, options: { allo
     if (idError) return idError;
     if (ruleSourceIds.has(source.id)) return `规则来源 ID ${source.id} 不能重复`;
     ruleSourceIds.add(source.id);
+    if (config.renderTarget === "clash" && config.ruleSets.mode === "compiled" && source.enabled && source.format.startsWith("surge-")) return `Clash 规则来源 ${source.name} 不支持 Surge 格式，请选择 Clash YAML 或文本格式。`;
     const nameError = validateSizedString(source?.name, MAX_NAME_LENGTH, `规则来源 ${source.id} 名称`);
     if (nameError) return nameError;
     const urlError = validateSizedString(source?.url, MAX_URL_LENGTH, `规则来源 ${source.id} URL`, true);
@@ -185,6 +188,11 @@ export function validateConfigEntityLimits(config: RenderConfig, options: { allo
     if (inlineError) return inlineError;
     const optionsError = validateStringList(output?.surgeOptions, `规则输出 ${output.name} Surge 参数`, 100, 512);
     if (optionsError) return optionsError;
+    if (config.renderTarget === "clash" && config.ruleSets.mode === "compiled" && output.enabled) {
+      if (output.surgeOptions.some((option) => option !== "no-resolve")) return `Clash 规则输出 ${output.name} 仅支持 no-resolve 选项。`;
+      const parsed = parseInlineRuleSetLines(output.inlineRules, output.name, undefined, true);
+      if (parsed.warnings.length) return parsed.warnings[0]!;
+    }
     const seenOptions = new Set<string>();
     for (const rawOption of output.surgeOptions) {
       const option = rawOption.trim().toLowerCase();
@@ -202,6 +210,7 @@ export function validateConfigEntityLimits(config: RenderConfig, options: { allo
     const ruleError = validateSizedString(rule?.rule, MAX_RULE_LENGTH, `主配置单条规则 ${rule.id}`);
     if (ruleError) return ruleError;
     if (/[\r\n]/.test(rule.rule)) return `主配置单条规则 ${rule.id} 不能包含换行`;
+    if (config.renderTarget === "clash" && config.ruleSets.mode === "compiled" && rule.enabled && rule.rule.trim().toUpperCase() !== "MATCH" && rule.rule.trim().toUpperCase() !== "FINAL" && !isNativeClashRule(rule.rule)) return `主配置单条规则 ${rule.id} 含有不支持的 Clash 类型或参数。`;
     const policyError = validatePolicyName(rule?.policy, `主配置单条规则 ${rule.id} 策略`);
     if (policyError) return policyError;
   }

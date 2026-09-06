@@ -1,4 +1,5 @@
 import { DEFAULT_CONFIG } from "./default-config";
+import { migrateClashRouting } from "./clash-routing-migration";
 import { parseGroupOption, splitGroupSpec } from "./policy-group-spec";
 import { normalizeConfig, normalizeSurge, normalizeClash } from "./config-normalize";
 import { convertSurgeToSingbox, defaultSingboxConfig } from "./singbox-config";
@@ -33,6 +34,10 @@ export function migrateConfigDocument(input: RenderConfig): AppConfig {
 
 export function defaultConfigDocument(): AppConfig {
   const doc = migrateConfigDocument(DEFAULT_CONFIG);
+  const clash = migrateClashRouting(doc.clients.clash);
+  if (clash.issues.length) throw new Error("默认 Clash 分流配置无法转换。");
+  doc.clients.clash = clash.client;
+  doc.clients.clash.ruleSets.aggregateByPolicy = true;
   doc.clients.singbox = { ...doc.clients.singbox, ...defaultSingboxConfig(), ruleSets: { mode: "manual", aggregateByPolicy: false, sources: [], outputs: [], directRules: [] } };
   return doc;
 }
