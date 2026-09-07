@@ -38,6 +38,7 @@ interface ParseLineOptions {
 }
 
 export function parseRuleSetContent(content: string, format: RuleSetSourceFormat, sourceLabel: string, visit?: RuleVisitor, clashOnly = false, strictClashYaml = false): ParseRuleSetResult {
+  if (format === "sing-box-binary") return { rules: [], warnings: [`${sourceLabel}: SRS 二进制规则集必须由 sing-box 直接下载。`], fatal: true };
   if (clashOnly && format.startsWith("surge-")) return { rules: [], warnings: [`${sourceLabel}: Clash 不支持 Surge 来源格式。`] };
   const inferred = inferRuleSetFormat(content, format);
   const selectedFormat = clashOnly && inferred === "surge-rule-set" ? "plain-classical" : inferred;

@@ -2,7 +2,7 @@ import { parseInlineRuleSetLines } from "./rule-set-parser";
 import { isNativeClashDirectRule } from "./rule-targets";
 import { normalizeManagedBasePath, ruleSetPathName } from "./managed-url";
 import { isValidSingboxOutbound } from "./singbox-validation";
-import { isProxyNodeSupportedForTarget } from "./node-transforms";
+import { isIPv4, isIPv6, isProxyNodeSupportedForTarget } from "./node-transforms";
 import { parseConfiguredProxyNode } from "./parsers";
 import { parseAllPolicySelector, parseGroupOption, splitGroupSpec } from "./policy-group-spec";
 import { effectiveRuleSetOutputs } from "./rule-set-outputs";
@@ -169,6 +169,7 @@ export function validateConfigEntityLimits(config: RenderConfig, options: { allo
     if (ruleSourceIds.has(source.id)) return `规则来源 ID ${source.id} 不能重复`;
     ruleSourceIds.add(source.id);
     if (config.renderTarget === "clash" && config.ruleSets.mode === "compiled" && source.enabled && source.format.startsWith("surge-")) return `Clash 规则来源 ${source.name} 不支持 Surge 格式，请选择 Clash YAML 或文本格式。`;
+    if (source.format === "sing-box-binary" && config.renderTarget !== "sing-box") return `规则来源 ${source.name} 的 SRS 格式仅适用于 sing-box。`;
     const nameError = validateSizedString(source?.name, MAX_NAME_LENGTH, `规则来源 ${source.id} 名称`);
     if (nameError) return nameError;
     const urlError = validateSizedString(source?.url, MAX_URL_LENGTH, `规则来源 ${source.id} URL`, true);
@@ -176,6 +177,8 @@ export function validateConfigEntityLimits(config: RenderConfig, options: { allo
     if (source.url && !isHttpUrl(source.url)) return `规则来源 ${source.id} URL 必须使用 http 或 https`;
   }
   for (const output of config.ruleSets.outputs) {
+    const dnsError = validateRuleSetDns(config, output);
+    if (dnsError) return dnsError;
     if (output.surgeType !== undefined && (config.renderTarget !== "surge" || !["RULE-SET", "DOMAIN-SET"].includes(output.surgeType))) return `规则输出 ${output.name} 的 Surge 类型无效。`;
     if (output.provider !== undefined && config.renderTarget !== "clash") return `规则输出 ${output.name} 的 provider 设置仅适用于 Clash。`;
     if (output.provider !== undefined && (!output.provider || !["domain", "ipcidr", "classical"].includes(output.provider.behavior)
@@ -701,7 +704,8 @@ function validateOutputNameList(outputs: RenderConfig["ruleSets"]["outputs"]): s
     names.add(name);
   }
   for (const name of names) {
-    for (const suffix of ["-domain", "-ipcidr"]) {
+    for (const suffix of ["-domain", "-ipcidr", "-dns"]) {
+      if (suffix === "-dns" && !outputs.some((output) => ruleSetPathName(output.name) === name && output.dnsServer)) continue;
       if (names.has(`${name}${suffix}`)) return `规则集名称 ${name} 与 ${name}${suffix} 会生成冲突文件名`;
     }
   }
@@ -838,4 +842,34 @@ function validateImportantSettings(config: RenderConfig): string | null {
     if (typeof value === "string" && /[\r\n]/.test(value)) return `${label}不能包含换行`;
   }
   return null;
+}
+
+function validateRuleSetDns(config: RenderConfig, output: RenderConfig["ruleSets"]["outputs"][number]): string | null {
+  const server = output.dnsServer;
+  if (server === undefined || server === "") return null;
+  const label = `规则集 ${output.name} 的 DNS 解析服务器`;
+  if (typeof server !== "string" || server.length > 2048 || /[\u0000-\u001f\u007f\u2028\u2029]/.test(server)) return `${label}无效。`;
+  if (config.renderTarget === "sing-box") {
+    const servers = config.document?.clients.singbox.dns.servers;
+    if (!Array.isArray(servers) || !servers.some((item) => item && typeof item === "object" && !Array.isArray(item) && item.tag === server)) return `${label}不存在，请在 DNS 页添加服务器或重新选择。`;
+    return null;
+  }
+  if (config.renderTarget === "clash") {
+    if (output.provider?.behavior === "ipcidr") return `${label}不能用于纯 IP 规则集，请使用 domain 或 classical。`;
+    if (output.enabled && config.ruleSets.mode === "compiled" && !config.clash.dnsEnabled) return `请先启用 Clash DNS，再指定规则集解析服务器。`;
+  }
+  if (/[\s,]/.test(server)) return `${label}只接受一个服务器地址。`;
+  if (server === "system") return null;
+  if (isIPv4(server) || isIPv6(server)) return null;
+  if (!server.includes("://")) {
+    const match = server.match(/^(?:\[([a-fA-F0-9:]+)\]|([0-9.]+)):(\d+)$/);
+    if (match && (isIPv6(match[1] || "") || isIPv4(match[2] || "")) && Number(match[3]) > 0 && Number(match[3]) <= 65535) return null;
+    return `${label}应为 IP、IP:端口、system 或加密 DNS URL。`;
+  }
+  try {
+    const url = new URL(server);
+    const schemes = config.renderTarget === "surge" ? ["https:", "h3:", "quic:", "tls:", "tcp:"] : ["https:", "tls:", "quic:", "tcp:", "udp:"];
+    if (schemes.includes(url.protocol) && url.hostname && !url.username && !url.password && !url.hash) return null;
+  } catch { /* Report only the field, never echo resolver credentials. */ }
+  return `${label}的 URL 协议或地址无效。`;
 }

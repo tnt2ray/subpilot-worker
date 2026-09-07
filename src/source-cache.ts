@@ -1,5 +1,5 @@
 import { decryptText, encryptText } from "./crypto-store";
-import { listKvKeys, readKvJson } from "./kv-helpers";
+import { deleteKvKeys, listKvKeys, readKvJson } from "./kv-helpers";
 import { requireSecret } from "./secrets";
 import {
   normalizeSourceCacheNodeCount,
@@ -154,11 +154,14 @@ async function refreshSourceCacheForSources(
   const failures: SourceCacheRefreshFailure[] = [];
   let refreshed = 0;
   let cached = 0;
+  const refreshedKeys = new Set<string>();
 
   for (const source of sourcesToRefresh) {
     if (!source.enabled || !source.url) continue;
     const userAgent = sourceUserAgent(config, source);
     const key = await sourceCacheKeyFor(source.url, userAgent);
+    if (refreshedKeys.has(key)) continue;
+    refreshedKeys.add(key);
     const now = new Date().toISOString();
     if (options.deadline !== undefined && Date.now() >= options.deadline) {
       const existingEntry = existingByKey.get(key);
@@ -219,7 +222,7 @@ async function refreshSourceCacheForSources(
     : 0;
 
   const entries = [...nextEntries.values()].sort((a, b) => b.fetchedAt.localeCompare(a.fetchedAt));
-  await env.SUBPILOT_CONFIG.put(SOURCE_CACHE_META_INDEX_KEY, JSON.stringify(entries));
+  await writeSourceCacheIndex(env, entries);
 
   return {
     refreshed,
@@ -253,7 +256,7 @@ export async function pruneSourceCache(env: Env, config: RenderConfig): Promise<
   const entries = existing
     .filter((entry) => expectedKeys.has(entry.key))
     .sort((a, b) => b.fetchedAt.localeCompare(a.fetchedAt));
-  await env.SUBPILOT_CONFIG.put(SOURCE_CACHE_META_INDEX_KEY, JSON.stringify(entries));
+  await writeSourceCacheIndex(env, entries);
   return deleted;
 }
 
@@ -335,10 +338,7 @@ async function pruneUnexpectedSourceCacheEntries(env: Env, existing: SourceCache
   for (const key of contentKeys) {
     if (!expectedKeys.has(key)) staleCacheKeys.add(key);
   }
-  await Promise.all([...staleCacheKeys].flatMap((key) => [
-    env.SUBPILOT_CONFIG.delete(key),
-    env.SUBPILOT_CONFIG.delete(sourceCacheMetaKey(key))
-  ]));
+  await deleteKvKeys(env, [...staleCacheKeys].flatMap((key) => [key, sourceCacheMetaKey(key)]));
   return staleCacheKeys.size;
 }
 
@@ -376,10 +376,22 @@ async function writeSourceCacheEntry(
       meta,
       ...await readSourceCacheEntries(env).then((existing) => existing.filter((item) => item.key !== entry.key))
     ];
-    writes.push(env.SUBPILOT_CONFIG.put(SOURCE_CACHE_META_INDEX_KEY, JSON.stringify(entries)));
+    writes.push(writeSourceCacheIndex(env, entries));
   }
   await Promise.all(writes);
   return meta;
+}
+
+async function writeSourceCacheIndex(env: Env, entries: SourceCacheEntry[]): Promise<void> {
+  const content = JSON.stringify([...entries].sort((left, right) => left.key.localeCompare(right.key)));
+  try {
+    if (await env.SUBPILOT_CONFIG.get(SOURCE_CACHE_META_INDEX_KEY) !== content) {
+      await env.SUBPILOT_CONFIG.put(SOURCE_CACHE_META_INDEX_KEY, content);
+    }
+  } catch {
+    // Per-source metadata remains authoritative when cleanup and refresh race.
+    console.warn(JSON.stringify({ level: "warn", message: "订阅源缓存索引更新失败，将使用独立缓存元数据。" }));
+  }
 }
 
 async function readSourceCacheContent(env: Env, key: string, stored: string): Promise<string> {

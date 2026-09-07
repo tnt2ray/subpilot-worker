@@ -3,7 +3,7 @@ import { toSingboxOutbound } from "./singbox-nodes";
 import { isValidSingboxOutbound } from "./singbox-validation";
 import { parseAllPolicySelector, parseGroupOption, splitGroupSpec } from "./policy-group-spec";
 import { nodeMatchesFilter } from "./node-transforms";
-import { effectiveRuleSetOutputs } from "./rule-set-outputs";
+import { effectiveRuleSetOutputs, nativeSingboxRuleSetSources, ruleSetOutputNeedsCompilation } from "./rule-set-outputs";
 import { ensureCompiledRuleSet } from "./rule-set-compiler";
 import { planRuleSetArtifacts } from "./rule-set-artifacts";
 import { managedRuleSetUrlForRequest } from "./managed-url";
@@ -90,6 +90,8 @@ export async function buildSingbox(env: Env, config: RenderConfig, nodes: ProxyN
     outbounds.push(group);
   }
   const route = structuredClone(client.route);
+  const dns = structuredClone(client.dns);
+  const dnsRules: JsonObject[] = [];
   if (config.ruleSets.mode === "compiled") {
     const rules: JsonObject[] = [{ protocol: "dns", action: "hijack-dns" }];
     const ruleSets: JsonObject[] = [];
@@ -111,10 +113,25 @@ export async function buildSingbox(env: Env, config: RenderConfig, nodes: ProxyN
           else if (converted.rule) rules.push({ ...converted.rule, ...policyAction(item.direct.policy) });
         } else {
           if (item.output.surgeOptions.some((option) => option !== "no-resolve")) throw new Error(`${item.output.name} 的 Surge 规则选项无法等价转换，请在当前客户端规则计划中移除或改写。`);
+          for (const source of nativeSingboxRuleSetSources(config.ruleSets, item.output)) {
+            const tag = `${item.output.name}-srs-${source.id}`;
+            ruleSets.push({ type: "remote", tag, format: "binary", url: source.url, http_client: { engine: "go" }, update_interval: "1d" });
+            rules.push({ rule_set: [tag], ...policyAction(item.output.policy) });
+            if (item.output.dnsServer) dnsRules.push({ rule_set: [tag], action: "route", server: item.output.dnsServer });
+          }
+          if (!ruleSetOutputNeedsCompilation(config.ruleSets, item.output, "sing-box")) continue;
           const manifest = await ensureCompiledRuleSet(env, config, item.output);
           diagnostics.push(...manifest.warnings.filter((message) => !/^AS\d+ 已展开为 \d+ 条 IPv4\/IPv6 CIDR（RIPE RIS 快照）。$/.test(message)).map((message) => issue("clients.singbox.ruleSets", "rule-cache", "warning", message)));
           const compatible = manifest.buckets.reduce((sum, bucket) => sum + (bucket.targetCounts?.["sing-box"] ?? 0), 0);
           if (compatible !== manifest.ruleCount) throw new Error("规则集中存在 sing-box 无法等价表达的规则");
+          if (item.output.dnsServer) {
+            if (!manifest.dnsRuleCount) diagnostics.push(issue("clients.singbox.ruleSets", "rule-dns-empty", "warning", `${item.output.name} 没有可用于 DNS 匹配的独立域名规则，未生成 DNS 绑定。`));
+            else {
+              const tag = `${item.output.name}-dns`;
+              ruleSets.push({ type: "remote", tag, format: "source", url: managedRuleSetUrlForRequest(config, requestUrl, item.output.name, "dns", "sing-box"), http_client: { engine: "go" }, update_interval: "1d" });
+              dnsRules.push({ rule_set: [tag], action: "route", server: item.output.dnsServer });
+            }
+          }
           for (const artifact of planRuleSetArtifacts(manifest.buckets, "sing-box")) {
             const tag = `${item.output.name}-${artifact.bucket}`;
             ruleSets.push({ type: "remote", tag, format: "source", url: managedRuleSetUrlForRequest(config, requestUrl, item.output.name, artifact.bucket, "sing-box"), http_client: { engine: "go" }, update_interval: "1d" });
@@ -127,7 +144,7 @@ export async function buildSingbox(env: Env, config: RenderConfig, nodes: ProxyN
     route.rules = [...(Array.isArray(route.rules) ? route.rules : []), ...rules];
     route.rule_set = [...(Array.isArray(route.rule_set) ? route.rule_set : []), ...ruleSets];
   }
-  const dns = structuredClone(client.dns);
+  if (dnsRules.length) dns.rules = [...dnsRules, ...(Array.isArray(dns.rules) ? dns.rules : [])];
   mergeSingboxHosts(dns, hosts, diagnostics);
   const { coreVersion: _, migrationIssues: __, ruleSets: ___, groups: ____, disabledGroups: _____, ...nativeSettings } = client;
   const result = { ...nativeSettings, dns, outbounds, route };

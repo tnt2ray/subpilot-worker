@@ -306,7 +306,7 @@ function renderSingboxDns() {
     return `<tr><td>${index + 1}</td><td>${Object.keys(match).length ? renderConfigLines(JSON.stringify(match, null, 2).split("\n")) : t("所有请求", "All requests")}</td><td>${esc(rule.server || rule.action || "route")}</td><td class="actions">${iconButton("up", "move-sb-dns", `data-index="${index}" data-direction="-1" ${index === 0 ? "disabled" : ""}`, t("上移", "Move up"))}${iconButton("down", "move-sb-dns", `data-index="${index}" data-direction="1" ${index === rules.length - 1 ? "disabled" : ""}`, t("下移", "Move down"))}${actions("rules", index)}</td></tr>`;
   }).join("");
   const table = (headers, rows) => `<div class="table-wrap"><table><thead><tr>${headers.map((heading) => `<th>${heading}</th>`).join("")}</tr></thead><tbody>${rows || `<tr><td colspan="${headers.length}" class="empty">${t("尚未配置", "Not configured")}</td></tr>`}</tbody></table></div>`;
-  return `<div class="sb-dns-page">${section(t("解析服务器", "DNS servers"), table([t("名称", "Name"), t("协议", "Protocol"), t("服务器地址", "Server address"), t("连接出口", "Connection outbound"), t("操作", "Actions")], serverRows), btn(t("添加服务器", "Add server"), "edit-sb-dns", 'data-kind="servers"', "primary"))}${section(t("默认解析", "Default resolution"), field("clients.singbox.dns.final", dns.final || "", { label: t("默认 DNS 服务器", "Default DNS server"), options: [...servers.map((server) => server.tag).filter(Boolean), ""] }) + `<p class="help">${t("未命中 DNS 分流规则时使用；留空使用第一个服务器。", "Used when no DNS rule matches; empty uses the first server.")}</p>`)}${section(t("DNS 分流规则", "DNS routing rules"), table([t("顺序", "Order"), t("匹配条件", "Match conditions"), t("解析目标 / 动作", "DNS target / action"), t("操作", "Actions")], ruleRows), btn(t("添加规则", "Add rule"), "edit-sb-dns", 'data-kind="rules"'))}<div class="toolbar">${btn(t("缓存与其他设置", "Cache and other settings"), "edit-sb-dns", 'data-kind="options"')}</div></div>`;
+  return `<div class="sb-dns-page">${section(t("DNS 服务器列表", "DNS server list"), table([t("名称", "Name"), t("协议", "Protocol"), t("服务器地址", "Server address"), t("连接出口", "Connection outbound"), t("操作", "Actions")], serverRows), btn(t("添加服务器", "Add server"), "edit-sb-dns", 'data-kind="servers"', "primary"))}${section(t("DNS 查询兜底服务器", "Fallback DNS server for queries"), field("clients.singbox.dns.final", dns.final || "", { label: t("兜底 DNS 服务器", "Fallback DNS server"), options: [...servers.map((server) => server.tag).filter(Boolean), ""] }) + `<p class="help">${t("收到的 DNS 查询未命中规则集 DNS 或高级 DNS 规则时使用。留空使用 DNS 服务器列表中的第一个服务器。", "Used when an incoming DNS query matches neither rule-set DNS nor advanced DNS rules. Leave empty to use the first server in the DNS server list.")}</p>`)}${section("", `<details><summary>${t("高级 DNS 规则", "Advanced DNS rules")} · ${rules.length}</summary><p class="help">${t("规则集 DNS 请在“分流规则”Tab 配置。此处用于查询类型匹配、拒绝查询等高级设置，在规则集 DNS 规则之后匹配。折叠不影响已配置规则生效。", "Configure rule-set DNS on the Routing rules tab. Use this section for advanced settings such as query-type matching and query rejection. These rules match after rule-set DNS rules; collapsing this section does not disable them.")}</p>${table([t("顺序", "Order"), t("匹配条件", "Match conditions"), t("解析目标 / 动作", "DNS target / action"), t("操作", "Actions")], ruleRows)}<div class="toolbar">${btn(t("添加规则", "Add rule"), "edit-sb-dns", 'data-kind="rules"')}</div></details>`)}<div class="toolbar">${btn(t("缓存与其他设置", "Cache and other settings"), "edit-sb-dns", 'data-kind="options"')}</div></div>`;
 }
 async function editSingboxDns(kind, index) {
   singboxSchema ||= await api("/api/singbox/schema");
@@ -337,13 +337,16 @@ function renderSingboxNetwork() {
   }).join("");
   return `<section class="sb-network"><div class="section-heading"><div><h2>${t("入站管理", "Inbound connections")}</h2><p class="help">${t("TUN 接管设备流量；HTTP / SOCKS 端口供应用连接代理。", "TUN captures device traffic; HTTP / SOCKS ports accept proxy connections from apps.")}</p></div>${btn(t("添加入站", "Add inbound"), "edit-singbox-inbound", "", "primary")}</div><div class="table-wrap"><table><thead><tr><th>${t("入站", "Inbound")}</th><th>${t("用途", "Purpose")}</th><th>${t("地址", "Address")}</th><th>${t("网络设置", "Network settings")}</th><th>${t("操作", "Actions")}</th></tr></thead><tbody>${rows || `<tr><td colspan="5" class="empty">${t("尚未配置入站，点击「添加入站」设置流量入口。", "No inbounds configured. Add an inbound to receive traffic.")}</td></tr>`}</tbody></table></div></section>`;
 }
+function singboxConnectionDnsHelp() {
+  return t("用于解析代理节点地址，以及直连时尚未解析的目标域名。连接单独指定 DNS 时优先使用其设置；此处指定的服务器可能绕过 DNS 查询分流规则。", "Resolves proxy server addresses and target domains still unresolved when connecting directly. A connection-specific DNS resolver takes priority; a server selected here may bypass DNS query routing rules.");
+}
 function renderSingboxConnectionSettings(group) {
-  const title = group === "dns" ? t("连接域名解析", "Connection hostname resolution") : t("出口连接设置", "Outbound connection settings");
+  const title = group === "dns" ? t("建立连接时的默认 DNS", "Default DNS for establishing connections") : t("出口连接设置", "Outbound connection settings");
   const route = currentClient().route;
   const keys = group === "dns" ? ["default_domain_resolver"] : ["auto_detect_interface", "default_interface", "default_network_strategy"];
-  const names = { default_domain_resolver: t("默认域名解析器", "Default domain resolver"), auto_detect_interface: t("自动检测出口网卡", "Detect outbound interface"), default_interface: t("指定出口网卡", "Outbound interface"), default_network_strategy: t("网络选择策略", "Network strategy") };
+  const names = { default_domain_resolver: t("连接解析服务器", "Connection resolver"), auto_detect_interface: t("自动检测出口网卡", "Detect outbound interface"), default_interface: t("指定出口网卡", "Outbound interface"), default_network_strategy: t("网络选择策略", "Network strategy") };
   const summary = keys.filter((key) => route[key] !== undefined).map((key) => `<div><span class="muted">${names[key]}：</span>${esc(typeof route[key] === "boolean" ? route[key] ? t("开启", "On") : t("关闭", "Off") : typeof route[key] === "object" ? JSON.stringify(route[key]) : route[key])}</div>`).join("");
-  return section(title, summary || `<p class="help">${t("使用默认设置", "Using defaults")}</p>`, btn(t("配置", "Configure"), "edit-singbox-section", `data-key="route" data-route-group="${group}"`));
+  return section(title, (summary || `<p class="help">${t("使用默认设置", "Using defaults")}</p>`) + (group === "dns" ? `<p class="help">${singboxConnectionDnsHelp()}</p>` : ""), btn(t("配置", "Configure"), "edit-singbox-section", `data-key="route" data-route-group="${group}"`));
 }
 function renderSingboxVpn(type) {
   const title = { wireguard: "WireGuard", openconnect: "OpenConnect", "openvpn-client": "OpenVPN" }[type];
@@ -397,7 +400,7 @@ async function editSingboxSection(key, inboundIndex, endpointType, routeGroup) {
     viewSchema = { ...singboxSchema, properties: { ...singboxSchema.properties, route: { ...node, properties: Object.fromEntries(routeKeys.map((name) => [name, node.properties[name]])), required: (node.required || []).filter((name) => routeKeys.includes(name)) } } };
   }
   let form;
-  modal(endpointType ? { wireguard: "WireGuard", openconnect: "OpenConnect", "openvpn-client": "OpenVPN" }[endpointType] : routeGroup ? (routeGroup === "dns" ? t("连接域名解析", "Connection hostname resolution") : t("出口连接设置", "Outbound connection settings")) : singboxTitle(key, t), `<p class="help">${t("先选择类型，再填写常用设置。更多参数在「高级设置」和「添加可选设置」中；应用后请保存配置。", "Choose a type and edit its common settings. Additional parameters are under Advanced settings and Add optional settings. Save configuration after applying.")}</p><div id="singbox-form"></div>`, async () => {
+  modal(endpointType ? { wireguard: "WireGuard", openconnect: "OpenConnect", "openvpn-client": "OpenVPN" }[endpointType] : routeGroup ? (routeGroup === "dns" ? t("建立连接时的默认 DNS", "Default DNS for establishing connections") : t("出口连接设置", "Outbound connection settings")) : singboxTitle(key, t), `<p class="help">${routeGroup === "dns" ? singboxConnectionDnsHelp() : t("先选择类型，再填写常用设置。更多参数在「高级设置」和「添加可选设置」中；应用后请保存配置。", "Choose a type and edit its common settings. Additional parameters are under Advanced settings and Add optional settings. Save configuration after applying.")}</p><div id="singbox-form"></div>`, async () => {
     const edited = form.read();
     let value = inboundIndex === undefined ? edited : [...client.inbounds];
     if (routeKeys) {
@@ -478,7 +481,7 @@ function renderRules() {
   let html = "";
   if (native) {
     if (!compiled) return section("", `<p class="help">${t("启用后，已有原生规则仍优先匹配，已保存的编排规则也会启用。", "Existing native rules keep priority. Previously saved rule-plan entries will also become active.")}</p>`, btn(t("使用规则集地址配置", "Use rule-set URLs"), "enable-singbox-rule-plan", "", "primary")) + renderSingboxSections(["route"]);
-    return renderRulePlan(client.ruleSets);
+    return renderSingboxSections(["route"]) + renderRulePlan(client.ruleSets);
   }
   if (!compiled) {
     html += section("", `<div class="toolbar">${btn(native ? "JSON" : t("文本", "Text"), "edit-json", `data-path="${path}" data-lines="${native ? "false" : "true"}"`)}</div><div class="table-wrap"><table class="rule-table"><thead><tr><th>${t("顺序", "Order")}</th><th>${t("匹配类型", "Match")}</th><th>${t("匹配值", "Value")}</th><th>${t("出站策略", "Outbound")}</th><th>${t("操作", "Actions")}</th></tr></thead><tbody>${rules.map((rule, index) => ruleRow(rule, index, path, native)).join("") || `<tr><td colspan="5" class="empty">${t("还没有规则", "No rules")}</td></tr>`}</tbody></table></div>${btn(icon("plus") + t("添加规则", "Add rule"), "add-rule", `data-path="${path}"`)}${native ? `<div class="toolbar"></div>${field(`${basePath()}.route.final`, client.route.final || "", { label: t("默认出站", "Default outbound"), options: policyChoices(client.route.final || "") })}` : ""}<div class="toolbar"><span>${t("当前端策略组：", "Client groups:")}</span>${Object.keys(currentClient().groups).slice(0, 7).map((name) => `<span class="chip">${esc(name)}</span>`).join("")}<a href="#groups">${t("管理策略组", "Manage groups")}</a></div>`);
@@ -532,6 +535,10 @@ function appendPlanItem(plan, kind, item) {
 }
 function outputSourceUrls(output) {
   return output.sourceIds.map((id) => currentClient().ruleSets.sources.find((source) => source.id === id)?.url).filter(Boolean).join("\n");
+}
+function pruneUnusedRuleSources(plan) {
+  const used = new Set(plan.outputs.flatMap((output) => output.sourceIds));
+  plan.sources = plan.sources.filter((source) => used.has(source.id));
 }
 function sourcesForUrls(plan, text, preferredIds = []) {
   const urls = [...new Set(text.split("\n").map((url) => url.trim()).filter(Boolean))];
@@ -594,7 +601,7 @@ function renderRulePlan(plan) {
     const kindLabel = output ? (surge ? item.surgeType || t("规则集（自动类型）", "Rule set (automatic type)") : t("规则集", "Rule set")) : t("单条规则", "Direct rule");
     const policy = control("policy", "select", selectOptions(policyChoices(item.policy), item.policy), `aria-label="${t("出口策略", "Outbound policy")}"`);
     const options = output && surge ? `<label class="small">${t("Surge 选项", "Surge options")}${control("surgeOptions", "select", selectOptions(surgeOptionChoices(item.surgeType || "RULE-SET"), item.surgeOptions.join(",")))}</label>` : "";
-    return `<tr><td>${position + 1}</td><td class="routing-content"><span class="small muted">${esc(kindLabel)}</span>${content}</td><td>${policy}${options}</td><td><label class="routing-enabled"><input type="checkbox" data-plan-field="enabled" ${attrs} ${item.enabled ? "checked" : ""} ${lockedFinal ? "disabled" : ""}>${t("启用", "Enabled")}</label></td><td class="actions"><span class="routing-actions"><span class="order">${iconButton("up", "move-plan", `data-position="${position}" data-direction="-1" ${lockedFinal || position === 0 ? "disabled" : ""}`, t("上移", "Move up"))}${iconButton("down", "move-plan", `data-position="${position}" data-direction="1" ${lockedFinal || position === ordered.length - 1 || isFinalEntry(ordered[position + 1]) ? "disabled" : ""}`, t("下移", "Move down"))}</span>${iconButton("edit", `edit-${kind}`, `data-index="${index}"`, t("编辑", "Edit"))}${iconButton("trash", `delete-${kind}`, `data-index="${index}" ${lockedFinal ? "disabled" : ""}`, t("删除", "Delete"))}</span></td></tr>`;
+    return `<tr><td>${position + 1}</td><td class="routing-content"><span class="small muted">${esc(kindLabel)}</span>${content}${output ? `<p class="small muted">DNS: ${esc(item.dnsServer || t("继承全局", "Inherit global"))}</p>` : ""}</td><td>${policy}${options}</td><td><label class="routing-enabled"><input type="checkbox" data-plan-field="enabled" ${attrs} ${item.enabled ? "checked" : ""} ${lockedFinal ? "disabled" : ""}>${t("启用", "Enabled")}</label></td><td class="actions"><span class="routing-actions"><span class="order">${iconButton("up", "move-plan", `data-position="${position}" data-direction="-1" ${lockedFinal || position === 0 ? "disabled" : ""}`, t("上移", "Move up"))}${iconButton("down", "move-plan", `data-position="${position}" data-direction="1" ${lockedFinal || position === ordered.length - 1 || isFinalEntry(ordered[position + 1]) ? "disabled" : ""}`, t("下移", "Move down"))}</span>${iconButton("edit", `edit-${kind}`, `data-index="${index}"`, t("编辑", "Edit"))}${iconButton("trash", `delete-${kind}`, `data-index="${index}" ${lockedFinal ? "disabled" : ""}`, t("删除", "Delete"))}</span></td></tr>`;
   }).join("");
   if (state.client === "singbox" && !plan.directRules.some((item) => item.enabled && isFinalRule(item.rule))) {
     const selected = currentClient().route.final || "";
@@ -993,36 +1000,44 @@ function ruleSetDownloadName(plan, urls) {
   }
   const names = new Set(plan.outputs.map((output) => output.name));
   let name = base;
-  for (let suffix = 2; [name, `${name}-domain`, `${name}-ipcidr`].some((value) => names.has(value)) || names.has(name.replace(/-(domain|ipcidr)$/, "")); suffix += 1) name = `${base}-${suffix}`;
+  for (let suffix = 2; [name, `${name}-domain`, `${name}-ipcidr`, `${name}-dns`].some((value) => names.has(value)) || names.has(name.replace(/-(domain|ipcidr|dns)$/, "")); suffix += 1) name = `${base}-${suffix}`;
   return name;
 }
 function editOutput(index) {
   const plan = currentClient().ruleSets;
   const surge = state.client === "surge";
   const singbox = state.client === "singbox";
+  const clash = state.client === "clash";
   const original = index === null ? { name: "", enabled: true, policy: "Proxy", sourceIds: [], inlineRules: [], order: nextPlanOrder(plan), surgeOptions: [] } : plan.outputs[index];
   const initialUrls = outputSourceUrls(original);
   const displayedUrls = state.invalid.get(`plan.${state.client}.output.${index}.sourceUrls`) ?? initialUrls;
   const domainSources = original.sourceIds.length > 0 && original.sourceIds.every((id) => ["surge-domain-set", "plain-domain"].includes(plan.sources.find((source) => source.id === id)?.format));
   const sourceFormats = [...new Set(original.sourceIds.map((id) => plan.sources.find((source) => source.id === id)?.format || "auto"))];
-  const form = { ...original, sourceUrls: initialUrls, sourceFormat: sourceFormats.length > 1 ? "existing" : sourceFormats[0] || "auto", surgeType: original.surgeType || (domainSources ? "DOMAIN-SET" : "RULE-SET"), surgeOptions: original.surgeOptions.join(","), behavior: original.provider?.behavior || (index === null ? "classical" : "auto"), interval: original.provider?.interval ?? 86400 };
-  const formats = [["auto", t("自动识别", "Automatic")], ["surge-rule-set", "Surge RULE-SET"], ["surge-domain-set", "Surge DOMAIN-SET"], ["clash-yaml", "Clash YAML"], ["plain-domain", t("域名文本", "Domain text")], ["plain-ipcidr", t("IP-CIDR 文本", "IP-CIDR text")], ["plain-classical", t("规则文本（classical）", "Rule text (classical)")]];
+  const form = { ...original, dnsServer: original.dnsServer || "", sourceUrls: initialUrls, sourceFormat: sourceFormats.length > 1 ? "existing" : sourceFormats[0] || "auto", surgeType: original.surgeType || (domainSources ? "DOMAIN-SET" : "RULE-SET"), surgeOptions: original.surgeOptions.join(","), behavior: original.provider?.behavior || (index === null ? "classical" : "auto"), interval: original.provider?.interval ?? 86400 };
+  const formats = [["auto", t("自动识别", "Automatic")], ["sing-box-binary", t("sing-box SRS（独立直连）", "sing-box SRS (direct download)")], ["surge-rule-set", "Surge RULE-SET"], ["surge-domain-set", "Surge DOMAIN-SET"], ["clash-yaml", "Clash YAML"], ["plain-domain", t("域名文本", "Domain text")], ["plain-ipcidr", t("IP-CIDR 文本", "IP-CIDR text")], ["plain-classical", t("规则文本（classical）", "Rule text (classical)")]].filter(([format]) => !clash || ["auto", "clash-yaml", "plain-domain", "plain-ipcidr", "plain-classical"].includes(format));
   if (form.sourceFormat === "existing") formats.unshift(["existing", t("保留各地址已有格式", "Keep each URL’s existing format")]);
-  const clash = state.client === "clash";
-  const simple = clash || state.client === "singbox";
-  const sourceSettings = singbox ? `<div class="form-row"><label for="output-source-format">${t("来源格式", "Source format")}</label><select id="output-source-format" data-local="sourceFormat">${formats.map(([value, label]) => `<option value="${esc(value)}" ${value === form.sourceFormat ? "selected" : ""}>${esc(label)}</option>`).join("")}</select></div><p class="help">${t("可自动识别 Clash 或 Surge 来源，也可明确选择格式。所选格式用于本行所有地址，合并后转换为 sing-box 规则集。", "Detect Clash or Surge sources automatically, or choose a format for all URLs in this row. Merged rules are converted to a sing-box rule set.")}</p>` : "";
-  const providerSettings = clash ? localField("behavior", form.behavior, { label: "behavior", options: [...(form.behavior === "auto" ? ["auto"] : []), "domain", "ipcidr", "classical"] }) + localField("interval", form.interval, { label: t("interval（秒）", "interval (seconds)") }) + `<p class="help">${t("单个 URL 由 Clash 直接下载；多个 URL 由系统合并去重。interval 为客户端下载间隔。", "Clash downloads a single URL directly. Multiple URLs are merged and deduplicated. interval controls client downloads.")}</p>` : "";
+  const simple = clash || singbox;
+  const sourceSettings = singbox || clash ? `<div class="form-row"><label for="output-source-format">${t("来源格式", "Source format")}</label><select id="output-source-format" data-local="sourceFormat">${formats.map(([value, label]) => `<option value="${esc(value)}" ${value === form.sourceFormat ? "selected" : ""}>${esc(label)}</option>`).join("")}</select></div><p class="help">${singbox ? t("自动识别时，.srs 地址各自独立输出，由 sing-box 下载，不参与合并或转换；其他文本来源合并去重后转换。无 .srs 后缀的二进制地址请选择 SRS 格式。明确选择的格式适用于本行所有地址。", "Automatic mode outputs each .srs URL independently for sing-box to download; text sources are merged, deduplicated and converted. Choose SRS for binary URLs without a .srs extension. An explicit format applies to all URLs in this row.") : t("自动识别按下载内容判断格式并生成规则集，不依赖 URL 后缀。明确指定格式后，兼容的单个来源可由 Clash 直接下载；文本格式应与 behavior 一致。所选格式用于本行所有地址。", "Automatic mode detects downloaded content and generates a rule set without relying on URL extensions. An explicit format allows a single compatible source to be downloaded directly by Clash; text format must match behavior. The selected format applies to all URLs in this row.")}</p>` : "";
+  const providerSettings = clash ? localField("behavior", form.behavior, { label: "behavior", options: [...(form.behavior === "auto" ? ["auto"] : []), "domain", "ipcidr", "classical"] }) + localField("interval", form.interval, { label: t("interval（秒）", "interval (seconds)") }) + `<p class="help">${t("多个 URL 由系统合并去重。interval 为客户端下载间隔；自动识别来源的更新由系统规则缓存刷新控制。", "Multiple URLs are merged and deduplicated. interval controls client downloads; automatic sources update through system rule-cache refreshes.")}</p>` : "";
+  const dnsTags = singbox ? (currentClient().dns.servers || []).map((server) => server.tag).filter(Boolean) : [];
+  const dnsSettings = localField("dnsServer", form.dnsServer, {
+    label: t("DNS 解析服务器（留空继承全局）", "DNS resolver (empty inherits global settings)"),
+    ...(singbox ? { options: [...new Set(["", ...dnsTags, form.dnsServer])] } : { placeholder: "223.5.5.5 / https://dns.example.com/dns-query" })
+  }) + `<p class="help">${singbox ? t("在 DNS 页添加解析服务器后可在此选择。文本来源仅提取独立域名规则；SRS 直接引用原规则集，请使用适合 DNS 匹配的 SRS。按本页顺序匹配，优先于 DNS 页规则。", "Add resolvers on the DNS tab, then select one here. Text sources contribute standalone domain rules; SRS sets are referenced as provided and must be suitable for DNS matching. Entries match in routing order, before DNS-tab rules.") : surge ? t("仅作用于规则集内的域名；已有 Host 映射优先。需要 Surge Mac 5.10+ / iOS 5.14.3+。代理请求的远端解析不受此设置保证。", "Applies to domains in the set; existing Host mappings take priority. Requires Surge Mac 5.10+ / iOS 5.14.3+. Remote resolution by a proxy is not guaranteed to use this resolver.") : t("Clash 指 Clash Verge 的 Mihomo 内核。需要启用 DNS；只对域名匹配生效，纯 IP 规则集不可指定。", "Clash means Clash Verge with the Mihomo core. DNS must be enabled; only domain matches apply, and IP-only sets cannot specify a resolver.")}</p>`;
   const advancedSettings = simple ? `<details><summary>${t("规则集其他设置", "Other rule-set settings")}</summary>${localField("enabled", form.enabled, { label: t("启用此规则集", "Enable this rule set") })}${clash ? localField("surgeOptions", form.surgeOptions, { label: t("解析 IP 前不查询 DNS", "Do not resolve IP matches"), options: ["", "no-resolve"] }) : ""}</details>` : "";
-  const intro = surge ? t("选择规则集类型并填写下载地址。多个地址合并去重，共用一个出口策略。RULE-SET 包含规则类型和匹配值；DOMAIN-SET 每行填写域名，以点开头表示包含子域名。", "Choose the set type and enter download URLs. Multiple URLs are merged and deduplicated under one outbound policy. RULE-SET contains typed rules; DOMAIN-SET lists domains, with a leading dot to include subdomains.") : t("填写规则下载地址并选择出口策略。多个地址的规则合并去重，使用同一个出口策略。", "Enter rule download URLs and choose an outbound policy. Rules from multiple URLs are merged and deduplicated under one outbound policy.");
+  const intro = surge ? t("选择规则集类型并填写下载地址。多个地址合并去重，共用一个出口策略。RULE-SET 包含规则类型和匹配值；DOMAIN-SET 每行填写域名，以点开头表示包含子域名。", "Choose the set type and enter download URLs. Multiple URLs are merged and deduplicated under one outbound policy. RULE-SET contains typed rules; DOMAIN-SET lists domains, with a leading dot to include subdomains.") : singbox ? t("填写规则下载地址并选择出口策略。SRS 各自独立输出；文本来源合并去重，使用同一个出口策略。", "Enter rule download URLs and choose an outbound policy. Each SRS is output independently; text sources are merged and deduplicated under the same policy.") : t("填写规则下载地址并选择出口策略。多个地址的规则合并去重，使用同一个出口策略。", "Enter rule download URLs and choose an outbound policy. Rules from multiple URLs are merged and deduplicated under one outbound policy.");
   const surgeSettings = surge ? localField("surgeType", form.surgeType, { label: t("规则集类型", "Rule-set type"), options: SURGE_RULE_SET_TYPES }) : "";
   const legacyInline = form.inlineRules.length ? `<p class="help">${t(`保留已有的 ${form.inlineRules.length} 条手填规则。新增独立规则请使用“添加单条规则”。`, `The ${form.inlineRules.length} existing manual rules are retained. Use Add direct rule for new individual rules.`)}</p>` : "";
   const title = surge ? t("编辑 Surge 规则集", "Edit Surge rule set") : clash ? t("编辑 Clash 规则集", "Edit Clash rule set") : t("编辑 sing-box 规则集", "Edit sing-box rule set");
-  modal(title, `<p class="help">${intro}</p>` + surgeSettings + sourceSettings + localField("sourceUrls", displayedUrls, { label: t("规则下载地址（每行一个）", "Rule download URLs (one per line)"), multiline: true, rows: 5 }) + providerSettings + legacyInline + (clash ? clashRouting.policyField(form.policy) : localField("policy", form.policy, { label: t("出口策略（作用于全部规则）", "Outbound policy (for all rules)"), options: policyChoices(form.policy) })) + (surge ? localField("surgeOptions", form.surgeOptions, { options: [...new Set([...surgeOptionChoices(form.surgeType), form.surgeOptions])] }) : "") + (simple ? "" : localField("enabled", form.enabled, { label: t("启用此规则集", "Enable this rule set") })) + advancedSettings, () => {
+  modal(title, `<p class="help">${intro}</p>` + surgeSettings + sourceSettings + localField("sourceUrls", displayedUrls, { label: t("规则下载地址（每行一个）", "Rule download URLs (one per line)"), multiline: true, rows: 5 }) + providerSettings + legacyInline + dnsSettings + (clash ? clashRouting.policyField(form.policy) : localField("policy", form.policy, { label: t("出口策略（作用于全部规则）", "Outbound policy (for all rules)"), options: policyChoices(form.policy) })) + (surge ? localField("surgeOptions", form.surgeOptions, { options: [...new Set([...surgeOptionChoices(form.surgeType), form.surgeOptions])] }) : "") + (simple ? "" : localField("enabled", form.enabled, { label: t("启用此规则集", "Enable this rule set") })) + advancedSettings, () => {
     const value = readLocal(form);
+    value.dnsServer = value.dnsServer.trim();
+    if (singbox && value.dnsServer && !dnsTags.includes(value.dnsServer)) throw Error(t("DNS 服务器不存在，请重新选择。", "DNS server is missing; choose another server."));
+    if (clash && value.dnsServer && (value.behavior === "ipcidr" || !currentClient().dnsEnabled)) throw Error(t("指定 DNS 需要启用 Clash DNS，且 behavior 不能为 ipcidr。", "Enable Clash DNS and use domain or classical behavior to assign a resolver."));
     if (clash) value.policy = clashRouting.checkPolicy(value.policy);
     if (!value.sourceUrls.trim() && !value.inlineRules.length) throw Error(t("请填写规则下载地址。", "Enter a rule download URL."));
     const linked = value.sourceUrls === initialUrls ? null : sourcesForUrls(plan, value.sourceUrls, original.sourceIds);
-    const next = { ...original, name: original.name || ruleSetDownloadName(plan, value.sourceUrls), policy: value.policy, enabled: value.enabled, inlineRules: value.inlineRules, surgeOptions: value.surgeOptions.split(",").filter(Boolean), sourceIds: linked ? linked.ids : original.sourceIds };
+    const next = { ...original, dnsServer: value.dnsServer, name: original.name || ruleSetDownloadName(plan, value.sourceUrls), policy: value.policy, enabled: value.enabled, inlineRules: value.inlineRules, surgeOptions: value.surgeOptions.split(",").filter(Boolean), sourceIds: linked ? linked.ids : original.sourceIds };
     if (surge) {
       if (!SURGE_RULE_SET_TYPES.includes(value.surgeType)) throw Error(t("请选择 RULE-SET 或 DOMAIN-SET。", "Choose RULE-SET or DOMAIN-SET."));
       if (!surgeOptionChoices(value.surgeType).includes(value.surgeOptions)) throw Error(t("附加选项与规则集类型不兼容，请重新选择。", "Select options compatible with the rule-set type."));
@@ -1038,7 +1053,7 @@ function editOutput(index) {
       }
     }
     const sources = linked ? linked.sources : structuredClone(plan.sources);
-    if (singbox) {
+    if (singbox || clash) {
       if (!formats.some(([format]) => format === value.sourceFormat)) throw Error(t("来源格式无效", "Invalid source format"));
       if (value.sourceFormat !== "existing") {
         const sharedIds = new Set(plan.outputs.filter((_, i) => i !== index).flatMap((output) => output.sourceIds));
@@ -1055,6 +1070,7 @@ function editOutput(index) {
     plan.sources = sources;
     state.invalid.delete(`plan.${state.client}.output.${index}.sourceUrls`);
     if (index === null) appendPlanItem(plan, "output", next); else plan.outputs[index] = next;
+    pruneUnusedRuleSources(plan);
     closeModal(); changed(); render();
   });
 }
@@ -1367,6 +1383,7 @@ async function action(button) {
   }
   if (name === "delete-output") {
     state.config.clients[state.client].ruleSets.outputs.splice(index, 1);
+    pruneUnusedRuleSources(currentClient().ruleSets);
     const prefix = `plan.${state.client}.output.`;
     for (const [key, value] of [...state.invalid]) {
       if (!key.startsWith(prefix)) continue;
@@ -1531,6 +1548,7 @@ document.addEventListener("change", (event) => {
       if (planField === "sourceUrls") {
         const linked = sourcesForUrls(plan, inline.value, item.sourceIds);
         plan.sources = linked.sources; item.sourceIds = linked.ids;
+        pruneUnusedRuleSources(plan);
       } else item[planField] = planField === "enabled" ? inline.checked : planField === "surgeOptions" ? inline.value.split(",").filter(Boolean) : inline.value;
       state.invalid.delete(invalidKey); inline.removeAttribute("aria-invalid"); changed();
     } catch (error) {

@@ -238,6 +238,11 @@ function buildClashLikeConfigData(
   if (Object.keys(ruleProviders).length > 0) {
     data["rule-providers"] = ruleProviders;
   }
+  if (options.target === "clash" && config.ruleSets.mode === "compiled" && Object.keys(options.ruleSetPlan?.clashDnsPolicy ?? {}).length) {
+    if (!data.dns) throw new Error("规则集指定 DNS 需要启用 Clash DNS。");
+    const dns = data.dns as Record<string, unknown>;
+    dns["nameserver-policy"] = options.ruleSetPlan!.clashDnsPolicy;
+  }
   data.proxies = nodes.map(toClashProxy);
   const proxyGroups = buildClashGroups(config, nodes, options.target);
   data["proxy-groups"] = proxyGroups;

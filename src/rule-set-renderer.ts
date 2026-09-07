@@ -71,7 +71,7 @@ function normalizeDomain(value: string): string {
   return value.trim().replace(/^\+\./, "").replace(/^\*\./, "").replace(/^\./, "").replace(/\.$/, "").toLowerCase();
 }
 
-function renderSingboxRules(rules: CompiledRuleSetRule[]): string {
+export function renderSingboxRules(rules: CompiledRuleSetRule[]): string {
   // Merge values only within the same field. Separate headless rules retain OR
   // semantics across fields such as process_name, domain_suffix and ip_cidr.
   const groups = new Map<string, unknown[]>();

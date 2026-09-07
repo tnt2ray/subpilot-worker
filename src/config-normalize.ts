@@ -137,11 +137,14 @@ export function normalizeRuleSets(input: Partial<RuleSetConfig> | undefined): Ru
   const ruleSets = input ?? {};
   const mode = ruleSets.mode === "compiled" ? "compiled" : "manual";
   const directRules = Array.isArray(ruleSets.directRules) ? normalizeRuleSetDirectRules(ruleSets.directRules) : [];
+  const outputs = Array.isArray(ruleSets.outputs) ? normalizeRuleSetOutputs(ruleSets.outputs) : [];
+  const sourceIds = new Set(outputs.flatMap((output) => output.sourceIds));
   return {
     mode,
     aggregateByPolicy: ruleSets.aggregateByPolicy === true,
-    sources: Array.isArray(ruleSets.sources) ? normalizeRuleSetSources(ruleSets.sources) : [],
-    outputs: Array.isArray(ruleSets.outputs) ? normalizeRuleSetOutputs(ruleSets.outputs) : [],
+    sources: Array.isArray(ruleSets.sources) ? normalizeRuleSetSources(ruleSets.sources)
+      .filter((source) => mode !== "compiled" || sourceIds.has(source.id)) : [],
+    outputs,
     directRules: directRules.sort(compareByOrder)
   };
 }
@@ -177,6 +180,7 @@ function normalizeRuleSetOutput(output: RuleSetOutput, index: number): RuleSetOu
     inlineRules: stringArray(output.inlineRules, []),
     order: finiteOrder(output.order, index),
     surgeOptions: uniqueStringArray(output.surgeOptions, []),
+    ...(output.dnsServer !== undefined ? { dnsServer: typeof output.dnsServer === "string" ? output.dnsServer.trim() : output.dnsServer } : {}),
     ...(output.provider !== undefined ? { provider: structuredClone(output.provider) } : {}),
     ...(output.surgeType !== undefined ? { surgeType: output.surgeType } : {}),
     ...(updatedAt ? { updatedAt } : {})

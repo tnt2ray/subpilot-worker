@@ -3,6 +3,7 @@ import { managedRuleSetUrlForRequest } from "./managed-url";
 import { parseInlineRuleSetLines, parseRuleSetContent, type ParsedRuleSetRule, type CompiledRuleSetRule } from "./rule-set-parser";
 import {
   fetchCachedRuleSetSource,
+  readRefreshedRuleSetSource,
   pruneCompiledRuleSetCaches,
   readCompiledRuleSetManifest,
   refreshRuleSetSourceCaches,
@@ -13,7 +14,7 @@ import {
   type CompiledRuleSetStatusItem,
   type RuleSetSourceCacheFailure,
   type RuleSetSourceCacheRefreshResult,
-  type RuleSetSourceFetchResult
+  type RuleSetSourceRefreshState
 } from "./rule-set-cache";
 import { RULE_SET_BUCKETS, RULE_SET_TARGETS, type RuleSetBucket, type RuleSetOutput, type RuleSetOutputTarget } from "./rule-set-types";
 import { planRuleSetArtifacts } from "./rule-set-artifacts";
@@ -25,7 +26,7 @@ import {
   renderDirectRuleForTarget,
   renderRuleSetRuleForTarget
 } from "./rule-targets";
-import { directRuleSetSource, effectiveRuleSetOutputs, planRuleSetOutputs } from "./rule-set-outputs";
+import { directRuleSetSource, effectiveRuleSetOutputs, isSingboxBinarySource, planRuleSetOutputs, ruleSetOutputNeedsCompilation } from "./rule-set-outputs";
 import type { RenderConfig } from "./types";
 import { sha256Hex } from "./util";
 import { createSingboxAsnResolver } from "./singbox-asn";
@@ -56,6 +57,8 @@ export interface RuleSetRefreshOptions {
 }
 
 export interface CompiledRuleSetReferencePlan {
+  surgeDnsHosts?: string[];
+  clashDnsPolicy?: Record<string, string>;
   surgeRules: string[];
   clashRuleProviders: Record<string, Record<string, unknown>>;
   clashRules: string[];
@@ -68,14 +71,14 @@ interface CompileOptions {
   asnResolver?: ReturnType<typeof createSingboxAsnResolver>;
   allowStaleFallback?: boolean;
   forceSourceRefresh?: boolean;
-  sourceContentByKey?: Map<string, RuleSetSourceFetchResult>;
+  sourceStatesByKey?: Map<string, RuleSetSourceRefreshState>;
   sourceErrorsByKey?: Map<string, string>;
   deadline?: number;
 }
 
 const FINAL_RULE_TYPES = new Set(["FINAL", "MATCH"]);
 const RULE_SET_UPDATE_INTERVAL_SECONDS = 24 * 60 * 60;
-const RULE_SET_COMPILER_REVISION = 9;
+const RULE_SET_COMPILER_REVISION = 11;
 
 export async function compileRuleSetOutput(
   env: Env,
@@ -160,6 +163,7 @@ export async function compileRuleSetOutput(
       sourceErrors.push(`${output.name}: 规则来源 ${source.name} 已禁用或缺少 URL。`);
       continue;
     }
+    if (singbox && isSingboxBinarySource(source)) continue;
     try {
       const sourceKey = await ruleSetSourceCacheKey(source.url);
       const sourceError = options.sourceErrorsByKey?.get(sourceKey);
@@ -167,7 +171,8 @@ export async function compileRuleSetOutput(
         sourceErrors.push(`${source.name}: ${sourceError}`);
         continue;
       }
-      const result = options.sourceContentByKey?.get(sourceKey) ?? await fetchCachedRuleSetSource(env, source, {
+      const refreshedSource = options.sourceStatesByKey?.get(sourceKey);
+      const result = refreshedSource ? await readRefreshedRuleSetSource(env, sourceKey, refreshedSource) : await fetchCachedRuleSetSource(env, source, {
         allowCachedFallback: true,
         forceRefresh: Boolean(options.forceSourceRefresh),
         ...(options.deadline !== undefined ? { deadline: options.deadline } : {})
@@ -239,6 +244,7 @@ export async function compileRuleSetOutput(
     sourceIds: output.sourceIds,
     ruleCount: RULE_SET_BUCKETS.reduce((sum, bucket) => sum + buckets[bucket].length, 0),
     duplicateCount,
+    ...(config.renderTarget === "sing-box" && output.dnsServer ? { dnsRuleCount: 0 } : {}),
     ...(config.renderTarget === "clash" && output.provider ? { provider: output.provider } : {}),
     ...(config.renderTarget === "surge" && output.surgeType ? { surgeType: output.surgeType } : {}),
     ...(asnExpiresAt !== undefined ? { asnExpiresAt } : {}),
@@ -295,6 +301,7 @@ async function ruleSetOutputFingerprint(config: RenderConfig, output: RuleSetOut
       return source ? { id, url: source.url, enabled: source.enabled, format: source.format } : { id, missing: true };
     }),
     nativeMembers: nativeOutputMembers(config, output),
+    dnsServer: output.dnsServer,
     inlineRules: output.inlineRules,
     surgeOptions: output.surgeOptions,
     ...(config.renderTarget === "surge" && output.surgeType ? { surgeType: output.surgeType } : {}),
@@ -308,7 +315,7 @@ export async function refreshRuleSetCaches(
   outputName?: string,
   options: RuleSetRefreshOptions = {}
 ): Promise<RuleSetRefreshResult> {
-  const effectiveOutputs = effectiveRuleSetOutputs(config.ruleSets);
+  const effectiveOutputs = config.ruleSets.mode === "compiled" ? effectiveRuleSetOutputs(config.ruleSets) : [];
   const outputs = outputName
     ? effectiveOutputs.filter((output) => output.name === outputName)
     : effectiveOutputs;
@@ -341,9 +348,10 @@ async function refreshRuleSetOutputs(
   pruneUnexpected: boolean,
   options: RuleSetRefreshOptions
 ): Promise<RuleSetRefreshResult> {
-  outputs = outputs.filter((output) => !directRuleSetSource(config.ruleSets, output, config.renderTarget ?? "surge"));
+  outputs = outputs.filter((output) => ruleSetOutputNeedsCompilation(config.ruleSets, output, config.renderTarget ?? "surge"));
   const neededSourceIds = new Set(outputs.flatMap((output) => output.sourceIds));
-  sourcesToRefresh = sourcesToRefresh.filter((source) => neededSourceIds.has(source.id));
+  sourcesToRefresh = sourcesToRefresh.filter((source) => neededSourceIds.has(source.id)
+    && !(config.renderTarget === "sing-box" && isSingboxBinarySource(source)));
   const sourceRefresh = options.sourceRefresh ? await scopeRuleSetSourceRefresh(options.sourceRefresh, config) : await refreshRuleSetSourceCaches(env, config, sourcesToRefresh, {
     pruneUnexpected,
     ...(options.deadline !== undefined ? { deadline: options.deadline } : {})
@@ -374,7 +382,7 @@ async function refreshRuleSetOutputs(
       const result = await compileRuleSetOutput(env, config, output, {
         asnResolver,
         allowStaleFallback: true,
-        sourceContentByKey: sourceRefresh.contentByKey,
+        sourceStatesByKey: sourceRefresh.sourcesByKey,
         sourceErrorsByKey: sourceRefresh.errorsByKey,
         ...(options.deadline !== undefined ? { deadline: options.deadline } : {})
       });
@@ -415,8 +423,9 @@ function refreshDeadlineExceeded(deadline: number | undefined): boolean {
 }
 
 export async function readRuleSetStatus(env: Env, config: RenderConfig): Promise<CompiledRuleSetStatusItem[]> {
+  if (config.ruleSets.mode !== "compiled") return [];
   return Promise.all(effectiveRuleSetOutputs(config.ruleSets).map(async (output) => {
-    if (directRuleSetSource(config.ruleSets, output, config.renderTarget ?? "surge")) return {
+    if (!ruleSetOutputNeedsCompilation(config.ruleSets, output, config.renderTarget ?? "surge")) return {
       outputName: output.name, enabled: output.enabled, direct: true, updatedAt: null,
       ruleCount: 0, duplicateCount: 0, buckets: [], artifacts: [], warnings: [], cached: false
     };
@@ -448,6 +457,8 @@ export async function buildCompiledRuleSetReferencePlan(
   requestUrl: string
 ): Promise<CompiledRuleSetReferencePlan> {
   const plan: CompiledRuleSetReferencePlan = {
+    surgeDnsHosts: [],
+    clashDnsPolicy: {},
     surgeRules: [],
     clashRuleProviders: {},
     clashRules: [],
@@ -503,6 +514,7 @@ export async function buildCompiledRuleSetReferencePlan(
       const direct = directRuleSetSource(config.ruleSets, output, target);
       if (direct) {
         if (target === "surge") {
+          if (output.dnsServer) plan.surgeDnsHosts!.push(`${direct.surgeType}:${direct.url} = server:${output.dnsServer}`);
           plan.surgeRules.push([direct.surgeType!, direct.url, output.policy, ...output.surgeOptions].join(","));
         } else {
           const providerName = compiledRuleProviderName(output.name, "combined");
@@ -511,6 +523,7 @@ export async function buildCompiledRuleSetReferencePlan(
             url: direct.url, path: `./rules/${providerName}.${direct.format === "yaml" ? "yaml" : "txt"}`,
             interval: output.provider!.interval
           };
+          if (output.dnsServer) plan.clashDnsPolicy![`rule-set:${providerName}`] = output.dnsServer;
           plan.clashRules.push(`RULE-SET,${providerName},${output.policy}${output.surgeOptions.includes("no-resolve") ? ",no-resolve" : ""}`);
         }
         continue;
@@ -521,7 +534,7 @@ export async function buildCompiledRuleSetReferencePlan(
       const surgeStart = plan.surgeRules.length;
       const clashStart = plan.clashRules.length;
       appendCompiledOutputReferences(plan, config, output, manifest, target, requestUrl);
-      if (config.ruleSets.aggregateByPolicy && !output.provider && !output.surgeType) {
+      if (config.ruleSets.aggregateByPolicy && !output.provider && !output.surgeType && !output.dnsServer) {
         const comment = ruleSetAggregationComment(output.policy, includedOutputNames);
         if (target === "surge" && plan.surgeRules.length > surgeStart) {
           plan.surgeRules.splice(surgeStart, 0, `# ${comment}`);
@@ -558,6 +571,7 @@ function appendCompiledOutputReferences(
       const url = managedRuleSetUrlForRequest(config, requestUrl, output.name, artifact.bucket, target);
       const options = surgeRuleSetOptions(output, artifact.includesIpCidr);
       const type = artifact.bucket === "domain" ? "DOMAIN-SET" : "RULE-SET";
+      if (output.dnsServer && artifact.behavior !== "ipcidr") plan.surgeDnsHosts!.push(`${type}:${url} = server:${output.dnsServer}`);
       plan.surgeRules.push([type, url, output.policy, ...options].join(","));
     }
     return;
@@ -572,6 +586,7 @@ function appendCompiledOutputReferences(
       path: `./rules/${providerName}.yaml`,
       interval: output.provider?.interval ?? RULE_SET_UPDATE_INTERVAL_SECONDS
     };
+    if (output.dnsServer && artifact.behavior !== "ipcidr") plan.clashDnsPolicy![`rule-set:${providerName}`] = output.dnsServer;
     plan.clashRules.push(`RULE-SET,${providerName},${output.policy}${output.surgeOptions.includes("no-resolve") && !(target === "clash" && config.ruleSets.aggregateByPolicy && !output.provider) ? ",no-resolve" : ""}`);
   }
 }
@@ -676,6 +691,7 @@ function changedRuleSetOutputs(previousConfig: RenderConfig, config: RenderConfi
       || previous.policy !== output.policy
       || previous.enabled !== output.enabled
       || JSON.stringify(previous.provider) !== JSON.stringify(output.provider)
+      || previous.dnsServer !== output.dnsServer
       || previous.surgeType !== output.surgeType
       || !sameStringList(previous.sourceIds, output.sourceIds)
       || !sameStringList(previous.inlineRules, output.inlineRules)

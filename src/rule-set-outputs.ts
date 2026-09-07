@@ -1,4 +1,4 @@
-import type { RuleSetConfig, RuleSetOutput, RuleSetOutputTarget } from "./rule-set-types";
+import type { RuleSetConfig, RuleSetOutput, RuleSetOutputTarget, RuleSetSource } from "./rule-set-types";
 
 export interface PlannedRuleSetOutput {
   output: RuleSetOutput;
@@ -18,7 +18,7 @@ export function planRuleSetOutputs(ruleSets: RuleSetConfig, enabledOnly = true):
   for (const { output } of outputs) {
     // Explicit providers merge URLs within their own row, retaining behavior,
     // refresh interval and matching position even when legacy aggregation is on.
-    if (output.provider || output.surgeType) {
+    if (output.provider || output.surgeType || output.dnsServer) {
       plans.set(`provider\0${output.name}`, { output, includedOutputNames: [output.name] });
       continue;
     }
@@ -71,10 +71,10 @@ export function directRuleSetSource(ruleSets: RuleSetConfig, output: RuleSetOutp
   const formats = new Set(sources.map((source) => source!.format));
   if (urls.size !== 1 || formats.size !== 1) return null;
   const source = sources[0]!;
-  const pathname = new URL(source.url).pathname;
   if (target === "clash" && output.provider) {
+    // Automatic sources must pass through content detection and compilation;
+    // URL extensions do not establish the provider's actual format.
     if (source.format === "clash-yaml") return { url: source.url, format: "yaml" };
-    if (source.format === "auto") return { url: source.url, format: /\.(?:txt|list)$/i.test(pathname) ? "text" : "yaml" };
     const behavior = source.format.replace(/^plain-/, "");
     if (source.format.startsWith("plain-") && behavior === output.provider.behavior) return { url: source.url, format: "text" };
   }
@@ -86,6 +86,33 @@ export function directRuleSetSource(ruleSets: RuleSetConfig, output: RuleSetOutp
 }
 
 export function compiledRuleSetSources(ruleSets: RuleSetConfig, target: RuleSetOutputTarget): RuleSetConfig["sources"] {
-  const ids = new Set(effectiveRuleSetOutputs(ruleSets).filter((output) => !directRuleSetSource(ruleSets, output, target)).flatMap((output) => output.sourceIds));
-  return ruleSets.sources.filter((source) => source.enabled && source.url && ids.has(source.id));
+  if (ruleSets.mode !== "compiled") return [];
+  const ids = new Set(effectiveRuleSetOutputs(ruleSets).filter((output) => ruleSetOutputNeedsCompilation(ruleSets, output, target)).flatMap((output) => output.sourceIds));
+  return ruleSets.sources.filter((source) => source.enabled && source.url && ids.has(source.id)
+    && !(target === "sing-box" && isSingboxBinarySource(source)));
+}
+
+export function isSingboxBinarySource(source: RuleSetSource): boolean {
+  if (source.format === "sing-box-binary") return true;
+  if (source.format !== "auto") return false;
+  try { return /\.srs$/i.test(new URL(source.url).pathname); }
+  catch { return false; }
+}
+
+/** Binary sets retain their native semantics and are never read by the compiler. */
+export function nativeSingboxRuleSetSources(ruleSets: RuleSetConfig, output: RuleSetOutput): RuleSetSource[] {
+  const sources = output.sourceIds.flatMap((id) => {
+    const source = ruleSets.sources.find((item) => item.id === id);
+    return source?.enabled && source.url && isSingboxBinarySource(source) ? [source] : [];
+  });
+  return [...new Map(sources.map((source) => [source.url, source])).values()];
+}
+
+export function ruleSetOutputNeedsCompilation(ruleSets: RuleSetConfig, output: RuleSetOutput, target: RuleSetOutputTarget): boolean {
+  if (target !== "sing-box") return !directRuleSetSource(ruleSets, output, target);
+  if (output.inlineRules.length || !output.sourceIds.length) return true;
+  return output.sourceIds.some((id) => {
+    const source = ruleSets.sources.find((item) => item.id === id);
+    return !source?.enabled || !source.url || !isSingboxBinarySource(source);
+  });
 }

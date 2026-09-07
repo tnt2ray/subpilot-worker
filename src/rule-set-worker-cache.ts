@@ -5,14 +5,15 @@ import {
   type CompiledRuleSetManifest
 } from "./rule-set-cache";
 import { RULE_SET_TARGETS, type RuleSetOutput, type RuleSetOutputTarget } from "./rule-set-types";
-import { directRuleSetSource, effectiveRuleSetOutputs } from "./rule-set-outputs";
+import { effectiveRuleSetOutputs, ruleSetOutputNeedsCompilation } from "./rule-set-outputs";
 import { planRuleSetArtifacts } from "./rule-set-artifacts";
 import type { RenderConfig } from "./types";
 import { sha256Hex } from "./util";
 
 const RULE_SET_WORKER_CACHE_TTL_SECONDS = 12 * 60 * 60;
 const INTERNAL_CACHE_VERSION_PARAM = "__subpilot_version";
-const RULE_SET_WORKER_CACHE_WARM_CONCURRENCY = 4;
+const INTERNAL_CACHE_VERSION_HEADER = "x-subpilot-cache-version";
+const RULE_SET_WORKER_CACHE_WARM_CONCURRENCY = 1;
 
 export interface RuleSetWorkerCacheWarmOptions {
   /** Absolute Unix timestamp in milliseconds after which no new cache work starts. */
@@ -31,7 +32,11 @@ export async function compiledRuleSetFileResponse(content: string, target: RuleS
 
 export async function matchCompiledRuleSetWorkerCache(request: Request, version: string): Promise<Response | null> {
   if (request.method !== "GET" || !workerCacheAvailable()) return null;
-  const response = await caches.default.match(internalRuleSetCacheRequest(request.url, version));
+  const response = await caches.default.match(internalRuleSetCacheRequest(request.url));
+  if (response && response.headers.get(INTERNAL_CACHE_VERSION_HEADER) !== version) {
+    await response.body?.cancel();
+    return null;
+  }
   return response ? clientRuleSetResponse(request, response) : null;
 }
 
@@ -39,14 +44,16 @@ export async function cacheCompiledRuleSetResponse(requestUrl: string, version: 
   if (!workerCacheAvailable()) return;
   const headers = new Headers(response.headers);
   headers.set("cache-control", `public, max-age=${RULE_SET_WORKER_CACHE_TTL_SECONDS}`);
+  headers.set(INTERNAL_CACHE_VERSION_HEADER, version);
   await caches.default.put(
-    internalRuleSetCacheRequest(requestUrl, version),
+    internalRuleSetCacheRequest(requestUrl),
     new Response(response.body, { status: response.status, statusText: response.statusText, headers })
   );
 }
 
 export function clientRuleSetResponse(request: Request, response: Response): Response {
   const headers = new Headers(response.headers);
+  headers.delete(INTERNAL_CACHE_VERSION_HEADER);
   headers.set("cache-control", "no-cache");
   const etag = headers.get("etag");
   if (etag && matchesIfNoneMatch(request.headers.get("if-none-match"), etag)) {
@@ -69,7 +76,7 @@ export async function warmCompiledRuleSetWorkerCache(
   options: RuleSetWorkerCacheWarmOptions = {}
 ): Promise<{ cached: number }> {
   if (!token || !workerCacheAvailable()) return { cached: 0 };
-  const enabledOutputs = (outputs ?? effectiveRuleSetOutputs(config.ruleSets)).filter((output) => !directRuleSetSource(config.ruleSets, output, config.renderTarget ?? "surge"));
+  const enabledOutputs = (outputs ?? effectiveRuleSetOutputs(config.ruleSets)).filter((output) => ruleSetOutputNeedsCompilation(config.ruleSets, output, config.renderTarget ?? "surge"));
   let cursor = 0;
   let cached = 0;
 
@@ -126,9 +133,9 @@ function workerCacheAvailable(): boolean {
   return typeof caches !== "undefined" && Boolean(caches.default);
 }
 
-function internalRuleSetCacheRequest(requestUrl: string, version: string): Request {
+function internalRuleSetCacheRequest(requestUrl: string): Request {
   const url = new URL(requestUrl);
-  url.searchParams.set(INTERNAL_CACHE_VERSION_PARAM, version || "legacy");
+  url.searchParams.delete(INTERNAL_CACHE_VERSION_PARAM);
   return new Request(url, { method: "GET" });
 }
 

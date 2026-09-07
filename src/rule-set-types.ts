@@ -7,13 +7,14 @@ export const RULE_SET_SOURCE_FORMATS = [
   "surge-rule-set",
   "surge-domain-set",
   "clash-yaml",
+  "sing-box-binary",
   "plain-domain",
   "plain-ipcidr",
   "plain-classical"
 ] as const;
 
 export type RuleSetBucket = typeof RULE_SET_BUCKETS[number];
-export type RuleSetDownloadBucket = RuleSetBucket | "combined";
+export type RuleSetDownloadBucket = RuleSetBucket | "combined" | "dns";
 export type RuleSetOutputTarget = Target | "stash";
 export type RuleSetMode = "manual" | "compiled";
 export type RuleSetSourceFormat = typeof RULE_SET_SOURCE_FORMATS[number];
@@ -28,6 +29,8 @@ export interface RuleSetSource {
 }
 
 export interface RuleSetOutput {
+  /** Resolver address for Surge/Mihomo; existing DNS server tag for sing-box. */
+  dnsServer?: string;
   surgeType?: "RULE-SET" | "DOMAIN-SET";
   /** Explicit Clash provider settings; all URLs in this row share one artifact. */
   provider?: { behavior: RuleSetBucket; interval: number };

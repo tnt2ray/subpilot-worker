@@ -106,7 +106,7 @@ export function ruleSetPathName(outputName: unknown): string {
 }
 
 export function ruleSetArtifactName(outputName: string, bucket: RuleSetDownloadBucket): string {
-  const suffix = bucket === "domain" ? "-domain" : bucket === "ipcidr" ? "-ipcidr" : "";
+  const suffix = bucket === "dns" ? "-dns" : bucket === "domain" ? "-domain" : bucket === "ipcidr" ? "-ipcidr" : "";
   return `${ruleSetPathName(outputName)}${suffix}`;
 }
 

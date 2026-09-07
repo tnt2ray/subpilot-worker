@@ -210,6 +210,17 @@ SubPilot generates configuration and does not log into Tailscale on the client's
 
 ### Routing rules
 
+The sing-box DNS tab separates three purposes: **DNS server list** manages available servers; **Fallback DNS server for queries** handles queries that match neither rule-set DNS nor advanced DNS rules, using the first listed server when empty; **Default DNS for establishing connections** resolves proxy server addresses and unresolved direct-connection targets. A connection-specific resolver takes priority, and connection resolution may bypass DNS query routing rules.
+
+On the sing-box DNS tab, native rules appear under **Advanced DNS rules**, collapsed by default with a configured-rule count. Configure rule-set DNS on the Routing rules tab; advanced DNS rules match afterward. Collapsing the section does not disable existing rules.
+
+The rule-set editor includes a **DNS resolver** field; empty inherits global settings, and the list shows the current selection. Here, Clash means Clash Verge with the Mihomo core. Surge / Clash accept one IP, IP:port, `system`, or encrypted DNS URL; sing-box selects an existing server from the DNS tab. Save and update the client subscription. No KV schema migration or extra deployment steps are required.
+
+- Surge emits `[Host]` `RULE-SET:` / `DOMAIN-SET:` DNS mappings, requiring Mac 5.10+ / iOS 5.14.3+. Existing Host mappings take priority; bindings follow routing-list order. Remote proxy resolution is not guaranteed to use this resolver. Entries with a DNS assignment do not aggregate by outbound policy.
+- Clash emits `dns.nameserver-policy` and requires DNS to be enabled. IP-only (`ipcidr`) providers cannot assign a resolver. This setting selects a resolver; it does not select the DNS connection outbound or guarantee remote proxy resolution behavior.
+- sing-box generates a separate `-dns.json` set containing standalone DOMAIN, DOMAIN-SUFFIX, DOMAIN-KEYWORD, DOMAIN-REGEX and DOMAIN-WILDCARD rules, excluding IP, process and logical rules. Bindings follow routing-list order before native DNS-tab rules; empty domain sets produce a notice. Update bindings after deleting or renaming a referenced DNS server before saving.
+
+
 1. Select a client and open Routing rules. Add a rule set or direct rule.
 2. Enter rule-set URLs, one per line, then select the format and outbound policy.
 3. Arrange rules by matching priority. Surge uses `FINAL`, Clash uses `MATCH`, and sing-box's `FINAL` row represents `route.final`. The final row cannot be deleted, disabled or moved; its outbound can be changed.
@@ -218,12 +229,16 @@ SubPilot generates configuration and does not log into Tailscale on the client's
 | Client | Rule-set settings |
 | --- | --- |
 | Surge | `RULE-SET` or `DOMAIN-SET`, plus supported rule options |
-| Clash | `behavior`: domain / ipcidr / classical; `interval` in seconds, default 86400 |
-| sing-box | Automatic or explicit Clash, Surge, domain, IP-CIDR or classical source format |
+| Clash | Source format: automatic, Clash YAML, domain/IP-CIDR/classical text; `behavior`: domain / ipcidr / classical; `interval` in seconds, default 86400 |
+| sing-box | Automatic or explicit Clash, Surge, domain, IP-CIDR or classical source format; independent direct SRS downloads |
 
-A single compatible Surge or Clash source is downloaded by the client without Worker fetching or caching. Multiple URLs within one entry are merged and deduplicated. Clash `rule-providers` are generated automatically. Separate Clash and sing-box entries remain independent; Surge optionally aggregates by policy, which can change matching order.
+A single compatible Surge source, or a single compatible Clash source with an explicit format, is downloaded by the client without Worker fetching or caching. Clash automatic mode detects actual content and compiles it, even for a single URL; it never guesses the format from an extension. This supports extensionless URLs, `.conf` URLs and extensions that do not match the content. The selected format applies to all URLs in the entry; changing a shared source's format does not change other entries. Multiple URLs within one entry are merged and deduplicated. Clash `rule-providers` are generated automatically. Separate Clash and sing-box entries remain independent; Surge optionally aggregates by policy, which can change matching order.
 
 Clash and Surge sources require conversion for sing-box even with one URL. `IP-ASN` expands into IPv4/IPv6 CIDRs and updates periodically. Resolution failures use cached data when possible; otherwise the ASN is skipped with a notice. Unsupported rules such as `USER-AGENT` and `URL-REGEX` are skipped. Download failures and invalid source formats are reported as errors. Generated remote rule sets use a direct HTTP client for downloading.
+
+In automatic mode, each sing-box `.srs` URL becomes an independent `remote` / `binary` rule set downloaded and updated by the client. Select SRS explicitly for binary URLs without that extension. When an entry mixes SRS and text sources, each SRS remains independent and only text is merged and compiled; all use the entry's outbound policy. The Worker does not download, parse or cache SRS. With a DNS resolver assigned, SRS is referenced directly by native DNS rules and must be suitable for DNS matching; text sources still contribute only standalone domain rules.
+
+The native sing-box route and rule-set editor remains available after enabling the unified rule plan, with native rules retaining priority. Converting native Clash routing discards dormant shared or Surge plan entries and keeps the current native rules and providers. A failed conversion preserves the original configuration.
 
 Generated files use `.list`, `.yaml` and `.json` for Surge, Clash and sing-box respectively. The same name can be used independently across clients.
 
@@ -284,6 +299,10 @@ Replace the example domain, or use `SUBPILOT_BASE_URL` to provide the URL. The s
 
 Enabled upstream subscriptions are fetched into encrypted KV cache. Requests prefer cached content; failed refreshes try to retain usable old entries. Rule-source bodies share cache, while compiled artifacts remain separate for each client. Refreshes have execution deadlines, retain successful results, and report individual failures; once the deadline is reached, no new remote fetches or compilations start.
 
+Rule sources share one complete encrypted body per URL; subscription sources share one per URL and effective User-Agent. Successful refreshes overwrite the body without keeping source history. Batch refreshes retain status and content hashes only, and compilation reads one source at a time. A complete successful compiled version replaces earlier versions, which are then removed. Edge cache entries use stable URLs with version validation and overwrite previous responses.
+
+After deleting a rule set or source, or changing its URL and saving, background cleanup removes unreferenced source bodies, metadata and compiled artifacts. Caches still used by another active rule or client remain. Source configuration entries with no rule-entry references are also removed. Saving or refreshing automatically cleans historical caches; no KV schema migration or extra deployment steps are required. Old edge copies expire according to their cache lifetime; rule-download endpoints stop using deleted entries once they read the newly saved configuration.
+
 The default schedules in local `wrangler.jsonc` are:
 
 ```json
@@ -303,7 +322,7 @@ Use **Force refresh** on the overview to refresh subscriptions. Save drafts befo
 | Configuration request | 6 MiB |
 | Entities | 20 shared subscription sources, 500 shared manual nodes; 100 policy groups per client; no separate rule-source count limit |
 | Compiled outputs | 40 per client |
-| One remote input | 4 MiB per subscription source; no project-level download-size cap for rule sources |
+| One remote input | 4 MiB per subscription source; 16 MiB per text rule source compiled by the Worker, reserving room for encryption and memory; client downloads are exempt |
 | One subscription source | 2,500 nodes and 5,000 host entries |
 | Nodes and hosts in aggregate | 10,000 source nodes and 20,000 host entries; 15,000 final nodes |
 | One compiled rule output | No fixed input-character or rule-count cap; runtime resources and artifact storage capacity still apply |

@@ -55,7 +55,7 @@ function renderSurgeInlineProfile(
   const configuredHostEntries = parseHostEntries(`[Host]\n${config.surge.hosts.join("\n")}`);
   const autoProxyHostLines = proxyServerHostEntries(config, nodes, [...configuredHostEntries, ...sourceHostEntries]).map(renderHostEntryLine);
   const sourceHostLines = sourceHostEntries.map(renderHostEntryLine);
-  const hostLines = [...config.surge.hosts, ...sourceHostLines, ...autoProxyHostLines];
+  const hostLines = [...config.surge.hosts, ...sourceHostLines, ...autoProxyHostLines, ...(config.ruleSets.mode === "compiled" ? ruleSetPlan?.surgeDnsHosts ?? [] : [])];
   if (hostLines.length > 0) {
     sections.push(renderSection("Host", [...new Set(hostLines)]));
   }

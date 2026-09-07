@@ -12,7 +12,7 @@ import {
 } from "./rule-set-worker-cache";
 import { ruleSetPathName, type RuleSetSyncPath } from "./managed-url";
 import { planRuleSetArtifacts } from "./rule-set-artifacts";
-import { effectiveRuleSetOutputs } from "./rule-set-outputs";
+import { effectiveRuleSetOutputs, ruleSetOutputNeedsCompilation } from "./rule-set-outputs";
 import type { RuleSetOutputTarget } from "./rule-set-types";
 import type { RenderConfig } from "./types";
 import { badRequest, jsonResponse, notFound } from "./util";
@@ -59,6 +59,8 @@ export async function handleRuleSetApi(request: Request, env: Env, ctx: Executio
   if (compiledMatch && request.method === "GET") {
     const outputName = safeDecodePathSegment(compiledMatch[1]!);
     if (!outputName) return badRequest("Invalid rule set output name");
+    if (config.ruleSets.mode !== "compiled" || !effectiveRuleSetOutputs(config.ruleSets).some((output) =>
+      output.name === outputName && ruleSetOutputNeedsCompilation(config.ruleSets, output, config.renderTarget ?? "surge"))) return notFound();
     const manifest = await readCompiledRuleSetManifest(env, outputName);
     if (!manifest) return notFound();
     return jsonResponse({ manifest });
@@ -109,9 +111,10 @@ export async function handleRuleSetDownload(
 
 function manifestSupportsDownload(
   manifest: NonNullable<Awaited<ReturnType<typeof readCompiledRuleSetManifest>>>,
-  bucket: "domain" | "ipcidr" | "combined",
+  bucket: "domain" | "ipcidr" | "combined" | "dns",
   target: RuleSetOutputTarget
 ): boolean {
+  if (bucket === "dns") return target === "sing-box" && (manifest.dnsRuleCount ?? 0) > 0;
   if (bucket === "combined") {
     return planRuleSetArtifacts(manifest.buckets, target, manifest.provider?.behavior, manifest.surgeType).some((artifact) => artifact.bucket === "combined");
   }
@@ -120,13 +123,14 @@ function manifestSupportsDownload(
 
 function resolveRuleSetDownload(config: RenderConfig, path: RuleSetSyncPath): {
   output: RenderConfig["ruleSets"]["outputs"][number];
-  bucket: "domain" | "ipcidr" | "combined";
+  bucket: "domain" | "ipcidr" | "combined" | "dns";
   target: RuleSetOutputTarget;
 } | null {
-  const outputs = effectiveRuleSetOutputs(config.ruleSets);
+  const outputs = effectiveRuleSetOutputs(config.ruleSets)
+    .filter((output) => ruleSetOutputNeedsCompilation(config.ruleSets, output, path.target));
   const exact = outputs.find((output) => ruleSetPathName(output.name) === path.artifactName);
   if (exact) return { output: exact, bucket: "combined", target: path.target };
-  for (const [suffix, bucket] of [["-domain", "domain"], ["-ipcidr", "ipcidr"]] as const) {
+  for (const [suffix, bucket] of [["-domain", "domain"], ["-ipcidr", "ipcidr"], ["-dns", "dns"]] as const) {
     if (!path.artifactName.endsWith(suffix)) continue;
     const outputName = path.artifactName.slice(0, -suffix.length);
     const output = outputs.find((item) => ruleSetPathName(item.name) === outputName);

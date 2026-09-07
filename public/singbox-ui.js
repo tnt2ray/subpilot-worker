@@ -29,7 +29,7 @@ const LABELS = {
   peers: "对端", allowed_ips: "允许网段", endpoint: "关联端点", bind_interface: "绑定接口", interface_name: "接口名称",
   default: "默认成员", interrupt_exist_connections: "切换时中断连接", idle_timeout: "空闲超时", interval: "间隔", tolerance: "延迟容差",
   url: "地址", path: "路径", format: "格式", update_interval: "更新间隔", headers: "请求头", http_client: "HTTP 客户端",
-  default_http_client: "默认 HTTP 客户端", default_domain_resolver: "默认解析器", find_process: "查找进程", find_neighbor: "查找邻居",
+  default_http_client: "默认 HTTP 客户端", default_domain_resolver: "建立连接时的默认 DNS", find_process: "查找进程", find_neighbor: "查找邻居",
   netns: "网络命名空间", cache_file: "缓存文件", clash_api: "Clash API", v2ray_api: "V2Ray API", debug: "调试",
   level: "日志级别", timestamp: "时间戳", output: "输出路径", disabled: "禁用", store: "信任库", secret: "密钥"
 };

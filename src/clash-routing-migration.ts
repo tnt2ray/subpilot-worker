@@ -23,6 +23,12 @@ export function migrateClashRouting(original: AppConfig["clients"]["clash"]): {
   if (invalid) return { client, issues: [invalid] };
   const providers = parseClashRuleProvidersYaml(client.ruleProviders);
   const plan = client.ruleSets;
+  // Native rules are authoritative during this migration. Discard the dormant
+  // shared/Surge plan instead of keeping incompatible, unreachable resources.
+  plan.sources = [];
+  plan.outputs = [];
+  plan.directRules = [];
+  plan.aggregateByPolicy = false;
   const ids = new Set([...plan.sources, ...plan.directRules].map((item) => item.id));
   const nextId = (kind: string): string => {
     let index = 1;
@@ -31,25 +37,13 @@ export function migrateClashRouting(original: AppConfig["clients"]["clash"]): {
     ids.add(id);
     return id;
   };
-  // Preserve dormant compiled entries without making them part of the active native rules.
-  plan.outputs.forEach((item) => { item.enabled = false; });
-  plan.directRules.forEach((item) => { item.enabled = false; });
-  // Reserve native provider names before parking dormant entries. Legacy client
-  // splits copied Surge outputs here; they must not force active Clash URLs to
-  // gain a numeric suffix merely because the inactive copy has the same name.
-  const providerNames = new Set(Object.keys(providers));
-  const names = new Set([...providerNames, ...plan.outputs.map((item) => item.name)]);
+  const names = new Set<string>();
   const uniqueName = (base: string): string => {
     let name = base;
     for (let i = 2; names.has(name); i += 1) name = `${base} ${i}`;
     names.add(name);
     return name;
   };
-  for (const output of plan.outputs) {
-    if (providerNames.has(output.name)) output.name = uniqueName(`${output.name}-inactive`);
-  }
-  names.clear();
-  for (const output of plan.outputs) names.add(output.name);
   const resources = new Map<string, { sourceIds: string[]; inlineRules: string[]; provider: NonNullable<RuleSetOutput["provider"]> }>();
   for (const [name, provider] of Object.entries(providers)) {
     const type = String(provider.type).trim().toLowerCase();
@@ -82,7 +76,7 @@ export function migrateClashRouting(original: AppConfig["clients"]["clash"]): {
       }
       const parsed = parseRuleSetContent(provider.payload.join("\n"), behavior === "domain" ? "plain-domain" : behavior === "ipcidr" ? "plain-ipcidr" : "plain-classical", name, undefined, true);
       issues.push(...parsed.warnings);
-      resources.set(name, { sourceIds: [], inlineRules: parsed.rules.map((item) => item.raw), provider: settings });
+      resources.set(name, { sourceIds: [], inlineRules: parsed.rules.map((item) => item.clashDomainPattern ?? item.raw), provider: settings });
     }
   }
   const used = new Set<string>();
