@@ -340,7 +340,7 @@ If saving returns **HTTP 429**, keep the page draft and retry later. Avoid repea
 ### Telegram
 
 1. Create a bot with `/newbot` in [BotFather](https://core.telegram.org/bots/tutorial) and securely retain its token.
-2. In **System settings**, enter the Telegram Bot Token and save. A non-empty token enables Telegram notifications and configures the webhook; clearing it disables notifications.
+2. In the **Telegram** section of **System settings**, enter the Bot Token and save. Chat ID and binding actions are grouped in the same section. A non-empty token enables Telegram notifications and configures the webhook; clearing it disables notifications.
 3. Click **Generate binding code**. Unsaved changes must be saved first. The webhook path is `/api/telegram/webhook`, preferring the origin of Managed Base URL; unchanged webhook settings do not need re-registration.
 4. Send the displayed `/bind <code>` to the bot in the receiving conversation within 10 minutes. After success, only that chat can run bot commands.
 

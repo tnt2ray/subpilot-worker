@@ -326,7 +326,7 @@ npm run migrate -- --url "https://your-worker.example" --apply
 填写并保存 Bot Token 即启用通知，清空并保存则关闭。Bot 用于刷新失败、新版本提醒和状态查询。
 
 1. 在 Telegram 的 `@BotFather` 使用 `/newbot` 创建 bot，妥善保存返回的 Bot Token。
-2. 在 SubPilot“系统设置”填写 Bot Token，**先保存配置**，再点击“生成绑定码”。
+2. 在 SubPilot“系统设置”的 Telegram 区块填写 Bot Token（Chat ID 和绑定操作也集中在此），**先保存配置**，再点击“生成绑定码”。
 3. 将显示的 `/bind <code>` 发送到目标会话；绑定码一次性使用，有效期 10 分钟。
 4. 收到绑定成功回复后，只有该 Chat ID 可以触发 bot 命令。
 
