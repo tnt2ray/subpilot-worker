@@ -181,6 +181,7 @@ Proxy nodes accepts Surge node syntax, Clash YAML/JSON and native sing-box JSON.
 Configure groups separately for each client. Definitions use `type, members or filter, option=value`, with English commas and no `group-name =` prefix. The page's syntax guide lists the available types and options.
 
 - `{all}` selects proxy nodes, not other groups.
+- `fallback` supports `{all}` and its filters, for example `fallback, {all}`. Expanded node order determines failover priority, so changes to node order affect priority. `subnet` does not support this selector.
 - `{all filter=Hong Kong,Japan exclude=via,DMIT}` performs case-insensitive substring matching against names and tags, filtering before exclusion. It is not a regular expression.
 - Named members may reference nodes, groups and supported built-in policies. Self-references and cycles are invalid.
 - `Proxy` must stay enabled and cannot be deleted or renamed. Other empty groups are omitted; routing policies referencing them fall back to `Proxy`. An empty `Proxy` blocks the subscription.

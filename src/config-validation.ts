@@ -540,7 +540,7 @@ function validatePolicyGroupSpec(name: string, spec: string, config: RenderConfi
   for (const item of items) {
     const selector = parseAllPolicySelector(item);
     if (selector) {
-      if (type === "subnet" || type === "fallback") return `策略组 ${name} 类型 ${type} 不能使用 {all} 节点选择器`;
+      if (type === "subnet") return `策略组 ${name} 类型 ${type} 不能使用 {all} 节点选择器`;
       continue;
     }
     if (item.startsWith("{") || item.endsWith("}")) return `策略组 ${name} 的节点选择器格式无效`;
