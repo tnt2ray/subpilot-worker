@@ -1,4 +1,5 @@
 import YAML from "yaml";
+import { compiledRuleProviderName } from "./rule-provider-name";
 
 export type ClashRuleProviderMap = Record<string, Record<string, unknown>>;
 
@@ -13,12 +14,13 @@ function providerSection(value: unknown): unknown {
     : value;
 }
 
-function defaultRuleProviderPath(name: string): string {
-  const slug = name
-    .trim()
-    .replace(/[\\/:*?"<>|#\s]+/g, "_")
-    .replace(/^_+|_+$/g, "");
-  return `./rules/${slug || "provider"}.yaml`;
+function defaultRuleProviderPath(name: string, usedPaths: Set<string>): string {
+  const stem = `./rules/${compiledRuleProviderName(name, "combined")}`;
+  let path = `${stem}.yaml`;
+  let suffix = 2;
+  while (usedPaths.has(path)) path = `${stem}_${suffix++}.yaml`;
+  usedPaths.add(path);
+  return path;
 }
 
 export function parseClashRuleProvidersYaml(value: string): ClashRuleProviderMap {
@@ -27,6 +29,11 @@ export function parseClashRuleProvidersYaml(value: string): ClashRuleProviderMap
   const parsed = providerSection(YAML.parse(trimmed));
   if (!isPlainRecord(parsed)) return {};
   const output: ClashRuleProviderMap = {};
+  const usedPaths = new Set(Object.values(parsed).flatMap((provider) => (
+    isPlainRecord(provider) && typeof provider.path === "string" && provider.path.trim()
+      ? [provider.path.trim()]
+      : []
+  )));
   for (const [name, provider] of Object.entries(parsed)) {
     const providerName = name.trim();
     if (!providerName || !isPlainRecord(provider)) continue;
@@ -34,7 +41,7 @@ export function parseClashRuleProvidersYaml(value: string): ClashRuleProviderMap
       ...provider,
       path: typeof provider.path === "string" && provider.path.trim()
         ? provider.path.trim()
-        : defaultRuleProviderPath(providerName)
+        : defaultRuleProviderPath(providerName, usedPaths)
     };
   }
   return output;

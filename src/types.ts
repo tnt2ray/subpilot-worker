@@ -243,6 +243,10 @@ export interface ProxyNode {
   singbox?: Record<string, ProxyParamValue>;
   name: string;
   originalName?: string | undefined;
+  /** Original source-scoped names retained when identical nodes are merged. */
+  referenceAliases?: Array<{ scope: string; name: string }> | undefined;
+  /** URI transport before target rendering, used to reject unsupported conversions. */
+  uriTransport?: string | undefined;
   type: string;
   server: string;
   port?: number | undefined;

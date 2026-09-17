@@ -44,10 +44,10 @@ npm run setup
 
 1. 从 `wrangler.example.jsonc` 生成本地 `wrangler.jsonc`，创建或配置 `SUBPILOT_CONFIG` KV namespace。
 2. 询问上游订阅刷新间隔，范围为 1～24 小时，默认 12 小时。
-3. 要求输入至少 24 个字符的管理员 token，并生成配置加密密钥。
-4. 将 token 的 SHA-256 hash 写入 `ADMIN_TOKEN_HASH`，与 `CONFIG_ENCRYPTION_KEY` 一起通过 `wrangler deploy --secrets-file` 部署；临时密钥文件会在命令结束后删除。
+3. 核实远端 Secrets；缺少管理员凭据时要求输入至少 24 个字符的 token，缺少配置加密密钥时使用指定值或生成密钥。
+4. 将缺失的 `ADMIN_TOKEN_HASH`（token 的 SHA-256 hash）和 `CONFIG_ENCRYPTION_KEY` 通过 `wrangler deploy --secrets-file` 补齐并部署；临时密钥文件会在命令结束后删除。
 
-请把管理员 token 保存在密码管理器中。若已有本地 `wrangler.jsonc`，脚本会复用配置并默认跳过 Secrets 写入。**不要在推荐安装流程中先手动复制模板**；手动安装见下方独立步骤。
+请把管理员 token 保存在密码管理器中。若已有本地 `wrangler.jsonc`，脚本会复用配置，核实并保留已有 Secrets，只补齐缺失项。首次安装因 token 无效或部署失败而中断后，可修正问题并重新运行 `npm run setup`；本地配置文件的存在不会导致跳过未完成的 Secrets 初始化。无法核实远端状态时停止，不写入 Secrets。手动安装见下方独立步骤。
 
 仅在明确要替换管理员 token 和加密密钥时使用 `npm run setup -- --force-secrets`。替换现有 `CONFIG_ENCRYPTION_KEY` 会使原密钥加密的数据无法解密。
 
@@ -162,6 +162,8 @@ DNS 保留解析器地址、Fake IP 和域名排除项，多个解析器按顺�
 
 “代理节点”接受 Surge 节点语法、Clash YAML/JSON 和 sing-box 原生 JSON。sing-box JSON 可为单个节点、节点数组或包含 `outbounds` 的对象，只导入代理节点，不导入文件中的 DNS、路由或策略组。
 
+重复节点合并后保留各来源的原始名称映射，使链式引用仍指向保留的节点。订阅 URI 按其传输类型解析，无法等价转换的传输会跳过并提示；Hysteria2 链接省略端口时使用 443，并保留完整的 `username:password` 认证。
+
 策略组按客户端配置。组定义格式为 `类型, 成员或筛选器, 参数=值`，使用英文逗号，不填写 `组名 =` 前缀。页面中的“语法说明与示例”列出当前端可用类型和参数。
 
 - `{all}` 选取代理节点，不选取其他策略组。
@@ -218,6 +220,8 @@ sing-box 的 DNS 页将原生规则放在默认折叠的“高级 DNS 规则”�
 | sing-box | 自动识别或指定 Clash、Surge、域名、IP-CIDR、classical 来源格式；SRS 独立直连 |
 
 单个兼容的 Surge 来源，以及明确指定格式且兼容的单个 Clash 来源，由客户端直接下载，Worker 不下载或缓存。Clash 的“自动识别”按实际内容识别并编译，即使只有一个 URL 也不根据扩展名猜测格式；适用于无后缀、`.conf` 或后缀与内容不一致的地址。所选格式用于本条目所有地址；修改共享来源的格式不会改变其他条目的设置。同一条目包含多个 URL 时，系统合并去重；Clash 自动生成 `rule-providers`，无需手写。不同 Clash / sing-box 条目保持独立，不按出口跨条目聚合。Surge 可选“按策略聚合”，启用前请核对匹配顺序。
+
+Surge 编译保留用户指定的 `no-resolve`，不会因包含 IP-CIDR 自动添加；来源中的 `extended-matching` 保留在 RULE-SET 中。DOMAIN-SET 无法表达的规则选项，以及其他客户端无法等价转换的扩展匹配，会产生诊断并阻止不兼容输出。Clash 原生 HTTP provider 未填写 `path` 时，自动分配互不冲突的缓存路径，并避开已显式指定的路径。
 
 sing-box 使用 Clash 或 Surge 来源时，即使只有一个 URL 也需要转换。`IP-ASN` 展开为 IPv4/IPv6 CIDR，定期更新；查询失败时优先使用旧缓存，无数据则跳过并提示。`USER-AGENT`、`URL-REGEX` 等不支持的规则被跳过，来源下载失败或格式错误会报错。生成的远程规则集使用直连 HTTP 客户端下载。
 
@@ -342,7 +346,7 @@ npm run migrate -- --url "https://your-worker.example" --apply
 
 可用 BotFather 的 `/setcommands` 配置菜单，但不要公开添加临时 `/bind` 命令。群组命令无响应时尝试 `/status@你的_bot_用户名`；绑定失败时检查 token、绑定码有效期、目标会话和发言权限。
 
-更换会话时先“解除绑定”，再生成新绑定码。替换 Bot Token 会清除原 Chat ID 并重新注册 webhook，需要再次绑定；token 泄露时先在 BotFather 撤销。关闭通知会删除旧 webhook。
+更换会话时先“解除绑定”，再生成新绑定码。解绑立即生效，并保留页面中其他未保存的配置草稿。替换 Bot Token 会清除原 Chat ID 并重新注册 webhook，需要再次绑定；token 泄露时先在 BotFather 撤销。关闭通知会删除旧 webhook。
 
 参考：[Telegram Bot 创建](https://core.telegram.org/bots/tutorial)、[Bot Features](https://core.telegram.org/bots/features)、[Bots FAQ](https://core.telegram.org/bots/faq)、[命令菜单 API](https://core.telegram.org/bots/api#setmycommands)。
 

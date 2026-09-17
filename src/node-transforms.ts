@@ -258,6 +258,39 @@ export function ensureUniqueProxyPolicyNames(
   return output;
 }
 
+/** Resolve source-local aliases only after all surviving nodes have final names. */
+export function resolveProxyNodeReferences(nodes: ProxyNode[]): ProxyNode[] {
+  const renamed = new Map<string, string>();
+  const key = (scope: string, name: string): string => JSON.stringify([scope, name]);
+  for (const node of nodes) {
+    renamed.set(key(proxyReferenceScope(node), node.originalName ?? node.name), node.name);
+  }
+  // A real retained name takes precedence over an alias of a discarded duplicate.
+  for (const node of nodes) for (const alias of node.referenceAliases ?? []) {
+    const aliasKey = key(alias.scope, alias.name);
+    if (!renamed.has(aliasKey)) renamed.set(aliasKey, node.name);
+  }
+  const reserved = new Set([
+    ...SURGE_BUILT_IN_RULE_POLICIES,
+    ...CLASH_BUILT_IN_RULE_POLICIES,
+    ...STASH_BUILT_IN_RULE_POLICIES
+  ]);
+  return nodes.map((node) => {
+    let output = node;
+    for (const field of ["dialer-proxy", "underlying-proxy"]) {
+      const original = node.params[field];
+      if (typeof original !== "string" || reserved.has(original.toUpperCase())) continue;
+      const mapped = renamed.get(key(proxyReferenceScope(node), original));
+      if (mapped && mapped !== original) output = { ...output, params: { ...output.params, [field]: mapped }, surgeDetail: undefined };
+    }
+    return output;
+  });
+}
+
+function proxyReferenceScope(node: ProxyNode): string {
+  return JSON.stringify([Boolean(node.manual), node.sourceId ?? "manual"]);
+}
+
 export function parseFeatureTagRules(lines: string[] = []): FeatureTagRule[] {
   return lines.flatMap((line) => {
     const [rawTag, rawKeywords] = line.split(/=(.*)/s);
@@ -466,15 +499,17 @@ function isIpAddress(value: string): boolean {
 function dedupeByFingerprint(nodes: ProxyNode[]): ProxyNode[] {
   const selected = new Map<string, ProxyNode>();
   for (const node of nodes) {
+    const aliases = node.referenceAliases ?? [{ scope: proxyReferenceScope(node), name: node.originalName ?? node.name }];
     const key = nodeFingerprint(node);
     const existing = selected.get(key);
     if (!existing) {
-      selected.set(key, node);
+      selected.set(key, { ...node, referenceAliases: aliases });
       continue;
     }
     const featureTags = mergeFeatureTags(existing.featureTags, node.featureTags);
     const matchLabels = mergeMatchLabels(existing.matchLabels, node.matchLabels);
     const mergedBase = {
+      referenceAliases: [...existing.referenceAliases ?? [], ...aliases],
       manual: existing.manual || node.manual || undefined,
       chainExit: existing.chainExit || node.chainExit || undefined,
       chainFilter: existing.chainFilter?.length ? existing.chainFilter : node.chainFilter,
@@ -537,6 +572,8 @@ function nodeFingerprint(node: ProxyNode): string {
     node.uuid ?? "",
     node.cipher ?? "",
     stableParamFingerprint(node.params),
+    // Identical local reference names can designate different upstreams in different sources.
+    node.params["dialer-proxy"] || node.params["underlying-proxy"] ? proxyReferenceScope(node) : "",
     node.singbox ? stableParamFingerprint(Object.fromEntries(Object.entries(node.singbox).filter(([key]) => key !== "tag"))) : ""
   ].join("|");
 }

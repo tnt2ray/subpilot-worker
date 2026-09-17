@@ -137,8 +137,12 @@ export function toSingboxOutbound(node: ProxyNode, canonical: JsonObject): JsonO
   return output;
 }
 
-/** Reject lossy native-node conversions before a legacy renderer sees the node. */
+/** Reject unsupported URI transports and lossy native-node conversions before rendering. */
 export function nativeNodeCompatibility(node: ProxyNode, target: Target): string | null {
+  if (node.uriTransport) {
+    const transports = target === "clash" ? ["tcp", "ws", "grpc", "h2"] : target === "surge" ? ["tcp", "ws"] : ["tcp", "ws", "grpc"];
+    if (!transports.includes(node.uriTransport)) return `${target} 无法等价转换 URI 的 ${node.uriTransport} 传输，请使用当前客户端的原生节点配置`;
+  }
   if (target === "clash" && node.type === "snell" && Number(node.params.version ?? node.raw?.version) === 6) return "clash 不支持 Snell 6，未改写协议版本";
   if (!node.singbox || target === "sing-box") return null;
   const native = node.singbox;

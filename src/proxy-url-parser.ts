@@ -31,6 +31,7 @@ export function parseProxyUrl(value: string): ProxyNode | null {
       server: parsed.hostname,
       port: toPort(parsed.port) ?? defaultPortFor(type),
       params,
+      uriTransport: asString(params.network) || "tcp",
       paramsNormalized: paramsNormalized || undefined
     };
     if (type === "ss" && secret) {
@@ -51,7 +52,10 @@ export function parseProxyUrl(value: string): ProxyNode | null {
         node.uuid = auth;
         node.password = secret;
       }
-    } else if (["trojan", "hysteria2", "hy2", "anytls"].includes(type)) {
+    } else if (type === "hysteria2" || type === "hy2") {
+      const userInfo = value.match(/^[^:]+:\/\/([^/?#]*)@/)?.[1] ?? "";
+      node.password = userInfo.includes(":") ? `${auth}:${secret}` : auth;
+    } else if (["trojan", "anytls"].includes(type)) {
       node.password = auth;
     } else if (auth) {
       node.password = auth;
@@ -174,8 +178,21 @@ function normalizeUriParams(params: ProxyNode["params"]): void {
   const security = asString(params.security).toLowerCase();
   if (security === "tls" || security === "reality") params.tls = true;
   if (params.type !== undefined && params.network === undefined) params.network = params.type;
-  if (params.path !== undefined && params["ws-path"] === undefined) params["ws-path"] = params.path;
-  if (params.host !== undefined && params["ws-headers"] === undefined) params["ws-headers"] = `Host:${formatSurgeParamValue(params.host)}`;
+  // In sharing URIs, `http` denotes HTTP/2, not Clash's HTTP obfuscation.
+  if (params.network === "http") params.network = "h2";
+  if (params.network === "ws") {
+    if (params.path !== undefined && params["ws-path"] === undefined) params["ws-path"] = params.path;
+    if (params.host !== undefined && params["ws-headers"] === undefined) params["ws-headers"] = `Host:${formatSurgeParamValue(params.host)}`;
+    delete params.path;
+    delete params.host;
+  } else if (params.network === "h2") {
+    const options = isProxyParamRecord(params["h2-opts"]) ? { ...params["h2-opts"] } : {};
+    if (params.path !== undefined && options.path === undefined) options.path = params.path;
+    if (params.host !== undefined && options.host === undefined) options.host = Array.isArray(params.host) ? params.host : [params.host];
+    if (Object.keys(options).length) params["h2-opts"] = options;
+    delete params.path;
+    delete params.host;
+  }
   if (params.serviceName !== undefined && params["grpc-service-name"] === undefined) params["grpc-service-name"] = params.serviceName;
   if (params.fp !== undefined && params["client-fingerprint"] === undefined) params["client-fingerprint"] = params.fp;
   const realityOpts = isProxyParamRecord(params["reality-opts"]) ? { ...params["reality-opts"] } : {};
@@ -184,8 +201,6 @@ function normalizeUriParams(params: ProxyNode["params"]): void {
   if (Object.keys(realityOpts).length > 0) params["reality-opts"] = realityOpts;
   delete params.security;
   delete params.type;
-  delete params.path;
-  delete params.host;
   delete params.serviceName;
   delete params.fp;
   delete params.pbk;
@@ -230,6 +245,6 @@ function parseVmess(value: string): ProxyNode | null {
 }
 
 function defaultPortFor(type: string): number {
-  if (type === "https" || type === "trojan") return 443;
+  if (["https", "trojan", "hysteria2", "hy2"].includes(type)) return 443;
   return 80;
 }

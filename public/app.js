@@ -135,6 +135,7 @@ function render() {
   updateStatus();
   updateSourceRefreshButtons();
   updateMmdbView();
+  if (state.page === "links") loadLinks().catch((error) => toast(error.message));
 }
 function renderSidebarVersion() {
   const element = $("#sidebar-version");
@@ -1486,11 +1487,32 @@ async function action(button) {
     return;
   }
   if (name === "telegram-unbind") {
-    modal(t("解除绑定", "Unbind Telegram"), `<p>${t("确认解除当前 Telegram 绑定？", "Unbind the current Telegram chat?")}</p>`, async () => {
-      await api("/api/telegram/unbind", { method: "POST" });
-      closeModal();
-      await load();
-    });
+    const unbind = async () => {
+      if (state.busy) return;
+      state.busy = true;
+      updateStatus();
+      const chatId = state.config.settings.notificationTelegramChatId;
+      try {
+        const saved = await api("/api/telegram/unbind", { method: "POST" });
+        if (state.config.settings.notificationTelegramChatId === chatId) {
+          state.config.settings.notificationTelegramChatId = saved.settings.notificationTelegramChatId;
+        }
+        state.config.updatedAt = saved.updatedAt;
+        if (state.saved) {
+          const previous = JSON.parse(state.saved);
+          previous.settings.notificationTelegramChatId = saved.settings.notificationTelegramChatId;
+          previous.updatedAt = saved.updatedAt;
+          state.saved = JSON.stringify(previous);
+        }
+        if (modal.save === unbind) closeModal();
+        render();
+        toast(t("Telegram 已解除绑定", "Telegram unbound"));
+      } finally {
+        state.busy = false;
+        updateStatus();
+      }
+    };
+    modal(t("解除绑定", "Unbind Telegram"), `<p>${t("确认解除当前 Telegram 绑定？", "Unbind the current Telegram chat?")}</p>`, unbind);
     return;
   }
 }
@@ -1603,7 +1625,6 @@ $("#language").addEventListener("click", () => {
   state.lang = state.lang === "zh" ? "en" : "zh";
   localStorage.setItem("subpilot-language", state.lang);
   render();
-  if (state.page === "links") loadLinks().catch((error) => toast(error.message));
 });
 $("#logout").addEventListener("click", () => {
   const logout = async () => {
@@ -1629,7 +1650,6 @@ window.addEventListener("hashchange", async () => {
   if (["clients", "groups"].includes(state.page)) await loadSharedProxyNames().catch((error) => toast(error.message));
   render();
   $("#content").scrollTo(0, 0);
-  if (state.page === "links") loadLinks().catch((error) => toast(error.message));
   if (state.page === "system") loadMmdbStatus();
 });
 window.addEventListener("beforeunload", (event) => {
@@ -1665,7 +1685,6 @@ async function load() {
   await loadSharedProxyNames().catch((error) => toast(error.message));
   state.page = navigationPage();
   render();
-  if (state.page === "links") await loadLinks();
   await Promise.all([refreshStatus(), state.page === "system" ? loadMmdbStatus() : Promise.resolve()]);
 }
 load().catch((error) => {

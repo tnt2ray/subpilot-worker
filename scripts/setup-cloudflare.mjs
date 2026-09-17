@@ -16,6 +16,7 @@ const DEFAULT_SOURCE_REFRESH_HOURS = 12;
 const RULE_SET_REFRESH_CRON = "0 16 * * *";
 const MIN_ADMIN_TOKEN_LENGTH = 24;
 const LOGIN_RATE_LIMIT_BINDING_NAME = "LOGIN_RATE_LIMITER";
+const REQUIRED_SECRET_NAMES = ["ADMIN_TOKEN_HASH", "CONFIG_ENCRYPTION_KEY"];
 const args = new Set(process.argv.slice(2));
 const existingConfigOnly = args.has("--existing-config-only");
 
@@ -276,6 +277,30 @@ function randomSecret() {
   return randomBytes(32).toString("base64url");
 }
 
+function readRemoteSecretNames() {
+  const result = spawnSync("wrangler", ["secret", "list", "--format", "json", "--config", CONFIG_PATH], {
+    encoding: "utf8"
+  });
+  if (result.status !== 0) {
+    const message = stripAnsi(`${result.stdout ?? ""}\n${result.stderr ?? ""}`);
+    const name = readJsonConfig().name;
+    // A new Worker has no secrets yet. Other failures must not be mistaken for
+    // missing secrets: doing so could replace an existing encryption key.
+    if (result.status !== null && (typeof name === "string" && message.includes(`Worker "${name}" not found.`)
+      || /\[code:\s*10007\]/.test(message))) return new Set();
+    process.stderr.write("Could not verify existing Worker Secrets. Check Wrangler authentication and the configured Worker, then retry. No Secrets were written.\n");
+    process.exit(1);
+  }
+  try {
+    const secrets = JSON.parse(result.stdout);
+    if (!Array.isArray(secrets) || secrets.some((secret) => !secret || typeof secret.name !== "string")) throw Error("Invalid secret list");
+    return new Set(secrets.map((secret) => secret.name));
+  } catch {
+    process.stderr.write("Wrangler returned an invalid Secrets list. No Secrets were written.\n");
+    process.exit(1);
+  }
+}
+
 async function readAdminToken() {
   const envToken = process.env.SUBPILOT_ADMIN_TOKEN?.trim();
   if (envToken) return validateAdminToken(envToken);
@@ -301,13 +326,10 @@ function validateAdminToken(token) {
   return token;
 }
 
-function writeTempSecrets(adminToken, encryptionKey) {
+function writeTempSecrets(secrets) {
   const directory = mkdtempSync(join(tmpdir(), "subpilot-secrets-"));
   const file = join(directory, "secrets.json");
-  writeFileSync(file, JSON.stringify({
-    ADMIN_TOKEN_HASH: sha256Hex(adminToken),
-    CONFIG_ENCRYPTION_KEY: encryptionKey
-  }, null, 2), { mode: 0o600 });
+  writeFileSync(file, JSON.stringify(secrets, null, 2), { mode: 0o600 });
   return { directory, file };
 }
 
@@ -315,8 +337,8 @@ function deployWorker() {
   run("wrangler", ["deploy", "--config", CONFIG_PATH]);
 }
 
-function runWithSecrets(command, adminToken, encryptionKey) {
-  const { directory, file } = writeTempSecrets(adminToken, encryptionKey);
+function runWithSecrets(command, secrets) {
+  const { directory, file } = writeTempSecrets(secrets);
   let result;
   try {
     const commandArgs = command === "deploy"
@@ -340,23 +362,25 @@ if (!existingConfigOnly) await ensureKvNamespace();
 ensureLoginRateLimitBinding(createdConfig);
 await configureSourceRefreshSchedule(createdConfig);
 
-const shouldWriteSecrets = !args.has("--no-secrets") && (createdConfig || args.has("--force-secrets"));
-const adminToken = shouldWriteSecrets ? await readAdminToken() : "";
-const encryptionKey = shouldWriteSecrets ? (process.env.SUBPILOT_CONFIG_ENCRYPTION_KEY || randomSecret()) : "";
+const existingSecrets = args.has("--no-secrets") || args.has("--force-secrets") ? new Set() : readRemoteSecretNames();
+const secretNamesToWrite = args.has("--no-secrets") ? [] : REQUIRED_SECRET_NAMES.filter((name) => !existingSecrets.has(name));
+const secrets = {};
+if (secretNamesToWrite.includes("ADMIN_TOKEN_HASH")) secrets.ADMIN_TOKEN_HASH = sha256Hex(await readAdminToken());
+if (secretNamesToWrite.includes("CONFIG_ENCRYPTION_KEY")) secrets.CONFIG_ENCRYPTION_KEY = process.env.SUBPILOT_CONFIG_ENCRYPTION_KEY || randomSecret();
 
 const shouldDeploy = !args.has("--no-deploy") && !existingConfigOnly;
-if (shouldWriteSecrets) {
-  runWithSecrets(shouldDeploy ? "deploy" : "bulk", adminToken, encryptionKey);
+if (secretNamesToWrite.length) {
+  runWithSecrets(shouldDeploy ? "deploy" : "bulk", secrets);
 } else {
   if (shouldDeploy) deployWorker();
   if (!args.has("--no-secrets")) {
-    process.stdout.write("Existing wrangler.jsonc detected; skipped secret writes to avoid rotating production secrets.\n");
+    process.stdout.write("Required Worker Secrets already exist; preserved their values.\n");
     process.stdout.write("Pass --force-secrets only when you intentionally want to replace ADMIN_TOKEN_HASH and CONFIG_ENCRYPTION_KEY.\n");
   }
 }
 
 process.stdout.write("\nSubPilot setup complete.\n");
-if (shouldWriteSecrets) {
+if (secretNamesToWrite.includes("ADMIN_TOKEN_HASH")) {
   process.stdout.write("The admin token you entered was hashed into ADMIN_TOKEN_HASH.\n");
   process.stdout.write("Store the original admin token in your password manager. It is not written to the repository or KV in plaintext.\n");
 }

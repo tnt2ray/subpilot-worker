@@ -338,6 +338,8 @@ function normalizeClashAlpn(value: ProxyParamValue): ProxyParamValue {
 }
 
 function clashWsOptionsFromParams(params: ProxyNode["params"]): Record<string, ProxyParamValue> | null {
+  // Explicit transports take precedence over stale or unrelated WS options.
+  if (params.network !== undefined && params.network !== "ws") return null;
   const wsOpts = isProxyParamRecord(params["ws-opts"]) ? { ...params["ws-opts"] } : {};
   const headers = isProxyParamRecord(wsOpts.headers) ? { ...wsOpts.headers } : {};
   const parsedHeaders = parseHeaderParams(params["ws-headers"]);

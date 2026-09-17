@@ -53,9 +53,9 @@ Alternatively, extract `subpilot-worker-vX.Y.Z.tar.gz` from [GitHub Releases](ht
 npm run setup
 ```
 
-On a new installation, setup creates local `wrangler.jsonc`, creates or reuses the `SUBPILOT_CONFIG` KV namespace, and asks for the source refresh interval (1–24 hours, default 12) and an admin token of at least 24 characters. It hashes the token, generates an encryption key, and deploys with the required Worker Secrets through a temporary secrets file that is removed afterward. Keep the admin token in a password manager.
+On a new installation, setup creates local `wrangler.jsonc`, creates or reuses the `SUBPILOT_CONFIG` KV namespace, and asks for the source refresh interval (1–24 hours, default 12). It checks remote Secrets, requests an admin token of at least 24 characters when the admin credential is missing, and uses a supplied or generated encryption key when that Secret is missing. It deploys with the missing Secrets through a temporary file that is removed afterward. Keep the admin token in a password manager.
 
-If `wrangler.jsonc` already exists, setup reuses it and skips Secret writes by default. Do not copy the template before using the recommended setup; template copying belongs to the manual steps below. `npm run setup -- --force-secrets` also deploys and replaces both Secrets; use it only for an intentional reset or planned rotation. **Preserve the existing `CONFIG_ENCRYPTION_KEY` when reusing encrypted KV data.**
+If `wrangler.jsonc` already exists, setup reuses it, verifies and preserves existing Secrets, and writes only missing ones. After an invalid token or failed deployment interrupts first-time setup, correct the problem and rerun `npm run setup`; an existing configuration file does not skip unfinished Secret initialization. Setup stops without writing Secrets if their remote state cannot be verified. `npm run setup -- --force-secrets` also deploys and replaces both Secrets; use it only for an intentional reset or planned rotation. **Preserve the existing `CONFIG_ENCRYPTION_KEY` when reusing encrypted KV data.**
 
 <details>
 <summary>Automation environment variables</summary>
@@ -178,6 +178,8 @@ Configuration previews and modal editors include line numbers and syntax highlig
 
 Proxy nodes accepts Surge node syntax, Clash YAML/JSON and native sing-box JSON. sing-box input may be one node, an array or an object containing `outbounds`; DNS, routing and groups from that input are not imported.
 
+Merged duplicate nodes retain original name mappings for each source, so chain references still resolve to the retained node. Subscription URIs preserve their transport type; unsupported conversions are omitted with a diagnostic. Hysteria2 links default to port 443 when omitted and retain complete `username:password` authentication.
+
 Configure groups separately for each client. Definitions use `type, members or filter, option=value`, with English commas and no `group-name =` prefix. The page's syntax guide lists the available types and options.
 
 - `{all}` selects proxy nodes, not other groups.
@@ -234,6 +236,8 @@ The rule-set editor includes a **DNS resolver** field; empty inherits global set
 | sing-box | Automatic or explicit Clash, Surge, domain, IP-CIDR or classical source format; independent direct SRS downloads |
 
 A single compatible Surge source, or a single compatible Clash source with an explicit format, is downloaded by the client without Worker fetching or caching. Clash automatic mode detects actual content and compiles it, even for a single URL; it never guesses the format from an extension. This supports extensionless URLs, `.conf` URLs and extensions that do not match the content. The selected format applies to all URLs in the entry; changing a shared source's format does not change other entries. Multiple URLs within one entry are merged and deduplicated. Clash `rule-providers` are generated automatically. Separate Clash and sing-box entries remain independent; Surge optionally aggregates by policy, which can change matching order.
+
+Surge compilation preserves the user's `no-resolve` choice and does not add it merely because a set contains IP-CIDR rules. Source `extended-matching` options remain in RULE-SET output. Options that DOMAIN-SET cannot express, and extended matching without an equivalent in another client, produce diagnostics and block incompatible output. Native Clash HTTP providers without an explicit `path` receive distinct cache paths that also avoid explicitly assigned paths.
 
 Clash and Surge sources require conversion for sing-box even with one URL. `IP-ASN` expands into IPv4/IPv6 CIDRs and updates periodically. Resolution failures use cached data when possible; otherwise the ASN is skipped with a notice. Unsupported rules such as `USER-AGENT` and `URL-REGEX` are skipped. Download failures and invalid source formats are reported as errors. Generated remote rule sets use a direct HTTP client for downloading.
 
@@ -356,7 +360,7 @@ Use a personal chat or a private admin group. Groups normally need command acces
 
 BotFather `/setcommands` can expose these commands in a menu; omit the temporary `/bind` command. Bound notifications include refresh failures and, when enabled, new-version alerts.
 
-To change the receiving chat, click **Unbind**, generate a new code, and bind again. If the bot token changes, the old chat binding is cleared; save the new token and bind again. Clearing the token removes the old webhook. If binding fails, check the token, code expiry, Telegram API access, and chat permissions; for a leaked token, revoke it through BotFather before replacing it. See Telegram's [bot features](https://core.telegram.org/bots/features) and [FAQ](https://core.telegram.org/bots/faq).
+To change the receiving chat, click **Unbind**, generate a new code, and bind again. Unbinding takes effect immediately and preserves other unsaved configuration drafts on the page. If the bot token changes, the old chat binding is cleared; save the new token and bind again. Clearing the token removes the old webhook. If binding fails, check the token, code expiry, Telegram API access, and chat permissions; for a leaked token, revoke it through BotFather before replacing it. See Telegram's [bot features](https://core.telegram.org/bots/features) and [FAQ](https://core.telegram.org/bots/faq).
 
 ### GeoIP MMDB
 

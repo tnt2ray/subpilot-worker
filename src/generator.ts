@@ -16,7 +16,7 @@ import { collectClashRuleCoverageWarnings } from "./clash-rules";
 import { buildClash } from "./clash-like-renderer";
 import { loadConfig } from "./config-store";
 import { parseHostEntries } from "./host-entries";
-import { applyTransforms, buildChainNodes, buildConfiguredProxyNodes, ensureUniqueProxyPolicyNames, nodeTagsForMatching, parseFeatureTagRules } from "./node-transforms";
+import { applyTransforms, buildChainNodes, buildConfiguredProxyNodes, ensureUniqueProxyPolicyNames, nodeTagsForMatching, parseFeatureTagRules, resolveProxyNodeReferences } from "./node-transforms";
 import { dedupeHostEntries } from "./output-render";
 import { parseSubscription } from "./parsers";
 import { buildCompiledRuleSetReferencePlan, type CompiledRuleSetReferencePlan } from "./rule-set-compiler";
@@ -159,16 +159,7 @@ async function prepareOutput(env: Env, config: RenderConfig, target: Target, req
   const fetched = await fetchAllSources(env, config, target, warnings);
   const configuredNodes = buildConfiguredProxyNodes(config);
   const transformed = await applyTransforms(env, [...fetched.nodes, ...configuredNodes], config, target, warnings);
-  const supported = ensureUniqueProxyPolicyNames(transformed, config, warnings);
-  const renamed = new Map(supported.map((node) => [`${node.sourceId ?? "manual"}\0${node.originalName ?? node.name}`, node.name]));
-  for (const node of supported) {
-    for (const key of ["dialer-proxy", "underlying-proxy"]) {
-      const original = node.params[key];
-      if (typeof original !== "string") continue;
-      const mapped = renamed.get(`${node.sourceId ?? "manual"}\0${original}`);
-      if (mapped) { node.params = { ...node.params, [key]: mapped }; node.surgeDetail = undefined; }
-    }
-  }
+  const supported = resolveProxyNodeReferences(ensureUniqueProxyPolicyNames(transformed, config, warnings));
   const chainNodes = buildChainNodes(supported);
   const uniqueChainNodes = ensureUniqueProxyPolicyNames(chainNodes, config, warnings, supported.map((node) => node.name));
   const nodes = uniqueChainNodes.length > 0 ? [...supported, ...uniqueChainNodes] : supported;

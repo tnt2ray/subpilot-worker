@@ -24,7 +24,8 @@ import {
   configuredTailscalePolicyNames,
   isRulePolicyCompatibleWithTarget,
   renderDirectRuleForTarget,
-  renderRuleSetRuleForTarget
+  renderRuleSetRuleForTarget,
+  ruleUsesExtendedMatching
 } from "./rule-targets";
 import { directRuleSetSource, effectiveRuleSetOutputs, isSingboxBinarySource, planRuleSetOutputs, ruleSetOutputNeedsCompilation } from "./rule-set-outputs";
 import type { RenderConfig } from "./types";
@@ -78,7 +79,7 @@ interface CompileOptions {
 
 const FINAL_RULE_TYPES = new Set(["FINAL", "MATCH"]);
 const RULE_SET_UPDATE_INTERVAL_SECONDS = 24 * 60 * 60;
-const RULE_SET_COMPILER_REVISION = 11;
+const RULE_SET_COMPILER_REVISION = 12;
 
 export async function compileRuleSetOutput(
   env: Env,
@@ -101,12 +102,16 @@ export async function compileRuleSetOutput(
   let duplicateCount = 0;
   const acceptRule = (rule: ParsedRuleSetRule): void => {
     if (config.renderTarget === "surge" && output.surgeType === "DOMAIN-SET" && (rule.bucket !== "domain" || !isPlainDomainRule(rule))) {
-      if (!sourceErrors.some((message) => message.includes("DOMAIN-SET 只能"))) sourceErrors.push(`${rule.label}：DOMAIN-SET 只能包含域名或域名后缀，请检查来源类型。`);
+      if (!sourceErrors.some((message) => message.includes("DOMAIN-SET 只能"))) sourceErrors.push(`${rule.label}：DOMAIN-SET 只能包含不带附加选项的域名或域名后缀，请改用 RULE-SET 或调整来源。`);
       return;
     }
     if (config.renderTarget === "clash" && output.provider && output.provider.behavior !== "classical"
       && rule.bucket !== output.provider.behavior) {
       if (!sourceErrors.some((message) => message.includes("behavior="))) sourceErrors.push(`${rule.label}：规则内容与 behavior=${output.provider.behavior} 不符，请调整 behavior 或来源地址。`);
+      return;
+    }
+    if (ruleUsesExtendedMatching(rule.raw) && renderRuleSetRuleForTarget(rule.raw, config.renderTarget ?? "surge") === null) {
+      sourceErrors.push(`${rule.label}：extended-matching 无法等价转换为 ${targetName(config.renderTarget ?? "surge")}，请调整规则来源或使用支持该选项的客户端。`);
       return;
     }
     if (singbox && rule.type === "IP-ASN" && !validateRuleMatchValue(rule.type, rule.value)
@@ -229,6 +234,14 @@ export async function compileRuleSetOutput(
   }
 
   for (const warning of compatibilityWarnings(compatibility)) warnings.push(warning);
+  if ((!config.renderTarget || config.renderTarget === "surge") && buckets.classical.some((rule) =>
+    ["DOMAIN", "DOMAIN-SUFFIX", "DOMAIN-KEYWORD"].includes(rule.type)
+    && splitRuleLine(rule.raw).slice(2).some((option) => option.toLowerCase() === "extended-matching"))) {
+    // Surge applies a domain rule's flag to the entire RULE-SET. Keep those
+    // domains together instead of splitting large lists into DOMAIN-SET files.
+    buckets.classical = [...buckets.domain, ...buckets.classical];
+    buckets.domain = [];
+  }
   // Drop deduplication-only indexes before serializing large output buckets.
   seen.clear();
   suffixes.clear();
@@ -569,7 +582,7 @@ function appendCompiledOutputReferences(
   if (target === "surge") {
     for (const artifact of artifacts) {
       const url = managedRuleSetUrlForRequest(config, requestUrl, output.name, artifact.bucket, target);
-      const options = surgeRuleSetOptions(output, artifact.includesIpCidr);
+      const options = surgeRuleSetOptions(output);
       const type = artifact.bucket === "domain" ? "DOMAIN-SET" : "RULE-SET";
       if (output.dnsServer && artifact.behavior !== "ipcidr") plan.surgeDnsHosts!.push(`${type}:${url} = server:${output.dnsServer}`);
       plan.surgeRules.push([type, url, output.policy, ...options].join(","));
@@ -609,11 +622,8 @@ function directRuleMatchSignature(line: string): string {
   return [(parts[0] || "").trim().toUpperCase(), (parts[1] || "").trim()].join("\0");
 }
 
-function surgeRuleSetOptions(output: RuleSetOutput, includesIpCidr: boolean): string[] {
+function surgeRuleSetOptions(output: RuleSetOutput): string[] {
   const options = output.surgeOptions.filter((option) => !/^update-interval=/i.test(option));
-  if (includesIpCidr && !options.some((option) => option.toLowerCase() === "no-resolve")) {
-    options.unshift("no-resolve");
-  }
   options.push(`update-interval=${RULE_SET_UPDATE_INTERVAL_SECONDS}`);
   return options;
 }
@@ -640,7 +650,9 @@ interface CompatibilitySummary {
 
 function recordTargetCompatibility(rule: ParsedRuleSetRule, summaries: Map<string, CompatibilitySummary>, targets: readonly RuleSetOutputTarget[]): void {
   if (isPlainDomainRule(rule)) return;
-  const diagnosticType = rule.clashDomainPattern ? "Clash domain-provider 模式" : rule.type;
+  const options = splitRuleLine(rule.raw).slice(2);
+  const diagnosticType = rule.clashDomainPattern ? "Clash domain-provider 模式"
+    : options.length ? `${rule.type}（${options.join(",")}）` : rule.type;
   for (const target of targets) {
     const rendered = renderRuleSetRuleForTarget(rule.raw, target);
     const renderedType = rendered === null ? null : (splitRuleLine(rendered)[0] || "").trim().toUpperCase();
@@ -654,7 +666,7 @@ function recordTargetCompatibility(rule: ParsedRuleSetRule, summaries: Map<strin
 
 function compatibilityWarnings(summaries: Map<string, CompatibilitySummary>): string[] {
   return [...summaries.values()].map((item) => item.renderedType === null
-    ? `${item.label}${item.type} 不受 ${targetName(item.target)} 支持，已从该目标规则集过滤${item.count > 1 ? `（共 ${item.count} 条）` : ""}。`
+    ? `${item.label}${item.type} 规则不能等价转换为 ${targetName(item.target)}，已从该目标规则集过滤${item.count > 1 ? `（共 ${item.count} 条）` : ""}。`
     : `${item.label}${item.type} 在 ${targetName(item.target)} 输出中映射为 ${item.renderedType}${item.count > 1 ? `（共 ${item.count} 条）` : ""}。`);
 }
 

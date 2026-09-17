@@ -249,6 +249,15 @@ export function renderRuleSetRuleForTarget(rule: string, target: RuleSetOutputTa
   return translateRuleLineForTarget(rule, target, false);
 }
 
+export function ruleUsesExtendedMatching(rule: string): boolean {
+  const hasOption = (parts: string[]): boolean => parts.slice(2).some((part) => part.trim().toLowerCase() === "extended-matching");
+  const parts = splitRuleLine(rule);
+  if (hasOption(parts)) return true;
+  return LOGICAL_RULE_TYPES.has(parts[0]?.trim().toUpperCase() ?? "") && Boolean(parts[1])
+    ? logicalExpressionSome(parts[1]!, hasOption)
+    : false;
+}
+
 export function isRulePolicyCompatibleWithTarget(policy: string, target: RuleSetOutputTarget): boolean {
   const normalized = policy.trim();
   if (!normalized) return false;
@@ -350,7 +359,11 @@ function translateLogicalNode(content: string, target: RuleSetOutputTarget): str
     if (expression === null) return null;
     parts[1] = expression;
   }
-  return translateSourceMatchOptions(parts, target, false)?.join(",") ?? null;
+  const translated = translateSourceMatchOptions(parts, target, false);
+  if (!translated) return null;
+  const options = translated.slice(2);
+  if (filterDirectRuleOptions(translated[0]!, options, target).length !== options.length) return null;
+  return translated.join(",");
 }
 
 function logicalRuleParts(content: string): string[] | null {
@@ -448,11 +461,11 @@ function usesSurgeSubnetRule(rule: string): boolean {
   const type = parts[0]?.trim().toUpperCase() ?? "";
   if (type === "SUBNET") return true;
   return LOGICAL_RULE_TYPES.has(type) && Boolean(parts[1])
-    ? logicalExpressionUsesRuleType(parts[1]!, "SUBNET")
+    ? logicalExpressionSome(parts[1]!, (child) => child[0]!.trim().toUpperCase() === "SUBNET")
     : false;
 }
 
-function logicalExpressionUsesRuleType(expression: string, expectedType: string): boolean {
+function logicalExpressionSome(expression: string, matches: (parts: string[]) => boolean): boolean {
   for (let index = 0; index < expression.length; index += 1) {
     if (expression[index] !== "(") continue;
     const closingIndex = findClosingParenthesis(expression, index);
@@ -461,9 +474,9 @@ function logicalExpressionUsesRuleType(expression: string, expectedType: string)
     const parts = logicalRuleParts(inner);
     if (parts) {
       const type = parts[0]!.trim().toUpperCase();
-      if (type === expectedType) return true;
-      if (LOGICAL_RULE_TYPES.has(type) && parts[1] && logicalExpressionUsesRuleType(parts[1], expectedType)) return true;
-    } else if (logicalExpressionUsesRuleType(inner, expectedType)) {
+      if (matches(parts)) return true;
+      if (LOGICAL_RULE_TYPES.has(type) && parts[1] && logicalExpressionSome(parts[1], matches)) return true;
+    } else if (logicalExpressionSome(inner, matches)) {
       return true;
     }
     index = closingIndex;

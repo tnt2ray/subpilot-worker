@@ -1,14 +1,13 @@
 import YAML from "yaml";
-import { isNativeClashRule } from "./rule-targets";
+import { isNativeClashRule, ruleUsesExtendedMatching } from "./rule-targets";
 import { splitRuleLine } from "./rule-line";
 import { isValidCidrForRuleType, looksLikeCidr } from "./rule-value-validation";
 import type { RuleSetBucket, RuleSetSourceFormat } from "./rule-set-types";
 
 const DOMAIN_RULE_TYPES = new Set(["DOMAIN", "DOMAIN-SUFFIX"]);
 const IPCIDR_RULE_TYPES = new Set(["IP-CIDR", "IP-CIDR6"]);
-const IP_OPTION_RULE_TYPES = new Set([...IPCIDR_RULE_TYPES, "GEOIP", "IP-ASN"]);
 const SKIPPED_EXTERNAL_RULE_TYPES = new Set(["RULE-SET", "DOMAIN-SET", "FINAL", "MATCH"]);
-const IP_RULE_OPTIONS = new Set(["no-resolve", "src"]);
+const RULE_OPTIONS = new Set(["no-resolve", "src", "extended-matching"]);
 
 export interface ParsedRuleSetRule {
   type: string;
@@ -90,6 +89,7 @@ function parseClashYamlRuleSet(content: string, sourceLabel: string, visit?: Rul
       : "plain-classical";
   const rules: ParsedRuleSetRule[] = [];
   const warnings: string[] = [];
+  let fatal = false;
   payload.forEach((item, index) => {
     if (typeof item !== "string") { if (clashOnly) warnings.push(`${sourceLabel}: payload 第 ${index + 1} 项必须是字符串。`); return; }
     const parsedLine = parseRuleLineForRuleSet(item, {
@@ -99,9 +99,12 @@ function parseClashYamlRuleSet(content: string, sourceLabel: string, visit?: Rul
       clashOnly
     });
     if (parsedLine.rule) { if (visit) visit(parsedLine.rule); else rules.push(parsedLine.rule); }
-    if (parsedLine.warning) warnings.push(parsedLine.warning);
+    if (parsedLine.warning) {
+      warnings.push(parsedLine.warning);
+      if (clashOnly && ruleUsesExtendedMatching(item)) fatal = true;
+    }
   });
-  return { rules, warnings };
+  return { rules, warnings, ...(fatal ? { fatal } : {}) };
 }
 
 /** Common providers use flat string sequences; avoid a large YAML syntax tree. */
@@ -180,7 +183,7 @@ function parseRuleLineForRuleSet(line: string, options: ParseLineOptions): { rul
   if (IPCIDR_RULE_TYPES.has(type) && !isValidCidrForRuleType(value, type)) {
     return { warning: `${lineLabel(options)}${type} 包含无效的 CIDR。` };
   }
-  const raw = options.clashOnly ? [type, ...parts.slice(1)].join(",") : ruleWithoutPolicy(parts, type);
+  const raw = options.clashOnly ? [type, ...parts.slice(1)].join(",") : ruleWithoutPolicy(parts);
   if (options.clashOnly && !isNativeClashRule(raw)) return { warning: `${lineLabel(options)}不是受支持的 Clash 规则，规则集条目不能携带出口或其他客户端参数。` };
   const bucket = bucketForRuleType(type, raw);
   return {
@@ -229,19 +232,19 @@ function parsedRule(type: string, value: string, options: ParseLineOptions, buck
 }
 
 function bucketForRuleType(type: string, raw?: string): RuleSetBucket {
-  if (DOMAIN_RULE_TYPES.has(type)) return "domain";
+  const options = raw ? splitRuleLine(raw).slice(2) : [];
+  // Specialized payloads contain match values only and cannot retain options.
+  if (DOMAIN_RULE_TYPES.has(type)) return options.length ? "classical" : "domain";
   if (IPCIDR_RULE_TYPES.has(type)) {
-    const options = raw ? splitRuleLine(raw).slice(2).map((option) => option.trim().toLowerCase()) : [];
-    // A plain ipcidr payload cannot express per-rule resolution/source options.
-    return options.includes("src") || options.includes("no-resolve") ? "classical" : "ipcidr";
+    return options.length ? "classical" : "ipcidr";
   }
   return "classical";
 }
 
-function ruleWithoutPolicy(parts: string[], type: string): string {
+function ruleWithoutPolicy(parts: string[]): string {
   const normalized = parts.map((part) => part.trim()).filter(Boolean);
   if (normalized.length <= 2) return normalized.join(",");
-  if (IP_OPTION_RULE_TYPES.has(type) && IP_RULE_OPTIONS.has((normalized[2] || "").toLowerCase())) {
+  if (RULE_OPTIONS.has((normalized[2] || "").toLowerCase())) {
     return normalized.join(",");
   }
   return [normalized[0], normalized[1], ...normalized.slice(3)].join(",");
