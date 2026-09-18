@@ -209,9 +209,17 @@ SubPilot no longer exposes or generates the sing-box TUN `stack` option. Loading
 
 ### Tailscale
 
-Connection names can be used in the current client's groups and routing rules. Surge requires an authentication key for enabled nodes. sing-box may leave it empty and authorize through the login URL in client logs; use a separate state directory for each instance. Authentication keys are masked in the editor.
+Connection names can be used in the current client's groups and routing rules. Enabled Surge nodes use either an auth key or interactive login, never both. Complete interactive sign-in in the Surge policy editor; identity stays on that device, and renaming the section may require signing in again. sing-box may leave it empty and authorize through the login URL in client logs; use a separate state directory for each instance. Authentication keys are masked in the editor.
 
 SubPilot generates configuration and does not log into Tailscale on the client's behalf. See the [sing-box Tailscale documentation](https://sing-box.sagernet.org/configuration/endpoint/tailscale/).
+
+Surge exposes `auto-add-magic-dns-rule`, enabled by default, for automatic MagicDNS and visible-peer address routing. Subnets and exit traffic still require explicit rules. Existing idle keepalive values are preserved. Test URLs accept HTTP and HTTPS; HTTPS needs a Surge Beta with support for this feature, and TLS handshakes may increase test duration.
+
+### Surge groups and rule compatibility
+
+The group editor provides a `category` field and a dedicated Smart priority input. Enter one `regex:factor` per line, for example `Premium:0.9`. The first match wins; factors must be finite positive numbers, with values below 1 increasing preference. Quoted patterns preserve commas and quantifiers. `url-test` continues to render as `smart`.
+
+Category and HTTPS testing follow the [Surge Beta announcement](https://t.me/SurgeTestFlightFeed/413) and require a compatible client. Mac 6.9.1 / iOS 5.22.1 introduced `GEOIP,UNKNOWN` and `IP-ASN,UNKNOWN`, supported in Surge individual rules, logical rules and compiled rule sets. These semantics are not translated into ASN or GeoIP matches for other clients.
 
 ### Routing rules
 

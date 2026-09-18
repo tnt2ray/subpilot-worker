@@ -44,7 +44,7 @@ export function buildSurgeGroups(
     const available = filterUnavailableTailscalePolicies(groupType, targetAvailable, buildOptions);
     const items = groupType === "subnet" ? available : available.filter((item) => !parseGroupOption(item));
     const groupOptions = groupType === "subnet"
-      ? groupItems.filter((item) => parseGroupOption(item)?.key.toLowerCase() === "icon-url")
+      ? groupItems.filter((item) => ["icon-url", "category"].includes(parseGroupOption(item)?.key.toLowerCase() ?? ""))
       : resolved.filter((item) => parseGroupOption(item));
     return { name, type: groupType, items, options: groupOptions, surgeHidden };
   });

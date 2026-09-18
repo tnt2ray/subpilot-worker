@@ -193,9 +193,17 @@ SubPilot 不再提供或生成 sing-box TUN 的 `stack` 选项；加载或导入
 
 ### Tailscale
 
-节点名称可用于当前端策略组和分流规则。Surge 启用节点需要认证密钥；sing-box 可留空，通过客户端日志中的登录地址授权，多个实例应使用各自的状态目录。认证密钥在编辑时以密码框显示。
+节点名称可用于当前端策略组和分流规则。Surge 启用节点可选择认证密钥或交互登录，二者互斥；交互登录需在 Surge 策略编辑器完成，身份保存在当前设备，修改配置段名称可能需要重新登录。sing-box 可留空，通过客户端日志中的登录地址授权，多个实例应使用各自的状态目录。认证密钥在编辑时以密码框显示。
 
 SubPilot 只生成配置，不代替客户端登录 Tailscale。参见 [sing-box Tailscale 文档](https://sing-box.sagernet.org/configuration/endpoint/tailscale/)。
+
+Surge 提供 `auto-add-magic-dns-rule` 开关，默认启用，为 MagicDNS 和可见对端地址自动添加路由；子网和出口流量仍需显式规则。已有空闲保活值保持不变。测速地址支持 HTTP 和 HTTPS，HTTPS 需要支持该功能的 Surge Beta，TLS 握手可能增加测试耗时。
+
+### Surge 策略组与规则兼容
+
+策略组编辑器提供 `category` 分类字段和 Smart 优先级编辑入口。优先级每行填写 `regex:factor`，例如 `Premium:0.9`；首个匹配项生效，权重必须为有限正数，小于 1 更优先。支持引号内含逗号和量词的正则；`url-test` 仍输出为 `smart`。
+
+分类和 HTTPS 测速依据 [Surge Beta 公告](https://t.me/SurgeTestFlightFeed/413)，使用前需更新到支持它们的客户端。Mac 6.9.1 / iOS 5.22.1 起支持 `GEOIP,UNKNOWN` 和 `IP-ASN,UNKNOWN`，可用于 Surge 单条规则、逻辑规则和编译规则集；该语义不会转换为其他客户端的 ASN 或 GeoIP 匹配。
 
 ### 分流规则
 

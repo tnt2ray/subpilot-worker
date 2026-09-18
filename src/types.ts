@@ -66,6 +66,8 @@ export interface SurgeTailscaleNodeConfig {
   name: string;
   sectionName: string;
   authKey: string;
+  interactiveLogin?: boolean;
+  autoAddMagicDnsRule?: boolean;
   controlUrl: string;
   hostname: string;
   derpOnly: boolean;

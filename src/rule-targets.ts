@@ -243,10 +243,17 @@ export function isNativeClashRule(rule: string): boolean {
 }
 
 export function renderRuleSetRuleForTarget(rule: string, target: RuleSetOutputTarget): string | null {
+  if (target !== "surge" && ruleUsesUnknownMatch(rule)) return null;
   if (target === "sing-box") {
     try { const converted = convertRule(rule, true).rule; return converted && isValidSingboxHeadlessRule(converted) ? rule : null; } catch { return null; }
   }
   return translateRuleLineForTarget(rule, target, false);
+}
+
+function ruleUsesUnknownMatch(rule: string): boolean {
+  const matches = (parts: string[]): boolean => ["GEOIP", "IP-ASN"].includes(parts[0]?.trim().toUpperCase() ?? "") && parts[1]?.trim() === "UNKNOWN";
+  const parts = splitRuleLine(rule);
+  return matches(parts) || (LOGICAL_RULE_TYPES.has(parts[0]?.trim().toUpperCase() ?? "") && Boolean(parts[1]) && logicalExpressionSome(parts[1]!, matches));
 }
 
 export function ruleUsesExtendedMatching(rule: string): boolean {
@@ -278,6 +285,7 @@ function translateRuleLineForTarget(rule: string, target: RuleSetOutputTarget, m
   const parts = splitRuleLine(rule);
   const sourceType = (parts[0] || "").trim().toUpperCase();
   if (!sourceType) return null;
+  if (target !== "surge" && ruleUsesUnknownMatch(rule)) return null;
   if (FINAL_RULE_TYPES.has(sourceType)) return rule;
   if (mainRule && (sourceType === "RULE-SET" || sourceType === "DOMAIN-SET")) {
     return target === "surge" ? rule : null;

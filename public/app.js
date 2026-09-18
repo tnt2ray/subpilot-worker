@@ -1,3 +1,4 @@
+import { splitPolicyGroupSpec, parseGroupOption, validatePolicyPriority } from "./app-policy-group-spec.js";
 import { ADDRESS_TOKEN, DOMAIN_TOKEN } from "./config-address-syntax.js";
 import "./vendor/codemirror/codemirror.js";
 import { newTailscaleNode, tailscaleForm, updateTailscaleForm, readTailscaleForm } from "./tailscale-ui.js";
@@ -814,8 +815,36 @@ function editEntity(kind, index) {
 function editGroup(name) {
   if (state.client === "singbox") { editSingboxGroup(name); return; }
   const original = name ? { name, spec: currentClient().groups[name], enabled: !currentClient().disabledGroups.includes(name) } : { name: "", spec: "select, {all}", enabled: true };
-  modal(t("编辑策略组", "Edit policy group"), localField("name", original.name, { readonly: name === "Proxy" }) + localField("spec", original.spec, { label: t("组配置", "Group definition"), multiline: true }) + localField("enabled", original.enabled) + `<p class="help">${state.client === "surge" ? t("可使用 smart；兼容将 url-test 输出为 smart。smart 成员必须是代理节点，hidden=true 可隐藏组。", "Use smart; url-test is also emitted as smart for compatibility. Smart requires proxy-node members; hidden=true hides a group.") : state.client === "clash" ? t("支持 select、url-test、fallback 和 load-balance；hidden=true 的显示效果需要客户端或面板支持。", "Supports select, url-test, fallback and load-balance. hidden=true requires client or dashboard support.") : t("支持 select 和 url-test，分别输出为 selector 和 urltest；不支持 hidden。", "Supports select and url-test, emitted as selector and urltest. hidden is unsupported.")} ${t("修改名称不会自动重写规则引用。", "Renaming does not rewrite rule references.")}</p>`, () => {
+  const surge = state.client === "surge";
+  if (surge) {
+    const parts = splitPolicyGroupSpec(original.spec);
+    const options = parts.slice(1).map(parseGroupOption).filter(Boolean);
+    original.category = options.find((option) => option.key.toLowerCase() === "category")?.value || "";
+    const priority = options.find((option) => option.key.toLowerCase() === "policy-priority")?.value || "";
+    original.priority = priority.startsWith('"') && priority.endsWith('"') ? priority.slice(1, -1).split(";").join("\n") : priority;
+    original.spec = parts.filter((part, index) => !index || !["category", "policy-priority"].includes(parseGroupOption(part)?.key.toLowerCase())).join(", ");
+  }
+  const surgeOptions = surge ? localField("category", original.category, { label: t("分类（可选）", "Category (optional)") })
+    + localField("priority", original.priority, { label: t("Smart 策略优先级（每行 regex:factor）", "Smart policy priority (one regex:factor per line)"), multiline: true, rows: 3 })
+    + `<p class="help">${t("例如 Premium:0.9。权重必须大于 0；小于 1 更优先，大于 1 降低优先级，首个匹配项生效。仅用于 smart 或输出为 smart 的 url-test。分类与 HTTPS 测速需要支持这些参数的 Surge Beta。", "Example: Premium:0.9. Factors must be positive; below 1 increases preference, above 1 reduces it. The first match wins. Applies to smart or url-test emitted as smart. Category and HTTPS testing require a Surge Beta with support for these features.")}</p>` : "";
+  modal(t("编辑策略组", "Edit policy group"), localField("name", original.name, { readonly: name === "Proxy" }) + localField("spec", original.spec, { label: t("组配置", "Group definition"), multiline: true }) + surgeOptions + localField("enabled", original.enabled) + `<p class="help">${state.client === "surge" ? t("可使用 smart；兼容将 url-test 输出为 smart。smart 成员必须是代理节点，hidden=true 可隐藏组。", "Use smart; url-test is also emitted as smart for compatibility. Smart requires proxy-node members; hidden=true hides a group.") : state.client === "clash" ? t("支持 select、url-test、fallback 和 load-balance；hidden=true 的显示效果需要客户端或面板支持。", "Supports select, url-test, fallback and load-balance. hidden=true requires client or dashboard support.") : t("支持 select 和 url-test，分别输出为 selector 和 urltest；不支持 hidden。", "Supports select and url-test, emitted as selector and urltest. hidden is unsupported.")} ${t("修改名称不会自动重写规则引用。", "Renaming does not rewrite rule references.")}</p>`, () => {
     const value = readLocal(original);
+    if (surge) {
+      const parts = splitPolicyGroupSpec(value.spec);
+      const category = value.category.trim();
+      const priority = value.priority.split("\n").map((line) => line.trim()).filter(Boolean).join(";");
+      if (category && /[,{}";#\r\n\u0000-\u001f\u007f]/.test(category)) throw Error(t("分类包含无效字符", "Category contains invalid characters"));
+      const inlineKeys = parts.slice(1).map((part) => parseGroupOption(part)?.key.toLowerCase());
+      if (category && inlineKeys.includes("category") || priority && inlineKeys.includes("policy-priority")) throw Error(t("请勿在组配置和独立字段中重复填写分类或优先级", "Do not duplicate category or priority in the group definition and separate fields"));
+      if (priority) {
+        if (!["smart", "url-test"].includes(parts[0]?.toLowerCase())) throw Error(t("策略优先级仅适用于 Smart", "Policy priority only applies to Smart"));
+        const error = validatePolicyPriority(`"${priority}"`);
+        if (error) throw Error(t(error, "Use valid regex:factor entries with finite positive factors"));
+        parts.push(`policy-priority="${priority}"`);
+      }
+      if (category) parts.push(`category=${category}`);
+      value.spec = parts.join(", ");
+    }
     value.name = value.name.trim();
     if (!value.name || /[\r\n,=]/.test(value.name)) throw Error(t("策略组名称无效", "Invalid group name"));
     if (name === "Proxy" && (value.name !== "Proxy" || !value.enabled)) throw Error(t("Proxy 必须保留并启用", "Proxy must remain enabled"));

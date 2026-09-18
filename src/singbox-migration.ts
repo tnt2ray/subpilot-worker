@@ -102,6 +102,8 @@ export function initializeSingbox(clash: AppConfig["clients"]["clash"], surge: S
   result.endpoints = surge.tailscaleNodes.filter((node) => node.enabled).map((node, index) => {
     const endpoint: JsonObject = { type: "tailscale", tag: node.name, state_directory: `tailscale-${index + 1}`, accept_routes: true };
     for (const [key, value] of [["auth_key", node.authKey], ["control_url", node.controlUrl], ["hostname", node.hostname]] as const) if (value) endpoint[key] = value;
+    if (node.interactiveLogin) warn("endpoints", "surge-tailscale-login", `${node.name} 的交互登录身份保存在 Surge 本地，需在 sing-box 重新登录。`);
+    if (node.autoAddMagicDnsRule === false) warn("endpoints", "surge-tailscale-auto-rules", `${node.name} 的自动路由开关属于 Surge；请核对 sing-box 的 DNS 和分流规则。`);
     if (node.exitNode && node.exitNode !== "none") endpoint.exit_node = node.exitNode;
     if (node.underlyingProxy && node.underlyingProxy !== "DIRECT") endpoint.detour = node.underlyingProxy;
     const dnsTag = `dns-tailscale-${index + 1}`;

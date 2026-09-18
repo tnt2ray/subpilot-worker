@@ -366,6 +366,8 @@ function normalizeSurgeTailscaleNodes(value: unknown): RenderConfig["surge"]["ta
       name,
       sectionName,
       authKey: surgeTailscaleValue(record.authKey),
+      interactiveLogin: record.interactiveLogin === true,
+      autoAddMagicDnsRule: record.autoAddMagicDnsRule !== false,
       controlUrl: surgeTailscaleValue(record.controlUrl),
       hostname: surgeTailscaleValue(record.hostname),
       derpOnly: record.derpOnly === true,

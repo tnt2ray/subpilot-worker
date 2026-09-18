@@ -3,9 +3,11 @@ const surgeFields = [
   ["identity", "name", "策略名称", "Policy name", "text"],
   ["identity", "sectionName", "配置段名称", "Section name", "text"],
   ["identity", "enabled", "启用节点", "Enable node", "boolean"],
+  ["identity", "interactiveLogin", "在 Surge 客户端交互登录", "Sign in interactively in Surge", "boolean"],
   ["identity", "authKey", "认证密钥", "Auth key", "password"],
   ["identity", "controlUrl", "控制服务器地址", "Control server URL", "text"],
   ["identity", "hostname", "设备主机名", "Hostname", "text"],
+  ["routing", "autoAddMagicDnsRule", "自动添加 MagicDNS 与对端地址规则", "Automatically route MagicDNS and peer addresses", "boolean"],
   ["routing", "exitNode", "出口节点（none 表示不指定）", "Exit node (none for no exit)", "text"],
   ["routing", "underlyingProxy", "前置代理", "Upstream proxy", "policy"],
   ["routing", "dnsServer", "DNS 服务器", "DNS servers", "list"],
@@ -13,7 +15,7 @@ const surgeFields = [
   ["connection", "derpOnly", "仅通过 DERP 中继", "Use DERP relay only", "boolean"],
   ["connection", "idleKeepalive", "空闲保活（秒；0 / -1 为常驻）", "Idle keepalive (seconds; 0 / -1 for always on)", "number", [-1, 86400]],
   ["connection", "mtu", "MTU", "MTU", "number", [576, 1420]],
-  ["connection", "testUrl", "测速地址（HTTP）", "Test URL (HTTP)", "text"],
+  ["connection", "testUrl", "测速地址（HTTP / HTTPS）", "Test URL (HTTP / HTTPS)", "text"],
   ["connection", "testTimeout", "测速超时（秒）", "Test timeout (seconds)", "number", [1, 60]]
 ];
 const singboxFields = [
@@ -80,7 +82,7 @@ const object = (value) => value && typeof value === "object" && !Array.isArray(v
 const get = (node, key) => key.split(".").reduce((value, part) => value?.[part], node);
 const fields = (client) => client === "surge" ? surgeFields : singboxFields;
 function displayed(node, key, type) {
-  const value = get(node, key);
+  const value = get(node, key) ?? (key === "autoAddMagicDnsRule" ? true : key === "interactiveLogin" ? false : undefined);
   if (type === "ssh") return object(value) ? "custom" : value === undefined ? "" : String(value);
   if (type === "resolver") return object(value) ? "custom" : value ? "server" : "";
   if (key === "domain_resolver.server" && typeof node.domain_resolver === "string") return node.domain_resolver;
@@ -88,7 +90,7 @@ function displayed(node, key, type) {
   return value === undefined ? "" : String(value);
 }
 export function newTailscaleNode(client) {
-  return client === "surge" ? { name: "", sectionName: "", enabled: true, authKey: "", controlUrl: "", hostname: "", derpOnly: false, exitNode: "none", idleKeepalive: 600, preferIpv6: false, dnsServer: [], mtu: 1280, underlyingProxy: "", testUrl: "", testTimeout: 5 } : { type: "tailscale", tag: "" };
+  return client === "surge" ? { name: "", sectionName: "", enabled: true, interactiveLogin: false, autoAddMagicDnsRule: true, authKey: "", controlUrl: "", hostname: "", derpOnly: false, exitNode: "none", idleKeepalive: 600, preferIpv6: false, dnsServer: [], mtu: 1280, underlyingProxy: "", testUrl: "", testTimeout: 5 } : { type: "tailscale", tag: "" };
 }
 export function tailscaleForm(client, node, policies, t, esc) {
   const select = (key, values, value) => `<select id="ts-${key}" data-ts-field="${key}">${values.map(([v, label]) => `<option value="${esc(v)}" ${v === value ? "selected" : ""}>${esc(label)}</option>`).join("")}</select>`;
@@ -112,13 +114,14 @@ export function tailscaleForm(client, node, policies, t, esc) {
       return `<div class="form-row" data-ts-row="${key}"><label for="ts-${key}">${esc(t(zh, en))}</label><div class="field">${control}</div></div>`;
     }).join("");
     return group === "identity" ? body : `<details class="ts-field-group"><summary>${esc(t(zh, en))}</summary>${body}</details>`;
-  }).join("") + `<datalist id="ts-policies">${policies.map((policy) => `<option value="${esc(policy)}"></option>`).join("")}</datalist>`;
+  }).join("") + (client === "surge" ? `<p class="help">${t("交互登录需在 Surge 策略编辑器中完成，身份保存在当前设备；更改配置段名称可能需要重新登录。自动规则覆盖 MagicDNS 和对端地址，子网和出口流量仍需显式规则。", "Complete interactive sign-in in the Surge policy editor. Identity stays on that device; renaming the section may require signing in again. Automatic rules cover MagicDNS and peer addresses; subnets and exit traffic still need explicit rules.")}</p>` : "") + `<datalist id="ts-policies">${policies.map((policy) => `<option value="${esc(policy)}"></option>`).join("")}</datalist>`;
 }
 export function updateTailscaleForm(root) {
   const ssh = root.querySelector('[data-ts-field="ssh_server"]')?.value;
   const resolver = root.querySelector('[data-ts-field="domain_resolver"]')?.value;
   for (const row of root.querySelectorAll("[data-ts-row]")) {
     const key = row.dataset.tsRow;
+    if (key === "authKey") row.hidden = root.querySelector('[data-ts-field="interactiveLogin"]')?.checked === true;
     if (key.startsWith("ssh_server.")) row.hidden = ssh !== "custom";
     if (key.startsWith("domain_resolver.")) row.hidden = resolver !== "custom" && !(resolver === "server" && key === "domain_resolver.server");
   }
@@ -168,11 +171,12 @@ export function readTailscaleForm(client, original, root, t) {
   } else {
     if (!result.name.trim() || /[=,\r\n[\]]/.test(result.name)) fail("策略名称无效", "Invalid policy name");
     if (!result.sectionName.trim() || /[\s=,\r\n[\]]/.test(result.sectionName)) fail("配置段名称无效，不能包含空格", "Invalid section name; spaces are not allowed");
-    if (result.enabled && !result.authKey.trim()) fail("启用节点需要认证密钥", "An enabled node requires an auth key");
+    if (result.interactiveLogin) result.authKey = "";
+    if (result.enabled && !result.interactiveLogin && !result.authKey.trim()) fail("启用节点需要认证密钥", "An enabled node requires an auth key");
   }
   for (const key of client === "surge" ? ["controlUrl", "testUrl"] : ["control_url"]) {
     if (!result[key]) continue;
-    try { const url = new URL(result[key]); if (!(key === "testUrl" ? ["http:"] : ["https:", "http:"]).includes(url.protocol)) throw Error(); }
+    try { const url = new URL(result[key]); if (!["https:", "http:"].includes(url.protocol)) throw Error(); }
     catch { fail("控制服务器或测速地址格式无效", "Invalid control server or test URL"); }
   }
   return result;

@@ -22,6 +22,15 @@ Groups are independent per client. Migrating shared groups converts Surge `url-t
 
 Generated output follows the saved settings without filtering features by Surge version. Protocol conversion and configuration validation remain active. The application does not verify the installed Surge version; support for a configured feature is determined by the client importing it.
 
+## 新增参数 / Additional parameters
+
+- `category`：策略组分类；Smart 的 `policy-priority` 提供独立编辑入口，校验正则及有限正数权重，保留引号内逗号和正则量词。
+- Tailscale：认证密钥与 `interactive-login` 互斥；支持 `auto-add-magic-dns-rule`（默认 true）。交互身份由 Surge 本地保存，不能随订阅迁移到其他设备。
+- HTTPS `test-url` 与 `category` 依据 [Beta 公告](https://t.me/SurgeTestFlightFeed/413)，不自动降级为旧客户端参数。
+- `GEOIP,UNKNOWN` / `IP-ASN,UNKNOWN` 依据 [Mac 6.9.1 / iOS 5.22.1 公告](https://t.me/SurgeTestFlightFeed/412)，用于单条、逻辑和编译规则集；不跨端转换。
+
+The editor supports group categories, quoted Smart priority patterns with positive factors, HTTPS tests, and Tailscale interactive login and automatic routing controls. Interactive identities remain local to Surge. UNKNOWN GeoIP/ASN matches remain Surge-specific. Category and HTTPS tests require a compatible Beta; UNKNOWN requires Mac 6.9.1 / iOS 5.22.1 or later. Saved idle timeouts are retained.
+
 ## 配置参考
 
 - 协议与参数：[代理概览](https://manual.nssurge.com/policies/overview.html)、[HTTP](https://manual.nssurge.com/policies/http.html)、[MASQUE](https://manual.nssurge.com/policies/masque.html)、[TrustTunnel](https://manual.nssurge.com/policies/trust-tunnel.html)、[Snell](https://manual.nssurge.com/policies/snell.html)。

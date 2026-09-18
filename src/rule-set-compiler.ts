@@ -79,7 +79,7 @@ interface CompileOptions {
 
 const FINAL_RULE_TYPES = new Set(["FINAL", "MATCH"]);
 const RULE_SET_UPDATE_INTERVAL_SECONDS = 24 * 60 * 60;
-const RULE_SET_COMPILER_REVISION = 12;
+const RULE_SET_COMPILER_REVISION = 13;
 
 export async function compileRuleSetOutput(
   env: Env,

@@ -110,7 +110,7 @@ export function validateSurgeRules(config: Partial<Pick<RenderConfig, "disabledG
     ...Object.keys(config.groups || {}).filter((name) => !config.disabledGroups?.includes(name)),
     ...SURGE_BUILT_IN_RULE_POLICIES,
     ...(config.surge?.tailscaleNodes || [])
-      .filter((node) => node.enabled && typeof node.authKey === "string" && Boolean(node.authKey.trim()))
+      .filter((node) => node.enabled && (node.interactiveLogin === true || typeof node.authKey === "string" && Boolean(node.authKey.trim())))
       .map((node) => node.name)
   ]);
   const rules = Array.isArray(config.surge?.rules) ? config.surge.rules : [];
@@ -387,7 +387,7 @@ function validateSurgeRuleLine(rule: string, lineNumber: number, knownPolicies: 
   const type = (parts[0] || "").trim().toUpperCase();
   if (!type) return `Surge Rule 第 ${lineNumber} 行缺少规则类型`;
   if (parts.some((part) => !part.trim())) return `Surge Rule 第 ${lineNumber} 行存在空参数`;
-  const valueError = validateRuleMatchValue(type, parts[1] || "");
+  const valueError = validateRuleMatchValue(type, parts[1] || "", "surge");
   if (valueError) return `Surge Rule 第 ${lineNumber} 行${valueError}`;
 
   if (RULE_SET_TYPES.has(type)) {
@@ -427,7 +427,7 @@ function validateSurgeLogicalLeaf(parts: string[]): string | null {
     return `逻辑子规则类型 ${type || "(空)"} 不受支持`;
   }
   if (!(parts[1] || "").trim()) return "逻辑子规则缺少匹配值";
-  const valueError = validateRuleMatchValue(type, parts[1]!);
+  const valueError = validateRuleMatchValue(type, parts[1]!, "surge");
   if (valueError) return `逻辑子规则${valueError}`;
   const optionError = validateRuleOptions(parts.slice(2), type);
   return optionError ? `逻辑子规则${optionError}` : null;

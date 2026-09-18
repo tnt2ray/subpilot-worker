@@ -127,7 +127,7 @@ export function collectOutputDiagnostics(config: RenderConfig, target: Target, c
         const at = line.indexOf("="); const [type,...parts] = splitGroupSpec(line.slice(at+1));
         const name = line.slice(0,at).trim();
         surgeGroupTypes.set(name, type!);
-        groups.set(name, parts.flatMap((part) => { const option = parseGroupOption(part); return type === "subnet" ? option && !["hidden", "icon-url"].includes(option.key.toLowerCase()) ? [option.value] : [] : option ? [] : [part]; }));
+        groups.set(name, parts.flatMap((part) => { const option = parseGroupOption(part); return type === "subnet" ? option && !["hidden", "icon-url", "category"].includes(option.key.toLowerCase()) ? [option.value] : [] : option ? [] : [part]; }));
         const underlying = parts.map((part) => parseGroupOption(part)).find((option) => option?.key.toLowerCase() === "underlying-proxy");
         if (underlying) detours.set(name, underlying.value);
       }
@@ -165,7 +165,7 @@ export function collectOutputDiagnostics(config: RenderConfig, target: Target, c
       const original = config.groups[name];
       if (original) for (const part of splitGroupSpec(original).slice(1)) {
         const option = parseGroupOption(part);
-        const member = splitGroupSpec(original)[0] === "subnet" && option && !["hidden", "icon-url"].includes(option.key.toLowerCase()) ? option.value : !option ? part : undefined;
+        const member = splitGroupSpec(original)[0] === "subnet" && option && !["hidden", "icon-url", "category"].includes(option.key.toLowerCase()) ? option.value : !option ? part : undefined;
         if (!parseAllPolicySelector(part) && member && !available.has(member)) add(`groups.${name}`, "missing-member", `${name} 引用的 ${member} 不可用。`);
         else if (target === "sing-box" && !parseAllPolicySelector(part) && member && !members.includes(member)) add(`groups.${name}`, "omitted-member", `${name} 引用的 ${member} 未保留在输出策略组中。`);
       }

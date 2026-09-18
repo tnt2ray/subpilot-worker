@@ -4,7 +4,7 @@ import { normalizeManagedBasePath, ruleSetPathName } from "./managed-url";
 import { isValidSingboxOutbound } from "./singbox-validation";
 import { isIPv4, isIPv6, isProxyNodeSupportedForTarget } from "./node-transforms";
 import { parseConfiguredProxyNode } from "./parsers";
-import { parseAllPolicySelector, parseGroupOption, splitGroupSpec } from "./policy-group-spec";
+import { parseAllPolicySelector, parseGroupOption, splitGroupSpec, validatePolicyPriority } from "./policy-group-spec";
 import { effectiveRuleSetOutputs } from "./rule-set-outputs";
 import { compiledRuleProviderName } from "./rule-provider-name";
 import { splitRuleLine } from "./rule-line";
@@ -299,7 +299,11 @@ export function validateTailscalePolicies(config: RenderConfig): string | null {
     if (dnsError) return dnsError;
     if (node.dnsServer?.some((value) => /[,\r\n]/.test(value))) return `Tailscale ${node.name} dns-server 不能包含逗号或换行`;
     const authKey = typeof node.authKey === "string" ? node.authKey.trim() : "";
-    if (node.enabled && !authKey) return `Tailscale ${node.name} 启用时 auth-key 不能为空`;
+    for (const key of ["interactiveLogin", "autoAddMagicDnsRule"] as const) {
+      if (node[key] !== undefined && typeof node[key] !== "boolean") return `Tailscale ${node.name} ${key} 必须为布尔值`;
+    }
+    if (node.interactiveLogin && authKey) return `Tailscale ${node.name} interactive-login 与 auth-key 不能同时使用`;
+    if (node.enabled && !node.interactiveLogin && !authKey) return `Tailscale ${node.name} 启用时 auth-key 不能为空`;
     if (!Number.isInteger(node.idleKeepalive) || node.idleKeepalive < -1 || node.idleKeepalive > 86_400) {
       return `Tailscale ${node.name} idle-keepalive 必须是 -1 到 86400 的整数`;
     }
@@ -322,9 +326,9 @@ export function validateTailscalePolicies(config: RenderConfig): string | null {
     if (testUrl) {
       try {
         const url = new URL(testUrl);
-        if (url.protocol !== "http:" || !url.hostname) return `Tailscale ${node.name} test-url 必须是有效的 http:// URL`;
+        if (!["http:", "https:"].includes(url.protocol) || !url.hostname) return `Tailscale ${node.name} test-url 必须是有效的 HTTP(S) URL`;
       } catch {
-        return `Tailscale ${node.name} test-url 必须是有效的 http:// URL`;
+        return `Tailscale ${node.name} test-url 必须是有效的 HTTP(S) URL`;
       }
     }
   }
@@ -561,10 +565,22 @@ function validatePolicyGroupSpec(name: string, spec: string, config: RenderConfi
       return `策略组 ${name} 参数 ${key} 格式无效`;
     }
     if (RESERVED_CLASH_GROUP_OPTION_KEYS.has(lowerKey)) return `策略组 ${name} 参数 ${key} 为保留字段`;
+    if (lowerKey === "policy-priority" && config.renderTarget === "surge") {
+      if (!["smart", "url-test"].includes(type)) return `策略组 ${name} policy-priority 仅适用于 Smart`;
+      if (optionKeys.has(lowerKey)) return `策略组 ${name} 参数 ${key} 不能重复`;
+      optionKeys.add(lowerKey);
+      const error = validatePolicyPriority(option.value);
+      if (error) return `策略组 ${name} ${error}`;
+      continue;
+    }
     if (!option.value || /[,\r\n{}\u0000-\u001f\u007f]/.test(option.value)) return `策略组 ${name} 参数 ${key} 的值格式无效`;
     if (optionKeys.has(lowerKey) && !(type === "subnet" && isSubnetConditionKey(key))) return `策略组 ${name} 参数 ${key} 不能重复`;
     optionKeys.add(lowerKey);
 
+    if (lowerKey === "category" && config.renderTarget === "surge") {
+      if (/[";#]/.test(option.value)) return `策略组 ${name} category 不能包含引号、分号或井号`;
+      continue;
+    }
     if (lowerKey === "hidden") {
       if (!new Set(["true", "false", "1", "0"]).has(option.value.toLowerCase())) return `策略组 ${name} hidden 参数格式无效`;
       continue;
@@ -640,7 +656,7 @@ function validatePolicyGroupCycles(config: RenderConfig): string | null {
     const references = items.flatMap((item) => {
       if (parseAllPolicySelector(item)) return [];
       const option = parseGroupOption(item, { requireValue: true });
-      const policy = type === "subnet" ? option?.value : option ? "" : item;
+      const policy = type === "subnet" ? (option && (option.key.toLowerCase() === "default" || isSubnetConditionKey(option.key)) ? option.value : "") : option ? "" : item;
       return policy && activeGroups.has(policy) ? [policy] : [];
     });
     edges.set(name, [...new Set(references)]);
@@ -678,7 +694,7 @@ function isSubnetConditionKey(key: string): boolean {
 }
 
 function tailscaleNodeIsActive(node: RenderConfig["surge"]["tailscaleNodes"][number]): boolean {
-  return node.enabled === true && typeof node.authKey === "string" && Boolean(node.authKey.trim());
+  return node.enabled === true && (node.interactiveLogin === true || typeof node.authKey === "string" && Boolean(node.authKey.trim()));
 }
 
 function validateCompiledFallback(ruleSets: RenderConfig["ruleSets"]): string | null {

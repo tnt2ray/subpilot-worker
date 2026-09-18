@@ -81,7 +81,8 @@ function renderTailscaleProxyLine(node: RenderConfig["surge"]["tailscaleNodes"][
 }
 
 function renderTailscaleSection(node: RenderConfig["surge"]["tailscaleNodes"][number]): string {
-  const lines = [`auth-key = ${node.authKey}`];
+  const lines = [node.interactiveLogin ? "interactive-login = true" : `auth-key = ${node.authKey}`];
+  if (node.autoAddMagicDnsRule === false) lines.push("auto-add-magic-dns-rule = false");
   if (node.controlUrl) lines.push(`control-url = ${node.controlUrl}`);
   if (node.hostname) lines.push(`hostname = ${node.hostname}`);
   if (node.derpOnly) lines.push("derp-only = true");
@@ -167,7 +168,7 @@ function resolveRuntimeTailscalePolicies(
   nodes: ProxyNode[]
 ): { groupOutputs: SurgeGroupOutput[]; tailscaleNodes: RenderConfig["surge"]["tailscaleNodes"] } {
   const configuredTailscalePolicies = new Set(config.surge.tailscaleNodes.map((node) => node.name));
-  const candidates = config.surge.tailscaleNodes.filter((node) => node.enabled && node.authKey.trim());
+  const candidates = config.surge.tailscaleNodes.filter((node) => node.enabled && (node.interactiveLogin || node.authKey.trim()));
   const availableTailscalePolicies = new Set<string>();
   const proxyPolicies = new Set(nodes.map((node) => node.name));
   let groupOutputs: SurgeGroupOutput[] = [];

@@ -4,7 +4,7 @@ const IPV6_CIDR_RULE_TYPES = new Set(["IP-CIDR6"]);
 const IP_ASN_RULE_TYPES = new Set(["IP-ASN", "SRC-IP-ASN"]);
 const MAX_ASN = 4_294_967_295;
 
-export function validateRuleMatchValue(type: string, value: string): string | null {
+export function validateRuleMatchValue(type: string, value: string, target?: "surge"): string | null {
   const normalizedType = type.trim().toUpperCase();
   if (DOMAIN_RULE_TYPES.has(normalizedType) && !isValidDomainRuleValue(value)) {
     return `${normalizedType} 包含无效的域名`;
@@ -13,7 +13,8 @@ export function validateRuleMatchValue(type: string, value: string): string | nu
     && !isValidCidrForRuleType(value, normalizedType)) {
     return `${normalizedType} 包含无效的 CIDR`;
   }
-  if (IP_ASN_RULE_TYPES.has(normalizedType) && !isValidIpAsn(value)) {
+  if (IP_ASN_RULE_TYPES.has(normalizedType) && !isValidIpAsn(value)
+    && !(target === "surge" && normalizedType === "IP-ASN" && value.trim() === "UNKNOWN")) {
     return `${normalizedType} 包含无效的 ASN`;
   }
   return null;
