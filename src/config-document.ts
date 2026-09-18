@@ -99,6 +99,9 @@ export function normalizeConfigDocument(stored: StoredConfigDocument): AppConfig
     if (value !== undefined && (!value || typeof value !== "object" || Array.isArray(value))) throw new Error(`sing-box ${key} 必须是对象。`);
   }
   if (singbox.migrationIssues !== undefined && (!Array.isArray(singbox.migrationIssues) || singbox.migrationIssues.some((item) => !item || item.target !== "sing-box" || !["error", "warning"].includes(item.severity) || [item.path, item.code, item.message].some((value) => typeof value !== "string")))) throw new Error("sing-box 迁移诊断格式无效。");
+  const normalizedSingbox = structuredClone(singbox);
+  // TUN stack is deprecated in 1.15 and removed in 1.17; use the core default.
+  for (const inbound of normalizedSingbox.inbounds) if (inbound.type === "tun") delete inbound.stack;
   return {
     version: 3,
     settings: currentSettings(view.settings),
@@ -107,7 +110,7 @@ export function normalizeConfigDocument(stored: StoredConfigDocument): AppConfig
     clients: {
       surge: { ...normalizeSurge(input.clients.surge), ...resources(input.clients.surge) },
       clash: { ...normalizeClash(input.clients.clash), ...resources(input.clients.clash, false) },
-      singbox: { ...structuredClone(singbox), migrationIssues: Array.isArray(singbox.migrationIssues) ? singbox.migrationIssues : [], ...resources(singbox, false) }
+      singbox: { ...normalizedSingbox, migrationIssues: Array.isArray(normalizedSingbox.migrationIssues) ? normalizedSingbox.migrationIssues : [], ...resources(singbox, false) }
     },
     updatedAt: input.updatedAt
   };

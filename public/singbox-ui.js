@@ -17,7 +17,7 @@ const LABELS = {
   type: "类型", tag: "名称", server: "服务器", server_port: "服务器端口", listen: "监听地址", listen_port: "监听端口",
   enabled: "启用", password: "密码", private_key: "私钥", public_key: "公钥", auth_key: "认证密钥", username: "用户名",
   tls: "TLS 加密", transport: "传输", multiplex: "多路复用", detour: "前置出站", domain_resolver: "域名解析器",
-  address: "虚拟网卡地址", mtu: "MTU", stack: "协议栈", auto_route: "自动路由", strict_route: "严格路由", auto_detect_interface: "自动检测接口",
+  address: "虚拟网卡地址", mtu: "MTU", auto_route: "自动路由", strict_route: "严格路由", auto_detect_interface: "自动检测接口",
   route_address: "包含路由", route_exclude_address: "排除路由", include_package: "包含应用包", exclude_package: "排除应用包",
   platform: "平台配置", http_proxy: "系统 HTTP 代理", rules: "规则", rule_set: "规则集", action: "动作", mode: "逻辑模式",
   domain: "完整域名", domain_suffix: "域名后缀", domain_keyword: "域名关键词", domain_regex: "域名正则",
@@ -184,7 +184,7 @@ export function createSingboxForm(root, schema, section, original, { t, esc, ref
     if (singleItem && !path.length && type === "array") return renderValue(node.items || {}, value[0], [0], name);
     if (type === "object" && object(value)) {
       const props = node.properties || {};
-      const basicKeys = new Set(["type", "tag", "action", "address", "interface_name", "stack", "auto_route", "strict_route", "mtu", "listen", "listen_port", "server", "server_port", "outbound", "outbounds", "final", "servers", "rules"]);
+      const basicKeys = new Set(["type", "tag", "action", "address", "interface_name", "auto_route", "strict_route", "mtu", "listen", "listen_port", "server", "server_port", "outbound", "outbounds", "final", "servers", "rules"]);
       let basicHtml = "", advancedHtml = "";
       for (const key of Object.keys(value)) {
         const child = props[key] || (object(node.additionalProperties) ? node.additionalProperties : { type: kind(value[key]) });

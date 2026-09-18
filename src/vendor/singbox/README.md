@@ -7,5 +7,8 @@ Copyright © 2022 nekohasekai. The upstream GPL-3.0-or-later license and additio
 terms are retained in `LICENSE`. This schema powers the native configuration forms and validates compatible
 configuration output; SubPilot is an independent project.
 
+`src/singbox-validation.ts` derives the schema used by SubPilot from this copy,
+removing the TUN `stack` option from forms and validation. The upstream file remains unchanged.
+
 Update this file only together with the supported core version, adapters,
 migration behavior, and native `sing-box check` verification.

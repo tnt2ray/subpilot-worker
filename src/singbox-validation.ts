@@ -1,6 +1,12 @@
 import { Validator, type Schema } from "@cfworker/json-schema";
-import schema from "./vendor/singbox/schema-1.14.0.json";
+import upstreamSchema from "./vendor/singbox/schema-1.14.0.json";
 import type { ConfigDiagnostic } from "./types";
+
+// Keep the upstream schema intact while hiding and rejecting the retired TUN option.
+const schema = structuredClone(upstreamSchema);
+for (const inbound of schema.$defs.Inbound.oneOf) {
+  if (inbound.properties?.type.const === "tun") delete (inbound.properties as { stack?: unknown }).stack;
+}
 
 // The library annotates schema objects with absolute URIs. All validators sharing
 // definitions must use the same base ID so nested references resolve consistently.

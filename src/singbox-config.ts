@@ -16,7 +16,7 @@ export function convertSurgeToSingbox(config: RenderConfig): SingboxConfig {
   const result: SingboxConfig = {
     ...defaultSingboxConfig(), log: { level: "info", timestamp: true },
     dns: { servers: [{ type: "udp", tag: "dns-direct", server: "1.1.1.1" }], final: "dns-direct" },
-    inbounds: [{ type: "tun", tag: "tun-in", address: ["172.19.0.1/30"], auto_route: true, stack: "system" }],
+    inbounds: [{ type: "tun", tag: "tun-in", address: ["172.19.0.1/30"], auto_route: true }],
     route: { auto_detect_interface: true, default_domain_resolver: "dns-direct", final: "Proxy" },
     experimental: { cache_file: { enabled: true } }
   };

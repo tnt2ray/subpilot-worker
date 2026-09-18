@@ -12,7 +12,7 @@ export function initializeSingbox(clash: AppConfig["clients"]["clash"], surge: S
     ...defaultSingboxConfig(), groups: {}, disabledGroups: [...clash.disabledGroups],
     ruleSets: { mode: "compiled", aggregateByPolicy: false, sources: [], outputs: [], directRules: [] },
     log: { level: "info", timestamp: true },
-    inbounds: [{ type: "tun", tag: "tun-in", address: clash.ipv6 ? ["172.19.0.1/30", "fdfe:dcba:9876::1/126"] : ["172.19.0.1/30"], auto_route: true, stack: "system" }],
+    inbounds: [{ type: "tun", tag: "tun-in", address: clash.ipv6 ? ["172.19.0.1/30", "fdfe:dcba:9876::1/126"] : ["172.19.0.1/30"], auto_route: true }],
     route: { auto_detect_interface: true, final: "Proxy" }
   };
   const warn = (path: string, code: string, message: string): void => { result.migrationIssues.push(issue(`clients.singbox.${path}`, code, "warning", message)); };

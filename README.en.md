@@ -205,6 +205,8 @@ Surge supports types including `select` and `smart`, with `url-test` converted t
 
 The sing-box baseline is **1.14.0**. Add optional settings through forms; removing an optional field restores core behavior. Device permissions, Always On and application selection must be configured in the actual client.
 
+SubPilot no longer exposes or generates the sing-box TUN `stack` option. Loading or importing existing configurations removes this field, allowing the client to use its own default stack. In 1.14.0, builds with gVisor default to `mixed`; other builds use `system`, so older clients may behave differently from their previously selected stack.
+
 ### Tailscale
 
 Connection names can be used in the current client's groups and routing rules. Surge requires an authentication key for enabled nodes. sing-box may leave it empty and authorize through the login URL in client logs; use a separate state directory for each instance. Authentication keys are masked in the editor.
