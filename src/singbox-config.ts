@@ -7,7 +7,7 @@ type JsonObject = Record<string, ProxyParamValue>;
 
 export function defaultSingboxConfig(): SingboxConfig {
   return {
-    coreVersion: "1.14.0", log: {}, dns: {}, inbounds: [], route: {},
+    coreVersion: "1.15.0-alpha.6", log: {}, dns: {}, inbounds: [], route: {},
     experimental: {}, migrationIssues: []
   };
 }

@@ -51,6 +51,8 @@ const LABELS = {
   autoDetectInterface: "自动检测接口",
   dnsEnabled: "启用 DNS",
   dnsListen: "DNS 监听地址",
+  dnsListenRoutingMark: "DNS 监听路由标记（Linux，0 为禁用）",
+  dnsFallbackLazyQuery: "延迟查询备用 DNS",
   dnsIpv6: "DNS IPv6",
   dnsEnhancedMode: "DNS 模式",
   dnsFakeIpRange: "Fake IP 网段",
@@ -133,7 +135,7 @@ const CLIENT_SECTIONS = {
   },
   clash: {
     network: ["port", "socksPort", "mixedPort", "allowLan", "mode", "logLevel", "ipv6", "unifiedDelay", "tcpConcurrent", "externalController", "tun"],
-    dns: ["dnsEnabled", "dnsListen", "dnsIpv6", "dnsEnhancedMode", "dnsFakeIpRange", "defaultNameservers", "nameservers", "fallbackNameservers", "fallbackFilterGeoip", "fallbackFilterIpcidr", "fakeIpFilter"],
+    dns: ["dnsEnabled", "dnsListen", "dnsListenRoutingMark", "dnsFallbackLazyQuery", "dnsIpv6", "dnsEnhancedMode", "dnsFakeIpRange", "defaultNameservers", "nameservers", "fallbackNameservers", "fallbackFilterGeoip", "fallbackFilterIpcidr", "fakeIpFilter"],
     rules: ["rules", "ruleProviders"]
   },
   singbox: { network: ["inbounds"], dns: ["dns"], rules: ["route"], tailscale: ["endpoints"], advanced: ["log", "experimental"] }

@@ -443,6 +443,8 @@ export function normalizeClash(input: Partial<RenderConfig["clash"]> | undefined
     tun: normalizeClashLikeTun(clash.tun, DEFAULT_CONFIG.clash.tun),
     dnsEnabled: dns.enable,
     dnsListen: dns.listen,
+    dnsListenRoutingMark: typeof clash.dnsListenRoutingMark === "number" ? clash.dnsListenRoutingMark : DEFAULT_CONFIG.clash.dnsListenRoutingMark,
+    dnsFallbackLazyQuery: clash.dnsFallbackLazyQuery === true,
     dnsIpv6: dns.ipv6,
     dnsEnhancedMode: dns.enhancedMode,
     dnsFakeIpRange: dns.fakeIpRange,

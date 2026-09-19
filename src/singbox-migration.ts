@@ -21,7 +21,10 @@ export function initializeSingbox(clash: AppConfig["clients"]["clash"], surge: S
     const type = originalType === "url-test" ? "url-test" : "select";
     if (originalType !== type) warn("groups", "clash-group-type", `${name} 的 ${originalType} 已转换为手动选择组。`);
     const supported = type === "url-test" ? ["url", "interval", "tolerance", "idle_timeout"] : ["default"];
-    const members = parts.filter((part) => {
+    const members = parts.map((part) => {
+      const option = parseGroupOption(part);
+      return type === "select" && option?.key === "default-selected" ? `default=${option.value}` : part;
+    }).filter((part) => {
       const option = parseGroupOption(part);
       if (!option || supported.includes(option.key)) return true;
       warn("groups", "clash-group-option", `${name} 的 ${option.key} 选项未迁移。`);
@@ -65,6 +68,8 @@ export function initializeSingbox(clash: AppConfig["clients"]["clash"], surge: S
   const bootstrap = addServers(clash.defaultNameservers, "dns-bootstrap");
   const primary = addServers(clash.nameservers, "dns-main");
   const fallback = addServers(clash.fallbackNameservers, "dns-fallback");
+  if (clash.dnsFallbackLazyQuery) warn("dns", "clash-dns-lazy", "Mihomo 备用 DNS 延迟查询行为无法等价迁移，请核对 sing-box DNS 规则。");
+  if (clash.dnsListenRoutingMark) warn("dns", "clash-dns-mark", "Mihomo DNS 监听路由标记无法等价迁移，请手动核对路由设置。");
   let resolver = servers.find((server) => bootstrap.includes(String(server.tag)) && (server.type === "local" || typeof server.server === "string" && isIP(server.server)))?.tag;
   if (!resolver) {
     resolver = "dns-system";

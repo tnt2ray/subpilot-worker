@@ -25,7 +25,7 @@ export async function buildSingbox(env: Env, config: RenderConfig, nodes: ProxyN
   for (const node of nodes) {
     try {
       const outbound = toSingboxOutbound(node, toClashProxy(node) as JsonObject);
-      if (!isValidSingboxOutbound(outbound)) throw new Error("节点字段不符合 sing-box 1.14.0，请检查其原生配置");
+      if (!isValidSingboxOutbound(outbound)) throw new Error("节点字段不符合 sing-box 1.15.0-alpha.6，请检查其原生配置");
       outbounds.push(outbound);
     }
     catch (error) { diagnostics.push(issue(`proxyNodes.${node.name}`, "node-conversion", "warning", `${node.name}：${error instanceof Error ? error.message : "节点无法转换"}`)); }

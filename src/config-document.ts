@@ -83,7 +83,7 @@ export function normalizeConfigDocument(stored: StoredConfigDocument): AppConfig
     return { groups: normalized.groups, disabledGroups: normalized.disabledGroups, ruleSets: { ...normalized.ruleSets, aggregateByPolicy: allowPolicyAggregation && normalized.ruleSets.aggregateByPolicy } };
   };
   const singbox = input.clients.singbox;
-  if (singbox.coreVersion !== "1.14.0" || !Array.isArray(singbox.inbounds)) throw new Error("无效的 sing-box 配置版本或入站配置。");
+  if (!["1.14.0", "1.14.1", "1.15.0-alpha.6"].includes(singbox.coreVersion) || !Array.isArray(singbox.inbounds)) throw new Error("无效的 sing-box 配置版本或入站配置。");
   for (const key of ["log", "dns", "route", "experimental"] as const) {
     if (!singbox[key] || typeof singbox[key] !== "object" || Array.isArray(singbox[key])) throw new Error(`sing-box ${key} 必须是对象。`);
   }
@@ -100,6 +100,7 @@ export function normalizeConfigDocument(stored: StoredConfigDocument): AppConfig
   }
   if (singbox.migrationIssues !== undefined && (!Array.isArray(singbox.migrationIssues) || singbox.migrationIssues.some((item) => !item || item.target !== "sing-box" || !["error", "warning"].includes(item.severity) || [item.path, item.code, item.message].some((value) => typeof value !== "string")))) throw new Error("sing-box 迁移诊断格式无效。");
   const normalizedSingbox = structuredClone(singbox);
+  normalizedSingbox.coreVersion = "1.15.0-alpha.6";
   // TUN stack is deprecated in 1.15 and removed in 1.17; use the core default.
   for (const inbound of normalizedSingbox.inbounds) if (inbound.type === "tun") delete inbound.stack;
   return {

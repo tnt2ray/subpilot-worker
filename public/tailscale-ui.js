@@ -19,6 +19,7 @@ const surgeFields = [
   ["connection", "testTimeout", "测速超时（秒）", "Test timeout (seconds)", "number", [1, 60]]
 ];
 const singboxFields = [
+  ["connection", "on_demand", "允许按需断开", "Allow on-demand disconnection", "boolean"],
   ["identity", "tag", "端点名称", "Endpoint tag", "text"],
   ["identity", "auth_key", "认证密钥（可留空交互登录）", "Auth key (optional for interactive login)", "password"],
   ["identity", "control_url", "控制服务器地址", "Control server URL", "text"],

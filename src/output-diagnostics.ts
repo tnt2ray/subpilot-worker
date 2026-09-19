@@ -48,9 +48,15 @@ export function collectOutputDiagnostics(config: RenderConfig, target: Target, c
     const dnsTags = new Set<string>((data.dns?.servers ?? []).map((item: { tag: string }) => item.tag));
     const httpTags = new Set<string>((data.http_clients ?? []).map((item: { tag: string }) => item.tag));
     const inboundTags = new Set<string>((data.inbounds ?? []).map((item: { tag: string }) => item.tag));
+    const inboundTypes = new Map<string, string>((data.inbounds ?? []).map((item: { tag: string; type: string }) => [item.tag, item.type]));
+    for (const [index, service] of (data.services ?? []).entries()) {
+      if (service.type !== "derp") continue;
+      const references = Array.isArray(service.verify_client_inbound) ? service.verify_client_inbound : service.verify_client_inbound ? [service.verify_client_inbound] : [];
+      if (references.some((tag: string) => inboundTypes.get(tag) !== "tailcat")) add(`clients.singbox.services.${index}.verify_client_inbound`, "tailcat-verifier", "DERP 客户端验证必须引用已存在的 Tailcat 入站。");
+    }
     const inboundEdges = new Map<string, string>();
     for (const inbound of data.inbounds ?? []) {
-      if (!inbound.detour) continue;
+      if (!inbound.detour || inbound.type === "tailcat") continue;
       if (!inboundTags.has(inbound.detour)) add("clients.singbox.inbounds", "missing-inbound", `入站 ${inbound.tag || "(未命名)"} 引用的入站不存在。`);
       if (inbound.tag) inboundEdges.set(inbound.tag, inbound.detour);
     }
@@ -109,7 +115,10 @@ export function collectOutputDiagnostics(config: RenderConfig, target: Target, c
   } else if (target === "clash") {
     const data = YAML.parse(content);
     for (const node of data.proxies ?? []) { nodes.add(node.name); if (node["dialer-proxy"]) detours.set(node.name, node["dialer-proxy"]); }
-    for (const group of data["proxy-groups"] ?? []) groups.set(group.name, group.proxies ?? []);
+    for (const group of data["proxy-groups"] ?? []) {
+      groups.set(group.name, group.proxies ?? []);
+      if (group["default-selected"] && !group.proxies?.includes(group["default-selected"])) add("clients.clash.groups", "selector-default", `${group.name} 的默认成员不在输出成员列表中。`);
+    }
     for (const line of data.rules ?? []) collectLineReference(line, roots);
   } else {
     let section = "";

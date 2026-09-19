@@ -12,7 +12,7 @@ Subscription sources, manual nodes, and chain exits are shared. Policy groups, d
 
 | Capability | Surge | clash | sing-box |
 | --- | --- | --- | --- |
-| Output | `.conf` | Clash-compatible `.yaml` | Native JSON for **1.14.0** |
+| Output | `.conf` | Clash-compatible `.yaml` | Native JSON for **1.15.0-alpha.6 (preview)** |
 | Nodes and groups | Supported protocols and group types | Supported protocols and group types | Native outbounds, `selector` / `urltest`, endpoint references |
 | Native routing | Surge rule text | `rules` + `rule-providers` | JSON `route` |
 | Compiled rule sources | `.list` | `.yaml` | JSON source `.json` |
@@ -178,6 +178,10 @@ Configuration previews and modal editors include line numbers and syntax highlig
 
 Proxy nodes accepts Surge node syntax, Clash YAML/JSON and native sing-box JSON. sing-box input may be one node, an array or an object containing `outbounds`; DNS, routing and groups from that input are not imported.
 
+Clash targets Mihomo **v1.19.31**: TUN supports `mips`; DNS exposes `fallback-lazy-query` (off by default) and Linux `listen-routing-mark` (0 disables it). A dedicated field sets `default-selected` for `select` groups. The default must be an emitted member; a saved client selection may override it.
+
+Native Clash YAML/JSON supports EasyTier, ZeroTier, MASQUE, WireGuard and OpenVPN. EasyTier, ZeroTier and WireGuard with `peers` do not require top-level `server`/`port`. Native fields are preserved, including ZeroTier `identity-secret`, WireGuard AmneziaWG options and `ip-stack`; AnyTLS `client-metadata` and Hysteria2 `handshake-timeout` are also retained. Use the appropriate core's native configuration; Surge and Mihomo MASQUE formats are not converted into each other. Core configuration validation does not verify remote connectivity.
+
 Merged duplicate nodes retain original name mappings for each source, so chain references still resolve to the retained node. Subscription URIs preserve their transport type; unsupported conversions are omitted with a diagnostic. Hysteria2 links default to port 443 when omitted and retain complete `username:password` authentication.
 
 Configure groups separately for each client. Definitions use `type, members or filter, option=value`, with English commas and no `group-name =` prefix. The page's syntax guide lists the available types and options.
@@ -203,9 +207,19 @@ Surge supports types including `select` and `smart`, with `url-test` converted t
 | Advanced | Surge URL Rewrite, Map Local and scripts; sing-box logging and HTTP clients; no Clash tab |
 | MITM certificates | Surge only: generate, import or export a CA and configure MITM hostnames |
 
-The sing-box baseline is **1.14.0**. Add optional settings through forms; removing an optional field restores core behavior. Device permissions, Always On and application selection must be configured in the actual client.
+The sing-box baseline is **1.15.0-alpha.6 (preview)**. Add optional settings through forms; removing an optional field restores core behavior. Device permissions, Always On and application selection must be configured in the actual client.
 
-SubPilot no longer exposes or generates the sing-box TUN `stack` option. Loading or importing existing configurations removes this field, allowing the client to use its own default stack. In 1.14.0, builds with gVisor default to `mixed`; other builds use `system`, so older clients may behave differently from their previously selected stack.
+SubPilot no longer exposes or generates the sing-box TUN `stack` option. Loading or importing existing configurations removes this field, allowing the client to use its own default stack. Version 1.15 uses sing-tun's own TCP/IP stack. Existing 1.14.0 / 1.14.1 documents automatically migrate their version marker while retaining native settings. Configurations using new fields require a compatible 1.15 client.
+
+New 1.15 controls:
+
+- **VPN connections**: WireGuard, Tailscale, OpenVPN and OpenConnect expose `on_demand`, allowing the client to disconnect endpoints when needed; this is not an idle timeout.
+- **Advanced → Cache, API & debugging**: `cache_file.buffer_size` controls write buffering (default `1MB`); `flush_interval` controls periodic flushing (e.g. `30s`, disabled by default).
+- **Inbound connections → TUN**: supports `multi_queue` (Linux only, with the new stack) and `auto_redirect_tproxy_mark`. Full Android `auto_redirect` requires a root service or root shell.
+- **Inbound connections / Advanced → Client native outbounds**: supports Tailcat. Shared nodes can also import native Tailcat JSON, preserving keys and DERP options for sing-box only; Tailcat has no conventional server/port pair. Generate keys with `sing-box generate tailcat-keypair`. Inbounds require a private key; outbounds require server public and discovery keys. Custom `derp_servers` cannot be combined with `derp_map_url` or `derp_region`.
+- **Advanced → Services → DERP**: supports `verify_client_inbound` and `verify_client_key`. Inbound references must identify existing Tailcat inbounds. Verified clients need fixed private keys.
+
+New optional settings remain omitted until configured. See the [1.15 changelog](https://sing-box.sagernet.org/changelog/) and [Tailcat documentation](https://sing-box.sagernet.org/configuration/outbound/tailcat/).
 
 ### Tailscale
 

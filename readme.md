@@ -12,7 +12,7 @@ SubPilot Worker 是运行在 Cloudflare Workers 上的订阅配置生成器，�
 - 按目标客户端适配输出；无法保留的节点或附加功能会报告原因，关键配置问题会阻止下载。
 - 支持手动节点、链式出口、策略组筛选、原生规则及本端来源编排。
 - 提供迁移问题处理、通用订阅地址、加密缓存、Telegram 通知和 GeoIP MMDB 上传。
-- sing-box 适配基线为 **1.14.0**；旧配置可迁移到配置文档版本 3。Stash 和 Shadowrocket 已退出输出目标。
+- sing-box 适配基线为 **1.15.0-alpha.6（预览版）**；旧配置可迁移到配置文档版本 3。Stash 和 Shadowrocket 已退出输出目标。
 
 概览页可查看最近 50 条订阅请求、节点总数和订阅缓存状态。点击“强制刷新”重新获取已保存且启用的订阅源；刷新失败时可查看原因及旧缓存是否可用。
 
@@ -162,6 +162,10 @@ DNS 保留解析器地址、Fake IP 和域名排除项，多个解析器按顺�
 
 “代理节点”接受 Surge 节点语法、Clash YAML/JSON 和 sing-box 原生 JSON。sing-box JSON 可为单个节点、节点数组或包含 `outbounds` 的对象，只导入代理节点，不导入文件中的 DNS、路由或策略组。
 
+Clash 适配基线为 Mihomo **v1.19.31**：TUN 支持 `mips`；DNS 可设置 `fallback-lazy-query`（默认关闭）和 Linux `listen-routing-mark`（0 为禁用）；`select` 组可在独立字段设置 `default-selected`，默认成员必须存在于输出成员列表，客户端已保存的选择可能覆盖它。
+
+原生 Clash YAML/JSON 支持 EasyTier、ZeroTier、MASQUE、WireGuard 和 OpenVPN；EasyTier、ZeroTier 及包含 `peers` 的 WireGuard 不要求顶层 `server`/`port`。原生字段完整保留，包括 ZeroTier `identity-secret`、WireGuard AmneziaWG 参数及 `ip-stack`；AnyTLS `client-metadata` 和 Hysteria2 `handshake-timeout` 也会保留。此类节点请填写对应内核的原生配置；Surge 与 Mihomo 的 MASQUE 不互转。内核配置校验不代表远端网络已连通。
+
 重复节点合并后保留各来源的原始名称映射，使链式引用仍指向保留的节点。订阅 URI 按其传输类型解析，无法等价转换的传输会跳过并提示；Hysteria2 链接省略端口时使用 443，并保留完整的 `username:password` 认证。
 
 策略组按客户端配置。组定义格式为 `类型, 成员或筛选器, 参数=值`，使用英文逗号，不填写 `组名 =` 前缀。页面中的“语法说明与示例”列出当前端可用类型和参数。
@@ -187,9 +191,19 @@ Surge 支持 `select`、`smart` 等类型，`url-test` 会转换为 `smart`；Cl
 | 高级设置 | Surge 的 URL Rewrite、Map Local 和脚本；sing-box 的日志与 HTTP 客户端；Clash 无此页 |
 | MITM 证书 | 仅 Surge：生成、导入或导出 CA，设置 MITM 主机名 |
 
-sing-box 适配基线为 **1.14.0**。可选参数通过表单添加，移除可选字段恢复内核默认行为。订阅无法代替客户端设置系统权限、Always On 或应用选择；请在实际设备完成这些操作。
+sing-box 适配基线为 **1.15.0-alpha.6（预览版）**。可选参数通过表单添加，移除可选字段恢复内核默认行为。订阅无法代替客户端设置系统权限、Always On 或应用选择；请在实际设备完成这些操作。
 
-SubPilot 不再提供或生成 sing-box TUN 的 `stack` 选项；加载或导入已有配置时会自动清理该字段，由客户端采用自身默认栈。1.14.0 包含 gVisor 的构建默认使用 `mixed`，否则使用 `system`，因此旧客户端的实际行为可能与原先显式指定的栈不同。
+SubPilot 不再提供或生成 sing-box TUN 的 `stack` 选项；加载或导入已有配置时会自动清理该字段，由客户端采用自身默认栈。1.15 使用 sing-tun 自有协议栈；旧 1.14.0 / 1.14.1 配置加载时自动升级版本标记，保留原生设置。启用 1.15 新字段的配置需要相应版本的客户端。
+
+1.15 新功能入口：
+
+- **VPN 连接**：WireGuard、Tailscale、OpenVPN 和 OpenConnect 提供 `on_demand`，允许客户端在需要时断开端点，不等同于空闲超时。
+- **高级 → 缓存、API 与调试**：`cache_file.buffer_size` 设置写缓冲大小（默认 `1MB`）；`flush_interval` 设置定时刷新间隔（例如 `30s`，默认不启用定时刷新）。
+- **入站管理 → TUN**：支持 `multi_queue`（仅 Linux、新协议栈）和 `auto_redirect_tproxy_mark`。Android 的完整 `auto_redirect` 需要 root 服务或 root shell。
+- **入站管理 / 高级 → 本端原生出站**：支持 Tailcat。共享节点也可导入原生 Tailcat JSON，保留密钥及 DERP 参数，仅输出到 sing-box；Tailcat 不使用常规服务器和端口。通过 `sing-box generate tailcat-keypair` 生成密钥；入站需私钥，出站需服务端公钥和发现公钥。自定义 `derp_servers` 不可与 `derp_map_url` / `derp_region` 混用。
+- **高级 → 服务 → DERP**：支持 `verify_client_inbound` 和 `verify_client_key`，入站引用必须指向已存在的 Tailcat 入站；启用验证的客户端需固定私钥。
+
+新增可选设置不会自动启用。参考 [1.15 更新日志](https://sing-box.sagernet.org/changelog/) 和 [Tailcat 文档](https://sing-box.sagernet.org/configuration/outbound/tailcat/)。
 
 ### Tailscale
 

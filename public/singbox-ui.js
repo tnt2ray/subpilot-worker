@@ -14,6 +14,11 @@ const TITLES = {
   network_namespaces: ["网络命名空间（Linux）", "Network namespaces (Linux)"], $schema: ["配置 Schema 地址", "Configuration schema URL"]
 };
 const LABELS = {
+  on_demand: "允许按需断开", buffer_size: "写缓冲大小", flush_interval: "自动刷新间隔",
+  multi_queue: "多队列（仅 Linux）", auto_redirect_tproxy_mark: "IPv6 TCP TPROXY 标记",
+  server_public_key: "服务端公钥", server_disco_key: "服务端发现公钥", pre_shared_key: "预共享密钥",
+  derp_map_url: "DERP 映射地址", derp_region: "DERP 区域", derp_servers: "自定义 DERP 服务器",
+  verify_client_inbound: "验证客户端的 Tailcat 入站", verify_client_key: "允许的 Tailcat 公钥",
   type: "类型", tag: "名称", server: "服务器", server_port: "服务器端口", listen: "监听地址", listen_port: "监听端口",
   enabled: "启用", password: "密码", private_key: "私钥", public_key: "公钥", auth_key: "认证密钥", username: "用户名",
   tls: "TLS 加密", transport: "传输", multiplex: "多路复用", detour: "前置出站", domain_resolver: "域名解析器",
@@ -36,7 +41,7 @@ const LABELS = {
 export const singboxSections = {
   network: ["inbounds"], dns: ["dns"], rules: ["route"],
   endpoints: ["endpoints"],
-  advanced: ["log", "http_clients"]
+  advanced: ["log", "http_clients", "outbounds", "experimental", "services"]
 };
 export const singboxTitle = (key, t) => TITLES[key] ? t(...TITLES[key]) : key;
 
@@ -166,7 +171,7 @@ export function createSingboxForm(root, schema, section, original, { t, esc, ref
     const type = deref(node.properties?.type);
     const protocol = type.const ?? type.enum?.[0];
     if (!protocol) return true;
-    if (section === "inbounds") return ["tun", "mixed", "http", "socks"].includes(protocol);
+    if (section === "inbounds") return ["tun", "mixed", "http", "socks", "tailcat"].includes(protocol);
     if (section === "endpoints") return endpointType ? protocol === endpointType : ["wireguard", "tailscale", "openconnect", "openvpn-client"].includes(protocol);
     return true;
   }
@@ -225,6 +230,16 @@ export function createSingboxForm(root, schema, section, original, { t, esc, ref
       html += multiline ? `<textarea ${sensitive ? 'class="sb-secret"' : ""} data-sb-value ${data} rows="5" spellcheck="false" autocomplete="off">${esc(value)}</textarea>` : sensitive ? `<input type="password" data-sb-value ${data} value="${esc(value)}" autocomplete="new-password">` : `<input type="text" data-sb-value ${data} value="${esc(value)}" autocomplete="off" spellcheck="false" ${ref.length ? `list="sb-refs-${id}"` : ""}>`;
       if (ref.length) html += `<datalist id="sb-refs-${id}">${ref.map((tag) => `<option value="${esc(tag)}"></option>`).join("")}</datalist>`;
     }
+    const help = {
+      on_demand: ["允许客户端在需要时断开此端点；留空沿用内核默认行为。", "Allows the client to disconnect this endpoint when needed; omit to use the core default."],
+      buffer_size: ["缓存文件写缓冲大小，例如 1MB；默认 1MB。", "Cache-file write buffer size, for example 1MB; defaults to 1MB."],
+      flush_interval: ["自动写入磁盘的间隔，例如 30s；默认不定时刷新。", "Automatic disk flush interval, for example 30s; periodic flushing is disabled by default."],
+      multi_queue: ["仅支持 Linux，使用新 TUN 协议栈，吞吐量可随 CPU 核心数扩展。", "Linux only, using the new TUN stack to scale throughput across CPU cores."],
+      auto_redirect: ["Android 需要图形客户端 root 服务或 root shell。", "Android requires the graphical client's root service or a root shell."],
+      verify_client_inbound: ["选择已配置的 Tailcat 入站；不能引用 TUN 或其他入站类型。", "Reference configured Tailcat inbounds, not TUN or other inbound types."],
+      derp_servers: ["不能与 derp_map_url 或 derp_region 同时设置。", "Cannot be combined with derp_map_url or derp_region."]
+    }[String(path.at(-1))];
+    if (help) html += `<p class="help">${esc(t(...help))}</p>`;
     if (node.pattern) html += `<p class="help">${t("格式", "Format")}: <code>${esc(node.pattern)}</code></p>`;
     return html;
   }

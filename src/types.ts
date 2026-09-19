@@ -104,6 +104,8 @@ export interface ClashConfig {
   tun: ClashTunConfig;
   dnsEnabled: boolean;
   dnsListen: string;
+  dnsListenRoutingMark: number;
+  dnsFallbackLazyQuery: boolean;
   dnsIpv6: boolean;
   dnsEnhancedMode: string;
   dnsFakeIpRange: string;
@@ -328,7 +330,7 @@ export interface ConfigDiagnostic {
 }
 
 export interface SingboxConfig {
-  coreVersion: "1.14.0";
+  coreVersion: "1.15.0-alpha.6";
   log: Record<string, ProxyParamValue>;
   dns: Record<string, ProxyParamValue>;
   inbounds: Record<string, ProxyParamValue>[];

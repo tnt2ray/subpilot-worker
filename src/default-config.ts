@@ -215,6 +215,8 @@ export const DEFAULT_CONFIG: RenderConfig = {
     },
     dnsEnabled: true,
     dnsListen: "0.0.0.0:53",
+    dnsListenRoutingMark: 0,
+    dnsFallbackLazyQuery: false,
     dnsIpv6: true,
     dnsEnhancedMode: "fake-ip",
     dnsFakeIpRange: "198.18.0.1/16",

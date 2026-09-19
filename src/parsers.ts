@@ -98,7 +98,14 @@ export function toSurgeLine(node: ProxyNode): string {
   return `${node.name} = ${[type, node.server, String(node.port ?? 0), ...suffix].join(", ")}`;
 }
 
+const CLASH_NATIVE_PROTOCOLS = new Set(["easytier", "zerotier", "masque", "wireguard", "openvpn"]);
+
 export function toClashProxy(node: ProxyNode): Record<string, unknown> {
+  if (CLASH_NATIVE_PROTOCOLS.has(node.type) && node.raw) {
+    const output: Record<string, unknown> = { ...node.raw, name: node.name };
+    if (node.params["dialer-proxy"] !== undefined) output["dialer-proxy"] = node.params["dialer-proxy"];
+    return output;
+  }
   const type = normalizeTypeForClash(node.type);
   const base: Record<string, unknown> = node.raw ? { ...node.raw } : {};
   const wsOpts = clashWsOptionsFromParams(node.params);
@@ -169,18 +176,23 @@ function parseYamlProxies(content: string, sourceId: string): ProxyNode[] {
     return data.proxies.flatMap((proxy) => {
       if (!proxy || typeof proxy !== "object") return [];
       const record = proxy as Record<string, unknown>;
-      if (!isSafeConfigText(record)) return [];
+      // OpenVPN embeds PEM blocks; only these native fields may contain line breaks.
+      const safeRecord = record.type === "openvpn" ? Object.fromEntries(Object.entries(record).map(([key, value]) => [key,
+        ["ca", "cert", "key", "tls-auth", "tls-crypt", "tls-crypt-v2"].includes(key) && typeof value === "string" ? value.replace(/\r?\n/g, "") : value
+      ])) : record;
+      if (!isSafeConfigText(safeRecord)) return [];
       const name = asString(record.name);
       const type = normalizeClashInputType(asString(record.type));
       const server = asString(record.server);
       const port = toPort(record.port);
-      if (!name || !type || !server || port === undefined) return [];
+      const serverless = ["easytier", "zerotier"].includes(type) || type === "wireguard" && Array.isArray(record.peers) && record.peers.length > 0;
+      if (!name || !type || !serverless && (!server || port === undefined)) return [];
       const params: ProxyNode["params"] = {};
       for (const [key, value] of Object.entries(record)) {
         if (["name", "type", "server", "port", "password", "uuid", "cipher"].includes(key)) continue;
         if (isProxyParamValue(value)) params[key] = value;
       }
-      const paramsNormalized = normalizeProxyParams(params);
+      const paramsNormalized = CLASH_NATIVE_PROTOCOLS.has(type) ? false : normalizeProxyParams(params);
       return [{
         name,
         type,

@@ -1,7 +1,7 @@
 import type { ProxyNode, ProxyParamValue, Target } from "./types";
 
 type JsonObject = Record<string, ProxyParamValue>;
-export const SINGBOX_PROTOCOLS = new Set(["http", "https", "socks5", "socks5-tls", "ss", "snell", "trojan", "vmess", "vless", "hysteria2", "hy2", "tuic-v5", "anytls", "ssh"]);
+export const SINGBOX_PROTOCOLS = new Set(["http", "https", "socks5", "socks5-tls", "ss", "snell", "trojan", "vmess", "vless", "hysteria2", "hy2", "tuic-v5", "anytls", "ssh", "tailcat"]);
 const NORMAL_TYPE: Record<string,string> = { shadowsocks: "ss", socks: "socks5", tuic: "tuic-v5" };
 
 export function parseSingboxNodes(content: string, sourceId: string): ProxyNode[] {
@@ -13,7 +13,7 @@ export function parseSingboxNodes(content: string, sourceId: string): ProxyNode[
   const entries = nativeDocument ? outbounds : Array.isArray(value) ? value : object?.type ? [object] : [];
   return entries.flatMap((entry, index): ProxyNode[] => {
     const outbound = record(entry);
-    if (!outbound || typeof outbound.type !== "string" || typeof outbound.server !== "string") return [];
+    if (!outbound || typeof outbound.type !== "string" || (outbound.type !== "tailcat" && typeof outbound.server !== "string")) return [];
     // Standalone Clash JSON is also valid YAML; let the Clash parser retain its name and port.
     if (!nativeDocument && ("name" in outbound || "port" in outbound) && !("tag" in outbound) && !("server_port" in outbound)) return [];
     const tls = record(outbound.tls);
@@ -38,7 +38,7 @@ export function parseSingboxNodes(content: string, sourceId: string): ProxyNode[
     const obfs = record(outbound.obfs);
     if (obfs) { params.obfs = obfs.type ?? "salamander"; params["obfs-password"] = obfs.password ?? ""; }
     return [{ name: typeof outbound.tag === "string" && outbound.tag ? outbound.tag : `sing-box-${index + 1}`, type,
-      server: outbound.server, port: outbound.server_port === undefined && outbound.type === "ssh" ? 22 : Number(outbound.server_port ?? 0),
+      server: typeof outbound.server === "string" ? outbound.server : "", port: outbound.server_port === undefined && outbound.type === "ssh" ? 22 : Number(outbound.server_port ?? 0),
       password: typeof (outbound.password ?? outbound.psk) === "string" ? String(outbound.password ?? outbound.psk) : undefined,
       uuid: typeof outbound.uuid === "string" ? outbound.uuid : undefined,
       cipher: typeof (outbound.method ?? outbound.security) === "string" ? String(outbound.method ?? outbound.security) : undefined,
@@ -47,6 +47,13 @@ export function parseSingboxNodes(content: string, sourceId: string): ProxyNode[
 }
 
 export function toSingboxOutbound(node: ProxyNode, canonical: JsonObject): JsonObject {
+  if (node.type === "tailcat" && node.singbox?.type === "tailcat") {
+    const output = structuredClone(node.singbox);
+    output.tag = node.name;
+    const detour = node.params["dialer-proxy"] ?? node.params["underlying-proxy"];
+    if (detour) output.detour = detour;
+    return output;
+  }
   if (!node.server || !Number.isInteger(node.port) || Number(node.port) < 1 || Number(node.port) > 65535) throw new Error("节点服务器或端口无效");
   if (node.singbox) {
     const output = structuredClone(node.singbox);
@@ -139,6 +146,8 @@ export function toSingboxOutbound(node: ProxyNode, canonical: JsonObject): JsonO
 
 /** Reject unsupported URI transports and lossy native-node conversions before rendering. */
 export function nativeNodeCompatibility(node: ProxyNode, target: Target): string | null {
+  if (target === "clash" && ["easytier", "zerotier", "wireguard", "openvpn"].includes(node.type) && !node.raw) return "此协议需要 Mihomo 原生 YAML/JSON 节点配置";
+  if (node.type === "masque" && ((target === "clash" && !node.raw) || (target === "surge" && node.raw))) return "Surge 与 Mihomo 的 MASQUE 格式无法等价转换，请使用对应客户端的原生节点配置";
   if (node.uriTransport) {
     const transports = target === "clash" ? ["tcp", "ws", "grpc", "h2"] : target === "surge" ? ["tcp", "ws"] : ["tcp", "ws", "grpc"];
     if (!transports.includes(node.uriTransport)) return `${target} 无法等价转换 URI 的 ${node.uriTransport} 传输，请使用当前客户端的原生节点配置`;

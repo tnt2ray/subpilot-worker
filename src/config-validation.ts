@@ -611,6 +611,11 @@ function validatePolicyGroupSpec(name: string, spec: string, config: RenderConfi
         continue;
       }
     }
+    if (config.renderTarget === "clash" && type === "select" && key === "default-selected") {
+      const policyError = validatePolicyName(option.value, `策略组 ${name} 默认成员`);
+      if (policyError) return policyError;
+      continue;
+    }
     if (type === "select") return `策略组 ${name} select 类型不支持参数 ${key}`;
     if (type === "subnet") {
       if (lowerKey === "default") defaultCount += 1;
@@ -845,6 +850,11 @@ function validateRuleLines(value: unknown, label: string): string | null {
 }
 
 function validateImportantSettings(config: RenderConfig): string | null {
+  if (config.renderTarget === "clash") {
+    const mark = config.clash.dnsListenRoutingMark;
+    if (mark !== undefined && (!Number.isInteger(mark) || mark < 0 || mark > 0xffffffff)) return "Clash DNS 监听路由标记必须是 0 到 4294967295 的整数";
+    if (!["system", "gvisor", "mixed", "mips"].includes(config.clash.tun.stack)) return "Clash TUN stack 不受支持";
+  }
   const fields: Array<[unknown, number, string, boolean?]> = [
     [config.settings?.managedBaseUrl, MAX_URL_LENGTH, "Managed base URL", true],
     [config.settings?.userAgentSurge, 512, "Surge User-Agent"],

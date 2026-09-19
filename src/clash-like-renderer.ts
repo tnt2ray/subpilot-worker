@@ -19,6 +19,8 @@ interface ClashLikeTunConfig {
 interface ClashLikeDnsConfig {
   enable: boolean;
   listen: string;
+  listenRoutingMark?: number;
+  fallbackLazyQuery?: boolean;
   ipv6: boolean;
   enhancedMode: string;
   fakeIpRange: string;
@@ -150,6 +152,8 @@ function buildClashLikeDns(config: ClashLikeDnsConfig): Record<string, unknown> 
     ipv6: config.ipv6,
     "enhanced-mode": config.enhancedMode
   };
+  if (config.listenRoutingMark !== undefined) dns["listen-routing-mark"] = config.listenRoutingMark;
+  if (config.fallbackLazyQuery !== undefined) dns["fallback-lazy-query"] = config.fallbackLazyQuery;
   if (config.enhancedMode === "fake-ip") {
     dns["fake-ip-range"] = config.fakeIpRange;
     dns["fake-ip-filter"] = config.fakeIpFilter;
@@ -182,6 +186,8 @@ function clashBaseConfig(config: RenderConfig["clash"]): ClashLikeBaseConfig {
     dns: {
       enable: config.dnsEnabled,
       listen: config.dnsListen,
+      listenRoutingMark: config.dnsListenRoutingMark,
+      fallbackLazyQuery: config.dnsFallbackLazyQuery,
       ipv6: config.dnsIpv6,
       enhancedMode: config.dnsEnhancedMode,
       fakeIpRange: config.dnsFakeIpRange,

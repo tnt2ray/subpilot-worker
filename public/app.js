@@ -90,7 +90,7 @@ function field(path, value, options = {}) {
   const title = options.label || label(key);
   if (path === "clients.surge.ipv6Vif") options = { ...options, options: ["off", "auto", "always"] };
   if (path === "clients.clash.mode") options = { ...options, options: ["rule", "global", "direct"] };
-  if (path === "clients.clash.tun.stack") options = { ...options, options: ["system", "gvisor", "mixed"] };
+  if (path === "clients.clash.tun.stack") options = { ...options, options: ["system", "gvisor", "mixed", "mips"] };
   if (path === "clients.clash.dnsEnhancedMode") options = { ...options, options: ["fake-ip", "redir-host"] };
   const textList = isTextList(key, value);
   const structured = value && typeof value === "object";
@@ -125,7 +125,7 @@ function render() {
   $("#navigation").innerHTML = NAV.map(([id, zh, en, img]) => `<a href="#${id}" class="${state.page === id ? "active" : ""}" ${state.page === id ? 'aria-current="page"' : ""}>${icon(img)}${state.lang === "zh" ? zh : en}</a>`).join("");
   const page = NAV.find((item) => item[0] === state.page) || NAV[0];
   $("#page-title").textContent = state.lang === "zh" ? page[1] : page[2];
-  $("#header-actions").innerHTML = state.page === "clients" && state.client === "singbox" ? `<span class="muted small">sing-box 1.14.0</span>${btn(t("迁移问题", "Migration issues"), "diagnostics")}` : "";
+  $("#header-actions").innerHTML = state.page === "clients" && state.client === "singbox" ? `<span class="muted small">sing-box 1.15.0-alpha.6</span>${btn(t("迁移问题", "Migration issues"), "diagnostics")}` : state.page === "clients" && state.client === "clash" ? `<span class="muted small">Mihomo v1.19.31</span>` : "";
   $("#language").textContent = state.lang === "zh" ? "中文 / EN" : "EN / 中文";
   $("#logout").textContent = t("退出登录", "Sign out");
   renderSidebarVersion();
@@ -224,7 +224,7 @@ function groupSyntaxHelp() {
   const types = state.client === "surge"
     ? t("select 手动选择；smart 智能选择；url-test 输出时自动转为 smart；fallback 按顺序故障切换；load-balance 负载均衡；subnet 按网络选择。smart 只能包含代理节点，不能直接引用其他组或 DIRECT。", "select: manual selection; smart: adaptive selection; url-test is emitted as smart; fallback: priority failover; load-balance: load balancing; subnet: network-based selection. Smart accepts proxy nodes only, not nested groups or DIRECT.")
     : state.client === "clash"
-      ? t("select 手动选择；url-test 自动测速；fallback 按顺序故障切换；load-balance 负载均衡。", "select: manual selection; url-test: automatic latency testing; fallback: priority failover; load-balance: load balancing.")
+      ? t("select 手动选择，可用 default-selected 指定默认成员；url-test 自动测速；fallback 按顺序故障切换；load-balance 负载均衡。", "select: manual selection, with default-selected for the default member; url-test: automatic latency testing; fallback: priority failover; load-balance: load balancing.")
       : t("select 手动选择，输出为 selector；url-test 自动测速，输出为 urltest。可用端点的 tag 可以作为显式成员引用。", "select: manual selection, emitted as selector; url-test: automatic latency testing, emitted as urltest. Available endpoint tags can be referenced as explicit members.");
   const options = state.client === "surge"
     ? t("hidden=true 隐藏组。Surge 不使用组级 url；测速 URL 在客户端配置中设置，smart 的 interval 不生效。subnet 使用 条件=策略，例如 subnet, SSID:Home=DIRECT, default=Proxy；default 必填，不能引用自身。", "hidden=true hides the group. Surge ignores group-level url; set the test URL in client settings. Smart ignores interval. subnet uses condition=policy, for example subnet, SSID:Home=DIRECT, default=Proxy; default is required and must not reference the group itself.")
@@ -337,7 +337,7 @@ function renderSingboxNetwork() {
     const route = item.auto_route === undefined ? t("未指定", "Not specified") : item.auto_route ? t("开启", "On") : t("关闭", "Off");
     return `<tr><td><strong>${esc(item.tag || t("未命名入站", "Unnamed inbound"))}</strong><div class="help">${esc(item.type || "—")}</div></td><td>${tun ? t("接管设备流量", "Capture device traffic") : ["mixed", "http", "socks"].includes(item.type) ? t("本地代理端口", "Local proxy port") : t("接收入站连接", "Accept inbound connections")}</td><td><div class="help">${tun ? t("虚拟网卡地址", "Virtual interface addresses") : t("监听地址 / 端口", "Listen address / port")}</div>${address.length ? address.map((value) => `<code class="sb-network-address">${esc(value)}</code>`).join("") : "—"}</td><td>${tun ? `<dl><dt>${t("自动路由", "Automatic routing")}</dt><dd>${route}</dd>${item.interface_name ? `<dt>${t("接口", "Interface")}</dt><dd>${esc(item.interface_name)}</dd>` : ""}</dl>` : "—"}</td><td class="actions">${iconButton("edit", "edit-singbox-inbound", `data-index="${index}"`, t("编辑入站", "Edit inbound"))}${iconButton("trash", "delete-singbox-inbound", `data-index="${index}"`, t("删除入站", "Delete inbound"))}</td></tr>`;
   }).join("");
-  return `<section class="sb-network"><div class="section-heading"><div><h2>${t("入站管理", "Inbound connections")}</h2><p class="help">${t("TUN 接管设备流量；HTTP / SOCKS 端口供应用连接代理。", "TUN captures device traffic; HTTP / SOCKS ports accept proxy connections from apps.")}</p></div>${btn(t("添加入站", "Add inbound"), "edit-singbox-inbound", "", "primary")}</div><div class="table-wrap"><table><thead><tr><th>${t("入站", "Inbound")}</th><th>${t("用途", "Purpose")}</th><th>${t("地址", "Address")}</th><th>${t("网络设置", "Network settings")}</th><th>${t("操作", "Actions")}</th></tr></thead><tbody>${rows || `<tr><td colspan="5" class="empty">${t("尚未配置入站，点击「添加入站」设置流量入口。", "No inbounds configured. Add an inbound to receive traffic.")}</td></tr>`}</tbody></table></div></section>`;
+  return `<section class="sb-network"><div class="section-heading"><div><h2>${t("入站管理", "Inbound connections")}</h2><p class="help">${t("TUN 接管设备流量；HTTP / SOCKS 端口供应用连接代理；Tailcat 通过 DERP 建立点对点隧道。", "TUN captures device traffic; HTTP / SOCKS ports accept proxy connections from apps; Tailcat establishes peer-to-peer tunnels through DERP.")}</p></div>${btn(t("添加入站", "Add inbound"), "edit-singbox-inbound", "", "primary")}</div><div class="table-wrap"><table><thead><tr><th>${t("入站", "Inbound")}</th><th>${t("用途", "Purpose")}</th><th>${t("地址", "Address")}</th><th>${t("网络设置", "Network settings")}</th><th>${t("操作", "Actions")}</th></tr></thead><tbody>${rows || `<tr><td colspan="5" class="empty">${t("尚未配置入站，点击「添加入站」设置流量入口。", "No inbounds configured. Add an inbound to receive traffic.")}</td></tr>`}</tbody></table></div></section>`;
 }
 function singboxConnectionDnsHelp() {
   return t("用于解析代理节点地址，以及直连时尚未解析的目标域名。连接单独指定 DNS 时优先使用其设置；此处指定的服务器可能绕过 DNS 查询分流规则。", "Resolves proxy server addresses and target domains still unresolved when connecting directly. A connection-specific DNS resolver takes priority; a server selected here may bypass DNS query routing rules.");
@@ -361,6 +361,9 @@ function renderSingboxSections(keys) {
     inbounds: t("Android / Apple 的 TUN 由系统 VPN 接口管理；接口名、进程匹配等能力受平台权限限制。应用选择、Always On 等客户端自身设置需在客户端中操作。", "Android / Apple TUN uses the system VPN interface. Interface names and process matching depend on platform permissions. App selection overrides and Always On are configured in the client itself."),
     endpoints: t("配置 WireGuard、Tailscale、OpenConnect 和 OpenVPN 客户端连接。", "Configure WireGuard, Tailscale, OpenConnect and OpenVPN client connections."),
     route: client.ruleSets.mode === "compiled" ? t("来源编排模式下，原生规则先匹配，再匹配编排规则；原生规则集与生成规则集合并，标签不可重复。", "In compiled mode, native rules match before compiled rules. Native and generated rule sets are merged; tags must be unique.") : "",
+    outbounds: t("可添加 Tailcat 等本端原生出站，再在策略组和规则中引用。Tailcat 使用公钥和 DERP，不填写服务器地址与端口。", "Add client-native outbounds such as Tailcat, then reference them in groups and rules. Tailcat uses keys and DERP rather than a server address and port."),
+    experimental: t("cache_file 中可设置写缓冲大小和定时刷新间隔，留空使用客户端默认值。", "Configure write buffering and periodic flushing under cache_file, or omit them to use client defaults."),
+    services: t("DERP 客户端验证可引用 Tailcat 入站或允许的公钥。", "DERP client verification can reference Tailcat inbounds or allowed public keys."),
     http_clients: t("Apple HTTP 引擎仅 Apple 平台可用，支持字段与 Go 引擎不同。", "The Apple HTTP engine is available only on Apple platforms and supports a different set of options from Go.")
   };
   return `<div class="client-settings singbox-settings"><div class="client-settings-details">` + keys.map((key) => {
@@ -445,7 +448,7 @@ function renderTailscale() {
     const exit = surge ? node.exitNode : node.exit_node;
     return [`<tr><td>${btn(esc(name || t("未命名", "Unnamed")), "edit-tailscale", `data-index="${index}"`, "link")}</td><td>${esc(node.hostname || "—")}</td><td>${esc(exit && exit !== "none" ? exit : t("未指定", "Not selected"))}</td><td>${surge ? node.enabled ? t("启用", "Enabled") : t("停用", "Disabled") : t("已配置", "Configured")}</td><td class="actions">${smallButton("edit", "edit-tailscale", `data-index="${index}"`, t("编辑", "Edit"))}${smallButton("trash", "delete-tailscale", `data-index="${index}"`, t("删除", "Delete"))}</td></tr>`];
   }).join("");
-  return section(t("Tailscale 节点", "Tailscale nodes"), `<p class="help">${surge ? t("节点可在当前端的策略组和分流规则中使用。认证密钥仅在编辑时以密码框显示。", "Use nodes in this client's policy groups and routing rules. Auth keys are masked in the editor.") : t("使用 sing-box 1.14 原生 Tailscale endpoint。认证密钥可留空，通过客户端日志中的登录地址授权；每个实例应使用独立的状态目录。", "Uses native sing-box 1.14 Tailscale endpoints. Leave the auth key empty to sign in through the URL in client logs; use a separate state directory for each instance.")}</p><div class="table-wrap"><table class="editable-table tailscale-table"><thead><tr><th>${t("名称", "Name")}</th><th>${t("设备主机名", "Hostname")}</th><th>${t("出口节点", "Exit node")}</th><th>${t("状态", "Status")}</th><th class="actions">${t("操作", "Actions")}</th></tr></thead><tbody>${rows || `<tr><td colspan="5" class="empty">${t("尚未添加 Tailscale 节点", "No Tailscale nodes yet")}</td></tr>`}</tbody></table></div>`, btn(t("添加节点", "Add node"), "add-tailscale", "", "primary"));
+  return section(t("Tailscale 节点", "Tailscale nodes"), `<p class="help">${surge ? t("节点可在当前端的策略组和分流规则中使用。认证密钥仅在编辑时以密码框显示。", "Use nodes in this client's policy groups and routing rules. Auth keys are masked in the editor.") : t("使用 sing-box 1.15 原生 Tailscale endpoint。认证密钥可留空，通过客户端日志中的登录地址授权；每个实例应使用独立的状态目录。", "Uses native sing-box 1.15 Tailscale endpoints. Leave the auth key empty to sign in through the URL in client logs; use a separate state directory for each instance.")}</p><div class="table-wrap"><table class="editable-table tailscale-table"><thead><tr><th>${t("名称", "Name")}</th><th>${t("设备主机名", "Hostname")}</th><th>${t("出口节点", "Exit node")}</th><th>${t("状态", "Status")}</th><th class="actions">${t("操作", "Actions")}</th></tr></thead><tbody>${rows || `<tr><td colspan="5" class="empty">${t("尚未添加 Tailscale 节点", "No Tailscale nodes yet")}</td></tr>`}</tbody></table></div>`, btn(t("添加节点", "Add node"), "add-tailscale", "", "primary"));
 }
 function editTailscale(index) {
   const client = state.client, surge = client === "surge";
@@ -816,6 +819,12 @@ function editGroup(name) {
   if (state.client === "singbox") { editSingboxGroup(name); return; }
   const original = name ? { name, spec: currentClient().groups[name], enabled: !currentClient().disabledGroups.includes(name) } : { name: "", spec: "select, {all}", enabled: true };
   const surge = state.client === "surge";
+  const clash = state.client === "clash";
+  if (clash) {
+    const parts = splitPolicyGroupSpec(original.spec);
+    original.defaultSelected = parts.slice(1).map(parseGroupOption).find((option) => option?.key === "default-selected")?.value || "";
+    original.spec = parts.filter((part, index) => !index || parseGroupOption(part)?.key !== "default-selected").join(", ");
+  }
   if (surge) {
     const parts = splitPolicyGroupSpec(original.spec);
     const options = parts.slice(1).map(parseGroupOption).filter(Boolean);
@@ -827,8 +836,18 @@ function editGroup(name) {
   const surgeOptions = surge ? localField("category", original.category, { label: t("分类（可选）", "Category (optional)") })
     + localField("priority", original.priority, { label: t("Smart 策略优先级（每行 regex:factor）", "Smart policy priority (one regex:factor per line)"), multiline: true, rows: 3 })
     + `<p class="help">${t("例如 Premium:0.9。权重必须大于 0；小于 1 更优先，大于 1 降低优先级，首个匹配项生效。仅用于 smart 或输出为 smart 的 url-test。分类与 HTTPS 测速需要支持这些参数的 Surge Beta。", "Example: Premium:0.9. Factors must be positive; below 1 increases preference, above 1 reduces it. The first match wins. Applies to smart or url-test emitted as smart. Category and HTTPS testing require a Surge Beta with support for these features.")}</p>` : "";
-  modal(t("编辑策略组", "Edit policy group"), localField("name", original.name, { readonly: name === "Proxy" }) + localField("spec", original.spec, { label: t("组配置", "Group definition"), multiline: true }) + surgeOptions + localField("enabled", original.enabled) + `<p class="help">${state.client === "surge" ? t("可使用 smart；兼容将 url-test 输出为 smart。smart 成员必须是代理节点，hidden=true 可隐藏组。", "Use smart; url-test is also emitted as smart for compatibility. Smart requires proxy-node members; hidden=true hides a group.") : state.client === "clash" ? t("支持 select、url-test、fallback 和 load-balance；hidden=true 的显示效果需要客户端或面板支持。", "Supports select, url-test, fallback and load-balance. hidden=true requires client or dashboard support.") : t("支持 select 和 url-test，分别输出为 selector 和 urltest；不支持 hidden。", "Supports select and url-test, emitted as selector and urltest. hidden is unsupported.")} ${t("修改名称不会自动重写规则引用。", "Renaming does not rewrite rule references.")}</p>`, () => {
+  const clashOptions = clash ? localField("defaultSelected", original.defaultSelected, { label: t("默认成员（仅 select，可选）", "Default member (select only, optional)") }) + `<p class="help">${t("填写输出中的完整成员名称；已保存的客户端选择可能覆盖此默认值。", "Enter the complete emitted member name; a saved client selection may override this default.")}</p>` : "";
+  modal(t("编辑策略组", "Edit policy group"), localField("name", original.name, { readonly: name === "Proxy" }) + localField("spec", original.spec, { label: t("组配置", "Group definition"), multiline: true }) + surgeOptions + clashOptions + localField("enabled", original.enabled) + `<p class="help">${state.client === "surge" ? t("可使用 smart；兼容将 url-test 输出为 smart。smart 成员必须是代理节点，hidden=true 可隐藏组。", "Use smart; url-test is also emitted as smart for compatibility. Smart requires proxy-node members; hidden=true hides a group.") : state.client === "clash" ? t("支持 select、url-test、fallback 和 load-balance；hidden=true 的显示效果需要客户端或面板支持。", "Supports select, url-test, fallback and load-balance. hidden=true requires client or dashboard support.") : t("支持 select 和 url-test，分别输出为 selector 和 urltest；不支持 hidden。", "Supports select and url-test, emitted as selector and urltest. hidden is unsupported.")} ${t("修改名称不会自动重写规则引用。", "Renaming does not rewrite rule references.")}</p>`, () => {
     const value = readLocal(original);
+    if (clash && value.defaultSelected.trim()) {
+      const parts = splitPolicyGroupSpec(value.spec);
+      const selected = value.defaultSelected.trim();
+      if (parts[0]?.toLowerCase() !== "select") throw Error(t("默认成员仅适用于 select", "Default member only applies to select"));
+      if (/[,={}\r\n\u0000-\u001f\u007f]/.test(selected)) throw Error(t("默认成员名称无效", "Invalid default member name"));
+      if (parts.slice(1).some((part) => parseGroupOption(part)?.key === "default-selected")) throw Error(t("请勿重复填写默认成员", "Do not specify the default member twice"));
+      parts.push(`default-selected=${selected}`);
+      value.spec = parts.join(", ");
+    }
     if (surge) {
       const parts = splitPolicyGroupSpec(value.spec);
       const category = value.category.trim();

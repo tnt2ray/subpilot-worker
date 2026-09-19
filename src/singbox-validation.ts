@@ -1,11 +1,29 @@
 import { Validator, type Schema } from "@cfworker/json-schema";
-import upstreamSchema from "./vendor/singbox/schema-1.14.0.json";
+import upstreamSchema from "./vendor/singbox/schema-1.15.0-alpha.6.json";
 import type { ConfigDiagnostic } from "./types";
 
 // Keep the upstream schema intact while hiding and rejecting the retired TUN option.
 const schema = structuredClone(upstreamSchema);
 for (const inbound of schema.$defs.Inbound.oneOf) {
   if (inbound.properties?.type.const === "tun") delete (inbound.properties as { stack?: unknown }).stack;
+}
+
+// The upstream schema omits some runtime requirements and reference annotations.
+for (const [definition, required] of [["Inbound", ["private_key"]], ["Outbound", ["server_public_key", "server_disco_key"]]] as const) {
+  for (const branch of schema.$defs[definition].oneOf) {
+    const entry = branch as unknown as { required?: string[]; properties?: Record<string, { const?: string; minLength?: number }> };
+    if (entry.properties?.type?.const !== "tailcat") continue;
+    entry.required = [...new Set([...(entry.required ?? []), ...required])];
+    for (const key of required) entry.properties[key]!.minLength = 1;
+  }
+}
+for (const branch of schema.$defs.Service.oneOf) {
+  const entry = branch as unknown as { properties?: Record<string, unknown> };
+  if ((entry.properties?.type as { const?: string } | undefined)?.const !== "derp") continue;
+  entry.properties!.verify_client_inbound = { anyOf: [
+    { type: "string", "x-tag-reference": "inbound" },
+    { type: "array", items: { type: "string", "x-tag-reference": "inbound" } }
+  ] };
 }
 
 // The library annotates schema objects with absolute URIs. All validators sharing
@@ -60,9 +78,11 @@ export function validateSingboxSection(section: string, value: unknown): string[
   const property = schema.properties[section as keyof typeof schema.properties];
   const result = new Validator({ $id: schema.$id, $defs: schema.$defs, ...property } as Schema, "2020-12", true).validate(value);
   if (result.valid) {
-    return section === "outbounds" && Array.isArray(value)
-      ? value.flatMap((item, index) => unsupportedAnyTlsFastOpen(item) ? [`outbounds/${index}/tcp_fast_open: AnyTLS 不支持启用 TCP Fast Open。`] : [])
-      : [];
+    return [
+      ...(section === "outbounds" && Array.isArray(value)
+        ? value.flatMap((item, index) => unsupportedAnyTlsFastOpen(item) ? [`outbounds/${index}/tcp_fast_open: AnyTLS 不支持启用 TCP Fast Open。`] : []) : []),
+      ...tailcatDiagnostics({ [section]: value }).map((item) => `${item.path}: ${item.message}`)
+    ];
   }
   return [...new Set([...result.errors].reverse().map((error) => `${section}${error.instanceLocation.replace(/^#/, "")}: ${error.keyword}`))].slice(0, 12);
 }
@@ -78,17 +98,17 @@ function unsupportedAnyTlsFastOpen(value: unknown): boolean {
 }
 
 export function isValidSingboxOutbound(value: unknown): boolean {
-  return outboundValidator.validate(value).valid && !unsupportedAnyTlsFastOpen(value);
+  return outboundValidator.validate(value).valid && !unsupportedAnyTlsFastOpen(value) && tailcatDiagnostics({ outbounds: [value] }).length === 0;
 }
 
 export function validateSingboxOutput(value: unknown): ConfigDiagnostic[] {
   const result = validator.validate(value);
   if (result.valid) {
     const outbounds = (value as { outbounds?: unknown[] }).outbounds ?? [];
-    return outbounds.flatMap((outbound, index): ConfigDiagnostic[] => unsupportedAnyTlsFastOpen(outbound) ? [{
+    return [...tailcatDiagnostics(value), ...outbounds.flatMap((outbound, index): ConfigDiagnostic[] => unsupportedAnyTlsFastOpen(outbound) ? [{
       target: "sing-box", severity: "error", code: "anytls-fast-open", path: `clients.singbox.outbounds.${index}.tcp_fast_open`,
       message: "AnyTLS 不支持启用 TCP Fast Open，请关闭此选项。"
-    }] : []);
+    }] : [])];
   }
   const locations = new Set<string>();
   return [...result.errors].reverse().flatMap((error): ConfigDiagnostic[] => {
@@ -96,6 +116,24 @@ export function validateSingboxOutput(value: unknown): ConfigDiagnostic[] {
     if (locations.has(path) || locations.size >= 12) return [];
     locations.add(path);
     return [{ target: "sing-box", severity: "error", code: "singbox-schema", path,
-      message: `sing-box 1.14.0 字段校验失败（${error.keyword}），请检查此处的原生配置。` }];
+      message: `sing-box 1.15.0-alpha.6 字段校验失败（${error.keyword}），请检查此处的原生配置。` }];
   });
+}
+
+function tailcatDiagnostics(value: unknown): ConfigDiagnostic[] {
+  if (!value || typeof value !== "object") return [];
+  const config = value as Record<string, unknown>;
+  const result: ConfigDiagnostic[] = [];
+  for (const section of ["inbounds", "outbounds"] as const) {
+    const entries = config[section];
+    if (!Array.isArray(entries)) continue;
+    entries.forEach((item: Record<string, unknown>, index) => {
+      if (item?.type !== "tailcat") return;
+      const add = (field: string, message: string) => result.push({ target: "sing-box", severity: "error", code: "tailcat-options", path: `clients.singbox.${section}.${index}.${field}`, message });
+      const servers = Array.isArray(item.derp_servers) ? item.derp_servers.length > 0 : Boolean(item.derp_servers);
+      if (servers && (item.derp_map_url || item.derp_region)) add("derp_servers", "自定义 DERP 服务器不能与 DERP 映射地址或区域同时使用。");
+      if (Array.isArray(item.users) && item.users.some((user) => !user || typeof user.public_key !== "string" || !user.public_key.trim())) add("users", "Tailcat 用户必须填写客户端公钥。");
+    });
+  }
+  return result;
 }
