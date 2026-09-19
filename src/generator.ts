@@ -20,6 +20,7 @@ import { applyTransforms, buildChainNodes, buildConfiguredProxyNodes, ensureUniq
 import { dedupeHostEntries } from "./output-render";
 import { parseSubscription } from "./parsers";
 import { buildCompiledRuleSetReferencePlan, type CompiledRuleSetReferencePlan } from "./rule-set-compiler";
+import { prepareRuleSetCache, scheduleRuleSetRebuild } from "./rule-set-preparation";
 import type { RuleSetOutputTarget } from "./rule-set-types";
 import { fetchCachedSource, sourceUserAgent } from "./source-cache";
 import { buildSurge } from "./surge-renderer";
@@ -48,6 +49,7 @@ interface PreparedOutput {
 
 interface GenerationOptions {
   includeRuleDiagnostics?: boolean;
+  context?: Pick<ExecutionContext, "waitUntil">;
 }
 
 const SOURCE_FETCH_CONCURRENCY = 2;
@@ -85,6 +87,24 @@ export async function generateConfig(
   env = ruleSetEnv(env, target);
   const renderTarget = target;
   const diagnostics: ConfigDiagnostic[] = [];
+  // Rule compilation can outlive a client's configuration download timeout.
+  // Keep the complete configuration unavailable until all required artifacts
+  // match it, and let retries continue only the unfinished background work.
+  const ruleSetCache = target === "sing-box" ? await prepareRuleSetCache(env, config) : undefined;
+  if (ruleSetCache?.unavailable.length) {
+    if (options.context) scheduleRuleSetRebuild(env, config, ruleSetCache.pending, options.context);
+    return {
+      target, content: "", contentType: "application/json; charset=utf-8",
+      proxyCount: 0, fetchedSources: 0, warnings: [], canDownload: false,
+      ...(ruleSetCache.errors.length ? {} : { retryAfterSeconds: ruleSetCache.retryAfterSeconds }),
+      diagnostics: ruleSetCache.errors.length
+        ? ruleSetCache.errors.map((message) => ({ target, severity: "error", code: "rule-conversion", path: "ruleSets", message }))
+        : [{ target, severity: "error", code: "rule-cache-pending", path: "ruleSets",
+        message: ruleSetCache.failed
+          ? "规则集缓存暂不可用，后台生成失败；请检查规则来源或稍后重试。"
+          : "规则集缓存正在后台生成，请稍后重试更新配置。" }]
+    };
+  }
   let prepared: PreparedOutput;
   try { prepared = await prepareOutput(env, config, target, requestUrl); }
   catch { return { target, content: "", contentType: "text/plain; charset=utf-8", proxyCount: 0, fetchedSources: 0, warnings: [], canDownload: false,
@@ -101,7 +121,7 @@ export async function generateConfig(
   let proxyCount = prepared.nodes.length;
   try {
     content = target === "sing-box"
-      ? await buildSingbox(env, config, prepared.nodes, prepared.hostEntries, requestUrl, diagnostics)
+      ? buildSingbox(config, prepared.nodes, prepared.hostEntries, requestUrl, diagnostics, ruleSetCache!.manifests)
       : buildTargetContent(config, target, prepared.nodes, prepared.hostEntries, requestUrl, prepared.ruleSetPlan);
     const resolved = omitEmptyPolicyGroups(config, target, content);
     config = resolved.config;
@@ -129,6 +149,7 @@ export async function generateConfig(
   if (content.length > MAX_RENDERED_CONFIG_CHARACTERS) {
     throw new Error(`Generated configuration exceeds ${MAX_RENDERED_CONFIG_CHARACTERS} character limit`);
   }
+  if (ruleSetCache && options.context) scheduleRuleSetRebuild(env, config, ruleSetCache.pending, options.context);
   return {
     target,
     content: canDownload ? content : "",

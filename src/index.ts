@@ -158,8 +158,9 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
   if (url.pathname === "/api/config/check" && request.method === "POST") {
     const target = normalizeTarget(url.searchParams.get("target"));
     if (!target) return badRequest("Invalid target");
-    const result = await generateForRequest(env, request, target);
-    return jsonResponse({ target, canDownload: result.canDownload, diagnostics: result.diagnostics });
+    const result = await generateForRequest(env, request, target, { context: ctx });
+    return jsonResponse({ target, canDownload: result.canDownload, diagnostics: result.diagnostics,
+      ...(result.retryAfterSeconds ? { retryAfterSeconds: result.retryAfterSeconds } : {}) });
   }
   if (url.pathname === "/api/config/proxy-names" && request.method === "POST") {
     let body: AppConfig;
@@ -347,14 +348,17 @@ async function handleSync(request: Request, env: Env, ctx: ExecutionContext, man
   }
   const target = inferTarget(request);
   if (!target) return badRequest("Cannot identify the client. User-Agent must identify Surge, clash, or sing-box.");
-  const result = await generateForRequest(env, request, target);
+  const result = await generateForRequest(env, request, target, { context: ctx });
   if (!result.canDownload) {
     const diagnostics = result.diagnostics.filter((item) => item.severity === "error");
     return jsonResponse({
       error: diagnostics[0]?.message || "Configuration is not ready for this target",
       target,
       diagnostics
-    }, { status: 422, headers: { vary: "User-Agent" } });
+    }, { status: result.retryAfterSeconds ? 503 : 422, headers: {
+      vary: "User-Agent",
+      ...(result.retryAfterSeconds ? { "retry-after": String(result.retryAfterSeconds), "cache-control": "no-store" } : {})
+    } });
   }
   ctx.waitUntil(recordConfigFetch(env, result.target, request).catch((error) => {
     console.error(JSON.stringify({ level: "error", message: error instanceof Error ? error.message : String(error) }));

@@ -33,7 +33,7 @@ const MAX_COMPILED_RULE_SET_KV_VALUE_BYTES = 24 * 1024 * 1024;
 const COMPILED_RULE_SET_PUBLISH_GRACE_MS = 5 * 60 * 1000;
 const MAX_COMPILED_MANIFEST_CANDIDATES = 8;
 
-class InvalidRuleSetSourceResponseError extends Error {}
+export class InvalidRuleSetSourceResponseError extends Error {}
 
 export interface RuleSetSourceCacheEntry {
   key: string;
@@ -178,7 +178,7 @@ export async function fetchCachedRuleSetSource(
         warning: `${source.name}: ${reason}`
       };
     }
-    throw new Error(`${source.name}: ${reason}`);
+    throw new Error(`${source.name}: ${reason}`, { cause: error });
   }
 }
 
@@ -344,7 +344,7 @@ export async function pruneCompiledRuleSetCaches(env: Env, config: RenderConfig)
   return deleted;
 }
 
-export async function readCompiledRuleSetManifest(env: Env, outputName: string): Promise<CompiledRuleSetManifest | null> {
+export async function readCompiledRuleSetManifest(env: Env, outputName: string, options: { allowLegacy?: boolean } = {}): Promise<CompiledRuleSetManifest | null> {
   const headPage = await listKvKeyPage(
     env,
     compiledRuleSetVersionHeadPrefix(outputName),
@@ -385,6 +385,9 @@ export async function readCompiledRuleSetManifest(env: Env, outputName: string):
       ) return versioned;
     }
   }
+  // The legacy mutable manifest has no corresponding artifact visibility check.
+  // Cache-only downloads must rebuild it as a complete version before use.
+  if (options.allowLegacy === false) return null;
   return normalizeCompiledManifest(await readKvJson<unknown>(env, compiledRuleSetMetaKey(outputName)));
 }
 

@@ -282,6 +282,8 @@ export interface GenerationResult {
   warnings: string[];
   diagnostics: ConfigDiagnostic[];
   canDownload: boolean;
+  /** Transient rule-cache preparation; clients should retain their current configuration. */
+  retryAfterSeconds?: number;
 }
 
 /** Persisted configuration. Format-specific fields never inherit from another client. */

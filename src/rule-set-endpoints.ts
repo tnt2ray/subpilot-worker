@@ -13,7 +13,8 @@ import {
 import { ruleSetPathName, type RuleSetSyncPath } from "./managed-url";
 import { planRuleSetArtifacts } from "./rule-set-artifacts";
 import { effectiveRuleSetOutputs, ruleSetOutputNeedsCompilation } from "./rule-set-outputs";
-import type { RuleSetOutputTarget } from "./rule-set-types";
+import { prepareRuleSetCache, scheduleRuleSetRebuild } from "./rule-set-preparation";
+import type { RuleSetOutput, RuleSetOutputTarget } from "./rule-set-types";
 import type { RenderConfig } from "./types";
 import { badRequest, jsonResponse, notFound } from "./util";
 
@@ -79,6 +80,7 @@ export async function handleRuleSetDownload(
   const resolved = resolveRuleSetDownload(config, path);
   if (!resolved) return notFound();
   const { output, bucket, target } = resolved;
+  if (target === "sing-box") return handlePreparedSingboxRuleSetDownload(request, env, ctx, config, output, bucket);
 
   let manifest;
   try {
@@ -107,6 +109,50 @@ export async function handleRuleSetDownload(
   const response = await compiledRuleSetFileResponse(content, target);
   ctx.waitUntil(cacheCompiledRuleSetResponse(request.url, compiledCacheVersion(manifest), response.clone()).catch(logRuleSetWorkerCacheError));
   return clientRuleSetResponse(request, response);
+}
+
+async function handlePreparedSingboxRuleSetDownload(
+  request: Request,
+  env: Env,
+  ctx: ExecutionContext,
+  config: RenderConfig,
+  output: RuleSetOutput,
+  bucket: "domain" | "ipcidr" | "combined" | "dns"
+): Promise<Response> {
+  const prepared = await prepareRuleSetCache(env, config, [output]);
+  const manifest = prepared.manifests.get(output.name);
+  if (!manifest) {
+    scheduleRuleSetRebuild(env, config, prepared.pending, ctx);
+    if (prepared.errors.length) return jsonResponse({ error: prepared.errors.join(" ") }, { status: 422, headers: { "cache-control": "no-store" } });
+    return ruleSetPreparingResponse(prepared.retryAfterSeconds, prepared.failed);
+  }
+  if (!manifestSupportsDownload(manifest, bucket, "sing-box")) return notFound();
+
+  let response = await matchCompiledRuleSetWorkerCache(request, compiledCacheVersion(manifest));
+  if (!response) {
+    const content = await readCompiledRuleSetBucket(env, output.name, bucket, "sing-box", manifest);
+    if (content === null) {
+      // A stream can exist but contain unreadable ciphertext. Rebuild it after
+      // returning, just as for a missing artifact; never compile on this path.
+      const repair = await prepareRuleSetCache(env, config, [output], { force: true });
+      scheduleRuleSetRebuild(env, config, repair.pending, ctx, { force: true });
+      if (repair.errors.length) return jsonResponse({ error: repair.errors.join(" ") }, { status: 422, headers: { "cache-control": "no-store" } });
+      return ruleSetPreparingResponse(repair.retryAfterSeconds, repair.failed);
+    }
+    const file = await compiledRuleSetFileResponse(content, "sing-box");
+    ctx.waitUntil(cacheCompiledRuleSetResponse(request.url, compiledCacheVersion(manifest), file.clone()).catch(logRuleSetWorkerCacheError));
+    response = clientRuleSetResponse(request, file);
+  }
+  scheduleRuleSetRebuild(env, config, prepared.pending, ctx);
+  return response;
+}
+
+function ruleSetPreparingResponse(retryAfterSeconds: number, failed = false): Response {
+  return jsonResponse({
+    error: failed
+      ? "规则集缓存暂不可用，后台生成失败；请检查规则来源或稍后重试。"
+      : "规则集缓存正在后台生成，请稍后重试下载。"
+  }, { status: 503, headers: { "retry-after": String(retryAfterSeconds), "cache-control": "no-store" } });
 }
 
 function manifestSupportsDownload(

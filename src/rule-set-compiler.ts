@@ -1,8 +1,10 @@
+import { YAMLParseError } from "yaml";
 import { clashRuleWithNoResolve } from "./rule-targets";
 import { managedRuleSetUrlForRequest } from "./managed-url";
 import { parseInlineRuleSetLines, parseRuleSetContent, type ParsedRuleSetRule, type CompiledRuleSetRule } from "./rule-set-parser";
 import {
   fetchCachedRuleSetSource,
+  InvalidRuleSetSourceResponseError,
   readRefreshedRuleSetSource,
   pruneCompiledRuleSetCaches,
   readCompiledRuleSetManifest,
@@ -51,6 +53,18 @@ export interface RuleSetOutputRefreshFailure {
   usedCachedManifest: boolean;
 }
 
+export type RuleSetCompileErrorCode = "configuration" | "format";
+
+/** Only fixed messages and codes may cross the background diagnostics boundary. */
+export class RuleSetCompileError extends Error {
+  constructor(readonly code: RuleSetCompileErrorCode) {
+    super(code === "configuration"
+      ? "规则集配置存在无效来源引用或不兼容的规则选项，请检查当前客户端的分流规则。"
+      : "规则来源内容格式无效，请检查来源格式并使用原始规则文件。");
+    this.name = "RuleSetCompileError";
+  }
+}
+
 export interface RuleSetRefreshOptions {
   sourceRefresh?: RuleSetSourceCacheRefreshResult;
   /** Absolute Unix timestamp in milliseconds after which no new fetch or output compilation starts. */
@@ -97,6 +111,7 @@ export async function compileRuleSetOutput(
   const compatibility = new Map<string, CompatibilitySummary>();
   const targets = config.renderTarget ? [config.renderTarget] : RULE_SET_TARGETS;
   const singbox = config.renderTarget === "sing-box";
+  let compileErrorCode: RuleSetCompileErrorCode | undefined;
   const asnRules = new Map<string, ParsedRuleSetRule>();
   let asnExpiresAt: number | undefined;
   let duplicateCount = 0;
@@ -111,6 +126,7 @@ export async function compileRuleSetOutput(
       return;
     }
     if (ruleUsesExtendedMatching(rule.raw) && renderRuleSetRuleForTarget(rule.raw, config.renderTarget ?? "surge") === null) {
+      if (singbox) compileErrorCode = "configuration";
       sourceErrors.push(`${rule.label}：extended-matching 无法等价转换为 ${targetName(config.renderTarget ?? "surge")}，请调整规则来源或使用支持该选项的客户端。`);
       return;
     }
@@ -161,10 +177,12 @@ export async function compileRuleSetOutput(
     }
     const source = sourceById.get(sourceId);
     if (!source) {
+      if (singbox) compileErrorCode = "configuration";
       sourceErrors.push(`${output.name}: 规则来源 ${sourceId} 不存在。`);
       continue;
     }
     if (!source.enabled || !source.url) {
+      if (singbox) compileErrorCode = "configuration";
       sourceErrors.push(`${output.name}: 规则来源 ${source.name} 已禁用或缺少 URL。`);
       continue;
     }
@@ -191,8 +209,11 @@ export async function compileRuleSetOutput(
       const { content } = result;
       const format = config.renderTarget === "surge" && output.surgeType ? output.surgeType === "DOMAIN-SET" ? "surge-domain-set" : "surge-rule-set" : source.format;
       const parsed = parseRuleSetContent(content, format, source.name, visitorFor(member), config.renderTarget === "clash", singbox);
+      if (singbox && parsed.fatal) compileErrorCode ??= "format";
       for (const warning of parsed.warnings) (singbox && !parsed.fatal ? warnings : sourceErrors).push(warning);
     } catch (error) {
+      if (singbox && (error instanceof YAMLParseError || error instanceof InvalidRuleSetSourceResponseError
+        || error instanceof Error && error.cause instanceof InvalidRuleSetSourceResponseError)) compileErrorCode ??= "format";
       sourceErrors.push(error instanceof Error ? error.message : String(error));
     }
   }
@@ -230,6 +251,7 @@ export async function compileRuleSetOutput(
         stale: true
       };
     }
+    if (singbox && compileErrorCode) throw new RuleSetCompileError(compileErrorCode);
     throw new Error(sourceErrors.join("; "));
   }
 
@@ -302,7 +324,7 @@ export async function ensureCompiledRuleSet(
   return compileRuleSetOutput(env, config, output, { allowStaleFallback: true }).then((result) => result.manifest);
 }
 
-async function ruleSetOutputFingerprint(config: RenderConfig, output: RuleSetOutput): Promise<string> {
+export async function ruleSetOutputFingerprint(config: RenderConfig, output: RuleSetOutput): Promise<string> {
   const sources = new Map(config.ruleSets.sources.map((source) => [source.id, source]));
   return sha256Hex(JSON.stringify({
     compilerRevision: config.renderTarget === "sing-box" || config.renderTarget === "clash" ? RULE_SET_COMPILER_REVISION + 1 : RULE_SET_COMPILER_REVISION,

@@ -4,7 +4,7 @@ import { isValidSingboxOutbound } from "./singbox-validation";
 import { parseAllPolicySelector, parseGroupOption, splitGroupSpec } from "./policy-group-spec";
 import { nodeMatchesFilter } from "./node-transforms";
 import { effectiveRuleSetOutputs, nativeSingboxRuleSetSources, ruleSetOutputNeedsCompilation } from "./rule-set-outputs";
-import { ensureCompiledRuleSet } from "./rule-set-compiler";
+import type { CompiledRuleSetManifest } from "./rule-set-cache";
 import { planRuleSetArtifacts } from "./rule-set-artifacts";
 import { managedRuleSetUrlForRequest } from "./managed-url";
 import { compiledFinalRuleOptions, splitRuleLine } from "./rule-line";
@@ -12,7 +12,7 @@ import { convertRule, policyAction, issue, mergeSingboxHosts } from "./singbox-c
 import type { ConfigDiagnostic, HostEntry, ProxyNode, ProxyParamValue, RenderConfig } from "./types";
 
 type JsonObject = Record<string, ProxyParamValue>;
-export async function buildSingbox(env: Env, config: RenderConfig, nodes: ProxyNode[], hosts: HostEntry[], requestUrl: string, diagnostics: ConfigDiagnostic[]): Promise<string> {
+export function buildSingbox(config: RenderConfig, nodes: ProxyNode[], hosts: HostEntry[], requestUrl: string, diagnostics: ConfigDiagnostic[], manifests: ReadonlyMap<string, CompiledRuleSetManifest>): string {
   const client = config.document!.clients.singbox;
   // Source-only migration notices do not describe the current sing-box output.
   const sourceOnlyNotices = new Set([
@@ -120,7 +120,8 @@ export async function buildSingbox(env: Env, config: RenderConfig, nodes: ProxyN
             if (item.output.dnsServer) dnsRules.push({ rule_set: [tag], action: "route", server: item.output.dnsServer });
           }
           if (!ruleSetOutputNeedsCompilation(config.ruleSets, item.output, "sing-box")) continue;
-          const manifest = await ensureCompiledRuleSet(env, config, item.output);
+          const manifest = manifests.get(item.output.name);
+          if (!manifest) throw new Error("规则集缓存尚未就绪，请稍后重试更新配置。");
           diagnostics.push(...manifest.warnings.filter((message) => !/^AS\d+ 已展开为 \d+ 条 IPv4\/IPv6 CIDR（RIPE RIS 快照）。$/.test(message)).map((message) => issue("clients.singbox.ruleSets", "rule-cache", "warning", message)));
           const compatible = manifest.buckets.reduce((sum, bucket) => sum + (bucket.targetCounts?.["sing-box"] ?? 0), 0);
           if (compatible !== manifest.ruleCount) throw new Error("规则集中存在 sing-box 无法等价表达的规则");

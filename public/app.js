@@ -651,7 +651,7 @@ function editSingboxDirect(index) {
 }
 
 function renderLinks() {
-  return `<p class="muted">${t("三个客户端使用同一条订阅地址，按 User-Agent 自动识别 Surge、clash或 sing-box。请在客户端中导入；链接中的 token 授予订阅读取权限。", "All three clients use this subscription URL. User-Agent identifies Surge, clash, or sing-box. Import it in your client; the token grants subscription read access.")}</p><div id="subscription-links"><p class="muted">${t("正在读取…", "Loading…")}</p></div><div class="toolbar">${btn(t("轮换读取 token", "Rotate read token"), "rotate-token", "", "danger")}</div>` + section(t("订阅检查", "Subscription check"), `<p class="help">${t("检查服务器已保存的配置。订阅更新返回 422 时，可在这里查看具体原因。", "Check the configuration saved on the server. If subscription updates return 422, view the specific causes here.")}</p><div class="toolbar">${Object.entries(CLIENTS).map(([id, client]) => btn(`${t("检查", "Check")} ${esc(client.label)}`, "check-subscription", `data-client="${id}"`)).join("")}</div><div id="subscription-check-result">${renderSubscriptionCheck()}</div>`);
+  return `<p class="muted">${t("三个客户端使用同一条订阅地址，按 User-Agent 自动识别 Surge、clash或 sing-box。请在客户端中导入；链接中的 token 授予订阅读取权限。", "All three clients use this subscription URL. User-Agent identifies Surge, clash, or sing-box. Import it in your client; the token grants subscription read access.")}</p><div id="subscription-links"><p class="muted">${t("正在读取…", "Loading…")}</p></div><div class="toolbar">${btn(t("轮换读取 token", "Rotate read token"), "rotate-token", "", "danger")}</div>` + section(t("订阅检查", "Subscription check"), `<p class="help">${t("检查服务器已保存的配置。订阅更新失败时，可在这里查看具体原因；sing-box 规则缓存未就绪时，检查会启动后台准备并提示重试时间。", "Check the configuration saved on the server to find out why a subscription update failed. If sing-box rules are not ready, the check starts background preparation and shows when to retry.")}</p><div class="toolbar">${Object.entries(CLIENTS).map(([id, client]) => btn(`${t("检查", "Check")} ${esc(client.label)}`, "check-subscription", `data-client="${id}"`)).join("")}</div><div id="subscription-check-result">${renderSubscriptionCheck()}</div>`);
 }
 function renderSystem() {
   const mmdbPaths = [["Surge macOS", "~/Library/Application Support/com.nssurge.surge-mac/GeoLite2-Country.mmdb"], ["Clash Verge Windows", "%APPDATA%\\io.github.clash-verge-rev.clash-verge-rev\\Country.mmdb"], ["Clash Verge macOS", "~/Library/Application Support/io.github.clash-verge-rev.clash-verge-rev/Country.mmdb"]];
@@ -1156,10 +1156,12 @@ function renderSubscriptionCheck() {
   const { client, result, checkedAt, error } = subscriptionCheck;
   if (!result && !error) return `<p role="status">${t("正在检查", "Checking")} ${esc(CLIENTS[client].label)}…</p>`;
   const items = result?.diagnostics || [];
+  const retryAfter = Number(result?.retryAfterSeconds) || 0;
   const log = [
     `${t("客户端", "Client")}: ${CLIENTS[client].label}`,
     `${t("检查时间", "Checked at")}: ${formatDate(checkedAt)}`,
-    `${t("结果", "Result")}: ${error ? t("检查未完成", "Check incomplete") : result.canDownload ? t("通过，已保存配置可生成订阅", "PASS — the saved configuration can generate a subscription") : t("阻断，订阅请求将返回 HTTP 422", "BLOCKED — subscription requests will return HTTP 422")}`,
+    `${t("结果", "Result")}: ${error ? t("检查未完成", "Check incomplete") : result.canDownload ? t("通过，已保存配置可生成订阅", "PASS — the saved configuration can generate a subscription") : retryAfter > 0 ? t("规则缓存暂未就绪，订阅请求将返回 HTTP 503", "Rules are not ready; subscription requests will return HTTP 503") : t("阻断，订阅请求将返回 HTTP 422", "BLOCKED — subscription requests will return HTTP 422")}`,
+    ...(!error && retryAfter > 0 ? [t(`请在 ${retryAfter} 秒后重新检查或更新订阅。`, `Check again or update the subscription in ${retryAfter} seconds.`)] : []),
     "",
     ...(error ? [`[ERROR] ${error}`] : items.map((item) => `[${item.severity.toUpperCase()}] ${item.path} (${item.code}): ${item.message}`)),
     ...(!error && !items.length ? [t("无校验问题。", "No validation issues.")] : [])
