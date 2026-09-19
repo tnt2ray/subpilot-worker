@@ -115,7 +115,7 @@ The login limit defaults to 10 attempts per minute per client IP within each Clo
 
 </details>
 
-For a custom domain, connect it to the Worker in Cloudflare or configure `routes` in local `wrangler.jsonc`. Keep that file untracked. The example configuration includes both refresh schedules described in [Cache and operational limits](#cache-and-operational-limits).
+For a custom domain, connect it to the Worker in Cloudflare or configure `routes` in local `wrangler.jsonc`. Keep that file untracked. The example configuration includes subscription refresh, daily rule-change detection, and pending rebuilds every 5 minutes; see [Cache and operational limits](#cache-and-operational-limits).
 
 ## First use
 
@@ -291,7 +291,7 @@ For a Git clone, it requires clean tracked files and pulls the current branch wi
 
 `npm run update -- --no-deploy` skips only the final deployment. It still updates code, dependencies, and local configuration, so it is not a read-only check.
 
-Confirm both refresh schedules are present after upgrading; see [Cache and operational limits](#cache-and-operational-limits). The current version appears below “Sign out” in the sidebar, replaced by green “Update available” text when a new version is detected. Scheduled version checks are disabled by default; when enabled, GitHub Releases is checked at most daily and a bound Telegram chat receives one notification for each newly detected version.
+The setup script adds the pending-rebuild schedule while retaining your existing subscription interval. Confirm all three schedules after upgrading; see [Cache and operational limits](#cache-and-operational-limits). The current version appears below “Sign out” in the sidebar, replaced by green “Update available” text when a new version is detected. Scheduled version checks are disabled by default; when enabled, GitHub Releases is checked at most daily and a bound Telegram chat receives one notification for each newly detected version.
 
 ### Upgrading from 1.4.0 to 2.0.0
 
@@ -328,11 +328,15 @@ Replace the example domain, or use `SUBPILOT_BASE_URL` to provide the URL. The s
 
 Enabled upstream subscriptions are fetched into encrypted KV cache. Requests prefer cached content; failed refreshes try to retain usable old entries. Rule-source bodies share cache, while compiled artifacts remain separate for each client. Refreshes have execution deadlines, retain successful results, and report individual failures; once the deadline is reached, no new remote fetches or compilations start.
 
-sing-box configuration and hosted rule downloads only read complete rule caches matching the current configuration and compiler version. When first use, rule changes, or an upgrade invalidate the cache, the server promptly returns HTTP `503` with `Retry-After` and prepares rules in background batches. Retry the configuration update after the indicated delay. **Subscription check** also starts preparation and reports its status. Later requests continue unfinished work; existing manual refreshes and the daily rule task can also complete preparation. A complete configuration is returned once every required rule set is ready.
+sing-box configuration and hosted rule downloads only read complete rule caches matching the current configuration and compiler version. When first use, rule changes, or an upgrade invalidate the cache, the server promptly returns HTTP `503` with `Retry-After` and prepares rules in background batches. Retry the configuration update after the indicated delay. **Subscription check** also starts preparation and reports its status. A complete configuration is returned once every required rule set is ready.
 
-Failed background compilations briefly back off before retrying so other rule sets can make progress. Recognized source-format or configuration-reference errors appear in subsequent subscription checks and return HTTP `422` on subscription downloads. When only ASN data has expired and the configuration and compiler version still match, existing complete artifacts remain available while ASN data refreshes in the background. An incomplete background ASN lookup without usable cached prefixes prevents publishing an artifact with missing rules. Background work has an execution budget, so large batches may need several requests or a scheduled refresh to finish.
+Saving configuration that affects rule output immediately records pending work in KV and starts a background update. If the execution budget runs out, the five-minute schedule continues unfinished work. Closing the admin page or stopping client updates does not stop this progress. The five-minute task only processes pending work; it does not refetch all upstream sources every 5 minutes, and needs no additional storage binding or secret.
 
-Rule sources share one complete encrypted body per URL; subscription sources share one per URL and effective User-Agent. Successful refreshes overwrite the body without keeping source history. Batch refreshes retain status and content hashes only, and compilation reads one source at a time. A complete successful compiled version replaces earlier versions, which are then removed. Edge cache entries use stable URLs with version validation and overwrite previous responses.
+The daily rule task checks upstream content hashes and recompiles when source content, relevant configuration, or the compiler version changes, ASN data expires, or cache is missing. Unchanged source bodies are retained, and recompilation is skipped when the other compiler inputs still match and complete artifacts remain usable. Older artifacts without source hashes are rebuilt once during the next rule check to establish a comparison baseline. Batch checks process sources individually instead of retaining all source bodies together.
+
+Failed background compilations briefly back off before retrying so other rule sets can make progress. Recognized source-format or configuration-reference errors appear in subsequent subscription checks and return HTTP `422` on subscription downloads. When only ASN data has expired and the configuration and compiler version still match, existing complete artifacts remain available while ASN data refreshes in the background. An incomplete background ASN lookup without usable cached prefixes prevents publishing an artifact with missing rules. Background work has an execution budget, so large batches may need several scheduled continuations to finish.
+
+Rule sources share one complete encrypted body per URL; subscription sources share one per URL and effective User-Agent. Successfully fetched new content replaces earlier content without keeping source history. A complete successful compiled version replaces earlier versions, which are then removed. Edge cache entries use stable URLs with version validation and overwrite previous responses.
 
 After deleting a rule set or source, or changing its URL and saving, background cleanup removes unreferenced source bodies, metadata and compiled artifacts. Caches still used by another active rule or client remain. Source configuration entries with no rule-entry references are also removed. Saving or refreshing automatically cleans historical caches; no KV schema migration or extra deployment steps are required. Old edge copies expire according to their cache lifetime; rule-download endpoints stop using deleted entries once they read the newly saved configuration.
 
@@ -341,12 +345,12 @@ The default schedules in local `wrangler.jsonc` are:
 ```json
 {
   "triggers": {
-    "crons": ["0 */12 * * *", "0 16 * * *"]
+    "crons": ["0 */12 * * *", "0 16 * * *", "*/5 * * * *"]
   }
 }
 ```
 
-The first entry refreshes subscriptions every 12 hours; keep your chosen interval if different. Keep `0 16 * * *` for daily compiled rule-set refresh. Other cron entries run upstream refreshes. Without the daily rule task, manual refresh and on-demand generation remain available. Schedule changes require a new deployment using `wrangler deploy`.
+The first entry refreshes subscriptions every 12 hours; keep your chosen interval if different. `0 16 * * *` is reserved for daily rule-source change detection, and `*/5 * * * *` for pending rebuilds every 5 minutes. Other cron entries refresh subscriptions. Existing deployments must add `*/5 * * * *` to `triggers.crons` in private `wrangler.jsonc` and redeploy; `npm run setup` and `npm run update` add it if missing. Without it, background work still starts immediately, but unfinished work cannot continue through the five-minute task. No new bindings or Secrets are required. Cron uses UTC; changes require deployment and time to propagate through Cloudflare. [Cron configuration](https://developers.cloudflare.com/workers/configuration/cron-triggers/)
 
 Use **Force refresh** on the overview to refresh subscriptions. Save drafts before refreshing. Admin and Telegram times use the configured display time zone in `yyyy-mm-dd hh:mm:ss`; stored timestamps remain UTC.
 

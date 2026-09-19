@@ -37,6 +37,8 @@ import { validateRuleMatchValue } from "./rule-value-validation";
 
 export interface RuleSetRefreshResult {
   refreshed: number;
+  /** Outputs whose current configuration and source bodies already match the cache. */
+  unchanged?: number;
   failed: number;
   cached: number;
   deleted: number;
@@ -44,6 +46,8 @@ export interface RuleSetRefreshResult {
   warnings: string[];
   failures: RuleSetSourceCacheFailure[];
   outputFailures: RuleSetOutputRefreshFailure[];
+  /** Outputs that still need a successful refresh, including stale cache fallbacks. */
+  pendingOutputNames?: string[];
   outputs: CompiledRuleSetStatusItem[];
 }
 
@@ -67,6 +71,8 @@ export class RuleSetCompileError extends Error {
 
 export interface RuleSetRefreshOptions {
   sourceRefresh?: RuleSetSourceCacheRefreshResult;
+  /** Revalidate the current output before publishing its completed artifacts. */
+  canPublish?: (output: RuleSetOutput) => Promise<boolean>;
   /** Absolute Unix timestamp in milliseconds after which no new fetch or output compilation starts. */
   deadline?: number;
 }
@@ -86,9 +92,12 @@ interface CompileOptions {
   asnResolver?: ReturnType<typeof createSingboxAsnResolver>;
   allowStaleFallback?: boolean;
   forceSourceRefresh?: boolean;
+  /** Repair callers omit this flag so damaged artifacts are always rebuilt. */
+  skipUnchangedSources?: boolean;
   sourceStatesByKey?: Map<string, RuleSetSourceRefreshState>;
   sourceErrorsByKey?: Map<string, string>;
   deadline?: number;
+  canPublish?: () => Promise<boolean>;
 }
 
 const FINAL_RULE_TYPES = new Set(["FINAL", "MATCH"]);
@@ -100,9 +109,19 @@ export async function compileRuleSetOutput(
   config: RenderConfig,
   output: RuleSetOutput,
   options: CompileOptions = {}
-): Promise<{ manifest: CompiledRuleSetManifest; stale: boolean }> {
+): Promise<{ manifest: CompiledRuleSetManifest; stale: boolean; unchanged?: boolean }> {
   const outputFingerprint = await ruleSetOutputFingerprint(config, output);
+  const previous = options.skipUnchangedSources
+    ? await readCompiledRuleSetManifest(env, output.name, { allowLegacy: false }).catch(() => null)
+    : null;
+  if (previous) {
+    const refreshed = await refreshedSourceHashes(config, output, options);
+    if (refreshed && canReuseCompiledOutput(previous, outputFingerprint, refreshed.hashes)) {
+      return { manifest: previous, stale: refreshed.stale, unchanged: true };
+    }
+  }
   const buckets = emptyBuckets();
+  const sourceContentHashes: Record<string, string> = {};
   const warnings: string[] = [];
   const sourceErrors: string[] = [];
   const sourceById = new Map(config.ruleSets.sources.map((source) => [source.id, source]));
@@ -200,6 +219,7 @@ export async function compileRuleSetOutput(
         forceRefresh: Boolean(options.forceSourceRefresh),
         ...(options.deadline !== undefined ? { deadline: options.deadline } : {})
       });
+      sourceContentHashes[sourceKey] = result.contentHash ?? await sha256Hex(result.content);
       if (result.usedCachedContent) {
         usedCachedSource = true;
         if (result.warning) warnings.push(`${output.name}: 刷新失败，继续使用旧规则集源缓存：${result.warning}`);
@@ -223,10 +243,17 @@ export async function compileRuleSetOutput(
     for (const warning of inline.warnings) (singbox ? warnings : sourceErrors).push(warning);
   }
 
+  // Without a complete refresh snapshot, read and parse each source only once.
+  // Comparing here still avoids ASN lookups, rendering and cache publication.
+  if (!sourceErrors.length && previous && canReuseCompiledOutput(previous, outputFingerprint, sourceContentHashes)) {
+    return { manifest: previous, stale: usedCachedSource, unchanged: true };
+  }
+
   if (singbox && asnRules.size && !sourceErrors.length) {
     const resolve = options.asnResolver ?? createSingboxAsnResolver(env, options.deadline);
     for (const rule of asnRules.values()) {
       const result = await resolve(rule.value);
+      if (!result.prefixes.length && result.warning) throw new Error("规则集 ASN 数据暂不可用，保留已有完整缓存。");
       asnExpiresAt = Math.min(asnExpiresAt ?? Infinity, result.expiresAt);
       usedCachedSource ||= result.stale;
       if (result.warning) warnings.push(result.warning);
@@ -277,6 +304,7 @@ export async function compileRuleSetOutput(
     policy: output.policy,
     updatedAt: new Date().toISOString(),
     sourceIds: output.sourceIds,
+    sourceContentHashes,
     ruleCount: RULE_SET_BUCKETS.reduce((sum, bucket) => sum + buckets[bucket].length, 0),
     duplicateCount,
     ...(config.renderTarget === "sing-box" && output.dnsServer ? { dnsRuleCount: 0 } : {}),
@@ -291,7 +319,7 @@ export async function compileRuleSetOutput(
     warnings
   };
   try {
-    await writeCompiledRuleSet(env, manifest, buckets);
+    await writeCompiledRuleSet(env, manifest, buckets, options.canPublish ? { canPublish: options.canPublish } : {});
   } catch (error) {
     const existing = options.allowStaleFallback
       ? await readCompiledRuleSetManifest(env, output.name).catch(() => null)
@@ -322,6 +350,40 @@ export async function ensureCompiledRuleSet(
   if (cached?.outputFingerprint === await ruleSetOutputFingerprint(config, output)
     && (cached.asnExpiresAt === undefined || cached.asnExpiresAt > Date.now())) return cached;
   return compileRuleSetOutput(env, config, output, { allowStaleFallback: true }).then((result) => result.manifest);
+}
+
+function canReuseCompiledOutput(
+  manifest: CompiledRuleSetManifest,
+  outputFingerprint: string,
+  hashes: Record<string, string>
+): boolean {
+  const previous = manifest.sourceContentHashes;
+  return Boolean(manifest.storageId) && manifest.outputFingerprint === outputFingerprint
+    && (manifest.asnExpiresAt === undefined || manifest.asnExpiresAt > Date.now())
+    && previous !== undefined && Object.keys(previous).length === Object.keys(hashes).length
+    && Object.entries(hashes).every(([key, hash]) => previous[key] === hash);
+}
+
+async function refreshedSourceHashes(
+  config: RenderConfig,
+  output: RuleSetOutput,
+  options: CompileOptions
+): Promise<{ hashes: Record<string, string>; stale: boolean } | null> {
+  const sources = new Map(config.ruleSets.sources.map((source) => [source.id, source]));
+  const hashes: Record<string, string> = {};
+  let stale = false;
+  for (const sourceId of output.sourceIds) {
+    const source = sources.get(sourceId);
+    if (!source?.enabled || !source.url) return null;
+    if (config.renderTarget === "sing-box" && isSingboxBinarySource(source)) continue;
+    const key = await ruleSetSourceCacheKey(source.url);
+    if (options.sourceErrorsByKey?.has(key)) return null;
+    const state = options.sourceStatesByKey?.get(key);
+    if (!state) return null;
+    hashes[key] = state.contentHash;
+    stale ||= state.usedCachedContent;
+  }
+  return { hashes, stale };
 }
 
 export async function ruleSetOutputFingerprint(config: RenderConfig, output: RuleSetOutput): Promise<string> {
@@ -395,11 +457,12 @@ async function refreshRuleSetOutputs(
   const compiledDeleted = pruneUnexpected && canContinue ? await pruneCompiledRuleSetCaches(env, config) : 0;
 
   let refreshed = 0;
+  let unchanged = 0;
   let failed = 0;
   let cached = 0;
   const warnings = new Set(sourceRefresh.warnings);
   const outputFailures: RuleSetOutputRefreshFailure[] = [];
-  const asnResolver = createSingboxAsnResolver(env, options.deadline);
+  const pendingOutputNames: string[] = [];
   if (pruneUnexpected && !canContinue) warnings.add("规则集刷新已到截止时间，跳过过期编译缓存清理。");
 
   for (let outputIndex = 0; outputIndex < outputs.length; outputIndex += 1) {
@@ -408,6 +471,7 @@ async function refreshRuleSetOutputs(
       const reason = "规则集刷新已超过截止时间";
       for (const remaining of outputs.slice(outputIndex)) {
         failed += 1;
+        pendingOutputNames.push(remaining.name);
         outputFailures.push({ outputName: remaining.name, reason, usedCachedManifest: false });
         warnings.add(`${remaining.name}: ${reason}。`);
       }
@@ -415,20 +479,26 @@ async function refreshRuleSetOutputs(
     }
     try {
       const result = await compileRuleSetOutput(env, config, output, {
-        asnResolver,
+        asnResolver: createSingboxAsnResolver(env, options.deadline),
         allowStaleFallback: true,
+        skipUnchangedSources: true,
         sourceStatesByKey: sourceRefresh.sourcesByKey,
         sourceErrorsByKey: sourceRefresh.errorsByKey,
+        ...(options.canPublish ? { canPublish: () => options.canPublish!(output) } : {}),
         ...(options.deadline !== undefined ? { deadline: options.deadline } : {})
       });
       if (result.stale) {
         cached += 1;
+        pendingOutputNames.push(output.name);
+      } else if (result.unchanged) {
+        unchanged += 1;
       } else {
         refreshed += 1;
       }
       for (const warning of result.manifest.warnings) warnings.add(warning);
     } catch (error) {
       failed += 1;
+      pendingOutputNames.push(output.name);
       const reason = error instanceof Error ? error.message : String(error);
       const existing = refreshDeadlineExceeded(options.deadline)
         ? null
@@ -442,6 +512,7 @@ async function refreshRuleSetOutputs(
 
   return {
     refreshed,
+    unchanged,
     failed,
     cached,
     deleted: sourceRefresh.deleted + compiledDeleted,
@@ -449,6 +520,7 @@ async function refreshRuleSetOutputs(
     warnings: [...warnings],
     failures: sourceRefresh.failures,
     outputFailures,
+    pendingOutputNames,
     outputs: refreshDeadlineExceeded(options.deadline) ? [] : await readRuleSetStatus(env, config)
   };
 }

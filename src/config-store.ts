@@ -1,5 +1,6 @@
 import { configDocument, defaultConfigDocument, migrateConfigDocument, normalizeConfigDocument, renderConfig, OUTPUT_TARGETS } from "./config-document";
 import { ruleSetEnv } from "./rule-set-scope";
+import { queueChangedRuleSetUpdates, runRuleSetUpdateJobs } from "./rule-set-jobs";
 import type { AppConfig, StoredConfigDocument } from "./types";
 import { DEFAULT_CONFIG } from "./default-config";
 import { CONFIG_SCHEMA_VERSION_KEY, CURRENT_KV_SCHEMA_VERSION } from "./config-schema";
@@ -241,10 +242,18 @@ export async function prepareConfigSave(env: Env, config: RenderConfig): Promise
 }
 
 export async function commitPreparedConfigSave(env: Env, prepared: PreparedConfigSave, context?: Pick<ExecutionContext, "waitUntil">): Promise<RenderConfig> {
+  const jobs = await queueChangedRuleSetUpdates(env, await loadConfig(env), prepared.config);
   await writeConfigSnapshot(env, prepared.config, prepared.snapshotKey);
   const verified = await env.SUBPILOT_CONFIG.get(prepared.snapshotKey);
   if (!verified || !(await tryDecryptConfigSnapshot(env, verified))) throw new Error("新配置写入校验失败，请重试。");
   await markDocumentCommitted(env);
+  if (context && jobs.length) {
+    context.waitUntil(runRuleSetUpdateJobs(env, prepared.config, {
+      jobs, deadline: Date.now() + 25_000, loadCurrentConfig: () => loadConfig(env)
+    }).catch(() => {
+      console.warn(JSON.stringify({ level: "warn", message: "Saved rule-set updates remain queued for scheduled processing." }));
+    }));
+  }
   const cleanup = finishCommittedConfigSave(env, prepared);
   if (context) context.waitUntil(cleanup);
   else await cleanup;

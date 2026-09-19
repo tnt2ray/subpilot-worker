@@ -38,6 +38,8 @@ export class InvalidRuleSetSourceResponseError extends Error {}
 export interface RuleSetSourceCacheEntry {
   key: string;
   fetchedAt: string;
+  checkedAt?: string;
+  contentHash?: string;
   sourceId: string;
   sourceName: string;
   contentAvailable: boolean;
@@ -52,6 +54,7 @@ export interface RuleSetSourceCacheFailure {
 
 export interface RuleSetSourceFetchResult {
   content: string;
+  contentHash?: string;
   usedCachedContent: boolean;
   warning?: string | undefined;
   reason?: string | undefined;
@@ -89,6 +92,7 @@ export interface CompiledRuleSetManifest {
   policy: string;
   updatedAt: string;
   sourceIds: string[];
+  sourceContentHashes?: Record<string, string>;
   ruleCount: number;
   duplicateCount: number;
   buckets: CompiledRuleSetBucketMeta[];
@@ -148,17 +152,19 @@ export async function fetchCachedRuleSetSource(
   const key = await ruleSetSourceCacheKey(source.url);
   if (!options.forceRefresh) {
     const cached = await readRuleSetSourceContent(env, key);
-    if (cached !== null) return { content: cached, usedCachedContent: false };
+    if (cached !== null) return { content: cached, contentHash: await sha256Hex(cached), usedCachedContent: false };
   }
 
   try {
     if (deadlineExceeded(options.deadline)) throw new Error(RULE_SET_REFRESH_DEADLINE_REASON);
     const content = await fetchRuleSetSourceContent(source.url, options.deadline);
+    const contentHash = await sha256Hex(content);
     let warning: string | undefined;
     try {
       await writeRuleSetSourceCacheEntry(env, {
         key,
         content,
+        contentHash,
         fetchedAt: new Date().toISOString(),
         sourceId: source.id,
         sourceName: source.name
@@ -167,13 +173,14 @@ export async function fetchCachedRuleSetSource(
       warning = `${source.name}: 规则来源缓存写入失败：${error instanceof Error ? error.message : String(error)}`;
       console.warn(JSON.stringify({ level: "warn", message: warning }));
     }
-    return { content, usedCachedContent: false, ...(warning ? { warning } : {}) };
+    return { content, contentHash, usedCachedContent: false, ...(warning ? { warning } : {}) };
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     const cached = options.allowCachedFallback ? await readRuleSetSourceContent(env, key, false) : null;
     if (options.allowCachedFallback && cached !== null) {
       return {
         content: cached,
+        contentHash: await sha256Hex(cached),
         usedCachedContent: true,
         warning: `${source.name}: ${reason}`
       };
@@ -195,7 +202,7 @@ export async function readRefreshedRuleSetSource(env: Env, key: string, state: R
   if (content === null || await sha256Hex(content) !== state.contentHash) {
     throw new Error("规则来源缓存尚未同步或已被更新，请稍后重试。");
   }
-  return { content, usedCachedContent: state.usedCachedContent, ...(state.warning ? { warning: state.warning } : {}) };
+  return { content, contentHash: state.contentHash, usedCachedContent: state.usedCachedContent, ...(state.warning ? { warning: state.warning } : {}) };
 }
 
 export async function refreshRuleSetSourceCaches(
@@ -259,7 +266,7 @@ export async function refreshRuleSetSourceCaches(
         sourceName: source.name
       }, { updateIndex: false });
       nextEntries.set(key, entry);
-      sourcesByKey.set(key, { contentHash: await sha256Hex(content), usedCachedContent: false });
+      sourcesByKey.set(key, { contentHash: entry.contentHash, usedCachedContent: false });
       refreshed += 1;
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
@@ -416,7 +423,8 @@ export async function readCompiledRuleSetBucket(
 export async function writeCompiledRuleSet(
   env: Env,
   manifest: CompiledRuleSetManifest,
-  buckets: Record<RuleSetBucket, CompiledRuleSetRule[]>
+  buckets: Record<RuleSetBucket, CompiledRuleSetRule[]>,
+  options: { canPublish?: () => Promise<boolean> } = {}
 ): Promise<void> {
   const storageId = compiledRuleSetStorageId();
   manifest.storageId = storageId;
@@ -454,6 +462,9 @@ export async function writeCompiledRuleSet(
     }
     // Publish the manifest only after every artifact. Track exact keys so a
     // failed write can be cleaned even before KV listing sees the new objects.
+    if (options.canPublish && !await options.canPublish()) {
+      throw new Error("Rule-set configuration changed before cache publication.");
+    }
     const metaKey = compiledRuleSetVersionMetaKey(manifest.outputName, storageId);
     writtenKeys.add(metaKey);
     await env.SUBPILOT_CONFIG.put(metaKey, JSON.stringify(manifest));
@@ -468,6 +479,9 @@ export async function writeCompiledRuleSet(
     await deleteKvKeys(env, [...writtenKeys]).catch(logCompiledCacheCleanupFailure);
     throw error;
   }
+  // A later configuration can commit while publication is in flight. Preserve
+  // its artifacts; the caller reconciles any completed obsolete publication.
+  if (options.canPublish && !await options.canPublish()) return;
   await pruneOldCompiledRuleSetVersions(env, manifest.outputName, storageId).catch(logCompiledCacheCleanupFailure);
 }
 
@@ -672,30 +686,57 @@ export async function ruleSetSourceCacheKey(url: string): Promise<string> {
   return `${RULE_SET_SOURCE_CACHE_PREFIX}${await sha256Hex(url)}`;
 }
 
+/** Read only metadata; checking refresh eligibility must not load source bodies. */
+export async function readRuleSetSourceCacheMetadata(env: Env, key: string): Promise<RuleSetSourceCacheEntry | null> {
+  const metadata = normalizeRuleSetSourceCacheEntry(await readKvJson<unknown>(env, ruleSetSourceCacheMetaKey(key)))
+    .find((entry) => entry.key === key);
+  if (metadata) return metadata;
+  const indexed = await readKvJson<unknown>(env, RULE_SET_SOURCE_CACHE_META_INDEX_KEY);
+  return Array.isArray(indexed)
+    ? dedupeRuleSetSourceCacheEntries(indexed.flatMap(normalizeRuleSetSourceCacheEntry)).find((entry) => entry.key === key) ?? null
+    : null;
+}
+
 async function writeRuleSetSourceCacheEntry(
   env: Env,
   entry: Omit<RuleSetSourceCacheEntry, "contentAvailable"> & { content: string },
   options: { updateIndex?: boolean } = {}
-): Promise<RuleSetSourceCacheEntry> {
+): Promise<RuleSetSourceCacheEntry & { contentHash: string; checkedAt: string }> {
   const { content, ...baseMeta } = entry;
-  const meta: RuleSetSourceCacheEntry = {
+  const [contentHash, stored, previous] = await Promise.all([
+    entry.contentHash ?? sha256Hex(content),
+    env.SUBPILOT_CONFIG.get(entry.key),
+    readRuleSetSourceCacheMetadata(env, entry.key)
+  ]);
+  let unchanged = false;
+  if (stored !== null) {
+    try {
+      const cached = await readEncryptedCacheContent(env, entry.key, stored, { migratePlaintext: false });
+      unchanged = await sha256Hex(cached) === contentHash;
+    } catch { /* Missing or unreadable content must be repaired even if metadata hashes match. */ }
+  }
+  const meta = {
     ...baseMeta,
+    fetchedAt: unchanged ? previous?.fetchedAt ?? UNKNOWN_RULE_SET_SOURCE_FETCHED_AT : entry.fetchedAt,
+    checkedAt: entry.checkedAt ?? entry.fetchedAt,
+    contentHash,
     contentAvailable: true
   };
   const updateIndex = options.updateIndex !== false;
-  const encryptedContent = await encryptCacheContent(env, content);
-  const writes: Promise<unknown>[] = [
-    env.SUBPILOT_CONFIG.put(entry.key, encryptedContent),
-    env.SUBPILOT_CONFIG.put(ruleSetSourceCacheMetaKey(entry.key), JSON.stringify(meta))
-  ];
+  // Unchanged encrypted bodies keep their original value. Historical plaintext
+  // still migrates on a successful refresh, and missing/corrupt bodies rebuild.
+  if (!unchanged || !stored?.startsWith(ENCRYPTED_CACHE_STORAGE_PREFIX)) {
+    await env.SUBPILOT_CONFIG.put(entry.key, await encryptCacheContent(env, content));
+  }
+  // Publish the hash/check time only after its corresponding body was stored.
+  await env.SUBPILOT_CONFIG.put(ruleSetSourceCacheMetaKey(entry.key), JSON.stringify(meta));
   if (updateIndex) {
     const entries = [
       meta,
       ...await readRuleSetSourceCacheEntries(env).then((existing) => existing.filter((item) => item.key !== entry.key))
     ];
-    writes.push(writeRuleSetSourceCacheIndex(env, entries));
+    await writeRuleSetSourceCacheIndex(env, entries);
   }
-  await Promise.all(writes);
   return meta;
 }
 
@@ -890,7 +931,7 @@ function dedupeRuleSetSourceCacheEntries(entries: RuleSetSourceCacheEntry[]): Ru
   const selected = new Map<string, RuleSetSourceCacheEntry>();
   for (const entry of entries) {
     const existing = selected.get(entry.key);
-    if (!existing || entry.fetchedAt > existing.fetchedAt) {
+    if (!existing || Date.parse(entry.checkedAt ?? entry.fetchedAt) >= Date.parse(existing.checkedAt ?? existing.fetchedAt)) {
       selected.set(entry.key, entry);
     }
   }
@@ -905,6 +946,8 @@ function normalizeRuleSetSourceCacheEntry(value: unknown): RuleSetSourceCacheEnt
   return [{
     key: entry.key,
     fetchedAt: entry.fetchedAt,
+    ...(typeof entry.checkedAt === "string" && Number.isFinite(Date.parse(entry.checkedAt)) ? { checkedAt: entry.checkedAt } : {}),
+    ...(typeof entry.contentHash === "string" && /^[a-f0-9]{64}$/.test(entry.contentHash) ? { contentHash: entry.contentHash } : {}),
     sourceId: typeof entry.sourceId === "string" ? entry.sourceId : "",
     sourceName: typeof entry.sourceName === "string" ? entry.sourceName : "",
     contentAvailable: typeof entry.contentAvailable === "boolean" ? entry.contentAvailable : true
@@ -921,6 +964,11 @@ function normalizeCompiledManifest(value: unknown): CompiledRuleSetManifest | nu
     policy: typeof record.policy === "string" ? record.policy : "Proxy",
     updatedAt: typeof record.updatedAt === "string" ? record.updatedAt : "",
     sourceIds: Array.isArray(record.sourceIds) ? record.sourceIds.filter((item): item is string => typeof item === "string") : [],
+    ...(record.sourceContentHashes && typeof record.sourceContentHashes === "object" && !Array.isArray(record.sourceContentHashes)
+      ? { sourceContentHashes: Object.fromEntries(Object.entries(record.sourceContentHashes).filter(([key, hash]) =>
+        key.startsWith(RULE_SET_SOURCE_CACHE_PREFIX) && /^[a-f0-9]{64}$/.test(key.slice(RULE_SET_SOURCE_CACHE_PREFIX.length))
+        && typeof hash === "string" && /^[a-f0-9]{64}$/.test(hash))) }
+      : {}),
     ruleCount: typeof record.ruleCount === "number" ? record.ruleCount : 0,
     ...(typeof record.dnsRuleCount === "number" ? { dnsRuleCount: record.dnsRuleCount } : {}),
     duplicateCount: typeof record.duplicateCount === "number" ? record.duplicateCount : 0,

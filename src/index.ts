@@ -14,7 +14,9 @@ import { handleGeoIpMmdbUpload, readGeoIpMmdbStatus } from "./geoip-admin";
 import { LOGIN_PAGE_HTML } from "./login-page";
 import { extractSubscriptionToken, isUnderManagedBasePath, managedBasePathFromConfig, parseSyncPath } from "./managed-url";
 import { notifyRuleSetRefreshFailures, notifySourceRefreshFailures, notifyVersionUpdateAvailable } from "./notifications";
-import { buildCompiledRuleSetReferencePlan, refreshChangedRuleSetCaches, refreshRuleSetCaches } from "./rule-set-compiler";
+import { buildCompiledRuleSetReferencePlan, refreshRuleSetCaches, ruleSetOutputFingerprint } from "./rule-set-compiler";
+import { queueRuleSetUpdates, RULE_SET_REBUILD_CRON, runRuleSetUpdateJobs } from "./rule-set-jobs";
+import { effectiveRuleSetOutputs, ruleSetOutputNeedsCompilation } from "./rule-set-outputs";
 import { handleRuleSetApi, handleRuleSetDownload } from "./rule-set-endpoints";
 import { warmCompiledRuleSetWorkerCache } from "./rule-set-worker-cache";
 import { refreshChangedSourceCache, refreshSourceCache } from "./source-cache";
@@ -50,6 +52,12 @@ export default {
   },
   async scheduled(controller: ScheduledController, env: Env, _ctx: ExecutionContext): Promise<void> {
     const config = await loadConfig(env);
+    if (controller.cron === RULE_SET_REBUILD_CRON) {
+      await runRuleSetUpdateJobs(env, config, {
+        deadline: Date.now() + SCHEDULED_REFRESH_DEADLINE_MS, loadCurrentConfig: () => loadConfig(env)
+      });
+      return;
+    }
     if (controller.cron === RULE_SET_REFRESH_CRON) {
       const deadline = Date.now() + SCHEDULED_REFRESH_DEADLINE_MS;
       if (!OUTPUT_TARGETS.some((target) => renderConfig(configDocument(config), target).ruleSets.mode === "compiled")) return;
@@ -58,14 +66,31 @@ export default {
         const selected = renderConfig(configDocument(config), target);
         if (selected.ruleSets.mode !== "compiled") continue;
         const scoped = ruleSetEnv(env, target);
-        const result = await refreshRuleSetCaches(scoped, selected, undefined, { deadline, sourceRefresh });
+        const result = await refreshRuleSetCaches(scoped, selected, undefined, {
+          deadline, sourceRefresh,
+          canPublish: async (output) => {
+            const latest = renderConfig(configDocument(await loadConfig(env)), target);
+            if (latest.ruleSets.mode !== "compiled") return false;
+            const current = effectiveRuleSetOutputs(latest.ruleSets).find((item) => item.name === output.name);
+            return Boolean(current && ruleSetOutputNeedsCompilation(latest.ruleSets, current, target)
+              && await ruleSetOutputFingerprint(latest, current) === await ruleSetOutputFingerprint(selected, output));
+          }
+        });
+        const latest = renderConfig(configDocument(await loadConfig(env)), target);
+        if (JSON.stringify(latest.ruleSets) !== JSON.stringify(selected.ruleSets)) {
+          await queueRuleSetUpdates(env, latest, effectiveRuleSetOutputs(latest.ruleSets).map((output) => output.name));
+          continue;
+        }
+        const pending = result.pendingOutputNames ?? result.outputFailures.map((failure) => failure.outputName);
+        if (pending.length) {
+          await queueRuleSetUpdates(env, selected, pending);
+        }
         await notifyRuleSetRefreshFailures(env, selected, result, "scheduled");
         await warmScheduledRuleSetWorkerCache(scoped, selected);
       }
       return;
     }
-    // The installer allows custom upstream schedules; the other trigger is
-    // reserved for rule sets above.
+    // Other configured schedules retain the chosen subscription refresh interval.
     const result = await refreshSourceCache(env, config, {
       deadline: Date.now() + SCHEDULED_REFRESH_DEADLINE_MS
     });
@@ -278,7 +303,7 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
       if (compiled.errors.length) return jsonResponse({ error: "Clash 分流转换校验失败，旧配置继续生效。", issues: compiled.errors }, { status: 400 });
     }
     const saved = await saveConfigWithTelegramWebhook(env, current, renderConfig(document), request.url, ctx);
-    scheduleChangedCacheRefresh(env, ctx, current, saved, request.url);
+    scheduleChangedSourceRefresh(env, ctx, current, saved);
     return jsonResponse(configDocument(saved));
   }
   if (url.pathname === "/api/read-token" && request.method === "GET") {
@@ -377,31 +402,16 @@ async function currentManagedBasePath(env: Env, requestUrl: string): Promise<str
   return managedBasePathFromConfig(await loadConfig(env), requestUrl);
 }
 
-function scheduleChangedCacheRefresh(
+function scheduleChangedSourceRefresh(
   env: Env,
   ctx: ExecutionContext,
   previousConfig: Awaited<ReturnType<typeof loadConfig>>,
-  config: Awaited<ReturnType<typeof loadConfig>>,
-  requestUrl: string
+  config: Awaited<ReturnType<typeof loadConfig>>
 ): void {
   const deadline = Date.now() + WAIT_UNTIL_REFRESH_DEADLINE_MS;
   ctx.waitUntil((async () => {
     const sourceResult = await refreshChangedSourceCache(env, previousConfig, config, { deadline });
     if (sourceResult) await notifySourceRefreshFailures(env, config, sourceResult, "config");
-    const oldSourceUrls = new Set(allCompiledRuleSetSources(previousConfig).map((source) => source.url));
-    const changedSources = allCompiledRuleSetSources(config).filter((source) => !oldSourceUrls.has(source.url));
-    const sourceRefresh = await refreshRuleSetSourceCaches(env, config, changedSources, { deadline, pruneUnexpected: false });
-    for (const target of OUTPUT_TARGETS) {
-      if (Date.now() >= deadline) break;
-      const scoped = ruleSetEnv(env, target);
-      const selected = renderConfig(configDocument(config), target);
-      const previous = renderConfig(configDocument(previousConfig), target);
-      const result = await refreshChangedRuleSetCaches(scoped, previous, selected, { deadline, sourceRefresh });
-      if (result) {
-        await notifyRuleSetRefreshFailures(env, selected, result, "config");
-        await warmCompiledRuleSetWorkerCache(scoped, selected, requestUrl, await getOrCreateReadToken(env), undefined, { deadline });
-      }
-    }
   })().catch(() => console.error(JSON.stringify({ level: "error", message: "Background cache refresh failed" }))));
 }
 

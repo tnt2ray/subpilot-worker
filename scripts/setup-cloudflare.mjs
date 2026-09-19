@@ -14,6 +14,7 @@ const TEMPLATE_PATH = "wrangler.example.jsonc";
 const PLACEHOLDER_KV_ID = "00000000000000000000000000000000";
 const DEFAULT_SOURCE_REFRESH_HOURS = 12;
 const RULE_SET_REFRESH_CRON = "0 16 * * *";
+const RULE_SET_REBUILD_CRON = "*/5 * * * *";
 const MIN_ADMIN_TOKEN_LENGTH = 24;
 const LOGIN_RATE_LIMIT_BINDING_NAME = "LOGIN_RATE_LIMITER";
 const REQUIRED_SECRET_NAMES = ["ADMIN_TOKEN_HASH", "CONFIG_ENCRYPTION_KEY"];
@@ -188,9 +189,18 @@ async function configureSourceRefreshSchedule(createdConfig) {
   }
 
   const config = readJsonConfig();
-  config.triggers = { ...(config.triggers ?? {}), crons: [refreshCronForHours(hours), RULE_SET_REFRESH_CRON] };
+  config.triggers = { ...(config.triggers ?? {}), crons: [refreshCronForHours(hours), RULE_SET_REFRESH_CRON, RULE_SET_REBUILD_CRON] };
   writeJsonConfig(config);
   process.stdout.write(`Configured upstream auto-refresh: every ${hours} hour${hours === 1 ? "" : "s"}.\n`);
+}
+
+function ensureRuleSetRebuildSchedule() {
+  const config = readJsonConfig();
+  const crons = Array.isArray(config.triggers?.crons) ? config.triggers.crons : [];
+  if (crons.includes(RULE_SET_REBUILD_CRON)) return;
+  config.triggers = { ...(config.triggers ?? {}), crons: [...crons, RULE_SET_REBUILD_CRON] };
+  writeJsonConfig(config);
+  process.stdout.write("Configured pending rule-set rebuilds: every 5 minutes.\n");
 }
 
 function ensureLoginRateLimitBinding(createdConfig) {
@@ -361,6 +371,7 @@ replaceWorkerName(process.env.SUBPILOT_WORKER_NAME);
 if (!existingConfigOnly) await ensureKvNamespace();
 ensureLoginRateLimitBinding(createdConfig);
 await configureSourceRefreshSchedule(createdConfig);
+ensureRuleSetRebuildSchedule();
 
 const existingSecrets = args.has("--no-secrets") || args.has("--force-secrets") ? new Set() : readRemoteSecretNames();
 const secretNamesToWrite = args.has("--no-secrets") ? [] : REQUIRED_SECRET_NAMES.filter((name) => !existingSecrets.has(name));
