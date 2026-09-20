@@ -1,3 +1,4 @@
+import { handleSingboxSrsInstall } from "./singbox-srs-install";
 import { allCompiledRuleSetSources, refreshRuleSetSourceCaches } from "./rule-set-cache";
 import { configDocument, normalizeConfigDocument, renderConfig, OUTPUT_TARGETS } from "./config-document";
 import { migrateClashRouting } from "./clash-routing-migration";
@@ -25,6 +26,8 @@ import { handleTelegramBindCode, handleTelegramUnbind, handleTelegramWebhook, sa
 import { readCachedUpdateStatus, getUpdateStatus } from "./update-check";
 import { APP_VERSION, RELEASE_REPOSITORY } from "./version";
 import { singboxSchema, validateSingboxSection } from "./singbox-validation";
+import { handleSrsCredentials } from "./singbox-srs-credentials";
+import { handleSingboxSrsJobApi, retrySingboxSrsJobs, validateSingboxSrsCredentials } from "./singbox-srs";
 import { applyTransforms, buildChainNodes, buildConfiguredProxyNodes, ensureUniqueProxyPolicyNames } from "./node-transforms";
 import { badRequest, forbidden, jsonResponse, notFound, payloadTooLarge, readRequestJsonWithLimit, RequestBodyTooLargeError, sha256Hex, textResponse, tooManyRequests, unauthorized } from "./util";
 
@@ -53,9 +56,11 @@ export default {
   async scheduled(controller: ScheduledController, env: Env, _ctx: ExecutionContext): Promise<void> {
     const config = await loadConfig(env);
     if (controller.cron === RULE_SET_REBUILD_CRON) {
+      const deadline = Date.now() + SCHEDULED_REFRESH_DEADLINE_MS;
       await runRuleSetUpdateJobs(env, config, {
-        deadline: Date.now() + SCHEDULED_REFRESH_DEADLINE_MS, loadCurrentConfig: () => loadConfig(env)
+        deadline, loadCurrentConfig: () => loadConfig(env)
       });
+      await retrySingboxSrsJobs(env, await loadConfig(env), deadline);
       return;
     }
     if (controller.cron === RULE_SET_REFRESH_CRON) {
@@ -117,6 +122,7 @@ async function route(request: Request, env: Env, ctx: ExecutionContext): Promise
   if (url.pathname === "/api/telegram/webhook" && request.method === "POST") {
     return handleTelegramWebhook(request, env, ctx);
   }
+  if (url.pathname.startsWith("/api/internal/singbox-srs/")) return handleSingboxSrsJobApi(request, env);
   if (url.pathname.startsWith("/api/")) return handleApi(request, env, ctx);
 
   const managedBasePath = await currentManagedBasePath(env, request.url);
@@ -166,6 +172,10 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
   if (!await isAdminRequest(env, request)) return unauthorized();
   const url = new URL(request.url);
 
+  if (url.pathname === "/api/singbox/srs/credentials") return handleSrsCredentials(request, env);
+
+  if (["/api/singbox/srs/install", "/api/singbox/srs/install/status"].includes(url.pathname)) return handleSingboxSrsInstall(request, env);
+
   if (url.pathname === "/api/singbox/schema" && request.method === "GET") return jsonResponse(singboxSchema);
   if (url.pathname === "/api/singbox/validate" && request.method === "POST") {
     let body: { section?: unknown; value?: unknown };
@@ -193,7 +203,7 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
     catch (error) { return error instanceof RequestBodyTooLargeError ? payloadTooLarge("Configuration is too large") : badRequest("Invalid JSON"); }
     try {
       const document = normalizeConfigDocument(body);
-      const error = validateDocumentForSave(document);
+      const error = validateDocumentForSave(document) || await validateSingboxSrsCredentials(env, document);
       if (error) return badRequest(error);
       const names = await Promise.all(OUTPUT_TARGETS.map(async (target) => {
         const config = renderConfig(document, target);
@@ -217,7 +227,7 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
     if (await sha256Hex(JSON.stringify(current)) !== body.fingerprint) return jsonResponse({ error: "旧配置已变化，当前页面草稿未提交。请记下需要保留的修改，刷新页面后重新检查迁移。" }, { status: 409 });
     try {
       const document = normalizeConfigDocument(body.config);
-      const error = validateDocumentForSave(document);
+      const error = validateDocumentForSave(document) || await validateSingboxSrsCredentials(env, document);
       if (error) return badRequest(error);
       const saved = await completeDocumentMigration(env, document);
       return jsonResponse(configDocument(saved));
@@ -276,7 +286,7 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
   if (url.pathname === "/api/config/clash-routing" && request.method === "POST") {
     try {
       const document = normalizeConfigDocument(await readRequestJsonWithLimit<AppConfig>(request, MAX_CONFIG_REQUEST_BYTES));
-      const error = validateDocumentForSave(document);
+      const error = validateDocumentForSave(document) || await validateSingboxSrsCredentials(env, document);
       if (error) return badRequest(error);
       return jsonResponse(migrateClashRouting(document.clients.clash));
     } catch { return badRequest("无法转换 Clash 配置，请检查原生规则和规则提供者格式。"); }
@@ -291,7 +301,7 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
       const existing = configDocument(current);
       const input = request.method === "PATCH" ? { ...existing, ...body, settings: { ...existing.settings, ...body.settings }, clients: { ...existing.clients, ...body.clients } } : body;
       document = normalizeConfigDocument(input);
-      const error = validateDocumentForSave(document);
+      const error = validateDocumentForSave(document) || await validateSingboxSrsCredentials(env, document);
       if (error) return badRequest(error);
     } catch { return badRequest("配置格式无效或超过大小限制。"); }
     if (configDocument(current).clients.clash.ruleSets.mode === "manual" && document.clients.clash.ruleSets.mode === "compiled") {

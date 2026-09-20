@@ -102,7 +102,9 @@ export async function generateConfig(
         : [{ target, severity: "error", code: "rule-cache-pending", path: "ruleSets",
         message: ruleSetCache.failed
           ? "规则集缓存暂不可用，后台生成失败；请检查规则来源或稍后重试。"
-          : "规则集缓存正在后台生成，请稍后重试更新配置。" }]
+          : config.settings.singboxSrs?.enabled
+            ? "SRS 规则集正在等待 GitHub Actions 编译，请稍后重试更新配置。"
+            : "规则集缓存正在后台生成，请稍后重试更新配置。" }]
     };
   }
   let prepared: PreparedOutput;

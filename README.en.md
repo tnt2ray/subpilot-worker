@@ -15,7 +15,7 @@ Subscription sources, manual nodes, and chain exits are shared. Policy groups, d
 | Output | `.conf` | Clash-compatible `.yaml` | Native JSON for **1.15.0-alpha.6 (preview)** |
 | Nodes and groups | Supported protocols and group types | Supported protocols and group types | Native outbounds, `selector` / `urltest`, endpoint references |
 | Native routing | Surge rule text | `rules` + `rule-providers` | JSON `route` |
-| Compiled rule sources | `.list` | `.yaml` | JSON source `.json` |
+| Compiled rule sources | `.list` | `.yaml` | JSON source `.json`, or optional GitHub Actions compilation to `.srs` |
 | Network and DNS | Surge settings | clash settings | Native inbounds and DNS |
 | Rewrite / Map Local / MITM / scripts | Retained | Omitted | Omitted |
 | Tailscale | Dedicated native form | Omitted | Native endpoint with a dedicated form |
@@ -247,7 +247,7 @@ The rule-set editor includes a **DNS resolver** field; empty inherits global set
 
 - Surge emits `[Host]` `RULE-SET:` / `DOMAIN-SET:` DNS mappings, requiring Mac 5.10+ / iOS 5.14.3+. Existing Host mappings take priority; bindings follow routing-list order. Remote proxy resolution is not guaranteed to use this resolver. Entries with a DNS assignment do not aggregate by outbound policy.
 - Clash emits `dns.nameserver-policy` and requires DNS to be enabled. IP-only (`ipcidr`) providers cannot assign a resolver. This setting selects a resolver; it does not select the DNS connection outbound or guarantee remote proxy resolution behavior.
-- sing-box generates a separate `-dns.json` set containing standalone DOMAIN, DOMAIN-SUFFIX, DOMAIN-KEYWORD, DOMAIN-REGEX and DOMAIN-WILDCARD rules, excluding IP, process and logical rules. Bindings follow routing-list order before native DNS-tab rules; empty domain sets produce a notice. Update bindings after deleting or renaming a referenced DNS server before saving.
+- sing-box generates a separate `-dns.json` set (`dns.srs` in the repository when SRS compilation is enabled) containing standalone DOMAIN, DOMAIN-SUFFIX, DOMAIN-KEYWORD, DOMAIN-REGEX and DOMAIN-WILDCARD rules, excluding IP, process and logical rules. Bindings follow routing-list order before native DNS-tab rules; empty domain sets produce a notice. Update bindings after deleting or renaming a referenced DNS server before saving.
 
 
 1. Select a client and open Routing rules. Add a rule set or direct rule.
@@ -267,11 +267,38 @@ Surge compilation preserves the user's `no-resolve` choice and does not add it m
 
 Clash and Surge sources require conversion for sing-box even with one URL. `IP-ASN` expands into IPv4/IPv6 CIDRs and updates periodically. Resolution failures use cached data when possible; otherwise the ASN is skipped with a notice. Unsupported rules such as `USER-AGENT` and `URL-REGEX` are skipped. Download failures and invalid source formats are reported as errors. Generated remote rule sets use a direct HTTP client for downloading.
 
-In automatic mode, each sing-box `.srs` URL becomes an independent `remote` / `binary` rule set downloaded and updated by the client. Select SRS explicitly for binary URLs without that extension. When an entry mixes SRS and text sources, each SRS remains independent and only text is merged and compiled; all use the entry's outbound policy. The Worker does not download, parse or cache SRS. With a DNS resolver assigned, SRS is referenced directly by native DNS rules and must be suitable for DNS matching; text sources still contribute only standalone domain rules.
+In automatic mode, each sing-box `.srs` URL becomes an independent `remote` / `binary` rule set downloaded and updated by the client. Select SRS explicitly for binary URLs without that extension. When an entry mixes SRS and text sources, each SRS remains independent and only text is merged and compiled; all use the entry's outbound policy. The Worker does not download, parse or cache user-supplied native SRS sources. With a DNS resolver assigned, SRS is referenced directly by native DNS rules and must be suitable for DNS matching; text sources still contribute only standalone domain rules.
 
 The native sing-box route and rule-set editor remains available after enabling the unified rule plan, with native rules retaining priority. Converting native Clash routing discards dormant shared or Surge plan entries and keeps the current native rules and providers. A failed conversion preserves the original configuration.
 
-Generated files use `.list`, `.yaml` and `.json` for Surge, Clash and sing-box respectively. The same name can be used independently across clients.
+Generated files use `.list`, `.yaml` and `.json` for Surge, Clash and sing-box respectively by default; the optional feature below changes sing-box rule sets to `.srs`. The same name can be used independently across clients.
+
+### Optional sing-box SRS compilation
+
+This feature is disabled by default. When enabled, the Worker continues to merge, deduplicate and convert text sources using the current rule plan, then sends them to GitHub Actions for compilation with sing-box **1.15.0-alpha.6** and publication to a dedicated branch (default `srs`) in a public GitHub repository. Generated configurations use `format: "binary"` and fixed repository `.srs` URLs for both managed routing rule sets and separate DNS domain subsets. User-supplied native `.srs` URLs continue to be downloaded directly by the client.
+
+1. Prepare an initialized public GitHub repository you control and enable Actions. One-click installation uses its default branch; artifacts use a separate branch. Use a separate repository per deployment because Actions Secrets are shared within a repository.
+2. Create a fine-grained personal access token restricted to that repository with **Repository permissions → Actions: Read and write** so the Worker can dispatch the workflow. Complete organization approval first if the repository requires it. [GitHub workflow API permissions](https://docs.github.com/en/rest/actions/workflows#create-a-workflow-dispatch-event)
+3. Open **System settings → sing-box SRS compilation (optional) → Configure compilation credentials**, enter the persistent token and click **Save credentials**. The server generates a shared secret and encrypts both values with the existing `CONFIG_ENCRYPTION_KEY` in a separate KV record. No additional SRS Worker Secrets are required. This operation is independent of Save configuration; the page shows status only, never stored values.
+
+4. Open **System settings → sing-box SRS compilation (optional)** and enter the public repository `owner/repo`, its default branch, workflow filename (default `singbox-srs.yml`) and output branch (default `srs`). Click **Install / update workflow** without enabling or saving the feature first. Supply a temporary fine-grained token with **Contents, Workflows and Secrets: Read and write** for that repository, with organization approval if required. The token is used only for this request, is not stored, and can be revoked afterwards. The persistent Worker dispatch token still needs only Actions write permission.
+5. Click **Install to GitHub**. The installer commits the workflow and script and encrypts/configures repository Actions Secrets `SUBPILOT_URL` (the current admin page's HTTPS origin) and `SUBPILOT_SRS_SECRET` (the shared secret stored by the server). Use a domain reachable from GitHub. Different existing files require explicit replacement; only the two displayed paths are updated. Branch protection and permission errors are reported; partial failures list completed steps and can be retried, without force-pushing. Confirm Actions is enabled, then enable SRS and save settings. The sing-box rule plan must be enabled.
+
+   One-click installation uses the repository [workflow](./.github/workflows/singbox-srs.yml) and [compiler script](./scripts/compile-singbox-srs.mjs) and synchronizes the shared secret without displaying it or requiring manual copying.
+
+6. Check the run in GitHub Actions, then use **Configuration links → Subscription check → sing-box** and update the client subscription. Initial preparation, or missing SRS files for the current rule version, returns HTTP `503` with `Retry-After`. The full configuration becomes available once all required routing and DNS artifacts are ready. Keep your current client configuration and retry after the indicated delay.
+
+Compilation uses the existing triggers: saving rule changes, manual refresh, and daily rule-source change detection. Complete artifacts are reused when source content and other compiler inputs have not changed. The existing five-minute maintenance task checks unfinished SRS work and may dispatch it again after at least 15 minutes since the previous attempt; no GitHub schedule is required. Enabling the feature or changing the repository, workflow ref, output branch or workflow also prepares SRS files for the current rules. Failures do not automatically fall back to JSON. Review the Actions run, fix the repository, credentials or workflow, and wait for a retry. Disable the option and save to restore JSON rule-set references in generated configurations.
+
+Replacing the persistent token preserves the shared secret and does not require reinstalling the workflow. Disable SRS and save settings before clearing credentials. Clearing disables both values without falling back to deployment credentials or deleting GitHub artifacts. Reconfiguration generates a new shared secret, so reinstall the workflow afterwards. KV propagation can take time; retry shortly if credentials appear missing immediately after saving.
+
+Existing deployments can continue using `SINGBOX_SRS_GITHUB_TOKEN` and `SINGBOX_SRS_SECRET` Worker Secrets until the first page save. The encrypted KV record then takes precedence while retaining the existing shared secret. `ADMIN_TOKEN_HASH` and `CONFIG_ENCRYPTION_KEY` remain Worker Secrets. Local development can save credentials to local KV through the page; installation and GitHub callbacks require a publicly reachable HTTPS endpoint.
+
+The workflow downloads the job's source snapshot from the Worker and publishes all routing/DNS binaries and a receipt in one Git commit on the output branch, creating that branch if necessary. It uses the built-in `GITHUB_TOKEN` with `contents: write`; no additional write PAT is needed. The output branch must differ from the default and workflow branches, and branch protection must permit Actions to write it. Concurrent updates retry branch conflicts without force-pushing or replacing other rule sets. The Worker confirms the current version's public publication receipt before serving the configuration.
+
+Stable URLs use `https://raw.githubusercontent.com/<owner>/<repo>/refs/heads/<output-branch>/rules/<output-key>/<bucket>.srs`. `output-key` is the SHA-256 of the rule-set name; `bucket` is `combined`, `domain`, `ipcidr` or `dns`. Updating a rule set under the same name preserves its URLs. GitHub caching can delay when clients see updates. The repository must be public, making compiled rule contents publicly readable; publish only rules suitable for public access. Subscription-source URLs, Worker URLs and credentials are not written to the output branch or Actions logs. Disabling the feature or deleting/renaming an output does not remove published files or Git history; clean up the repository separately when needed. Use a dedicated repository for each SubPilot deployment; Actions Secrets are shared within the repository.
+
+Encrypted compilation source snapshots remain in KV for 24 hours. The Worker stores publication status and maintains its existing JSON source caches, but does not store or proxy SRS binaries. The persistent GitHub token and shared secret use a separate encrypted KV record, excluded from ordinary configuration responses, snapshots and exports. The shared secret is also synchronized to GitHub Actions Secrets; the temporary installation token is never stored.
 
 ### Subscription checks
 
@@ -415,7 +442,8 @@ Region lookup uses existing single-IP overrides first, then the uploaded databas
 ## Security and data
 
 - `ADMIN_TOKEN_HASH` and `CONFIG_ENCRYPTION_KEY` belong in **Cloudflare Worker Secrets**. Login checks the admin token's SHA-256 hex hash; the plaintext admin token is not stored in the repository, KV, or Worker Secrets.
-- Configuration snapshots, subscription/rule-source caches, compiled rules, and recoverable subscription read tokens are encrypted. Telegram tokens and other private configuration values are protected within the encrypted snapshot. Preserve the encryption key across updates and migration.
+- Configuration snapshots, subscription/rule-source caches, Worker-compiled JSON/text rules, and recoverable subscription read tokens are encrypted. Telegram tokens and other private configuration values are protected within the encrypted snapshot. Preserve the encryption key across updates and migration.
+- Optional GitHub Actions SRS artifacts are published in a public repository's dedicated output branch. The dispatch token and shared secret use a separate encrypted KV record, with compatibility for legacy Worker Secrets; the shared secret is also configured in Actions Secrets.
 - Admin sessions use signed HttpOnly cookies; they do not create `session:*` KV keys. Subscription read tokens grant configuration access and should be kept private and rotated if exposed.
 - `wrangler.jsonc` is local and untracked. Keep real Worker names, namespace IDs, domains, subscription URLs, passwords, MITM CAs, tokens, and private exports out of public source, issues, logs, and release archives. Configuration data contains private information and must not be shared publicly.
 

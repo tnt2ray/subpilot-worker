@@ -40,7 +40,9 @@ export async function queueChangedRuleSetUpdates(
     for (const output of compilationOutputs(selected)) {
       const fingerprint = await ruleSetOutputFingerprint(selected, output);
       const old = previousOutputs.get(output.name);
-      if (old && await ruleSetOutputFingerprint(previous, old) === fingerprint) continue;
+      const srsChanged = target === "sing-box" && selected.settings.singboxSrs?.enabled
+        && JSON.stringify(previous.settings.singboxSrs) !== JSON.stringify(selected.settings.singboxSrs);
+      if (old && !srsChanged && await ruleSetOutputFingerprint(previous, old) === fingerprint) continue;
       jobs.push(await writeJob(env, target, output.name, fingerprint));
     }
   }

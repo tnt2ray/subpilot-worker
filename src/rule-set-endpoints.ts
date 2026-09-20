@@ -119,7 +119,7 @@ async function handlePreparedSingboxRuleSetDownload(
   output: RuleSetOutput,
   bucket: "domain" | "ipcidr" | "combined" | "dns"
 ): Promise<Response> {
-  const prepared = await prepareRuleSetCache(env, config, [output]);
+  const prepared = await prepareRuleSetCache(env, config, [output], { sourceOnly: true });
   const manifest = prepared.manifests.get(output.name);
   if (!manifest) {
     scheduleRuleSetRebuild(env, config, prepared.pending, ctx);
@@ -134,7 +134,7 @@ async function handlePreparedSingboxRuleSetDownload(
     if (content === null) {
       // A stream can exist but contain unreadable ciphertext. Rebuild it after
       // returning, just as for a missing artifact; never compile on this path.
-      const repair = await prepareRuleSetCache(env, config, [output], { force: true });
+      const repair = await prepareRuleSetCache(env, config, [output], { force: true, sourceOnly: true });
       scheduleRuleSetRebuild(env, config, repair.pending, ctx, { force: true });
       if (repair.errors.length) return jsonResponse({ error: repair.errors.join(" ") }, { status: 422, headers: { "cache-control": "no-store" } });
       return ruleSetPreparingResponse(repair.retryAfterSeconds, repair.failed);

@@ -5,6 +5,7 @@ import type { RuleSetOutput } from "./rule-set-types";
 import { createSingboxAsnResolver } from "./singbox-asn";
 import type { RenderConfig } from "./types";
 import { mapWithConcurrency } from "./util";
+import { ensureSingboxSrsJob, singboxSrsReady, validateSingboxSrsCredentials } from "./singbox-srs";
 
 const PREPARATION_CONCURRENCY = 3;
 const REBUILD_DEADLINE_MS = 25_000;
@@ -41,7 +42,7 @@ export async function prepareRuleSetCache(
   env: Env,
   config: RenderConfig,
   outputs?: RuleSetOutput[],
-  options: { force?: boolean } = {}
+  options: { force?: boolean; sourceOnly?: boolean } = {}
 ): Promise<PreparedRuleSetCache> {
   const result: PreparedRuleSetCache = {
     manifests: new Map(), pending: [], unavailable: [],
@@ -58,6 +59,12 @@ export async function prepareRuleSetCache(
       if (cached?.outputFingerprint === fingerprint) {
         state.manifest = cached;
         state.pending = !manifestIsFresh(cached, fingerprint);
+        if (!options.sourceOnly && !await singboxSrsReady(env, config, cached)) {
+          state.manifest = null;
+          state.pending = true;
+          const secretError = await validateSingboxSrsCredentials(env, config);
+          if (secretError) state.error = secretError;
+        }
       }
       if (state.pending) {
         const failure = await readRebuildFailure(env, config, fingerprint);
@@ -102,7 +109,10 @@ export function scheduleRuleSetRebuild(
       try {
         fingerprint = await ruleSetOutputFingerprint(config, output);
         const cached = await readCompiledRuleSetManifest(env, output.name, { allowLegacy: false });
-        if (!options.force && cached && manifestIsFresh(cached, fingerprint)) continue;
+        if (!options.force && cached && manifestIsFresh(cached, fingerprint)) {
+          await ensureSingboxSrsJob(env, config, cached, deadline);
+          continue;
+        }
         if ((await readRebuildFailure(env, config, fingerprint)).retryAfter > Date.now()) continue;
         if (deadline - Date.now() < MIN_REBUILD_REMAINING_MS) break;
         const resolveAsn = createSingboxAsnResolver(env, deadline);

@@ -7,6 +7,7 @@ import { effectiveRuleSetOutputs, nativeSingboxRuleSetSources, ruleSetOutputNeed
 import type { CompiledRuleSetManifest } from "./rule-set-cache";
 import { planRuleSetArtifacts } from "./rule-set-artifacts";
 import { managedRuleSetUrlForRequest } from "./managed-url";
+import { githubSrsUrl } from "./singbox-srs-artifacts";
 import { compiledFinalRuleOptions, splitRuleLine } from "./rule-line";
 import { activeSingboxMigrationIssues, convertRule, policyAction, issue, mergeSingboxHosts } from "./singbox-config";
 import type { ConfigDiagnostic, HostEntry, ProxyNode, ProxyParamValue, RenderConfig } from "./types";
@@ -87,6 +88,7 @@ export function buildSingbox(config: RenderConfig, nodes: ProxyNode[], hosts: Ho
   const dns = structuredClone(client.dns);
   const dnsRules: JsonObject[] = [];
   if (config.ruleSets.mode === "compiled") {
+    const binaryRuleSets = config.settings.singboxSrs?.enabled === true;
     const rules: JsonObject[] = [{ protocol: "dns", action: "hijack-dns" }];
     const ruleSets: JsonObject[] = [];
     const items = [
@@ -123,13 +125,13 @@ export function buildSingbox(config: RenderConfig, nodes: ProxyNode[], hosts: Ho
             if (!manifest.dnsRuleCount) diagnostics.push(issue("clients.singbox.ruleSets", "rule-dns-empty", "warning", `${item.output.name} 没有可用于 DNS 匹配的独立域名规则，未生成 DNS 绑定。`));
             else {
               const tag = `${item.output.name}-dns`;
-              ruleSets.push({ type: "remote", tag, format: "source", url: managedRuleSetUrlForRequest(config, requestUrl, item.output.name, "dns", "sing-box"), http_client: { engine: "go" }, update_interval: "1d" });
+              ruleSets.push({ type: "remote", tag, format: binaryRuleSets ? "binary" : "source", url: binaryRuleSets ? githubSrsUrl(config, item.output.name, "dns") : managedRuleSetUrlForRequest(config, requestUrl, item.output.name, "dns", "sing-box"), http_client: { engine: "go" }, update_interval: "1d" });
               dnsRules.push({ rule_set: [tag], action: "route", server: item.output.dnsServer });
             }
           }
           for (const artifact of planRuleSetArtifacts(manifest.buckets, "sing-box")) {
             const tag = `${item.output.name}-${artifact.bucket}`;
-            ruleSets.push({ type: "remote", tag, format: "source", url: managedRuleSetUrlForRequest(config, requestUrl, item.output.name, artifact.bucket, "sing-box"), http_client: { engine: "go" }, update_interval: "1d" });
+            ruleSets.push({ type: "remote", tag, format: binaryRuleSets ? "binary" : "source", url: binaryRuleSets ? githubSrsUrl(config, item.output.name, artifact.bucket) : managedRuleSetUrlForRequest(config, requestUrl, item.output.name, artifact.bucket, "sing-box"), http_client: { engine: "go" }, update_interval: "1d" });
             rules.push({ rule_set: [tag], ...policyAction(item.output.policy) });
           }
         }

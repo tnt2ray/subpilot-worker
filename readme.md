@@ -12,6 +12,7 @@ SubPilot Worker 是运行在 Cloudflare Workers 上的订阅配置生成器，�
 - 按目标客户端适配输出；无法保留的节点或附加功能会报告原因，关键配置问题会阻止下载。
 - 支持手动节点、链式出口、策略组筛选、原生规则及本端来源编排。
 - 提供迁移问题处理、通用订阅地址、加密缓存、Telegram 通知和 GeoIP MMDB 上传。
+- 可选启用 GitHub Actions，将 sing-box 编排规则集编译为 SRS，并自动替换生成配置中的路由和 DNS 规则集引用。
 - sing-box 适配基线为 **1.15.0-alpha.6（预览版）**；旧配置可迁移到配置文档版本 3。Stash 和 Shadowrocket 已退出输出目标。
 
 概览页可查看最近 50 条订阅请求、节点总数和订阅缓存状态。点击“强制刷新”重新获取已保存且启用的订阅源；刷新失败时可查看原因及旧缓存是否可用。
@@ -231,7 +232,7 @@ sing-box 的 DNS 页将原生规则放在默认折叠的“高级 DNS 规则”�
 
 - Surge 生成 `[Host]` 的 `RULE-SET:` / `DOMAIN-SET:` DNS 映射，要求 Mac 5.10+ / iOS 5.14.3+。已有 Host 映射优先，规则集按本页顺序匹配；代理远端解析不保证使用指定 DNS。指定 DNS 的条目不参与按策略聚合。
 - Clash 生成 `dns.nameserver-policy`，要求启用 DNS；`ipcidr` provider 不允许指定 DNS。此设置选择解析服务器，不改变 DNS 连接出口，也不保证代理远端解析行为。
-- sing-box 单独生成 `-dns.json` 域名规则集，包含独立 DOMAIN、DOMAIN-SUFFIX、DOMAIN-KEYWORD、DOMAIN-REGEX、DOMAIN-WILDCARD 规则；排除 IP、进程和逻辑组合。绑定按本页顺序优先于 DNS 页原生规则，无可用域名时提示。删除或重命名所引用的 DNS 服务器后，需更新绑定才能保存。
+- sing-box 单独生成 `-dns.json` 域名规则集（启用 SRS 编译后为仓库中的 `dns.srs`），包含独立 DOMAIN、DOMAIN-SUFFIX、DOMAIN-KEYWORD、DOMAIN-REGEX、DOMAIN-WILDCARD 规则；排除 IP、进程和逻辑组合。绑定按本页顺序优先于 DNS 页原生规则，无可用域名时提示。删除或重命名所引用的 DNS 服务器后，需更新绑定才能保存。
 
 
 1. 选择客户端，打开“分流规则”，添加规则集或单条规则。
@@ -251,11 +252,38 @@ Surge 编译保留用户指定的 `no-resolve`，不会因包含 IP-CIDR 自动�
 
 sing-box 使用 Clash 或 Surge 来源时，即使只有一个 URL 也需要转换。`IP-ASN` 展开为 IPv4/IPv6 CIDR，定期更新；查询失败时优先使用旧缓存，无数据则跳过并提示。`USER-AGENT`、`URL-REGEX` 等不支持的规则被跳过，来源下载失败或格式错误会报错。生成的远程规则集使用直连 HTTP 客户端下载。
 
-sing-box 的 `.srs` 地址在自动识别模式下直接输出为独立的 `remote` / `binary` 规则集，由客户端下载和更新；无 `.srs` 后缀的二进制地址可明确选择 SRS 格式。同一条目混合 SRS 与文本来源时，每份 SRS 独立输出，只有文本参与合并编译，出口沿用该条目的策略。Worker 不下载、解析或缓存 SRS。指定 DNS 解析服务器时，SRS 直接用于原生 DNS 规则匹配，请选择适合 DNS 匹配的规则集；文本来源仍只提取独立域名规则。
+sing-box 的 `.srs` 地址在自动识别模式下直接输出为独立的 `remote` / `binary` 规则集，由客户端下载和更新；无 `.srs` 后缀的二进制地址可明确选择 SRS 格式。同一条目混合 SRS 与文本来源时，每份 SRS 独立输出，只有文本参与合并编译，出口沿用该条目的策略。Worker 不下载、解析或缓存用户提供的原生 SRS 来源。指定 DNS 解析服务器时，SRS 直接用于原生 DNS 规则匹配，请选择适合 DNS 匹配的规则集；文本来源仍只提取独立域名规则。
 
 启用 sing-box 统一规则后，原生路由与规则集表单仍可编辑；原生规则继续先于统一规则匹配。Clash 从原生规则转换时，清理历史共享或 Surge 规则计划，仅保留本次原生规则及其提供者；转换失败时保留原配置。
 
-合并或转换后的规则文件由系统命名，Surge、Clash、sing-box 分别使用 `.list`、`.yaml`、`.json` 扩展名。三端可使用相同名称。
+合并或转换后的规则文件由系统命名，Surge、Clash、sing-box 默认分别使用 `.list`、`.yaml`、`.json` 扩展名；启用下述选配功能后，sing-box 使用 `.srs`。三端可使用相同名称。
+
+### sing-box SRS 编译（选配）
+
+此功能默认关闭。启用后，Worker 仍按现有规则计划合并、去重和转换文本来源，再通过 GitHub Actions 使用 sing-box **1.15.0-alpha.6** 编译为 SRS，并发布到公开 GitHub 仓库的独立产物分支（默认 `srs`）。生成配置中的托管路由规则集和独立 DNS 域名子集统一使用 `format: "binary"` 与仓库文件的固定 `.srs` 地址，客户端直接从 GitHub 下载；用户提供的原生 `.srs` 地址继续由客户端直接下载。
+
+1. 准备你控制的已初始化公开 GitHub 仓库，并启用 GitHub Actions。一键安装使用仓库默认分支；产物使用独立分支。每个 SubPilot 部署使用独立仓库，避免仓库级 Actions Secrets 相互覆盖。
+2. 创建 fine-grained personal access token，仅选择上述仓库，授予 **Repository permissions → Actions: Read and write**，供 Worker 触发工作流。组织仓库如需审批，先完成组织审批。[GitHub 工作流 API 权限](https://docs.github.com/en/rest/actions/workflows#create-a-workflow-dispatch-event)
+3. 打开 **系统设置 → sing-box SRS 编译（选配）→ 配置编译凭据**，输入上述长期 Token 并点击 **保存凭据**。后台自动生成共享密钥，使用已有 `CONFIG_ENCRYPTION_KEY` 加密后写入独立 KV 记录；不需要添加 SRS Worker Secrets。此操作独立于底部“保存配置”，页面只显示配置状态，不回显原值。
+
+4. 打开 **系统设置 → sing-box SRS 编译（选配）**，填写公开仓库 `owner/repo`、仓库默认分支（通常为 `main`）、工作流文件名（默认 `singbox-srs.yml`）和产物分支（默认 `srs`）。无需先启用或保存，点击 **一键安装 / 更新工作流**。临时安装用 fine-grained Token 需要目标仓库 **Contents、Workflows、Secrets: Read and write** 权限；组织如有要求，先完成审批。该 Token 仅用于本次请求，不保存，安装后可撤销。Worker 长期触发 Token 仍只需 Actions 写权限。
+5. 在弹窗点击 **安装到 GitHub**。系统提交工作流与编译脚本，并加密配置 `SUBPILOT_URL`（当前管理页面的 HTTPS origin）和 `SUBPILOT_SRS_SECRET`（后台保存的共享密钥）。请使用可供 GitHub 访问的 Worker 域名。已有不同内容默认阻止安装；核对后可勾选允许替换，只更新展示的两个路径。分支保护或 Token 权限不足会显示错误；部分成功时会列出已完成步骤，修复后可重试，不强制推送。安装完成后，确认 GitHub Actions 已启用，再启用 SRS 并保存设置。sing-box 应已启用规则来源编排。
+
+   一键安装使用仓库内的 [工作流](./.github/workflows/singbox-srs.yml) 和 [编译脚本](./scripts/compile-singbox-srs.mjs)，自动同步共享密钥，无需复制或查看其原值。
+
+6. 在 GitHub Actions 查看编译结果，然后执行 **配置链接 → 订阅检查 → sing-box** 并更新客户端订阅。首次启用或当前规则版本的 SRS 未就绪时返回 HTTP `503` 和 `Retry-After`，所有必需路由与 DNS 产物完成后才提供完整配置。保留客户端当前配置并按提示重试即可。
+
+编译沿用保存规则变更、手动刷新和每日规则来源变化检测的触发方式；源内容及其他编译输入未变化且产物完整时，不重复编译。原有每 5 分钟待办续建任务检查未完成的 SRS 编译，距上次触发至少 15 分钟后可重新触发；无需新增 GitHub 定时任务。首次启用或更换仓库、工作流分支、产物分支、工作流后也会为当前规则补建 SRS。失败时不会自动降级为 JSON；可在 Actions 查看失败原因，修复仓库、凭据或工作流后等待重试。关闭开关并保存后，生成配置恢复使用 JSON 规则集。
+
+替换长期 Token 会保留共享密钥，无需重新安装工作流。清除凭据前须先关闭 SRS 并保存配置；清除会同时停用 Token 和共享密钥，不会退回使用旧部署凭据，也不会删除 GitHub 产物。清除后重新配置会生成新共享密钥，须再次安装工作流。KV 的传播可能有延迟，刚保存后提示未配置时请稍后重试。
+
+已有 `SINGBOX_SRS_GITHUB_TOKEN` 和 `SINGBOX_SRS_SECRET` Worker Secrets 的部署仍可使用；首次通过页面保存后，以加密 KV 记录为准并保留已有共享密钥。`ADMIN_TOKEN_HASH` 和 `CONFIG_ENCRYPTION_KEY` 仍由 Worker Secrets 管理。本地开发可使用页面保存到本地 KV；一键安装及 GitHub 回调需要可从公网访问的 HTTPS 地址。
+
+工作流从 Worker 获取加密快照对应的规则正文，将路由与 DNS 产物以及发布清单作为一次 Git 提交写入产物分支；没有该分支时自动创建。工作流使用自带的 `GITHUB_TOKEN`（`contents: write`），无需额外的写仓库 PAT。产物分支不得为仓库默认分支或工作流所在分支，且分支保护规则需允许 Actions 写入。不同规则集并行发布时会重试冲突，不强制推送，也不覆盖其他规则集。Worker 确认当前版本的公开发布清单后才提供配置。
+
+固定地址格式为 `https://raw.githubusercontent.com/<owner>/<repo>/refs/heads/<output-branch>/rules/<output-key>/<bucket>.srs`。`output-key` 是规则集名称的 SHA-256，`bucket` 为 `combined`、`domain`、`ipcidr` 或 `dns`；同名规则集更新内容不会改变地址。GitHub 的缓存可能使客户端稍晚看到更新。仓库须公开，SRS 规则内容可被任何人读取；不要发布不适合公开的规则。订阅源地址、Worker 地址及访问凭据不会写入产物分支或 Actions 日志。关闭功能或删除、重命名规则集不会删除已经公开的文件或 Git 历史，需要时自行清理仓库。每个 SubPilot 部署应使用独立仓库，Actions Secrets 在仓库内共享。
+
+编译源快照以加密形式在 KV 保留 24 小时，Worker 仅保留发布状态，不储存或代理 SRS 二进制；源 JSON 仍按原有缓存机制维护。长期 GitHub Token 和共享密钥存放在独立的加密 KV 记录中，不进入普通配置接口、配置快照或导出文件；共享密钥另同步至 GitHub Actions Secrets，临时安装 Token 不保存。
 
 ### 订阅检查
 
@@ -409,7 +437,9 @@ sing-box 配置和托管规则文件下载只读取与当前配置及编译版�
 | Worker 名称、KV namespace ID、自定义域名 | 未跟踪的本地 `wrangler.jsonc` |
 | 管理员 token 的 SHA-256 hash | Worker Secret `ADMIN_TOKEN_HASH`，不保存 token 明文 |
 | 配置加密密钥 | Worker Secret `CONFIG_ENCRYPTION_KEY` |
-| 配置快照、上游与规则缓存、编译规则、Bot Token、可恢复读取 token | 加密的 Workers KV 数据 |
+| 配置快照、上游与规则缓存、Worker 编译的 JSON/文本规则、Bot Token、可恢复读取 token | 加密的 Workers KV 数据 |
+| 选配 GitHub Actions 编译的 SRS 产物 | 公开 GitHub 仓库的独立产物分支 |
+| SRS 工作流触发 token、共享密钥 | 独立加密 KV 记录（兼容旧 Worker Secrets）；共享密钥另存于 Actions Secret |
 | 管理员会话 | HttpOnly 签名 Cookie，不创建 `session:*` KV 键 |
 
 订阅链接的读取 token 授予配置访问权限。不要把 token、私有配置、密码、MITM CA 或其他运行数据提交到仓库、Issue 或公开聊天。程序更新保留原 Secrets；丢失或替换加密密钥会使对应数据无法解密。
