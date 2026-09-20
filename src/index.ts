@@ -27,7 +27,7 @@ import { readCachedUpdateStatus, getUpdateStatus } from "./update-check";
 import { APP_VERSION, RELEASE_REPOSITORY } from "./version";
 import { singboxSchema, validateSingboxSection } from "./singbox-validation";
 import { handleSrsCredentials } from "./singbox-srs-credentials";
-import { handleSingboxSrsJobApi, retrySingboxSrsJobs, validateSingboxSrsCredentials } from "./singbox-srs";
+import { handleSingboxSrsRetry, handleSingboxSrsStatus, handleSingboxSrsJobApi, retrySingboxSrsJobs, validateSingboxSrsCredentials } from "./singbox-srs";
 import { applyTransforms, buildChainNodes, buildConfiguredProxyNodes, ensureUniqueProxyPolicyNames } from "./node-transforms";
 import { badRequest, forbidden, jsonResponse, notFound, payloadTooLarge, readRequestJsonWithLimit, RequestBodyTooLargeError, sha256Hex, textResponse, tooManyRequests, unauthorized } from "./util";
 
@@ -60,7 +60,7 @@ export default {
       await runRuleSetUpdateJobs(env, config, {
         deadline, loadCurrentConfig: () => loadConfig(env)
       });
-      await retrySingboxSrsJobs(env, await loadConfig(env), deadline);
+      await retrySingboxSrsJobs(env, await loadConfig(env), Date.now() + 25_000);
       return;
     }
     if (controller.cron === RULE_SET_REFRESH_CRON) {
@@ -171,6 +171,10 @@ function handleLogout(request: Request): Response {
 async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   if (!await isAdminRequest(env, request)) return unauthorized();
   const url = new URL(request.url);
+
+  if (url.pathname === "/api/singbox/srs/retry" && request.method === "POST") return handleSingboxSrsRetry(request, env);
+
+  if (url.pathname === "/api/singbox/srs/status" && request.method === "GET") return handleSingboxSrsStatus(env);
 
   if (url.pathname === "/api/singbox/srs/credentials") return handleSrsCredentials(request, env);
 

@@ -267,7 +267,7 @@ sing-box 的 `.srs` 地址在自动识别模式下直接输出为独立的 `remo
 3. 打开 **系统设置 → sing-box SRS 编译（选配）→ 配置编译凭据**，输入上述长期 Token 并点击 **保存凭据**。后台自动生成共享密钥，使用已有 `CONFIG_ENCRYPTION_KEY` 加密后写入独立 KV 记录；不需要添加 SRS Worker Secrets。此操作独立于底部“保存配置”，页面只显示配置状态，不回显原值。
 
 4. 打开 **系统设置 → sing-box SRS 编译（选配）**，填写公开仓库 `owner/repo`、仓库默认分支（通常为 `main`）、工作流文件名（默认 `singbox-srs.yml`）和产物分支（默认 `srs`）。无需先启用或保存，点击 **一键安装 / 更新工作流**。临时安装用 fine-grained Token 需要目标仓库 **Contents、Workflows、Secrets: Read and write** 权限；组织如有要求，先完成审批。该 Token 仅用于本次请求，不保存，安装后可撤销。Worker 长期触发 Token 仍只需 Actions 写权限。
-5. 在弹窗点击 **安装到 GitHub**。系统提交工作流与编译脚本，并加密配置 `SUBPILOT_URL`（当前管理页面的 HTTPS origin）和 `SUBPILOT_SRS_SECRET`（后台保存的共享密钥）。请使用可供 GitHub 访问的 Worker 域名。已有不同内容默认阻止安装；核对后可勾选允许替换，只更新展示的两个路径。分支保护或 Token 权限不足会显示错误；部分成功时会列出已完成步骤，修复后可重试，不强制推送。安装完成后，确认 GitHub Actions 已启用，再启用 SRS 并保存设置。sing-box 应已启用规则来源编排。
+5. 在弹窗点击 **安装到 GitHub**。系统提交工作流与编译脚本，并加密配置 `SUBPILOT_URL`（当前管理页面的 HTTPS origin）和 `SUBPILOT_SRS_SECRET`（后台保存的共享密钥）。请使用可供 GitHub 访问的 Worker 域名。已有不同内容默认阻止安装；核对后可勾选允许替换，只更新展示的两个路径。分支保护或 Token 权限不足会显示错误；部分成功时会列出已完成步骤，修复后可重试，不强制推送。安装完成后，确认 GitHub Actions 已启用，再启用 SRS 并保存设置。sing-box 应已启用规则来源编排。启用 SRS 并保存后会自动启动首次编译，无需手动运行 Actions；未完成任务由后台每五分钟继续处理。可点击“查看编译进度”并刷新，查看规则准备、等待结果和完成数量；触发结果区分 GitHub 已接受、HTTP 拒绝和网络结果不确定，并提供权限或配置排查提示；历史尝试记录无法追溯响应。这不是 GitHub 逐步骤或百分比进度。未完成且规则缓存已就绪的条目提供“强制重试”，跳过 15 分钟间隔；可能重复触发在途任务，已完成产物不会重编译。管理员接口 `GET /api/singbox/srs/status` 返回已保存配置的状态。
 
    一键安装使用仓库内的 [工作流](./.github/workflows/singbox-srs.yml) 和 [编译脚本](./scripts/compile-singbox-srs.mjs)，自动同步共享密钥，无需复制或查看其原值。
 

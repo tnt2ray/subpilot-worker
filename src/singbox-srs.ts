@@ -22,6 +22,8 @@ interface SrsJob {
 
 const JOB_PREFIX = "cache:singboxSrs:job:";
 const DISPATCH_PREFIX = "cache:singboxSrs:dispatch:";
+const RESULT_PREFIX = "cache:singboxSrs:dispatchResult:";
+interface DispatchResult { attemptedAt: number; accepted: boolean; httpStatus?: number }
 const SNAPSHOT_TTL = 24 * 60 * 60;
 const RETRY_MS = 15 * 60_000;
 const NO_STORE = { "cache-control": "no-store, private" };
@@ -61,8 +63,66 @@ export async function singboxSrsReady(env: Env, config: RenderConfig, manifest: 
   return !job.artifacts.length || Boolean(await env.SUBPILOT_CONFIG.get(completeKey(job)));
 }
 
+/** Admin-only snapshot of saved configuration; never dispatches or returns credentials. */
+export async function handleSingboxSrsStatus(env: Env): Promise<Response> {
+  try {
+    const config = renderConfig(configDocument(await loadConfig(env)), "sing-box");
+    const enabled = usesSingboxSrs(config);
+    const outputs: Array<{ name: string; state: string; lastAttemptAt?: number; httpStatus?: number }> = [];
+    if (enabled) {
+      const scoped = ruleSetEnv(env, "sing-box");
+      for (const output of effectiveRuleSetOutputs(config.ruleSets)) {
+        if (!output.enabled || !ruleSetOutputNeedsCompilation(config.ruleSets, output, "sing-box")) continue;
+        const manifest = await readCompiledRuleSetManifest(scoped, output.name, { allowLegacy: false });
+        if (!manifest?.storageId || manifest.outputFingerprint !== await ruleSetOutputFingerprint(config, output)) {
+          outputs.push({ name: output.name, state: "preparing" });
+          continue;
+        }
+        const job = await jobForManifest(config, manifest);
+        if (!job.artifacts.length || await scoped.SUBPILOT_CONFIG.get(completeKey(job))) {
+          outputs.push({ name: output.name, state: "complete" });
+          continue;
+        }
+        const attempt = await env.SUBPILOT_CONFIG.get<number>(`${DISPATCH_PREFIX}${job.id}`, "json");
+        const lastAttemptAt = typeof attempt === "number" && Number.isFinite(attempt) && attempt > 0 ? attempt : undefined;
+        const result = await env.SUBPILOT_CONFIG.get<DispatchResult>(`${RESULT_PREFIX}${job.id}`, "json");
+        const currentResult = lastAttemptAt && result?.attemptedAt === lastAttemptAt ? result : null;
+        const state = currentResult ? (currentResult.accepted ? "accepted" : "dispatch_failed")
+          : !lastAttemptAt ? "pending" : Date.now() - lastAttemptAt >= RETRY_MS ? "retrying" : "awaiting";
+        outputs.push({ name: output.name, state, ...(lastAttemptAt ? { lastAttemptAt } : {}),
+          ...(currentResult?.httpStatus ? { httpStatus: currentResult.httpStatus } : {}) });
+      }
+    }
+    return jsonResponse({ enabled, total: outputs.length, completed: outputs.filter((output) => output.state === "complete").length, outputs }, { headers: NO_STORE });
+  } catch {
+    return jsonResponse({ error: "暂时无法读取编译状态，请重试。 / Compilation status is unavailable; retry shortly." }, { status: 503, headers: NO_STORE });
+  }
+}
+
+/** Admin-only explicit retry for one output; completed artifacts remain untouched. */
+export async function handleSingboxSrsRetry(request: Request, env: Env): Promise<Response> {
+  const origin = request.headers.get("origin");
+  if (origin && origin !== new URL(request.url).origin) return jsonResponse({ error: "Invalid origin" }, { status: 403, headers: NO_STORE });
+  let body: { name?: unknown };
+  try { body = await readRequestJsonWithLimit(request, 4096); }
+  catch { return jsonResponse({ error: "Invalid retry request" }, { status: 400, headers: NO_STORE }); }
+  if (!body || typeof body.name !== "string") return jsonResponse({ error: "Invalid output name" }, { status: 400, headers: NO_STORE });
+  try {
+    const config = renderConfig(configDocument(await loadConfig(env)), "sing-box");
+    const output = effectiveRuleSetOutputs(config.ruleSets).find((item) => item.name === body.name && item.enabled);
+    if (!usesSingboxSrs(config) || !output || !ruleSetOutputNeedsCompilation(config.ruleSets, output, "sing-box")) return jsonResponse({ error: "请先启用 SRS 并保存规则配置。 / Enable SRS and save the rule configuration first." }, { status: 409, headers: NO_STORE });
+    const scoped = ruleSetEnv(env, "sing-box");
+    const manifest = await readCompiledRuleSetManifest(scoped, output.name, { allowLegacy: false });
+    if (!manifest?.storageId || manifest.outputFingerprint !== await ruleSetOutputFingerprint(config, output)) return jsonResponse({ error: "规则缓存尚未准备完成，请稍后重试。 / Rule cache is not ready; retry later." }, { status: 409, headers: NO_STORE });
+    await ensureSingboxSrsJob(scoped, config, manifest, Date.now() + 25_000, true);
+    return jsonResponse({ ok: true }, { headers: NO_STORE });
+  } catch {
+    return jsonResponse({ error: "重试未成功，请刷新编译进度查看请求结果。 / Retry failed; refresh compilation progress for the request result." }, { status: 502, headers: NO_STORE });
+  }
+}
+
 /** Called by the existing compiler, including its unchanged-source fast path. */
-export async function ensureSingboxSrsJob(env: Env, config: RenderConfig, manifest: CompiledRuleSetManifest, deadline?: number): Promise<void> {
+export async function ensureSingboxSrsJob(env: Env, config: RenderConfig, manifest: CompiledRuleSetManifest, deadline?: number, force = false): Promise<void> {
   if (!usesSingboxSrs(config) || await singboxSrsReady(env, config, manifest)) return;
   const credentials = await readSrsCredentials(env);
   if (!credentials.token || !credentials.sharedSecret) throw new Error("请在系统设置中配置 SRS 编译凭据。 / Configure SRS compilation credentials in system settings.");
@@ -70,7 +130,7 @@ export async function ensureSingboxSrsJob(env: Env, config: RenderConfig, manife
   if (deadline && deadline - Date.now() < 2_000) return;
   const job = await jobForManifest(config, manifest);
   const lastDispatch = await env.SUBPILOT_CONFIG.get<number>(`${DISPATCH_PREFIX}${job.id}`, "json");
-  if (lastDispatch && Date.now() - lastDispatch < RETRY_MS) return;
+  if (!force && lastDispatch && Date.now() - lastDispatch < RETRY_MS) return;
   const secret = requireSecret(env, "CONFIG_ENCRYPTION_KEY");
   // Immutable snapshots let an Action finish even if source caches are pruned.
   if (!await env.SUBPILOT_CONFIG.get(`${JOB_PREFIX}${job.id}`)) {
@@ -82,12 +142,15 @@ export async function ensureSingboxSrsJob(env: Env, config: RenderConfig, manife
     await env.SUBPILOT_CONFIG.put(`${JOB_PREFIX}${job.id}`, await encryptJson(secret, job), { expirationTtl: SNAPSHOT_TTL });
   }
   // This marker also bounds retries after timeouts with an uncertain dispatch result.
-  await env.SUBPILOT_CONFIG.put(`${DISPATCH_PREFIX}${job.id}`, JSON.stringify(Date.now()), { expirationTtl: SNAPSHOT_TTL });
+  const attemptedAt = Date.now();
+  await env.SUBPILOT_CONFIG.put(`${DISPATCH_PREFIX}${job.id}`, JSON.stringify(attemptedAt), { expirationTtl: SNAPSHOT_TTL });
   const settings = config.settings.singboxSrs!;
   const repository = settings.repository.split("/").map(encodeURIComponent).join("/");
+  let httpStatus: number | undefined;
+  let accepted = false;
   try {
     const response = await fetch(`https://api.github.com/repos/${repository}/actions/workflows/${encodeURIComponent(settings.workflow)}/dispatches`, {
-      method: "POST", redirect: "error",
+      method: "POST", redirect: "manual",
       headers: {
         accept: "application/vnd.github+json", "content-type": "application/json",
         authorization: `Bearer ${credentials.token}`,
@@ -96,12 +159,17 @@ export async function ensureSingboxSrsJob(env: Env, config: RenderConfig, manife
       body: JSON.stringify({ ref: settings.ref, inputs: { job_id: job.id, output_key: srsOutputKey(manifest.outputName) } }),
       signal: AbortSignal.timeout(Math.max(1, Math.min(8_000, (deadline ?? Date.now() + 8_000) - Date.now())))
     });
-    await response.body?.cancel();
-    if (!response.ok) throw new Error("dispatch");
+    httpStatus = response.status;
+    accepted = response.ok;
+    await response.body?.cancel().catch(() => undefined);
   } catch {
-    // Never expose GitHub response bodies, private repository names or tokens.
-    throw new Error("GitHub Actions SRS 编译触发失败，请检查仓库、工作流及凭据；后台会自动重试。");
+    // A network failure does not prove GitHub rejected the request.
   }
+  // Use a separate key to avoid two immediate writes to the attempt marker.
+  // Persist only status codes; never GitHub response bodies or credentials.
+  await env.SUBPILOT_CONFIG.put(`${RESULT_PREFIX}${job.id}`, JSON.stringify({ attemptedAt, accepted,
+    ...(httpStatus !== undefined ? { httpStatus } : {}) } satisfies DispatchResult), { expirationTtl: SNAPSHOT_TTL });
+  if (!accepted) throw new Error("GitHub Actions SRS 编译触发失败，请检查编译进度中的请求结果；后台会自动重试。");
 }
 
 /** Reuse the existing five-minute maintenance trigger for dispatch recovery. */

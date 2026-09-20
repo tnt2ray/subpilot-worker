@@ -38,34 +38,55 @@ export async function handleSingboxSrsInstall(request: Request, env: Env): Promi
     const deadline = Date.now() + 90_000;
     async function api(path: string, method = "GET", payload?: unknown, missing = false): Promise<any> {
       if (Date.now() >= deadline) throw new InstallError("安装超时；请重新安装以继续。 / Installation timed out; retry to continue.");
-      const response = await fetch(`${base}${path}`, {
-        method, redirect: "error", signal: AbortSignal.timeout(Math.min(15_000, deadline - Date.now())),
+      let response: Response;
+      try { response = await fetch(`${base}${path}`, {
+        method, redirect: "manual", signal: AbortSignal.timeout(Math.min(15_000, deadline - Date.now())),
         headers: { authorization: `Bearer ${token}`, accept: "application/vnd.github+json", "user-agent": "SubPilot-SRS-installer", "X-GitHub-Api-Version": "2022-11-28", ...(payload ? { "content-type": "application/json" } : {}) },
         ...(payload ? { body: JSON.stringify(payload) } : {})
-      });
+      }); } catch (error) {
+        const timeout = error instanceof Error && ["TimeoutError", "AbortError"].includes(error.name);
+        throw new InstallError(timeout
+          ? "连接 GitHub 超时，请稍后重试。 / GitHub request timed out; retry shortly."
+          : "无法连接 GitHub API，请稍后重试。 / Could not connect to GitHub API; retry shortly.");
+      }
+      if (response.status >= 300 && response.status < 400) {
+        await response.body?.cancel().catch(() => undefined);
+        throw new InstallError("仓库地址发生重定向，请填写仓库当前的 owner/repo。 / Repository moved; use its current owner/repo.");
+      }
       if (missing && response.status === 404) { await response.body?.cancel(); return null; }
       if (!response.ok) {
         await response.body?.cancel();
         throw new InstallError(`GitHub HTTP ${response.status}。请检查仓库、Token 权限、Actions 设置和分支保护后重试。 / Check repository access, token permissions, Actions settings and branch protection, then retry.`);
       }
-      const text = await readResponseTextWithLimit(response, 1024 * 1024, "GitHub response");
-      return text ? JSON.parse(text) : null;
+      let text: string;
+      try { text = await readResponseTextWithLimit(response, 1024 * 1024, "GitHub response"); }
+      catch { throw new InstallError("读取 GitHub 响应失败或响应超过大小限制，请重试。 / Could not read GitHub response or response exceeded the size limit; retry."); }
+      if (response.status === 204) return null;
+      try {
+        const value = JSON.parse(text);
+        if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error();
+        return value;
+      } catch { throw new InstallError("GitHub 返回了无效数据，请稍后重试。 / GitHub returned invalid response data; retry shortly."); }
     }
-    stage = "检查仓库和文件 / Checking repository and files";
+    stage = "读取仓库信息 / Reading repository information";
     const repo = await api("");
     if (repo.private !== false || repo.archived || repo.disabled || typeof repo.default_branch !== "string") throw new InstallError("请选择可写的公开仓库。 / Select a writable public repository.");
     const branch = repo.default_branch as string;
     if (![branch, `refs/heads/${branch}`].includes(settings.ref) || settings.outputBranch === branch) throw new InstallError("一键安装要求工作流分支为仓库默认分支，产物使用其他分支。 / Use the repository default branch for the workflow and a different output branch.");
+    stage = "读取仓库 Secrets 公钥 / Reading repository Secrets public key";
     const key = await api("/actions/secrets/public-key");
     if (typeof key.key !== "string" || typeof key.key_id !== "string") throw new InstallError("无法读取仓库公钥。 / Repository public key unavailable.");
+    stage = "读取默认分支 / Reading default branch";
     const ref = await api(`/git/ref/heads/${encodeURIComponent(branch)}`);
     if (!sha(ref.object?.sha)) throw new InstallError("仓库需要已有的默认分支；请先初始化仓库。 / Initialize the repository default branch first.");
     const head = ref.object.sha as string;
+    stage = "读取默认分支提交 / Reading default branch commit";
     const commit = await api(`/git/commits/${head}`);
     if (!sha(commit.tree?.sha)) throw new InstallError("无法读取默认分支。 / Cannot read the default branch.");
     const files = [{ path: `.github/workflows/${settings.workflow}`, content: workflow }, { path: "scripts/compile-singbox-srs.mjs", content: script }];
     const changed = [];
     for (const file of files) {
+      stage = `检查文件 ${file.path} / Checking file ${file.path}`;
       const existing = await api(`/contents/${file.path}?ref=${head}`, "GET", undefined, true);
       const expected = createHash("sha1").update(`blob ${new TextEncoder().encode(file.content).length}\0`).update(file.content).digest("hex");
       if (existing?.type === "file" && !existing.target && !existing.submodule_git_url && existing.sha === expected) continue;
@@ -73,6 +94,7 @@ export async function handleSingboxSrsInstall(request: Request, env: Env): Promi
       changed.push({ ...file, mode: "100644", type: "blob" });
     }
     // Encrypt before any mutation so invalid keys fail without a partial install.
+    stage = "加密工作流凭据 / Encrypting workflow credentials";
     const secrets = [
       { name: "SUBPILOT_URL", encrypted_value: sealGitHubSecret(key.key, url.origin) },
       { name: "SUBPILOT_SRS_SECRET", encrypted_value: sealGitHubSecret(key.key, sharedSecret) }
@@ -94,7 +116,7 @@ export async function handleSingboxSrsInstall(request: Request, env: Env): Promi
     return jsonResponse({ ok: true, completed, ...status }, { headers });
   } catch (error) {
     // Never expose or log response bodies, request payloads, tokens or network URLs.
-    const detail = error instanceof InstallError ? error.message : "请求无效或 GitHub 暂时不可用，请检查配置后重试。 / Invalid request or GitHub unavailable; check settings and retry.";
+    const detail = error instanceof InstallError ? error.message : "安装器处理失败，请报告当前步骤以便排查。 / Installer processing failed; report the current step for diagnosis.";
     return jsonResponse({ error: `${stage}: ${detail}${completed.length ? ` 已完成 / Completed: ${completed.join("; ")}` : ""} 后续可安全重试。 / You can retry to finish.`, completed }, { status: 400, headers });
   } finally { token = ""; }
 }
