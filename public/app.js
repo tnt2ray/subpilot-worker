@@ -126,12 +126,12 @@ function render() {
   $("#navigation").innerHTML = NAV.map(([id, zh, en, img]) => `<a href="#${id}" class="${state.page === id ? "active" : ""}" ${state.page === id ? 'aria-current="page"' : ""}>${icon(img)}${state.lang === "zh" ? zh : en}</a>`).join("");
   const page = NAV.find((item) => item[0] === state.page) || NAV[0];
   $("#page-title").textContent = state.lang === "zh" ? page[1] : page[2];
-  $("#header-actions").innerHTML = state.page === "clients" && state.client === "singbox" ? `<span class="muted small">sing-box 1.15.0-alpha.6</span>${btn(t("迁移问题", "Migration issues"), "diagnostics")}` : state.page === "clients" && state.client === "clash" ? `<span class="muted small">Mihomo v1.19.31</span>` : "";
+  $("#header-actions").innerHTML = state.page === "clients" && state.client === "singbox" ? `<span class="muted small">sing-box 1.15.0-alpha.6</span>` : state.page === "clients" && state.client === "clash" ? `<span class="muted small">Mihomo v1.19.31</span>` : "";
   $("#language").textContent = state.lang === "zh" ? "中文 / EN" : "EN / 中文";
   $("#logout").textContent = t("退出登录", "Sign out");
   renderSidebarVersion();
   $("#migration-banner").hidden = !state.migration;
-  $("#migration-banner").innerHTML = state.migration ? `<div class="notice warning"><h2>${t("配置升级待确认", "Configuration migration required")}</h2><p>${t("Surge 与 clash 保留原设置；sing-box 从 Clash 初始化 DNS、策略组和分流规则，并迁移 Surge 的 Tailscale。确认迁移后移除 Stash 和 Shadowrocket。", "Surge and clash retain their settings. sing-box initializes DNS, groups and routing from Clash, and Tailscale from Surge. Confirm migration to remove Stash and Shadowrocket.")}</p><div class="toolbar">${btn(t("查看并确认迁移", "Review migration"), "migration")}</div></div>` : "";
+  $("#migration-banner").innerHTML = state.migration ? `<div class="notice warning"><h2>${t("配置升级待确认", "Configuration upgrade required")}</h2><p>${t("升级旧版配置格式，保留 Surge 与 Clash 各自的设置；sing-box 使用独立的原生默认配置。确认升级后移除 Stash 和 Shadowrocket。", "Upgrade the legacy configuration format while preserving the separate Surge and Clash settings. sing-box starts with independent native defaults. Confirm the upgrade to remove Stash and Shadowrocket.")}</p><div class="toolbar">${btn(t("查看并确认升级", "Review upgrade"), "migration")}</div></div>` : "";
   const views = { status: renderStatus, sources: () => renderEntities("sources"), nodes: () => renderEntities("nodes"), groups: renderGroups, clients: renderClient, links: renderLinks, system: renderSystem };
   $("#content").innerHTML = (views[state.page] || renderStatus)();
   updateStatus();
@@ -658,15 +658,15 @@ function renderSingboxSrsSettings() {
   const options = state.config.settings.singboxSrs || { enabled: false, repository: "", ref: "main", workflow: "singbox-srs.yml", outputBranch: "srs" };
   const path = "settings.singboxSrs";
   return section(t("sing-box SRS 编译（选配）", "sing-box SRS compilation (optional)"),
-    `<p class="help">${t("通过 GitHub Actions 将 sing-box 规则集编译为 SRS，并发布到公开仓库的独立分支。生成配置直接使用仓库文件的固定地址；规则内容会公开。首次编译期间请保留客户端当前配置。", "Compile sing-box rule sets with GitHub Actions and publish them to a dedicated branch in a public repository. Generated configurations use fixed repository URLs; rule contents become public. Keep your current client configuration until the first publication completes.")}</p>`
+    `<p class="help">${t("通过 GitHub Actions 将 sing-box 规则集编译为 SRS，并发布到公开仓库的独立分支；规则内容会公开。SRS 未就绪时自动使用 JSON 规则集，不影响已就绪规则的订阅下载。编译完成后更新订阅即可使用 SRS。", "Compile sing-box rule sets with GitHub Actions and publish them to a dedicated branch in a public repository; rule contents become public. While SRS is unavailable, subscriptions use ready JSON rule sets. Update the subscription after compilation to use SRS.")}</p>`
     + field(`${path}.enabled`, options.enabled, { label: t("启用 SRS 编译", "Enable SRS compilation") })
     + `<div id="singbox-srs-settings">`
     + field(`${path}.repository`, options.repository, { label: t("公开 GitHub 仓库（owner/repo）", "Public GitHub repository (owner/repo)") })
     + field(`${path}.ref`, options.ref, { label: t("GitHub 分支或标签", "GitHub branch or tag") })
     + field(`${path}.workflow`, options.workflow, { label: t("GitHub 工作流文件名", "GitHub workflow filename") })
     + field(`${path}.outputBranch`, options.outputBranch || "srs", { label: t("SRS 产物分支", "SRS output branch") })
-    + `<div class="toolbar">${btn(t("配置编译凭据", "Configure compilation credentials"), "srs-credentials")}${btn(t("一键安装 / 更新工作流", "Install / update workflow"), "install-srs")}${btn(t("查看编译进度", "View compilation progress"), "srs-progress")}</div>`
-    + `<p class="help">${t("先配置编译凭据，再一键安装工作流。启用 SRS 并保存配置后会自动启动首次编译，无需手动运行 Actions。长期 GitHub Token 需具有目标仓库 Actions 读写权限；共享密钥自动生成，安装时同步到 GitHub。凭据单独加密保存，不包含在配置导出中。请在公开仓库启用 Actions；产物分支不能使用默认分支或工作流分支。", "Configure compilation credentials, then install the workflow. Enabling SRS and saving configuration automatically starts the first compilation; no manual Actions run is needed. The persistent GitHub token needs Actions read/write access to the target repository. A shared secret is generated automatically and synchronized to GitHub during installation. Credentials are encrypted separately and excluded from configuration exports. Enable Actions in the public repository; use a separate output branch.")}</p></div>`);
+    + `<div class="toolbar">${btn(t("配置向导", "Setup wizard"), "srs-setup", "", "primary")}${btn(t("查看编译进度", "View compilation progress"), "srs-progress")}</div>`
+    + `<p class="help">${t("配置顺序：① 创建公开仓库并添加 README；② 配置编译凭据；③ 安装工作流（沿用同一个 Token）；④ 启用 SRS 并保存；⑤ 查看编译进度。启用 SRS 并保存配置后会自动启动首次编译，无需手动运行 Actions。GitHub Token 需具有目标仓库 Actions、Contents、Workflows、Secrets 读写权限；共享密钥自动生成，安装时同步到 GitHub。凭据单独加密保存，不包含在配置导出中。请在公开仓库启用 Actions；产物分支不能使用默认分支或工作流分支。", "Setup: 1. Create a public repository with a README. 2. Configure compilation credentials. 3. Install the workflow with the same token. 4. Enable SRS and save. 5. View compilation progress. Enabling SRS and saving configuration automatically starts the first compilation; no manual Actions run is needed. The GitHub token needs Actions, Contents, Workflows and Secrets read/write access to the target repository. A shared secret is generated automatically and synchronized to GitHub during installation. Credentials are encrypted separately and excluded from configuration exports. Enable Actions in the public repository; use a separate output branch.")}</p></div>`);
 }
 function srsDispatchFailure(code) {
   const hints = {
@@ -681,6 +681,7 @@ function srsDispatchFailure(code) {
 async function showSrsProgress() {
   const status = await api("/api/singbox/srs/status");
   const labels = {
+    workflow_update_required: t("请通过配置向导更新 SRS 工作流", "Update the SRS workflow through the setup wizard"),
     preparing: t("正在准备规则", "Preparing rules"),
     pending: t("等待触发", "Pending dispatch"),
     awaiting: t("已记录尝试，尚无请求结果", "Attempt recorded; request result unavailable"),
@@ -691,12 +692,13 @@ async function showSrsProgress() {
   };
   modal(t("SRS 编译进度", "SRS compilation progress"),
     `<p>${!status.enabled ? t("已保存配置尚未启用 SRS 或规则来源编排。", "SRS or the rule plan is disabled in the saved configuration.") : status.total === 0 ? t("没有需要编译的规则集。", "No rule sets need compilation.") : `${t("已完成规则集", "Completed rule sets")}: ${status.completed} / ${status.total}`}</p>
-    <ul>${status.outputs.map((output) => `<li><strong>${esc(output.name)}</strong>: ${esc(labels[output.state] || output.state)}${output.state === "dispatch_failed" ? ` — ${esc(srsDispatchFailure(output.httpStatus))}` : ""} ${!["complete", "preparing"].includes(output.state) ? btn(t("强制重试", "Force retry"), "srs-force-retry", `data-output="${esc(output.name)}"`) : ""}</li>`).join("")}</ul>
-    <p class="help">${t("强制重试会跳过等待时间，可能重复触发尚在运行的任务。", "Force retry bypasses the waiting period and may dispatch a duplicate of a running job.")}</p>
+    <ul>${status.outputs.map((output) => `<li><strong>${esc(output.name)}</strong>: ${esc(labels[output.state] || output.state)}${output.state === "dispatch_failed" ? ` — ${esc(srsDispatchFailure(output.httpStatus))}` : ""}</li>`).join("")}</ul>
+    ${status.outputs.some((output) => !["complete", "preparing", "workflow_update_required"].includes(output.state)) ? btn(t("强制重试全部未完成规则集", "Retry all unfinished rule sets"), "srs-force-retry", `data-output="${esc(status.outputs.find((output) => !["complete", "preparing", "workflow_update_required"].includes(output.state)).name)}"`) : ""}
+    <p class="help">${t("强制重试会触发一次全量检查，跳过已完成且未变化的规则集；可能再排入一个批次。", "Force retry schedules one batch checking all outputs and skipping unchanged completed ones; another batch may be queued.")}</p>
     <p class="help">${t("显示已保存配置的状态；KV 同步可能略有延迟。等待结果不代表 GitHub 正在运行，请在仓库 Actions 查看具体步骤及失败原因。", "Shows saved configuration status; KV synchronization may cause a delay. Awaiting a result does not confirm a running GitHub job. Check repository Actions for execution steps and failures.")}</p>`, showSrsProgress, t("刷新状态", "Refresh status"));
 }
 function srsCredentialSummary(status) {
-  return `<p>${t("长期 GitHub Token", "Persistent GitHub token")}: <strong>${status.dispatchTokenConfigured ? t("已配置", "Configured") : t("未配置", "Not configured")}</strong></p>
+  return `<p>${t("GitHub Token", "GitHub token")}: <strong>${status.dispatchTokenConfigured ? t("已配置", "Configured") : t("未配置", "Not configured")}</strong></p>
     <p>${t("共享密钥", "Shared secret")}: <strong>${status.sharedSecretConfigured ? t("已配置", "Configured") : t("保存 Token 时自动生成", "Generated when saving the token")}</strong></p>
     ${status.storage === "worker" ? `<p class="help">${t("当前沿用已有部署凭据；保存后使用页面配置，共享密钥保持不变。", "Using existing deployment credentials; saving switches to page-managed credentials and preserves the shared secret.")}</p>` : ""}`;
 }
@@ -708,10 +710,10 @@ async function showSrsCredentials() {
   const status = await api("/api/singbox/srs/credentials");
   modal(t("SRS 编译凭据", "SRS compilation credentials"),
     `<div id="srs-credential-status" role="status" aria-live="polite">${srsCredentialSummary(status)}</div>
-    <label for="srs-credential-token">${t("新的长期 GitHub Token", "New persistent GitHub token")}</label>
+    <label for="srs-credential-token">${t("新的GitHub Token", "New persistent GitHub token")}</label>
     <input id="srs-credential-token" type="password" autocomplete="new-password" spellcheck="false" maxlength="255">
     <p class="help"><a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener noreferrer">${t("前往 GitHub 创建 Token（新窗口）", "Create a token on GitHub (opens in a new window)")}</a></p>
-    <p class="help">${t("仅选择目标仓库，授予 Actions 读写权限。凭据独立保存，无需保存整份配置；原值不会回显。替换 Token 不会轮换共享密钥。首次保存后请一键安装工作流。", "Select only the target repository and grant Actions read/write access. Credentials are saved independently of configuration saves; stored values are never displayed. Replacing the token preserves the shared secret. Install the workflow after the first save.")}</p>
+    <p class="help">${t("仅选择目标仓库，授予 Actions、Contents、Workflows、Secrets 读写权限。凭据独立保存，无需保存整份配置；原值不会回显。替换 Token 不会轮换共享密钥。首次保存后请一键安装工作流。", "Select only the target repository and grant Actions, Contents, Workflows and Secrets read/write access. Credentials are saved independently of configuration saves; stored values are never displayed. Replacing the token preserves the shared secret. Install the workflow after the first save.")}</p>
     ${btn(t("清除编译凭据", "Clear compilation credentials"), "clear-srs-credentials", "", "danger")}
     <p id="srs-credential-result" role="status" aria-live="polite"></p>`, async () => {
       if (modal.savingSrsCredentials || modal.retryingSrs) return;
@@ -742,46 +744,75 @@ function showClearSrsCredentials() {
       toast(t("编译凭据已清除", "Compilation credentials cleared"));
     }, t("确认清除", "Confirm clear"));
 }
-async function showSrsInstaller() {
-  const settings = structuredClone(state.config.settings.singboxSrs);
-  const invalid = validateSingboxSrsSettings({ ...settings, enabled: true }, state.lang);
-  if (invalid) throw Error(invalid);
+async function showSrsSetup() {
   const status = await api("/api/singbox/srs/install/status");
-  const ready = status.sharedSecretConfigured;
-  modal(t("安装 SRS 工作流", "Install SRS workflow"),
-    `<p>${t("将向以下公开仓库的默认分支提交工作流和编译脚本，并更新仓库的 SUBPILOT_URL 与 SUBPILOT_SRS_SECRET。请为每个 SubPilot 部署使用独立仓库，并在 GitHub 启用 Actions。", "Commit the workflow and compiler script to the public repository's default branch and update its SUBPILOT_URL and SUBPILOT_SRS_SECRET. Use a separate repository per SubPilot deployment and enable Actions in GitHub.")}</p>
-    <p><strong>${esc(settings.repository)}</strong> · ${esc(settings.ref)}</p>
-    <ul><li><code>.github/workflows/${esc(settings.workflow)}</code></li><li><code>scripts/compile-singbox-srs.mjs</code></li></ul>
-    <p class="help">${t("工作流分支必须为仓库默认分支。安装不会保存当前设置或启用 SRS。临时 Token 仅用于本次请求，不保存；需要目标仓库 Contents、Workflows、Secrets 的读写权限，组织仓库需完成审批。", "The workflow ref must be the default branch. Installation does not save settings or enable SRS. The temporary token is used only for this request and is not stored. Grant Contents, Workflows and Secrets read/write access to the target repository; complete organization approval if required.")}</p>
-    ${!ready ? `<p class="danger-text">${t("请先关闭此窗口，在“配置编译凭据”中保存长期 GitHub Token，然后重新打开安装窗口。", "Close this dialog, save a persistent GitHub token in Configure compilation credentials, then reopen the installer.")}</p>` : ""}
-    ${!status.dispatchTokenConfigured ? `<p class="help">${t("启用前还需在“配置编译凭据”中保存长期 GitHub Token，授予目标仓库 Actions 读写权限。", "Before enabling SRS, save a persistent GitHub token with Actions read/write access in Configure compilation credentials.")}</p>` : ""}
-    <label for="srs-install-token">${t("临时安装 Token", "Temporary installation token")}</label><input id="srs-install-token" type="password" autocomplete="off" spellcheck="false" ${ready ? "" : "disabled"}>
-    <label><input id="srs-install-replace" type="checkbox">${t("允许替换上述路径中内容不同的已有文件", "Allow replacing different existing files at the paths above")}</label>
-    <p id="srs-install-result" role="status" aria-live="polite"></p>`, ready ? async () => {
+  const settings = state.config.settings.singboxSrs || {};
+  const callbackOrigin = status.callbackOrigin || (/^[a-z0-9-]+\.[a-z0-9-]+\.workers\.dev$/.test(location.hostname) ? location.origin : "");
+  modal(t("SRS 配置向导", "SRS setup wizard"),
+    `<p>${t("按顺序完成检查、安装和启用。仓库文件公开；凭据仅保存为加密数据或 GitHub Secrets。不会保存其他页面的草稿。", "Check, install and enable in order. Repository files are public; credentials remain encrypted or in GitHub Secrets. Other page drafts are not saved.")}</p>
+    <label>${t("1. 公开仓库（owner/repo）", "1. Public repository (owner/repo)")}<input id="srs-setup-repo" value="${esc(settings.repository || "")}"></label>
+    <p class="help"><a href="https://github.com/new" target="_blank" rel="noopener noreferrer">${t("创建仓库（勾选添加 README）", "Create repository (include a README)")}</a></p>
+    <label>${t("2. 工作流访问地址", "2. Workflow callback address")}<input id="srs-setup-origin" type="url" value="${esc(callbackOrigin)}" required></label>
+    <p class="help">${t("自动填入上次成功安装时使用的地址。建议填写本部署的 workers.dev 地址，避免自定义域名的人机验证；首次升级后如果地址为空，请重新填写一次。仅检查地址格式，不检查连通性；请确认地址属于本部署。实际连接由 GitHub Action 执行。", "Uses the address from the last successful installation. Prefer this deployment's workers.dev address to avoid custom-domain bot challenges. If the field is empty after upgrading, enter it once. Only address format is checked, not connectivity; ensure it belongs to your deployment. GitHub Actions makes the actual connection.")}</p>
+    <label>${t("3. GitHub Token", "3. GitHub token")}<input id="srs-setup-token" type="password" autocomplete="new-password"></label>
+    <p class="help">${status.dispatchTokenConfigured ? t("已配置，留空沿用；原 Token 需具备以下全部权限。", "Configured; leave blank to reuse. The stored token must have all permissions below.") : t("必填。", "Required.")} ${t("仅选择目标仓库，授予 Actions、Contents、Workflows、Secrets 读写权限。同一个 Token 用于安装与日常编译，加密保存在 KV；启用期间请勿撤销。", "Select only the target repository and grant Actions, Contents, Workflows and Secrets read/write. This token is used for installation and ongoing compilation and stored encrypted in KV; keep it valid while SRS is enabled.")} <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener noreferrer">${t("申请 Token", "Create token")}</a></p>
+    <details><summary>${t("高级设置", "Advanced settings")}</summary>
+    <label>${t("工作流分支（仓库默认分支）", "Workflow branch (repository default)")}<input id="srs-setup-ref" value="${esc(settings.ref || "main")}"></label>
+    <label>${t("产物分支", "Output branch")}<input id="srs-setup-output" value="${esc(settings.outputBranch || "srs")}"></label>
+    </details>
+    <p class="help">${t("运行向导会自动更新仓库中已有的工作流和编译脚本。", "Running the wizard automatically updates existing workflow and compiler files in the repository.")}</p>
+    <ol id="srs-setup-results" role="status" aria-live="polite"></ol>`, async () => {
       if (modal.installingSrs) return;
-      const input = $("#srs-install-token");
-      let token = input.value.trim();
-      input.value = "";
-      if (!token) throw Error(t("请输入安装 Token", "Enter the installation token"));
-      const replaceExisting = $("#srs-install-replace").checked;
-      const result = $("#srs-install-result");
-      modal.installingSrs = true;
-      input.disabled = true;
-      $("#srs-install-replace").disabled = true;
-      for (const button of $("#modal-actions").querySelectorAll("button")) button.disabled = true;
-      result.textContent = t("正在检查仓库、安装文件并配置 Secrets…", "Checking repository, installing files and configuring Secrets…");
+      const next = { enabled: true, repository: $("#srs-setup-repo").value.trim(), ref: $("#srs-setup-ref").value.trim(), workflow: settings.workflow || "singbox-srs.yml", outputBranch: $("#srs-setup-output").value.trim() };
+      const invalid = validateSingboxSrsSettings(next, state.lang);
+      if (invalid) throw Error(invalid);
+      let token = $("#srs-setup-token").value.trim();
+      $("#srs-setup-token").value = "";
+      if (!token && !status.dispatchTokenConfigured) throw Error(t("请填写所需 Token", "Enter the required tokens"));
+      const callbackOrigin = $("#srs-setup-origin").value.trim();
+      const replaceExisting = true;
+      const controls = [...$("#modal").querySelectorAll("input, button")];
+      const results = $("#srs-setup-results"); results.replaceChildren();
+      const report = (message) => { const li = document.createElement("li"); li.textContent = message; results.append(li); };
+      modal.installingSrs = true; controls.forEach((control) => { control.disabled = true; });
       try {
-        const installed = await api("/api/singbox/srs/install", { method: "POST", body: JSON.stringify({ settings, token, replaceExisting }) });
-        result.textContent = t("安装完成。确认 GitHub Actions 已启用后，关闭窗口，启用 SRS 并保存设置。", "Installation complete. Confirm GitHub Actions is enabled, close this dialog, enable SRS and save settings.") + (installed.dispatchTokenConfigured ? "" : t(" 尚需在“配置编译凭据”中保存长期 GitHub Token。", " A persistent GitHub token is still required in Configure compilation credentials."));
-      } catch (error) { result.textContent = error.message; }
-      finally {
-        token = "";
-        modal.installingSrs = false;
-        input.disabled = false;
-        $("#srs-install-replace").disabled = false;
-        for (const button of $("#modal-actions").querySelectorAll("button")) button.disabled = false;
-      }
-    } : null, t("安装到 GitHub", "Install to GitHub"));
+        const saved = await api("/api/config");
+        if (saved.clients?.singbox?.ruleSets?.mode !== "compiled") throw Error(t("请先启用 sing-box 规则来源编排并保存配置。", "Enable and save the sing-box rule plan first."));
+        if (token) {
+          await api("/api/singbox/srs/credentials", { method: "PUT", body: JSON.stringify({ token }) });
+          status.dispatchTokenConfigured = true;
+        }
+        report(t("编译凭据已配置", "Compilation credentials configured"));
+        report(t("正在检查访问地址和仓库，然后安装工作流…", "Checking callback and repository, then installing workflow…"));
+        const installed = await api("/api/singbox/srs/install", { method: "POST", body: JSON.stringify({ settings: next, token, callbackOrigin, replaceExisting }) });
+        for (const step of installed.completed) {
+          const [zh, en] = step.split(" / ");
+          report(t(zh, en === "configured" ? `${zh.split(" ")[0]} configured` : en || zh));
+        }
+        const updated = await api("/api/config", { method: "PATCH", body: JSON.stringify({ version: 3, settings: { singboxSrs: next } }) });
+        state.config.settings.singboxSrs = updated.settings.singboxSrs;
+        if (state.saved) { const baseline = JSON.parse(state.saved); baseline.settings.singboxSrs = updated.settings.singboxSrs; state.saved = JSON.stringify(baseline); }
+        status.dispatchTokenConfigured = true;
+        report(t("已启用并保存。后台开始准备首次编译；关闭窗口后查看编译进度。", "Enabled and saved. Initial compilation is being prepared; close this dialog to view progress."));
+        const countdown = document.createElement("p");
+        countdown.setAttribute("role", "status");
+        results.after(countdown);
+        const expiresAt = Date.now() + 5000;
+        const updateCountdown = () => {
+          const seconds = Math.max(0, Math.ceil((expiresAt - Date.now()) / 1000));
+          countdown.textContent = t(`配置成功，${seconds} 秒后自动关闭`, `Setup complete. Closing in ${seconds} seconds.`);
+          if (!seconds) closeModal();
+        };
+        updateCountdown();
+        modal.autoCloseTimer = setInterval(updateCountdown, 250);
+        modal.save = null;
+        $("#modal-actions").innerHTML = btn(t("关闭", "Close"), "close-modal");
+      } catch (error) { report(error.message); }
+      finally { token = ""; modal.installingSrs = false; controls.forEach((control) => { control.disabled = false; }); }
+    }, t("检查、安装并启用", "Check, install and enable"));
+}
+async function showSrsInstaller() {
+  await showSrsSetup();
 }
 function renderSystem() {
   const mmdbPaths = [["Surge macOS", "~/Library/Application Support/com.nssurge.surge-mac/GeoLite2-Country.mmdb"], ["Clash Verge Windows", "%APPDATA%\\io.github.clash-verge-rev.clash-verge-rev\\Country.mmdb"], ["Clash Verge macOS", "~/Library/Application Support/io.github.clash-verge-rev.clash-verge-rev/Country.mmdb"]];
@@ -882,6 +913,7 @@ function destroyModalEditors() {
   modal.editors = [];
 }
 function modal(title, body, onSave, saveLabel = t("应用更改", "Apply changes")) {
+  clearInterval(modal.autoCloseTimer);
   destroyModalEditors();
   $("#modal").classList.remove("routing-order-dialog");
   $("#modal-title").textContent = title;
@@ -898,8 +930,9 @@ function modal(title, body, onSave, saveLabel = t("应用更改", "Apply changes
 }
 function closeModal() {
   if (modal.generatingCa || modal.installingSrs || modal.savingSrsCredentials || modal.retryingSrs) return;
-  for (const input of document.querySelectorAll("#srs-install-token, #srs-credential-token")) input.value = "";
+  for (const input of document.querySelectorAll("#srs-install-token, #srs-credential-token, #srs-setup-token")) input.value = "";
   destroyModalEditors();
+  clearInterval(modal.autoCloseTimer);
   $("#modal").close();
   modal.save = null;
 }
@@ -1305,23 +1338,6 @@ function updateSubscriptionCheck() {
   const container = $("#subscription-check-result");
   if (container) container.innerHTML = renderSubscriptionCheck();
 }
-function showDiagnostics() {
-  const items = state.config.clients[state.client].migrationIssues || [];
-  $("#diagnostics-title").textContent = t("迁移问题", "Migration issues");
-  $("#diagnostic-items").innerHTML = `<p class="muted small">${esc(CLIENTS[state.client].label)}</p>${items.map((item, index) => `<div class="diagnostic ${esc(item.severity)}"><strong>${esc(item.message)}</strong><span class="help">${esc(item.path)}</span>${btn(t("定位设置", "Locate setting"), "locate", `data-path="${esc(item.path)}"`)}${btn(t("已手动处理", "Mark resolved"), "resolve-issue", `data-index="${index}"`)}</div>`).join("")}${!items.length ? `<p class="muted">${t("没有待处理的迁移问题。", "No pending migration issues.")}</p>` : ""}`;
-  if ($("#diagnostics").hidden) showDiagnostics.previousFocus = document.activeElement;
-  $("#diagnostics").hidden = false;
-  for (const selector of [".workspace", ".sidebar", ".save-bar"]) $(selector).inert = true;
-  document.body.classList.add("drawer-open");
-  $("#close-diagnostics").focus();
-}
-function closeDiagnostics() {
-  const wasOpen = !$("#diagnostics").hidden;
-  $("#diagnostics").hidden = true;
-  for (const selector of [".workspace", ".sidebar", ".save-bar"]) $(selector).inert = false;
-  document.body.classList.remove("drawer-open");
-  if (wasOpen && showDiagnostics.previousFocus?.isConnected) showDiagnostics.previousFocus.focus();
-}
 function download(content, name, type = "application/json") {
   const url = URL.createObjectURL(new Blob([content], { type }));
   const a = document.createElement("a");
@@ -1332,17 +1348,17 @@ function download(content, name, type = "application/json") {
 }
 async function reviewMigration() {
   if (!state.migration) return;
-  if (!state.migrationData) throw Error(t("请刷新页面后重新检查迁移。", "Reload the page and review migration again."));
+  if (!state.migrationData) throw Error(t("请刷新页面后重新检查升级。", "Reload the page and review the upgrade again."));
   if (state.invalid.size) throw Error(t("请先修正格式无效的输入。", "Correct invalid inputs first."));
-  modal(t("确认配置迁移", "Confirm configuration migration"), `<p>${t("迁移保留 Surge 与 clash 设置。sing-box 从 Clash 初始化 DNS、策略组和分流规则，自动配置 TUN 和出口接口检测，并迁移 Surge 已启用的 Tailscale。请核对迁移诊断。新配置写入并验证成功后，旧版配置将进入延迟清理。", "Migration preserves Surge and clash settings. sing-box initializes DNS, groups and routing from Clash, configures TUN and interface detection, and migrates enabled Surge Tailscale connections. Review migration diagnostics. Old configuration is scheduled for cleanup after the new configuration is written and verified.")}</p>`, async () => {
+  modal(t("确认配置升级", "Confirm configuration upgrade"), `<p>${t("升级旧版配置格式，保留 Surge 与 Clash 各自的设置。sing-box 使用独立的原生默认配置，DNS、策略组、分流规则和 Tailscale 均在 sing-box 中单独设置。新配置写入并验证成功后，旧版配置将进入延迟清理。", "Upgrade the legacy configuration format while preserving the separate Surge and Clash settings. sing-box starts with independent native defaults; configure its DNS, groups, routing rules and Tailscale separately. Old configuration is scheduled for cleanup after the new configuration is written and verified.")}</p>`, async () => {
     const config = await api("/api/config/migration", { method: "POST", body: JSON.stringify({ config: state.config, fingerprint: state.migrationData.fingerprint }) });
     state.config = config;
     state.saved = JSON.stringify(config);
     state.migration = false;
     closeModal();
     render();
-    toast(t("配置迁移已完成", "Configuration migration completed"));
-  }, t("确认迁移", "Confirm migration"));
+    toast(t("配置升级已完成", "Configuration upgrade completed"));
+  }, t("确认升级", "Confirm upgrade"));
 }
 async function loadLinks() {
   if (state.page !== "links") return;
@@ -1474,7 +1490,6 @@ async function action(button) {
   if (name === "client") {
     state.client = button.dataset.client;
     if (!Object.hasOwn(CLIENT_SECTIONS[state.client], state.section)) state.section = "network";
-    closeDiagnostics();
     render();
     $("#content").scrollTo(0, 0);
     return;
@@ -1515,6 +1530,10 @@ async function action(button) {
     await showSrsProgress();
     return;
   }
+  if (name === "srs-setup") {
+    await showSrsSetup();
+    return;
+  }
   if (name === "install-srs") {
     await showSrsInstaller();
     return;
@@ -1523,11 +1542,6 @@ async function action(button) {
     await modal.save?.();
     return;
   }
-  if (name === "diagnostics") {
-    showDiagnostics();
-    return;
-  }
-
   if (name === "migration") {
     await reviewMigration();
     return;
@@ -1611,34 +1625,6 @@ async function action(button) {
     render();
     return;
   }
-  if (name === "resolve-issue") {
-    const issues = state.config.clients[state.client].migrationIssues;
-    const item = issues[index];
-    modal(t("确认已处理", "Confirm resolution"), `<p>${esc(item?.message)}</p><p>${t("确认已在当前配置中手动完成转换，或已明确决定不保留该行为。", "Confirm that you converted this behavior manually or deliberately chose to omit it.")}</p>`, () => {
-      issues.splice(index, 1);
-      closeModal();
-      changed();
-      showDiagnostics();
-    });
-    return;
-  }
-  if (name === "locate") {
-    closeDiagnostics();
-    if (path.startsWith("groups")) location.hash = "groups";
-    else if (path.startsWith("proxyNodes")) location.hash = "nodes";
-    else {
-      if (path.startsWith("clients.singbox.")) {
-        state.client = "singbox";
-        const key = path.split(".")[2];
-        state.section = key === "ruleSets" ? "rules" : Object.entries(singboxSections).find(([, fields]) => fields.includes(key))?.[0] || "advanced";
-      } else state.section = path.includes(".dns") ? "dns" : path === "rules" || path.includes(".route") || path.includes("ruleSets") ? "rules" : "advanced";
-      location.hash = "clients";
-      render();
-    }
-    return;
-  }
-
-
   if (name === "copy-link") {
     await navigator.clipboard.writeText(button.dataset.url);
     toast(t("已复制链接", "Link copied"));
@@ -1833,9 +1819,9 @@ document.addEventListener("change", (event) => {
 });
 $("#save").addEventListener("click", () => save().catch((error) => toast(error.message)));
 
-$("#close-diagnostics").addEventListener("click", closeDiagnostics);
 $("#modal").addEventListener("close", () => {
-  for (const input of document.querySelectorAll("#srs-install-token, #srs-credential-token")) input.value = "";
+  clearInterval(modal.autoCloseTimer);
+  for (const input of document.querySelectorAll("#srs-install-token, #srs-credential-token, #srs-setup-token")) input.value = "";
 });
 $("#modal").addEventListener("cancel", destroyModalEditors);
 $("#close-modal").addEventListener("click", closeModal);
@@ -1865,7 +1851,6 @@ function navigationPage() {
 }
 window.addEventListener("hashchange", async () => {
   state.page = navigationPage();
-  closeDiagnostics();
   document.body.classList.remove("menu-open");
   if (["clients", "groups"].includes(state.page)) await loadSharedProxyNames().catch((error) => toast(error.message));
   render();
@@ -1876,16 +1861,6 @@ window.addEventListener("beforeunload", (event) => {
   if (dirty() || state.invalid.size || mmdb.uploading || modal.generatingCa || modal.installingSrs || modal.savingSrsCredentials) {
     event.preventDefault();
     event.returnValue = "";
-  }
-});
-document.addEventListener("keydown", (event) => {
-  if ($("#modal").open) return;
-  if (event.key === "Escape") closeDiagnostics();
-  if (event.key === "Tab" && !$("#diagnostics").hidden) {
-    const controls = [...$("#diagnostics").querySelectorAll("button:not(:disabled), a[href], input, select, textarea")];
-    const first = controls[0], last = controls.at(-1);
-    if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
-    else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
   }
 });
 async function load() {

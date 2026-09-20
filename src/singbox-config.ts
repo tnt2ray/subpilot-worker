@@ -1,26 +1,26 @@
 import { isIP } from "node:net";
 import { splitRuleLine } from "./rule-line";
 import { ruleTargetIndex } from "./rule-targets";
-import type { ConfigDiagnostic, HostEntry, ProxyParamValue, SingboxConfig } from "./types";
+import type { AppConfig, ConfigDiagnostic, HostEntry, ProxyParamValue } from "./types";
 
 type JsonObject = Record<string, ProxyParamValue>;
 
-export function defaultSingboxConfig(): SingboxConfig {
+/** Native defaults owned by sing-box, independent of every other client. */
+export function defaultSingboxConfig(): AppConfig["clients"]["singbox"] {
   return {
-    coreVersion: "1.15.0-alpha.6", log: {}, dns: {}, inbounds: [], route: {},
-    experimental: {}, migrationIssues: []
+    coreVersion: "1.15.0-alpha.6",
+    log: { level: "info", timestamp: true },
+    dns: { servers: [{ type: "udp", tag: "dns-direct", server: "1.1.1.1" }], final: "dns-direct" },
+    inbounds: [{ type: "tun", tag: "tun-in", address: ["172.19.0.1/30", "fdfe:dcba:9876::1/126"], auto_route: true }],
+    route: { auto_detect_interface: true, default_domain_resolver: "dns-direct", final: "Proxy" },
+    experimental: {},
+    groups: { Proxy: "select, {all}, DIRECT" },
+    disabledGroups: [],
+    ruleSets: {
+      mode: "compiled", aggregateByPolicy: false, sources: [], outputs: [],
+      directRules: [{ id: "singbox-final", rule: "FINAL", policy: "Proxy", enabled: true, order: 0 }]
+    }
   };
-}
-
-const RETIRED_SURGE_MIGRATION_NOTICES = new Set([
-  "surge-urlRewrite", "surge-mapLocal", "surge-scripts", "surge-tailscaleNodes",
-  "surge-alwaysRealIp", "surge-skipProxy", "surge-mitm"
-]);
-
-/** Retire source-only notices while preserving actionable migration diagnostics. */
-export function activeSingboxMigrationIssues(issues: readonly ConfigDiagnostic[]): ConfigDiagnostic[] {
-  return issues.filter((item) => item.target !== "sing-box" || item.path !== "clients.singbox"
-    || item.severity !== "warning" || !RETIRED_SURGE_MIGRATION_NOTICES.has(item.code));
 }
 
 export function mergeSingboxHosts(dns: JsonObject, hosts: HostEntry[], diagnostics: ConfigDiagnostic[]): void {
@@ -44,14 +44,6 @@ export function mergeSingboxHosts(dns: JsonObject, hosts: HostEntry[], diagnosti
 
 export function issue(path: string, code: string, severity: ConfigDiagnostic["severity"], message: string): ConfigDiagnostic {
   return { target: "sing-box", path, code, severity, message };
-}
-
-export function dnsServerFromUrl(value: string, tag: string): JsonObject {
-  if (value === "system") return { type: "local", tag };
-  const url = new URL(value.includes("://") ? value : `udp://${value.includes(":") && isIP(value) === 6 ? `[${value}]` : value}`);
-  const type = ({ "udp:": "udp", "tcp:": "tcp", "tls:": "tls", "https:": "https", "quic:": "quic", "h3:": "h3" } as Record<string,string>)[url.protocol];
-  if (!type || !url.hostname || url.username || url.password || url.search) throw new Error("Unsupported resolver");
-  return { type, tag, server: url.hostname.replace(/^\[|\]$/g, ""), ...(url.port ? { server_port: Number(url.port) } : {}), ...(type === "https" || type === "h3" ? { path: url.pathname || "/dns-query" } : {}) };
 }
 
 const RULE_FIELDS: Record<string, string> = {

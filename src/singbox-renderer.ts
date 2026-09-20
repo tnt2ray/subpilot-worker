@@ -9,13 +9,12 @@ import { planRuleSetArtifacts } from "./rule-set-artifacts";
 import { managedRuleSetUrlForRequest } from "./managed-url";
 import { githubSrsUrl } from "./singbox-srs-artifacts";
 import { compiledFinalRuleOptions, splitRuleLine } from "./rule-line";
-import { activeSingboxMigrationIssues, convertRule, policyAction, issue, mergeSingboxHosts } from "./singbox-config";
+import { convertRule, policyAction, issue, mergeSingboxHosts } from "./singbox-config";
 import type { ConfigDiagnostic, HostEntry, ProxyNode, ProxyParamValue, RenderConfig } from "./types";
 
 type JsonObject = Record<string, ProxyParamValue>;
-export function buildSingbox(config: RenderConfig, nodes: ProxyNode[], hosts: HostEntry[], requestUrl: string, diagnostics: ConfigDiagnostic[], manifests: ReadonlyMap<string, CompiledRuleSetManifest>): string {
+export function buildSingbox(config: RenderConfig, nodes: ProxyNode[], hosts: HostEntry[], requestUrl: string, diagnostics: ConfigDiagnostic[], manifests: ReadonlyMap<string, CompiledRuleSetManifest>, srsReadyOutputs: ReadonlySet<string>): string {
   const client = config.document!.clients.singbox;
-  diagnostics.push(...activeSingboxMigrationIssues(client.migrationIssues));
   let outbounds: JsonObject[] = [{ type: "direct", tag: "DIRECT" }];
   for (const node of nodes) {
     try {
@@ -88,7 +87,6 @@ export function buildSingbox(config: RenderConfig, nodes: ProxyNode[], hosts: Ho
   const dns = structuredClone(client.dns);
   const dnsRules: JsonObject[] = [];
   if (config.ruleSets.mode === "compiled") {
-    const binaryRuleSets = config.settings.singboxSrs?.enabled === true;
     const rules: JsonObject[] = [{ protocol: "dns", action: "hijack-dns" }];
     const ruleSets: JsonObject[] = [];
     const items = [
@@ -118,6 +116,10 @@ export function buildSingbox(config: RenderConfig, nodes: ProxyNode[], hosts: Ho
           if (!ruleSetOutputNeedsCompilation(config.ruleSets, item.output, "sing-box")) continue;
           const manifest = manifests.get(item.output.name);
           if (!manifest) throw new Error("规则集缓存尚未就绪，请稍后重试更新配置。");
+          const binaryRuleSets = config.settings.singboxSrs?.enabled === true && srsReadyOutputs.has(item.output.name);
+          if (config.settings.singboxSrs?.enabled && !binaryRuleSets) {
+            diagnostics.push(issue("clients.singbox.ruleSets", "srs-json-fallback", "warning", `${item.output.name} 的 SRS 尚未就绪，已回退为 JSON 规则集；编译完成后更新订阅即可使用 SRS。`));
+          }
           diagnostics.push(...manifest.warnings.filter((message) => !/^AS\d+ 已展开为 \d+ 条 IPv4\/IPv6 CIDR（RIPE RIS 快照）。$/.test(message)).map((message) => issue("clients.singbox.ruleSets", "rule-cache", "warning", message)));
           const compatible = manifest.buckets.reduce((sum, bucket) => sum + (bucket.targetCounts?.["sing-box"] ?? 0), 0);
           if (compatible !== manifest.ruleCount) throw new Error("规则集中存在 sing-box 无法等价表达的规则");
@@ -143,7 +145,8 @@ export function buildSingbox(config: RenderConfig, nodes: ProxyNode[], hosts: Ho
   }
   if (dnsRules.length) dns.rules = [...dnsRules, ...(Array.isArray(dns.rules) ? dns.rules : [])];
   mergeSingboxHosts(dns, hosts, diagnostics);
-  const { coreVersion: _, migrationIssues: __, ruleSets: ___, groups: ____, disabledGroups: _____, ...nativeSettings } = client;
+  const { coreVersion: _, ruleSets: __, groups: ___, disabledGroups: ____, ...nativeSettings } = client;
+  Reflect.deleteProperty(nativeSettings, "migrationIssues");
   const result = { ...nativeSettings, dns, outbounds, route };
   return JSON.stringify(result, null, 2) + "\n";
 }

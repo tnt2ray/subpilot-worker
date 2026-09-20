@@ -34,7 +34,7 @@ import type { RenderConfig } from "./types";
 import { sha256Hex } from "./util";
 import { createSingboxAsnResolver } from "./singbox-asn";
 import { validateRuleMatchValue } from "./rule-value-validation";
-import { ensureSingboxSrsJob, singboxSrsReady, usesSingboxSrs } from "./singbox-srs";
+import { prepareSingboxSrsJob, singboxSrsReady, usesSingboxSrs } from "./singbox-srs";
 
 export interface RuleSetRefreshResult {
   refreshed: number;
@@ -112,7 +112,7 @@ export async function compileRuleSetOutput(
   options: CompileOptions = {}
 ): Promise<{ manifest: CompiledRuleSetManifest; stale: boolean; unchanged?: boolean }> {
   const result = await compileRuleSetSourceOutput(env, config, output, options);
-  if (!options.canPublish || await options.canPublish()) await ensureSingboxSrsJob(env, config, result.manifest, options.deadline);
+  if (!options.canPublish || await options.canPublish()) await prepareSingboxSrsJob(env, config, result.manifest, options.deadline);
   return result;
 }
 
@@ -551,7 +551,7 @@ export async function readRuleSetStatus(env: Env, config: RenderConfig): Promise
     const stored = await readCompiledRuleSetManifest(env, output.name);
     const manifest = stored?.outputFingerprint === await ruleSetOutputFingerprint(config, output) ? stored : null;
     const target = config.renderTarget ?? "surge";
-    const srsPending = usesSingboxSrs(config) && (!manifest || !await singboxSrsReady(env, config, manifest));
+    const srsPending = usesSingboxSrs(config) && (!manifest || !await singboxSrsReady(env, config, manifest).catch(() => false));
     const count = (bucket: RuleSetBucket): number => manifest?.buckets.find((item) => item.bucket === bucket)?.targetCounts?.[target] ?? 0;
     return {
       outputName: output.name,
@@ -564,8 +564,10 @@ export async function readRuleSetStatus(env: Env, config: RenderConfig): Promise
         behavior: artifact.behavior,
         count: artifact.behavior === "domain" ? count("domain") : artifact.behavior === "ipcidr" ? count("ipcidr") : count("classical") + (artifact.includesDomains ? count("domain") : 0) + (artifact.includesIpCidr ? count("ipcidr") : 0)
       })),
-      warnings: [...(manifest?.warnings ?? []), ...(srsPending ? ["SRS 规则集等待 GitHub Actions 编译；请检查工作流配置及运行状态。"] : [])],
-      cached: Boolean(manifest) && !srsPending
+      warnings: [...(manifest?.warnings ?? []), ...(srsPending ? [manifest
+        ? "SRS 尚未就绪，订阅暂用 JSON 规则集；可在编译进度中查看状态。"
+        : "JSON 规则缓存正在准备，随后将尝试 SRS 编译。"] : [])],
+      cached: Boolean(manifest)
     };
   }));
 }

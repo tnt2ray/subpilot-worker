@@ -87,9 +87,9 @@ export async function generateConfig(
   env = ruleSetEnv(env, target);
   const renderTarget = target;
   const diagnostics: ConfigDiagnostic[] = [];
-  // Rule compilation can outlive a client's configuration download timeout.
-  // Keep the complete configuration unavailable until all required artifacts
-  // match it, and let retries continue only the unfinished background work.
+  // JSON preparation can outlive a client's configuration download timeout.
+  // Wait only for required JSON caches; optional SRS publication falls back
+  // to these complete sources until each output's binaries are confirmed.
   const ruleSetCache = target === "sing-box" ? await prepareRuleSetCache(env, config) : undefined;
   if (ruleSetCache?.unavailable.length) {
     if (options.context) scheduleRuleSetRebuild(env, config, ruleSetCache.pending, options.context);
@@ -102,9 +102,7 @@ export async function generateConfig(
         : [{ target, severity: "error", code: "rule-cache-pending", path: "ruleSets",
         message: ruleSetCache.failed
           ? "规则集缓存暂不可用，后台生成失败；请检查规则来源或稍后重试。"
-          : config.settings.singboxSrs?.enabled
-            ? "SRS 规则集正在等待 GitHub Actions 编译，请稍后重试更新配置。"
-            : "规则集缓存正在后台生成，请稍后重试更新配置。" }]
+          : "JSON 规则缓存正在后台生成，请稍后重试更新配置。" }]
     };
   }
   let prepared: PreparedOutput;
@@ -123,7 +121,7 @@ export async function generateConfig(
   let proxyCount = prepared.nodes.length;
   try {
     content = target === "sing-box"
-      ? buildSingbox(config, prepared.nodes, prepared.hostEntries, requestUrl, diagnostics, ruleSetCache!.manifests)
+      ? buildSingbox(config, prepared.nodes, prepared.hostEntries, requestUrl, diagnostics, ruleSetCache!.manifests, ruleSetCache!.srsReadyOutputs)
       : buildTargetContent(config, target, prepared.nodes, prepared.hostEntries, requestUrl, prepared.ruleSetPlan);
     const resolved = omitEmptyPolicyGroups(config, target, content);
     config = resolved.config;

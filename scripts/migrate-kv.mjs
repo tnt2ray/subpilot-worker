@@ -46,8 +46,7 @@ if (!preview.required) {
   process.exit(0);
 }
 if (!args.includes("--apply")) {
-  const pending = preview.config.clients.singbox.migrationIssues.filter((issue) => issue.severity === "error").length;
-  process.stdout.write(`Migration is pending. sing-box has ${pending} conversion items to review in the admin UI. No configuration was written. Add --apply to confirm migration.\n`);
+  process.stdout.write("Document upgrade is pending. Existing client settings are preserved; sing-box starts with independent defaults. No configuration was written. Review the draft in the admin UI, then add --apply to confirm.\n");
   process.exit(0);
 }
 const applied = await fetch(`${baseUrl}/api/config/migration`, {
@@ -55,6 +54,5 @@ const applied = await fetch(`${baseUrl}/api/config/migration`, {
   body: JSON.stringify({ config: preview.config, fingerprint: preview.fingerprint })
 });
 if (!applied.ok) throw new Error(`Migration was not completed: HTTP ${applied.status}. Inspect the admin UI and review migration again.`);
-const config = await applied.json();
-const pending = config.clients.singbox.migrationIssues.filter((issue) => issue.severity === "error").length;
-process.stdout.write(`Migration committed. sing-box has ${pending} conversion items to review in the admin UI.\n`);
+await applied.json();
+process.stdout.write("Document upgrade committed. Client settings remain independent. Review each client's configuration before use.\n");

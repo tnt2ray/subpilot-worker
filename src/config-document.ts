@@ -2,8 +2,7 @@ import { DEFAULT_CONFIG } from "./default-config";
 import { cleanClashFallbacks, migrateClashRouting } from "./clash-routing-migration";
 import { parseGroupOption, splitGroupSpec } from "./policy-group-spec";
 import { normalizeConfig, normalizeSurge, normalizeClash } from "./config-normalize";
-import { activeSingboxMigrationIssues, defaultSingboxConfig } from "./singbox-config";
-import { initializeSingbox } from "./singbox-migration";
+import { defaultSingboxConfig } from "./singbox-config";
 import type { AppConfig, ClientId, ClientRuleSettings, RenderConfig, SharedConfigDocument, StoredConfigDocument, Target } from "./types";
 
 export const OUTPUT_TARGETS: Target[] = ["surge", "clash", "sing-box"];
@@ -13,35 +12,52 @@ export function clientId(target: Target): ClientId {
 
 export function migrateConfigDocument(input: RenderConfig): AppConfig {
   const legacy = normalizeConfig(input);
-  const { sources, ...plan } = legacy.ruleSets;
-  const document = splitSharedConfigDocument({
-    version: 2,
+  // Version 1 shared groups and rule plans belonged to its existing clients.
+  // Preserve that storage layout's data without initializing a new client from it.
+  const resources = (target: "surge" | "clash"): ClientRuleSettings => ({
+    groups: legacyClientGroups(legacy.groups, target),
+    disabledGroups: [...legacy.disabledGroups],
+    ruleSets: structuredClone(legacy.ruleSets)
+  });
+  return {
+    version: 3,
     settings: currentSettings(legacy.settings),
-    groups: legacy.groups,
-    disabledGroups: legacy.disabledGroups,
-    groupTargets: {},
     sources: legacy.sources.map((source) => ({ ...source, fetchUserAgent: resolveLegacyUserAgent(legacy, source.fetchUserAgent) })),
     proxyNodes: legacy.proxyNodes,
     chain: legacy.chain,
-    ruleSources: sources,
     clients: {
-      surge: { ...legacy.surge, ruleSets: structuredClone(plan) },
-      clash: { ...legacy.clash, ruleSets: structuredClone(plan) },
-      singbox: { ...defaultSingboxConfig(), ruleSets: structuredClone(plan) }
+      surge: { ...legacy.surge, ...resources("surge") },
+      clash: { ...legacy.clash, ...resources("clash") },
+      singbox: defaultSingboxConfig()
     },
     updatedAt: legacy.updatedAt
-  });
-  document.clients.singbox = initializeSingbox(document.clients.clash, legacy.surge);
-  return document;
+  };
 }
 
 export function defaultConfigDocument(): AppConfig {
-  const doc = migrateConfigDocument(DEFAULT_CONFIG);
+  const defaults = structuredClone(DEFAULT_CONFIG);
+  const doc: AppConfig = {
+    version: 3,
+    settings: currentSettings(defaults.settings),
+    sources: [], proxyNodes: [], chain: defaults.chain,
+    clients: {
+      surge: { ...defaults.surge, groups: legacyClientGroups(defaults.groups, "surge"), disabledGroups: [], ruleSets: structuredClone(defaults.ruleSets) },
+      clash: { ...defaults.clash, groups: structuredClone(defaults.groups), disabledGroups: [], ruleSets: structuredClone(defaults.ruleSets) },
+      singbox: defaultSingboxConfig()
+    },
+    updatedAt: defaults.updatedAt
+  };
   const clash = migrateClashRouting(doc.clients.clash);
   if (clash.issues.length) throw new Error("默认 Clash 分流配置无法转换。");
   doc.clients.clash = clash.client;
   doc.clients.clash.ruleSets.aggregateByPolicy = false;
   return doc;
+}
+
+function legacyClientGroups(groups: Record<string, string>, target: Target): Record<string, string> {
+  return Object.fromEntries(Object.entries(groups).map(([name, spec]) => [name, target === "surge"
+    ? String(spec).replace(/^\s*url-test\s*(?=,|$)/i, "smart")
+    : splitGroupSpec(String(spec)).filter((part) => parseGroupOption(part)?.key.toLowerCase() !== "hidden").join(", ")]));
 }
 
 /** Copy shared version-2 resources once; each client owns its subsequent edits. */
@@ -51,7 +67,7 @@ function splitSharedConfigDocument(input: SharedConfigDocument): AppConfig {
   for (const targets of Object.values(input.groupTargets)) if (!Array.isArray(targets) || targets.some((target) => !OUTPUT_TARGETS.includes(target))) throw new Error("策略组包含无效的适用端。");
   // Shared hidden only affected Surge before the split; keep other clients visible.
   const resources = (target: Target, plan: SharedConfigDocument["clients"]["surge"]["ruleSets"]): ClientRuleSettings => {
-    const groups = Object.fromEntries(Object.entries(input.groups).filter(([name]) => !input.groupTargets[name] || input.groupTargets[name]!.includes(target)).map(([name, spec]) => [name, target === "surge" ? String(spec).replace(/^\s*url-test\s*(?=,|$)/i, "smart") : splitGroupSpec(String(spec)).filter((part) => parseGroupOption(part)?.key.toLowerCase() !== "hidden").join(", ")]));
+    const groups = legacyClientGroups(Object.fromEntries(Object.entries(input.groups).filter(([name]) => !input.groupTargets[name] || input.groupTargets[name]!.includes(target))), target);
     return { groups, disabledGroups: input.disabledGroups.filter((name) => name in groups), ruleSets: structuredClone({ ...plan, sources: input.ruleSources }) };
   };
   const { groups: _, disabledGroups: __, groupTargets: ___, ruleSources: ____, clients: _____, ...shared } = input;
@@ -98,8 +114,9 @@ export function normalizeConfigDocument(stored: StoredConfigDocument): AppConfig
     const value = singbox[key];
     if (value !== undefined && (!value || typeof value !== "object" || Array.isArray(value))) throw new Error(`sing-box ${key} 必须是对象。`);
   }
-  if (singbox.migrationIssues !== undefined && (!Array.isArray(singbox.migrationIssues) || singbox.migrationIssues.some((item) => !item || item.target !== "sing-box" || !["error", "warning"].includes(item.severity) || [item.path, item.code, item.message].some((value) => typeof value !== "string")))) throw new Error("sing-box 迁移诊断格式无效。");
   const normalizedSingbox = structuredClone(singbox);
+  // Retired cross-client conversion reports are no longer part of the document.
+  Reflect.deleteProperty(normalizedSingbox, "migrationIssues");
   normalizedSingbox.coreVersion = "1.15.0-alpha.6";
   // TUN stack is deprecated in 1.15 and removed in 1.17; use the core default.
   for (const inbound of normalizedSingbox.inbounds) if (inbound.type === "tun") delete inbound.stack;
@@ -111,7 +128,7 @@ export function normalizeConfigDocument(stored: StoredConfigDocument): AppConfig
     clients: {
       surge: { ...normalizeSurge(input.clients.surge), ...resources(input.clients.surge) },
       clash: { ...normalizeClash(input.clients.clash), ...resources(input.clients.clash, false) },
-      singbox: { ...normalizedSingbox, migrationIssues: activeSingboxMigrationIssues(normalizedSingbox.migrationIssues ?? []), ...resources(singbox, false) }
+      singbox: { ...normalizedSingbox, ...resources(singbox, false) }
     },
     updatedAt: input.updatedAt
   };

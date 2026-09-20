@@ -355,5 +355,4 @@ export interface SingboxConfig {
   services?: Record<string, ProxyParamValue>[];
   route: Record<string, ProxyParamValue>;
   experimental: Record<string, ProxyParamValue>;
-  migrationIssues: ConfigDiagnostic[];
 }

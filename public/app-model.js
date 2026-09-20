@@ -95,7 +95,6 @@ const LABELS = {
   level: "日志级别",
   timestamp: "时间戳",
   rule_set: "规则集",
-  migrationIssues: "转换待处理项",
   name: "名称",
   url: "URL",
   fetchUserAgent: "抓取 User-Agent",

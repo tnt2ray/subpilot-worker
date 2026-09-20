@@ -606,19 +606,6 @@ td.truncate {
 #save-status.dirty {
   color: #b66a09;
 }
-.drawer {
-  position: fixed;
-  top: 0;
-  right: 0;
-  bottom: 76px;
-  width: 350px;
-  background: white;
-  z-index: 35;
-  border-left: 1px solid var(--border);
-  box-shadow: -10px 0 25px #18253a08;
-  overflow: auto;
-}
-.drawer header,
 dialog header {
   display: flex;
   align-items: center;
@@ -626,41 +613,8 @@ dialog header {
   padding: 20px;
   border-bottom: 1px solid var(--border);
 }
-.drawer header h2,
 dialog header h2 {
   margin: 0;
-}
-.drawer #diagnostic-items {
-  padding: 20px;
-}
-.diagnostic {
-  border: 1px solid #cddbf9;
-  background: #f6f8ff;
-  padding: 13px;
-  border-radius: 6px;
-  margin-bottom: 14px;
-  overflow-wrap: anywhere;
-}
-.diagnostic.error {
-  border-color: #f0cfb1;
-  background: #fffaf4;
-}
-.diagnostic.warning {
-  border-color: #e9dbac;
-  background: #fffdf4;
-}
-.diagnostic .help {
-  display: block;
-  margin-top: 8px;
-}
-.diagnostic button {
-  margin-top: 8px;
-}
-.drawer-open .workspace {
-  margin-right: 350px;
-}
-.drawer-open .save-bar {
-  margin-right: 350px;
 }
 .notice {
   padding: 14px 18px;
@@ -801,12 +755,6 @@ dialog footer {
   }
 }
 @media (max-width: 1100px) {
-  .drawer-open .workspace {
-    margin-right: 0;
-  }
-  .drawer-open .save-bar {
-    margin-right: 0;
-  }
   .form-row {
     grid-template-columns: 190px minmax(150px, 1fr);
   }
@@ -864,11 +812,6 @@ dialog footer {
     flex: 1;
     height: 37px;
   }
-  .drawer {
-    width: 100%;
-    bottom: 0;
-    z-index: 50;
-  }
   .form-row {
     grid-template-columns: 1fr;
     gap: 3px;
@@ -906,12 +849,6 @@ dialog footer {
   }
   td.truncate {
     max-width: 160px;
-  }
-  .drawer-open .save-bar {
-    margin-right: 0;
-  }
-  .drawer-open .workspace {
-    margin-right: 0;
   }
 }
 @media (prefers-reduced-motion: reduce) {
