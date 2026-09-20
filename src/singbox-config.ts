@@ -1,7 +1,7 @@
 import { isIP } from "node:net";
 import { splitRuleLine } from "./rule-line";
 import { ruleTargetIndex } from "./rule-targets";
-import type { ConfigDiagnostic, HostEntry, ProxyParamValue, RenderConfig, SingboxConfig } from "./types";
+import type { ConfigDiagnostic, HostEntry, ProxyParamValue, SingboxConfig } from "./types";
 
 type JsonObject = Record<string, ProxyParamValue>;
 
@@ -12,68 +12,15 @@ export function defaultSingboxConfig(): SingboxConfig {
   };
 }
 
-export function convertSurgeToSingbox(config: RenderConfig): SingboxConfig {
-  const result: SingboxConfig = {
-    ...defaultSingboxConfig(), log: { level: "info", timestamp: true },
-    dns: { servers: [{ type: "udp", tag: "dns-direct", server: "1.1.1.1" }], final: "dns-direct" },
-    inbounds: [{ type: "tun", tag: "tun-in", address: ["172.19.0.1/30"], auto_route: true }],
-    route: { auto_detect_interface: true, default_domain_resolver: "dns-direct", final: "Proxy" },
-    experimental: { cache_file: { enabled: true } }
-  };
-  const issues = result.migrationIssues;
-  const surge = config.surge;
-  const servers: JsonObject[] = [];
-  for (const [index, value] of [...surge.dnsServer, ...surge.encryptedDnsServer].entries()) {
-    try { servers.push(dnsServerFromUrl(value, `dns-${index + 1}`)); }
-    catch { issues.push(issue(`clients.singbox.dns.servers`, "dns-conversion", "error", `DNS 服务器 #${index + 1} 无法等价转换，请手动配置。`)); }
-  }
-  if (servers.length) {
-    result.dns.servers = servers;
-    // Bootstrap encrypted resolver hostnames using an IP-addressed resolver.
-    const bootstrap = servers.find((server) => typeof server.server === "string" && isIP(server.server));
-    if (bootstrap) {
-      result.route.default_domain_resolver = bootstrap.tag!;
-      for (const server of servers) {
-        if (typeof server.server === "string" && !isIP(server.server)) server.domain_resolver = bootstrap.tag!;
-      }
-    }
-    if (!bootstrap) { servers.push({ type: "udp", tag: "dns-direct", server: "1.1.1.1" });
-      for (const server of servers) if (typeof server.server === "string" && !isIP(server.server)) server.domain_resolver = "dns-direct";
-      issues.push(issue("clients.singbox.dns", "dns-bootstrap", "warning", "已添加默认引导解析器，请确认其符合网络要求。"));
-    }
-    result.dns.final = servers[0]!.tag!;
-  }
-  result.inbounds[0]!.address = surge.ipv6 ? ["172.19.0.1/30", "fdfe:dcba:9876::1/126"] : ["172.19.0.1/30"];
-  result.inbounds[0]!.route_exclude_address = surge.tunExcludedRoutes;
-  if (surge.allowWifiAccess) result.inbounds.push({ type: "mixed", tag: "mixed-in", listen: "0.0.0.0", listen_port: 7890 });
-  const rules: JsonObject[] = [{ protocol: "dns", action: "hijack-dns" }];
-  if (config.ruleSets.mode !== "compiled") {
-    surge.rules.forEach((line, index) => {
-      if (!line.trim() || /^\s*[#;]/.test(line)) return;
-      try {
-        const converted = convertRule(line);
-        if (converted.final) {
-          const action = policyAction(converted.final);
-          if (action.action === "reject") { rules.push(action); delete result.route.final; }
-          else if (typeof action.outbound === "string") result.route.final = action.outbound;
-        }
-        else if (converted.rule) rules.push(converted.rule);
-      } catch (error) {
-        issues.push(issue("clients.singbox.route.rules", `surge-rule-${index + 1}`, "error", `Surge 规则 #${index + 1}：${error instanceof Error ? error.message : "无法转换"}`));
-      }
-    });
-  }
-  result.route.rules = rules;
-  mergeSingboxHosts(result.dns, surge.hosts.flatMap((line) => {
-    if (!line.trim() || /^\s*[#;]/.test(line)) return [];
-    const at = line.indexOf("=");
-    return [{ host: line.slice(0, at).trim(), value: line.slice(at + 1).trim() }];
-  }), issues);
-  for (const field of ["urlRewrite", "mapLocal", "scripts", "tailscaleNodes", "alwaysRealIp", "skipProxy"] as const) {
-    if (surge[field].length) issues.push(issue(`clients.singbox`, `surge-${field}`, "warning", `Surge ${field} 未自动转换，请检查 sing-box 对应设置。`));
-  }
-  if (surge.mitm.hostname.length) issues.push(issue("clients.singbox", "surge-mitm", "warning", "sing-box 不输出 MITM 配置。"));
-  return result;
+const RETIRED_SURGE_MIGRATION_NOTICES = new Set([
+  "surge-urlRewrite", "surge-mapLocal", "surge-scripts", "surge-tailscaleNodes",
+  "surge-alwaysRealIp", "surge-skipProxy", "surge-mitm"
+]);
+
+/** Retire source-only notices while preserving actionable migration diagnostics. */
+export function activeSingboxMigrationIssues(issues: readonly ConfigDiagnostic[]): ConfigDiagnostic[] {
+  return issues.filter((item) => item.target !== "sing-box" || item.path !== "clients.singbox"
+    || item.severity !== "warning" || !RETIRED_SURGE_MIGRATION_NOTICES.has(item.code));
 }
 
 export function mergeSingboxHosts(dns: JsonObject, hosts: HostEntry[], diagnostics: ConfigDiagnostic[]): void {

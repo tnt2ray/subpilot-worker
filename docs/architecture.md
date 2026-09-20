@@ -43,7 +43,7 @@ flowchart LR
 
 普通不支持节点或可省略附加功能产生 warning；缺少实际使用的策略、空组、链式依赖、循环、无等价规则和原生字段校验失败产生 error。error 使 `canDownload=false`、生成内容为空，订阅请求返回 422；其他客户端继续使用自己的设置。引用不会自动改写为 Proxy 或 DIRECT。
 
-sing-box 从 Surge 的转换只在旧文档迁移时执行。无等价转换的关键设置记为 `migrationIssues`；管理员可以修改后明确标记已处理。标记仅移除迁移待办，后续 Schema 和引用校验仍执行。
+sing-box 在全新安装或旧版配置迁移时从 Clash 初始化策略组、DNS 和分流，仅启用的 Tailscale 连接从 Surge 初始化，已有 sing-box 配置保持独立。无等价转换的关键设置记为 `migrationIssues`；管理员可以修改后明确标记已处理。旧 Surge 转换器已移除，七类源端功能的通用提示（URL Rewrite、Map Local、脚本、Tailscale 列表、Always Real IP、Skip Proxy、MITM）在配置规范化时按目标、路径、warning 级别及代码精确清除，覆盖读取、导入和保存；订阅生成复用同一清理逻辑。其他迁移诊断及后续 Schema、引用校验仍保留。
 
 原生 sing-box 节点保留出站字段；向其他格式转换时检查无法保留的认证、TLS 和传输参数。完整客户端 JSON 接受额外原生顶层字段，但 `outbounds` 始终由共享节点与组生成。格式/内核检查不证明设备权限、证书路径或实际网络连通。
 

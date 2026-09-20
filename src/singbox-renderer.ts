@@ -8,19 +8,13 @@ import type { CompiledRuleSetManifest } from "./rule-set-cache";
 import { planRuleSetArtifacts } from "./rule-set-artifacts";
 import { managedRuleSetUrlForRequest } from "./managed-url";
 import { compiledFinalRuleOptions, splitRuleLine } from "./rule-line";
-import { convertRule, policyAction, issue, mergeSingboxHosts } from "./singbox-config";
+import { activeSingboxMigrationIssues, convertRule, policyAction, issue, mergeSingboxHosts } from "./singbox-config";
 import type { ConfigDiagnostic, HostEntry, ProxyNode, ProxyParamValue, RenderConfig } from "./types";
 
 type JsonObject = Record<string, ProxyParamValue>;
 export function buildSingbox(config: RenderConfig, nodes: ProxyNode[], hosts: HostEntry[], requestUrl: string, diagnostics: ConfigDiagnostic[], manifests: ReadonlyMap<string, CompiledRuleSetManifest>): string {
   const client = config.document!.clients.singbox;
-  // Source-only migration notices do not describe the current sing-box output.
-  const sourceOnlyNotices = new Set([
-    "surge-urlRewrite", "surge-mapLocal", "surge-scripts", "surge-tailscaleNodes",
-    "surge-alwaysRealIp", "surge-skipProxy", "surge-mitm"
-  ]);
-  diagnostics.push(...client.migrationIssues.filter((item) =>
-    item.path !== "clients.singbox" || !sourceOnlyNotices.has(item.code)));
+  diagnostics.push(...activeSingboxMigrationIssues(client.migrationIssues));
   let outbounds: JsonObject[] = [{ type: "direct", tag: "DIRECT" }];
   for (const node of nodes) {
     try {

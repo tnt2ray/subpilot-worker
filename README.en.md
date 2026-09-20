@@ -172,6 +172,8 @@ Fresh installations and migrations from 1.4.0 initialize sing-box groups, DNS an
 
 Resolver addresses, Fake IP and domain exclusions are retained. Multiple resolvers are tried in order; fallback CIDR filters are migrated, while GeoIP country filtering requires manual adjustment. Migration diagnostics identify group types, DNS and Tailscale options without equivalent behavior. Review these before use.
 
+Legacy generic migration notices for Surge URL Rewrite, Map Local, scripts, the Tailscale list, Always Real IP, Skip Proxy and MITM are retired. Loading or importing a configuration removes these notices; the next save persists the cleanup. There is no need to dismiss each notice or reinitialize sing-box. Actionable DNS, routing and Tailscale option diagnostics are retained. No KV schema migration is required.
+
 Configuration previews and modal editors include line numbers and syntax highlighting. Apply changes in the editor, then click Save configuration.
 
 ### Nodes and policy groups

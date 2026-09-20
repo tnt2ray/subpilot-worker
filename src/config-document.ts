@@ -2,7 +2,7 @@ import { DEFAULT_CONFIG } from "./default-config";
 import { cleanClashFallbacks, migrateClashRouting } from "./clash-routing-migration";
 import { parseGroupOption, splitGroupSpec } from "./policy-group-spec";
 import { normalizeConfig, normalizeSurge, normalizeClash } from "./config-normalize";
-import { defaultSingboxConfig } from "./singbox-config";
+import { activeSingboxMigrationIssues, defaultSingboxConfig } from "./singbox-config";
 import { initializeSingbox } from "./singbox-migration";
 import type { AppConfig, ClientId, ClientRuleSettings, RenderConfig, SharedConfigDocument, StoredConfigDocument, Target } from "./types";
 
@@ -111,7 +111,7 @@ export function normalizeConfigDocument(stored: StoredConfigDocument): AppConfig
     clients: {
       surge: { ...normalizeSurge(input.clients.surge), ...resources(input.clients.surge) },
       clash: { ...normalizeClash(input.clients.clash), ...resources(input.clients.clash, false) },
-      singbox: { ...normalizedSingbox, migrationIssues: Array.isArray(normalizedSingbox.migrationIssues) ? normalizedSingbox.migrationIssues : [], ...resources(singbox, false) }
+      singbox: { ...normalizedSingbox, migrationIssues: activeSingboxMigrationIssues(normalizedSingbox.migrationIssues ?? []), ...resources(singbox, false) }
     },
     updatedAt: input.updatedAt
   };

@@ -156,6 +156,8 @@ Surge 不区分 iOS/macOS、正式版/TF 或版本号，也不使用版本 Tag�
 
 DNS 保留解析器地址、Fake IP 和域名排除项，多个解析器按顺序尝试；备用 DNS 的 IP-CIDR 过滤会迁移，GeoIP 国家过滤需手动调整。无法等价转换的组类型、DNS 或 Tailscale 参数会在迁移诊断中说明，请确认后使用。
 
+旧版遗留的 Surge URL Rewrite、Map Local、脚本、Tailscale 列表、Always Real IP、Skip Proxy 和 MITM 的通用迁移提示已废弃。读取或导入配置时会自动清除这些提示，后续保存时写回清理结果，无需逐条标记处理，也不会重新初始化 sing-box；有效的 DNS、规则及 Tailscale 参数诊断仍保留。无需 KV 数据结构迁移。
+
 配置内容带行号和语法高亮，点击编辑图标打开编辑弹窗。应用更改后仍需点击页面底部“保存配置”。
 
 ### 节点与策略组
