@@ -54,7 +54,7 @@ export function normalizeConfig(input: RenderConfig): RenderConfig {
       featureTagRules: stringArray(input.settings?.featureTagRules, DEFAULT_CONFIG.settings.featureTagRules),
       updateCheckEnabled: input.settings?.updateCheckEnabled === true,
       displayTimeZone: normalizeDisplayTimeZone(input.settings?.displayTimeZone),
-      actionsCompilation: normalizeActionsCompilationSettings(input.settings?.actionsCompilation),
+      actionsCompilation: withDefaultConfigSettings(input.settings).actionsCompilation,
       notificationChannel: notificationChannelFromTelegramToken(notificationTelegramBotToken),
       notificationTelegramChatId: notificationTelegramBotToken ? stringValue(input.settings?.notificationTelegramChatId, "") : "",
       notificationTelegramBotToken,
@@ -70,6 +70,17 @@ export function normalizeConfig(input: RenderConfig): RenderConfig {
     clash: normalizeClash(input.clash),
     stash: normalizeStash(input.stash),
     updatedAt: input.updatedAt
+  };
+}
+
+/** Resolve renamed settings before defaults can hide a legacy value. */
+export function withDefaultConfigSettings(input: unknown): RenderConfig["settings"] & { actionsCompilation: ActionsCompilationSettings } {
+  const raw = input && typeof input === "object" && !Array.isArray(input) ? input as Record<string, unknown> : {};
+  const { singboxSrs, ...current } = raw;
+  return {
+    ...DEFAULT_CONFIG.settings,
+    ...current,
+    actionsCompilation: normalizeActionsCompilationSettings(Object.hasOwn(current, "actionsCompilation") ? current.actionsCompilation : singboxSrs)
   };
 }
 

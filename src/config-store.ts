@@ -5,7 +5,7 @@ import { queueChangedRuleSetUpdates, runRuleSetUpdateJobs } from "./rule-set-job
 import type { AppConfig, StoredConfigDocument } from "./types";
 import { DEFAULT_CONFIG } from "./default-config";
 import { CONFIG_SCHEMA_VERSION_KEY, CURRENT_KV_SCHEMA_VERSION } from "./config-schema";
-import { normalizeChain, normalizeClash, normalizeConfig, normalizeRuleSets, normalizeStash, normalizeSurge } from "./config-normalize";
+import { normalizeChain, normalizeClash, normalizeConfig, normalizeRuleSets, normalizeStash, normalizeSurge, withDefaultConfigSettings } from "./config-normalize";
 import { decryptJson, decryptText, encryptJson, unsealSources } from "./crypto-store";
 import { listKvKeys } from "./kv-helpers";
 import { pruneRuleSetCaches, pruneCompiledRuleSetCaches } from "./rule-set-cache";
@@ -349,13 +349,48 @@ async function writeConfigSnapshot(env: Env, config: RenderConfig, key = CONFIG_
   await env.SUBPILOT_CONFIG.put(key, encrypted);
 }
 
+/** Persist the settings rename without making an old snapshot newer than a concurrent save. */
+export async function migrateLegacyActionsConfigSettings(env: Env): Promise<void> {
+  const selected = await readStoredConfigSnapshot(env);
+  if (!selected.key || !selected.config || selected.config.migrationRequired) return;
+  const stored = await env.SUBPILOT_CONFIG.get(selected.key);
+  if (stored === null) return;
+  const secret = requireSecret(env, "CONFIG_ENCRYPTION_KEY");
+  const snapshot = await decryptJson<ConfigSnapshot>(secret, stored);
+  if (snapshot.version !== CONFIG_SNAPSHOT_VERSION || !snapshot.config?.settings
+    || !Object.hasOwn(snapshot.config.settings, "singboxSrs")) return;
+  const settings = { ...snapshot.config.settings,
+    actionsCompilation: withDefaultConfigSettings(snapshot.config.settings).actionsCompilation };
+  Reflect.deleteProperty(settings, "singboxSrs");
+  const migrated = { ...snapshot, config: { ...snapshot.config, settings } };
+  let key: string;
+  if (selected.key.startsWith(CONFIG_SNAPSHOT_VERSION_PREFIX)) {
+    // Keep the original timestamp and sequence. The sibling precedes only its
+    // source snapshot; a later administrator save always retains precedence.
+    key = `${selected.key}:actions-v1`;
+  } else {
+    const updatedAt = Date.parse(snapshot.config.updatedAt ?? "");
+    const logicalTime = Number.isSafeInteger(updatedAt) && updatedAt > 0 && updatedAt <= Date.now() ? updatedAt : 0;
+    key = `${CONFIG_SNAPSHOT_VERSION_PREFIX}${String(CONFIG_SNAPSHOT_LOGICAL_TIME_MAX - logicalTime).padStart(16, "0")}:${CONFIG_SNAPSHOT_LOGICAL_TIME_MAX}:~actions-v1:${await sha256Hex(selected.key)}`;
+  }
+  if (await env.SUBPILOT_CONFIG.get(key) === null) {
+    await env.SUBPILOT_CONFIG.put(key, await encryptJson(secret, migrated));
+  }
+  const verified = await env.SUBPILOT_CONFIG.get(key);
+  if (verified === null || JSON.stringify(await decryptJson<ConfigSnapshot>(secret, verified)) !== JSON.stringify(migrated)) {
+    throw new Error("Actions settings migration could not be verified.");
+  }
+  // Retain the usual rollback snapshots and apply the existing bounded pruning.
+  await pruneConfigSnapshotVersions(env, { key, logicalTime: configSnapshotLogicalTimeFromKey(key) });
+}
+
 async function readStoredConfigSnapshot(env: Env): Promise<StoredConfigSnapshotResult> {
   const allowLegacy = await env.SUBPILOT_CONFIG.get(DOCUMENT_MIGRATION_COMMITTED) === null;
   const versionedPage = await env.SUBPILOT_CONFIG.list({
     prefix: CONFIG_SNAPSHOT_VERSION_PREFIX,
     limit: CONFIG_SNAPSHOT_VERSION_LIST_LIMIT
   });
-  const versionedKeys = versionedPage.keys.map((entry) => entry.name).sort();
+  const versionedKeys = versionedPage.keys.map((entry) => entry.name).sort(compareConfigSnapshotKeys);
   let found = versionedKeys.length > 0;
   if (found) requireSecret(env, "CONFIG_ENCRYPTION_KEY");
   for (const key of versionedKeys) {
@@ -452,8 +487,8 @@ async function pruneConfigSnapshotVersions(env: Env, current: ConfigSnapshotRevi
     prefix: CONFIG_SNAPSHOT_VERSION_PREFIX,
     limit: CONFIG_SNAPSHOT_VERSION_LIST_LIMIT
   });
-  const listedKeys = page.keys.map((entry) => entry.name).sort();
-  const candidates = [...new Set([current.key, ...listedKeys])].sort();
+  const listedKeys = page.keys.map((entry) => entry.name).sort(compareConfigSnapshotKeys);
+  const candidates = [...new Set([current.key, ...listedKeys])].sort(compareConfigSnapshotKeys);
   const listed = new Set(listedKeys);
   const cutoff = Date.now() - CONFIG_SNAPSHOT_CLEANUP_GRACE_MS;
   const retainedValid: string[] = [];
@@ -494,6 +529,14 @@ async function pruneConfigSnapshotVersions(env: Env, current: ConfigSnapshotRevi
     deleteKeys.push(...legacyCandidates.slice(0, CONFIG_SNAPSHOT_VERSION_PRUNE_BATCH_SIZE - deleteKeys.length));
   }
   await mapWithConcurrency([...new Set(deleteKeys)], 10, async (key) => env.SUBPILOT_CONFIG.delete(key));
+}
+
+function compareConfigSnapshotKeys(left: string, right: string): number {
+  const suffix = ":actions-v1";
+  const leftSource = left.endsWith(suffix) ? left.slice(0, -suffix.length) : left;
+  const rightSource = right.endsWith(suffix) ? right.slice(0, -suffix.length) : right;
+  if (leftSource !== rightSource) return leftSource < rightSource ? -1 : 1;
+  return Number(right.endsWith(suffix)) - Number(left.endsWith(suffix));
 }
 
 function configSnapshotLogicalTimeFromKey(key: string): number {
@@ -791,7 +834,7 @@ async function loadLegacyStoredConfig(env: Env): Promise<RenderConfig> {
 
   return normalizeConfig({
     version: 1,
-    settings: { ...DEFAULT_CONFIG.settings, ...settings },
+    settings: withDefaultConfigSettings(settings),
     groups,
     disabledGroups,
     sources,
@@ -946,7 +989,7 @@ export async function exportConfigBeforeMigration(env: Env): Promise<StoredConfi
   const committed = await env.SUBPILOT_CONFIG.get(DOCUMENT_MIGRATION_COMMITTED) !== null;
   const candidates = await listKvKeys(env, CONFIG_SNAPSHOT_VERSION_PREFIX);
   const fallback = [CONFIG_SNAPSHOT_KEY, ...(await listKvKeys(env, CONFIG_MIGRATED_SNAPSHOT_PREFIX)).sort().reverse(), CONFIG_MIGRATED_SNAPSHOT_KEY];
-  for (const key of [...candidates.sort(), ...fallback]) {
+  for (const key of [...candidates.sort(compareConfigSnapshotKeys), ...fallback]) {
     const encrypted = await env.SUBPILOT_CONFIG.get(key);
     if (!encrypted) continue;
     try {

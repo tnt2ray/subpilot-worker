@@ -818,6 +818,9 @@ async function showActionsSetup() {
         const updated = await api("/api/config", { method: "PATCH", body: JSON.stringify({ version: 3, settings: { actionsCompilation: next } }) });
         state.config.settings.actionsCompilation = updated.settings.actionsCompilation;
         if (state.saved) { const baseline = JSON.parse(state.saved); baseline.settings.actionsCompilation = updated.settings.actionsCompilation; state.saved = JSON.stringify(baseline); }
+        const actionsSection = $("#actions-compiler-settings")?.closest("section");
+        if (actionsSection) actionsSection.outerHTML = renderActionsCompilationSettings();
+        updateStatus();
         status.dispatchTokenConfigured = true;
         report(t("已启用并保存。后台将向 Actions 提交规则处理任务；关闭窗口后可查看各客户端进度。", "Enabled and saved. Rule processing will be submitted to Actions; close this dialog to view progress for each client."));
         const countdown = document.createElement("p");

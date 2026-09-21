@@ -273,7 +273,7 @@ sing-box 的 `.srs` 地址在自动识别模式下直接输出为独立的 `remo
 1. 准备已初始化且启用 Actions 的公开仓库，勾选添加 README。默认分支用于工作流，不能命名为 `rules`；每个 SubPilot 部署使用独立仓库。
 2. 创建 fine-grained GitHub Token，仅选择目标仓库，授予 **Actions、Contents、Workflows、Secrets: Read and write**；组织仓库如需审批请先完成。
 3. 为至少一个客户端启用规则来源编排并保存。打开 **系统设置 → Actions 规则编译 → 配置向导**，填写仓库、工作流访问地址和 Token。
-4. 点击 **检查、安装并启用**。向导安装 `compile-rule-sets.yml`、运行脚本和共用编译器，保存新配置并提交首批任务，不保存其他页面草稿。凭据独立加密保存；共享密钥同步为 GitHub Secret `SUBPILOT_ACTIONS_SECRET`，访问地址保存为 `SUBPILOT_URL`。
+4. 点击 **检查、安装并启用**。向导安装 `compile-rule-sets.yml`、运行脚本和共用编译器，保存新配置并提交首批任务，成功后立即更新页面中的开关和仓库信息，不保存其他页面草稿。凭据独立加密保存；共享密钥同步为 GitHub Secret `SUBPILOT_ACTIONS_SECRET`，访问地址保存为 `SUBPILOT_URL`。
 5. 建议使用本部署的 workers.dev 地址作为工作流访问地址，避免自定义域名的人机验证。向导只检查格式；真实连通性与触发权限由首次运行验证。
 6. 打开 **查看编译进度**，按 Surge、Clash、sing-box 查看状态；编译期间可使用 Worker 规则；产物确认后，在客户端更新订阅即可切换到 Actions 版本。GitHub 接收请求仅表示提交成功，排队和实际执行情况请查看仓库 Actions。
 
@@ -285,11 +285,15 @@ Worker 会在有限请求预算内尝试生成缺失的规则；仅当远程产�
 
 每个规则集的文件和清单以同一次提交原子发布，删除该目录内不再需要的旧分桶文件，保留其他目录；分支冲突会重试，不使用强制推送。Worker 校验不可变提交中的公开清单后才引用产物，订阅地址包含该提交号，避免读到后续未确认文件。新产物发布后需再次更新客户端订阅。公开文件和 Git 历史不会因关闭功能或删除规则集而自动移除。
 
-配置字段统一为 `settings.actionsCompilation`；状态接口为 `GET /api/actions-compilation/status`。不读取、迁移或兼容旧 SRS 专用设置、凭据、工作流、回调和产物目录。已有部署需要重新运行通用配置向导；旧工作流与旧产物如不再需要，可自行清理。
+配置字段统一为 `settings.actionsCompilation`；状态接口为 `GET /api/actions-compilation/status`。升级时沿用旧 `settings.singboxSrs` 中保存的仓库、分支、工作流文件名和开关，并在新记录不存在时读取 KV 中原有的加密 Token、共享密钥和工作流访问地址，无需重新填写。新配置和新凭据记录始终优先，已清除的凭据不会被恢复。旧 SRS 工作流协议和产物目录不再使用；已有部署需通过配置向导更新工作流，期间由 Worker 提供规则，旧产物可自行清理。
+
+现有五分钟维护任务会自动持久化新设置并迁移加密凭据和访问地址。迁移数据读回校验成功并经过至少五分钟传播宽限期后，分批清理旧 SRS 的凭据、地址、协议标记、任务缓存和发布回执；仍用于 Worker 回退的规则正文保留。迁移中断会继续重试，完成后停止旧键扫描；配置快照仍保留正常的三个回滚版本，无需手动操作 KV。
 
 规则计划快照在 KV 中加密保存 24 小时，供 Actions 认证下载；正常 Actions 编译的来源正文由 runner 下载至临时目录，执行结束后清理，不写入仓库；Worker 接管时按原有方式加密缓存来源和本地编译结果。Worker 保存 Actions 发布元数据，不存储或代理其产物正文。规则集名称和生成的规则内容会公开，来源地址、Worker 地址和访问凭据不写入产物或任务日志。Token 与共享密钥独立加密保存，不进入配置导出；替换 Token 保留共享密钥，清除后重新配置则须重装工作流。`ADMIN_TOKEN_HASH`、`CONFIG_ENCRYPTION_KEY` 仍由 Worker Secrets 管理。
 
 部署构建会运行 `npm run build:actions`，从共享编译核心生成供配置向导安装的独立脚本。生成文件位于被忽略的 `dist/`，不提交到源仓库；安装依赖时也会自动构建。
+
+工作流模板随 `scripts/compile-rule-sets.yml` 分发，兼容旧版压缩包更新器；配置向导将其安装到目标仓库的 `.github/workflows/`。从 v2.2.2 更新无需手动补充模板，也无需迁移 KV 数据结构。
 
 ### 订阅检查
 

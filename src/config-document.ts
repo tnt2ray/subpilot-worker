@@ -1,7 +1,7 @@
 import { DEFAULT_CONFIG } from "./default-config";
 import { cleanClashFallbacks, migrateClashRouting } from "./clash-routing-migration";
 import { parseGroupOption, splitGroupSpec } from "./policy-group-spec";
-import { normalizeConfig, normalizeSurge, normalizeClash } from "./config-normalize";
+import { normalizeConfig, normalizeSurge, normalizeClash, withDefaultConfigSettings } from "./config-normalize";
 import { defaultSingboxConfig } from "./singbox-config";
 import type { AppConfig, ClientId, ClientRuleSettings, RenderConfig, SharedConfigDocument, StoredConfigDocument, Target } from "./types";
 
@@ -91,7 +91,7 @@ export function normalizeConfigDocument(stored: StoredConfigDocument): AppConfig
     if (client.disabledGroups.includes("Proxy")) throw new Error("Proxy 策略组不能禁用。");
     if (!client.ruleSets || !Array.isArray(client.ruleSets.sources) || !Array.isArray(client.ruleSets.outputs) || !Array.isArray(client.ruleSets.directRules)) throw new Error("客户端规则编排格式无效。");
   }
-  const view = normalizeConfig({ ...DEFAULT_CONFIG, ...input, settings: { ...DEFAULT_CONFIG.settings, ...input.settings }, version: 1, groups: input.clients.surge.groups, disabledGroups: input.clients.surge.disabledGroups, surge: input.clients.surge, clash: input.clients.clash });
+  const view = normalizeConfig({ ...DEFAULT_CONFIG, ...input, settings: withDefaultConfigSettings(input.settings), version: 1, groups: input.clients.surge.groups, disabledGroups: input.clients.surge.disabledGroups, surge: input.clients.surge, clash: input.clients.clash });
   if (view.proxyNodes.length !== input.proxyNodes.length) throw new Error("代理节点配置存在空项或无效内容。");
   const resources = (client: ClientRuleSettings, allowPolicyAggregation = true): ClientRuleSettings => {
     const normalized = normalizeConfig({ ...view, groups: client.groups, disabledGroups: client.disabledGroups, ruleSets: client.ruleSets });
@@ -141,7 +141,7 @@ export function renderConfig(document: AppConfig, target: Target = "surge"): Ren
   return {
     ...DEFAULT_CONFIG,
     version: 1,
-    settings: { ...DEFAULT_CONFIG.settings, ...document.settings }, groups: client.groups, disabledGroups: client.disabledGroups,
+    settings: withDefaultConfigSettings(document.settings), groups: client.groups, disabledGroups: client.disabledGroups,
     sources: document.sources, proxyNodes: document.proxyNodes, chain: document.chain,
     surge: document.clients.surge, clash: document.clients.clash,
     ruleSets: target === "surge" ? client.ruleSets : { ...client.ruleSets, aggregateByPolicy: false },

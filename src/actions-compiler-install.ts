@@ -1,6 +1,6 @@
 import { ACTIONS_OUTPUT_BRANCH, ACTIONS_COMPILER_PROTOCOL, actionsCompilerProtocolKey } from "./actions-compiler-artifacts";
 import { createHash } from "node:crypto";
-import workflow from "../.github/workflows/compile-rule-sets.yml" with { type: "text" };
+import workflow from "../scripts/compile-rule-sets.yml" with { type: "text" };
 import compiler from "../dist/actions-compiler-runtime.mjs" with { type: "text" };
 import script from "../scripts/compile-rule-sets.mjs" with { type: "text" };
 import { validateActionsCompilationSettings } from "./config-validation";
@@ -8,16 +8,16 @@ import { decryptJson, encryptJson } from "./crypto-store";
 import { sealGitHubSecret } from "./github-secret-seal";
 import { requireSecret } from "./secrets";
 import { readActionsCredentials, actionsCredentialStatus } from "./actions-compiler-credentials";
+import { ACTIONS_CALLBACK_ORIGIN_KEY, readActionsIntegrationRecord } from "./actions-compiler-migration";
 import type { ActionsCompilationSettings } from "./types";
 import { jsonResponse, readRequestJsonWithLimit, readResponseTextWithLimit } from "./util";
 
 class InstallError extends Error {}
 const headers = { "cache-control": "no-store, private" };
-const CALLBACK_ORIGIN_KEY = "integration:actions-compiler:callback-origin:v1";
 const sha = (value: unknown): value is string => typeof value === "string" && /^[a-f0-9]{40}$/.test(value);
 
 async function readCallbackOrigin(env: Env): Promise<string | null> {
-  const stored = await env.SUBPILOT_CONFIG.get(CALLBACK_ORIGIN_KEY);
+  const stored = await readActionsIntegrationRecord(env, "callbackOrigin");
   if (stored === null) return null;
   try {
     const value = await decryptJson<{ version?: unknown; origin?: unknown }>(requireSecret(env, "CONFIG_ENCRYPTION_KEY"), stored);
@@ -79,10 +79,14 @@ export async function handleActionsCompilationInstall(request: Request, env: Env
         if (response.status === 409 && path.startsWith("/git/ref/")) throw new InstallError("仓库尚无首次提交，请在 GitHub 添加 README。 / Repository has no initial commit; add a README on GitHub.");
         throw new InstallError(`GitHub HTTP ${response.status}。请检查仓库、Token 权限、Actions 设置和分支保护后重试。 / Check repository access, token permissions, Actions settings and branch protection, then retry.`);
       }
+      // Secret creation returns 201 without a result object; updates return 204.
+      if (response.status === 204 || (response.status === 201 && method === "PUT" && path.startsWith("/actions/secrets/"))) {
+        await response.body?.cancel().catch(() => undefined);
+        return null;
+      }
       let text: string;
       try { text = await readResponseTextWithLimit(response, 1024 * 1024, "GitHub response"); }
       catch { throw new InstallError("读取 GitHub 响应失败或响应超过大小限制，请重试。 / Could not read GitHub response or response exceeded the size limit; retry."); }
-      if (response.status === 204) return null;
       try {
         const value = JSON.parse(text);
         if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error();
@@ -150,7 +154,7 @@ export async function handleActionsCompilationInstall(request: Request, env: Env
       completed.push(`${secret.name} 已配置 / configured`);
     }
     stage = "保存工作流访问地址 / Saving callback address";
-    await env.SUBPILOT_CONFIG.put(CALLBACK_ORIGIN_KEY,
+    await env.SUBPILOT_CONFIG.put(ACTIONS_CALLBACK_ORIGIN_KEY,
       await encryptJson(requireSecret(env, "CONFIG_ENCRYPTION_KEY"), { version: 1, origin: callbackOrigin }));
     await env.SUBPILOT_CONFIG.put(actionsCompilerProtocolKey(settings), ACTIONS_COMPILER_PROTOCOL);
     return jsonResponse({ ok: true, completed, ...status, callbackOrigin }, { headers });

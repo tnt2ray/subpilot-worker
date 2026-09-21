@@ -1,9 +1,9 @@
 import { loadConfig } from "./config-store";
+import { ACTIONS_CREDENTIALS_KEY, readActionsIntegrationRecord } from "./actions-compiler-migration";
 import { decryptJson, encryptJson } from "./crypto-store";
 import { requireSecret } from "./secrets";
 import { jsonResponse, randomToken, readRequestJsonWithLimit, RequestBodyTooLargeError } from "./util";
 
-const CREDENTIALS_KEY = "integration:actions-compiler:credentials:v1";
 const headers = { "cache-control": "no-store, private" };
 const validToken = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z0-9_]{20,255}$/.test(value);
 const validSharedSecret = (value: unknown): value is string => typeof value === "string" && /^[\x21-\x7e]{32,256}$/.test(value);
@@ -17,7 +17,9 @@ interface ActionsCredentials {
 /** Separate from configuration snapshots, exports and compiled-cache cleanup. */
 export async function readActionsCredentials(env: Env): Promise<ActionsCredentials> {
   try {
-    const stored = await env.SUBPILOT_CONFIG.get(CREDENTIALS_KEY);
+    // Only an absent current record may inherit the previously saved credentials.
+    // A current empty or unreadable record must never revive an old token.
+    const stored = await readActionsIntegrationRecord(env, "credentials");
     if (stored !== null) {
       const value = await decryptJson<{ version?: unknown; token?: unknown; sharedSecret?: unknown }>(requireSecret(env, "CONFIG_ENCRYPTION_KEY"), stored);
       if (!value || value.version !== 1 || (value.token !== "" && !validToken(value.token))
@@ -59,7 +61,7 @@ export async function handleActionsCredentials(request: Request, env: Env): Prom
       delete body.token;
     }
     const encrypted = await encryptJson(requireSecret(env, "CONFIG_ENCRYPTION_KEY"), { version: 1, token: credentials.token, sharedSecret: credentials.sharedSecret });
-    await env.SUBPILOT_CONFIG.put(CREDENTIALS_KEY, encrypted);
+    await env.SUBPILOT_CONFIG.put(ACTIONS_CREDENTIALS_KEY, encrypted);
     return jsonResponse({ ok: true, ...actionsCredentialStatus(credentials) }, { headers });
   } catch (error) {
     if (error instanceof SyntaxError) return jsonResponse({ error: "请求内容不是有效的 JSON。 / Invalid JSON request." }, { status: 400, headers });
