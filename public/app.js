@@ -85,10 +85,17 @@ function changed() {
 function isTextList(key, value) {
   return Array.isArray(value) && !["tailscaleNodes", "inbounds", "directRules", "servers", "rule_set", "outputs"].includes(key) && value.every((item) => typeof item === "string");
 }
+function displayTimeZoneOptions(current) {
+  let zones = ["Asia/Shanghai", "Asia/Hong_Kong", "Asia/Taipei", "Asia/Singapore", "Asia/Tokyo", "Asia/Seoul", "Asia/Kolkata", "Asia/Dubai", "Europe/London", "Europe/Paris", "America/New_York", "America/Chicago", "America/Denver", "America/Los_Angeles", "Australia/Sydney", "Pacific/Auckland"];
+  try { if (typeof Intl.supportedValuesOf === "function") zones = Intl.supportedValuesOf("timeZone"); }
+  catch { /* Older browsers retain the common time zone choices. */ }
+  return [...new Set(["UTC", ...zones, ...(typeof current === "string" && current ? [current] : [])])].sort();
+}
 function field(path, value, options = {}) {
   const key = path.split(".").at(-1);
   const id = `field-${path.replaceAll(".", "-")}`;
   const title = options.label || label(key);
+  if (path === "settings.displayTimeZone") options = { ...options, options: displayTimeZoneOptions(value) };
   if (path === "clients.surge.ipv6Vif") options = { ...options, options: ["off", "auto", "always"] };
   if (path === "clients.clash.mode") options = { ...options, options: ["rule", "global", "direct"] };
   if (path === "clients.clash.tun.stack") options = { ...options, options: ["system", "gvisor", "mixed", "mips"] };
@@ -129,6 +136,50 @@ function section(title, content, extra = "") {
   const heading = title || extra ? `<div class="section-heading">${title ? `<h2>${esc(title)}</h2>` : ""}${extra}</div>` : "";
   return `<section class="section">${heading}${content}</section>`;
 }
+// Only explicitly marked explanatory content moves into tips; status and validation text stays visible.
+function clearHeadingTip(heading) {
+  if (heading.parentElement.classList.contains("help-title")) heading.parentElement.replaceWith(heading);
+}
+function mountHelpTips(root, fallbackHeading) {
+  for (const note of root.querySelectorAll("[data-help]")) {
+    if (!note.textContent.trim()) { note.remove(); continue; }
+    const heading = note.closest("section")?.querySelector(".section-heading h2, .section-heading h3") || fallbackHeading;
+    let title = heading.parentElement;
+    if (!title.classList.contains("help-title")) {
+      title = document.createElement("div");
+      title.className = "help-title";
+      heading.before(title);
+      title.append(heading);
+    }
+    let tip = title.querySelector(":scope > .settings-help");
+    if (!tip) {
+      tip = document.createElement("details");
+      tip.className = "settings-help";
+      tip.innerHTML = `<summary><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 0 1 5 0c0 1.7-2.5 1.8-2.5 3.5M12 16v.1"/></svg></summary><div class="settings-help-content"></div>`;
+      $("summary", tip).setAttribute("aria-label", t("查看说明：", "About: ") + heading.textContent);
+      title.append(tip);
+    }
+    note.removeAttribute("data-help");
+    $(".settings-help-content", tip).append(note);
+  }
+}
+function positionHelpTip(help) {
+  if (!help.open) return;
+  const content = help.querySelector(":scope > .settings-help-content, :scope > .mmdb-path-help");
+  if (!content) return;
+  const anchor = $("summary", help).getBoundingClientRect();
+  const gap = 12;
+  const width = Math.min(content.classList.contains("mmdb-path-help") ? 620 : 460, window.innerWidth - gap * 2);
+  const below = window.innerHeight - anchor.bottom - gap * 2;
+  const above = anchor.top - gap * 2;
+  const useAbove = below < 220 && above > below;
+  content.style.position = "fixed";
+  content.style.width = `${width}px`;
+  content.style.maxHeight = `${Math.max(80, Math.min(window.innerHeight - gap * 2, useAbove ? above : below))}px`;
+  content.style.left = `${Math.max(gap, Math.min(anchor.left, window.innerWidth - width - gap))}px`;
+  content.style.right = "auto";
+  content.style.top = `${useAbove ? Math.max(gap, anchor.top - content.getBoundingClientRect().height - gap) : anchor.bottom + gap}px`;
+}
 function clientTabs() {
   return `<div class="client-tabs">${Object.entries(CLIENTS).map(([id, client]) => btn(client.label, "client", `data-client="${id}"`, state.client === id ? "selected" : "")).join("")}</div>`;
 }
@@ -137,6 +188,7 @@ function render() {
   document.documentElement.lang = state.lang === "zh" ? "zh-CN" : "en";
   $("#navigation").innerHTML = NAV.map(([id, zh, en, img]) => `<a href="#${id}" class="${state.page === id ? "active" : ""}" ${state.page === id ? 'aria-current="page"' : ""}>${icon(img)}${state.lang === "zh" ? zh : en}</a>`).join("");
   const page = NAV.find((item) => item[0] === state.page) || NAV[0];
+  clearHeadingTip($("#page-title"));
   $("#page-title").textContent = state.lang === "zh" ? page[1] : page[2];
   $("#header-actions").innerHTML = state.page === "clients" && state.client === "singbox" ? `<span class="muted small">sing-box 1.15.0-alpha.6</span>` : state.page === "clients" && state.client === "clash" ? `<span class="muted small">Mihomo v1.19.31</span>` : "";
   $("#language").textContent = state.lang === "zh" ? "中文 / EN" : "EN / 中文";
@@ -146,6 +198,7 @@ function render() {
   $("#migration-banner").innerHTML = state.migration ? `<div class="notice warning"><h2>${t("配置升级待确认", "Configuration upgrade required")}</h2><p>${t("升级旧版配置格式，保留 Surge 与 Clash 各自的设置；sing-box 使用独立的原生默认配置。确认升级后移除 Stash 和 Shadowrocket。", "Upgrade the legacy configuration format while preserving the separate Surge and Clash settings. sing-box starts with independent native defaults. Confirm the upgrade to remove Stash and Shadowrocket.")}</p><div class="toolbar">${btn(t("查看并确认升级", "Review upgrade"), "migration")}</div></div>` : "";
   const views = { status: renderStatus, sources: () => renderEntities("sources"), nodes: () => renderEntities("nodes"), groups: renderGroups, clients: renderClient, links: renderLinks, system: renderSystem };
   $("#content").innerHTML = (views[state.page] || renderStatus)();
+  mountHelpTips($("#content"), $("#page-title"));
   updateStatus();
   updateSourceRefreshButtons();
   updateMmdbView();
@@ -171,7 +224,7 @@ function renderSourceCache() {
   </dl>
   ${cache.protocolCounts.length ? `<div class="cache-protocols"><span class="muted">${t("协议分布", "Protocols")}</span>${renderCacheProtocols(cache.protocolCounts)}</div>` : ""}
   ${cache.sources.length ? `<div class="table-wrap"><table class="cache-table"><thead><tr><th>${t("订阅源", "Source")}</th><th>${t("缓存状态", "Cache status")}</th><th>${t("节点数", "Nodes")}</th><th>${t("协议分布", "Protocols")}</th><th>${t("更新时间", "Updated")}</th></tr></thead><tbody>${cache.sources.map((source) => `<tr><td class="cache-source-name">${esc(source.sourceName || source.sourceId || t("未命名订阅源", "Unnamed source"))}</td><td><span class="chip ${source.cached ? "cache-ready" : "cache-missing"}">${source.cached ? t("已缓存", "Cached") : t("未缓存", "Not cached")}</span></td><td>${source.cached ? esc(source.nodeCount) : "—"}</td><td>${source.cached ? renderCacheProtocols(source.protocolCounts) : "—"}</td><td class="request-time">${source.cached ? formatDate(source.fetchedAt) : "—"}</td></tr>`).join("")}</tbody></table></div>` : `<p class="empty">${t('还没有启用的订阅源。请先在<a href="#sources">订阅源</a>中添加或启用并保存。', 'No enabled sources yet. Add or enable a source in <a href="#sources">Subscription sources</a>, then save.')}</p>`}
-  <p class="help">${t("强制刷新会重新拉取已保存并启用的订阅源；上游获取失败时保留可用的旧缓存。", "Force refresh fetches saved, enabled sources again. Available cached content is retained if an upstream fetch fails.")}</p>`;
+  <p class="help" data-help>${t("强制刷新会重新拉取已保存并启用的订阅源；上游获取失败时保留可用的旧缓存。", "Force refresh fetches saved, enabled sources again. Available cached content is retained if an upstream fetch fails.")}</p>`;
 }
 function renderCacheProtocols(protocols) {
   return protocols.length ? protocols.map((item) => `<span class="chip">${esc(item.protocol)} · ${esc(item.count)}</span>`).join("") : `<span class="muted">${t("未解析到节点", "No parsed nodes")}</span>`;
@@ -224,7 +277,7 @@ function collection(kind) {
 function renderEntities(kind) {
   const items = collection(kind);
   const isNode = kind === "nodes";
-  return `<p class="muted">${t("订阅源和代理节点供三个客户端共用。", "Subscription sources and proxy nodes are shared by all three clients.")}</p><div class="toolbar">${btn(icon("plus") + t("添加", "Add"), "add-entity", `data-kind="${kind}"`, "primary")}${kind === "sources" ? btn(t("刷新订阅", "Refresh subscriptions"), "refresh-sources") : ""}</div><div class="table-wrap"><table class="editable-table"><thead><tr><th>${t("启用", "Enabled")}</th><th>${t("名称", "Name")}</th><th>${isNode ? t("节点配置", "Node configuration") : t("来源", "Source")}</th><th>${isNode ? t("链式出口", "Chain exit") : "User-Agent"}</th><th class="actions">${t("操作", "Actions")}</th></tr></thead><tbody>${items.map((item, index) => `<tr><td><input type="checkbox" class="toggle" aria-label="${t("启用", "Enable")} ${esc(item.name || item.id)}" data-field="${collectionPath(kind)}.${index}.enabled" ${item.enabled ? "checked" : ""}></td><td class="entity-name">${btn(esc(item.name || item.config?.split(/[=\n]/)[0] || item.id), "edit-entity", `data-kind="${kind}" data-index="${index}"`, "link entity-link")}</td><td class="truncate">${esc(isNode ? t("编辑查看完整配置", "Edit to view full configuration") : sourceHost(item.url))}</td><td class="truncate">${esc(isNode ? item.chainExit ? t("是", "Yes") : t("否", "No") : item.fetchUserAgent)}</td><td class="actions">${smallButton("edit", "edit-entity", `data-kind="${kind}" data-index="${index}"`, t("编辑", "Edit"))}${smallButton("trash", "delete-entity", `data-kind="${kind}" data-index="${index}"`, t("删除", "Delete"))}</td></tr>`).join("") || `<tr><td colspan="5" class="empty">${t("还没有添加资源", "No resources yet")}</td></tr>`}</tbody></table></div>`;
+  return `<p class="muted" data-help>${t("订阅源和代理节点供三个客户端共用。", "Subscription sources and proxy nodes are shared by all three clients.")}</p><div class="toolbar">${btn(icon("plus") + t("添加", "Add"), "add-entity", `data-kind="${kind}"`, "primary")}${kind === "sources" ? btn(t("刷新订阅", "Refresh subscriptions"), "refresh-sources") : ""}</div><div class="table-wrap"><table class="editable-table"><thead><tr><th>${t("启用", "Enabled")}</th><th>${t("名称", "Name")}</th><th>${isNode ? t("节点配置", "Node configuration") : t("来源", "Source")}</th><th>${isNode ? t("链式出口", "Chain exit") : "User-Agent"}</th><th class="actions">${t("操作", "Actions")}</th></tr></thead><tbody>${items.map((item, index) => `<tr><td><input type="checkbox" class="toggle" aria-label="${t("启用", "Enable")} ${esc(item.name || item.id)}" data-field="${collectionPath(kind)}.${index}.enabled" ${item.enabled ? "checked" : ""}></td><td class="entity-name">${btn(esc(item.name || item.config?.split(/[=\n]/)[0] || item.id), "edit-entity", `data-kind="${kind}" data-index="${index}"`, "link entity-link")}</td><td class="truncate">${esc(isNode ? t("编辑查看完整配置", "Edit to view full configuration") : sourceHost(item.url))}</td><td class="truncate">${esc(isNode ? item.chainExit ? t("是", "Yes") : t("否", "No") : item.fetchUserAgent)}</td><td class="actions">${smallButton("edit", "edit-entity", `data-kind="${kind}" data-index="${index}"`, t("编辑", "Edit"))}${smallButton("trash", "delete-entity", `data-kind="${kind}" data-index="${index}"`, t("删除", "Delete"))}</td></tr>`).join("") || `<tr><td colspan="5" class="empty">${t("还没有添加资源", "No resources yet")}</td></tr>`}</tbody></table></div>`;
 }
 function sourceHost(value) {
   try {
@@ -245,7 +298,7 @@ function groupSyntaxHelp() {
       ? t("url 设置测速地址，interval 设置测速间隔（秒）；hidden=true 隐藏组，但需要客户端或面板支持。", "url sets the test URL; interval sets the test interval in seconds. hidden=true hides the group when supported by the client or dashboard.")
       : t("url 设置测速地址，interval 设置测速间隔（秒），tolerance 设置延迟容差（毫秒）。sing-box 不支持 hidden，输出时会省略。", "url sets the test URL; interval sets the test interval in seconds; tolerance sets latency tolerance in milliseconds. sing-box omits unsupported hidden settings.");
   const example = state.client === "surge" ? "smart, {all filter=DMIT exclude=v4}, hidden=true" : "url-test, {all filter=DMIT exclude=v4}, url=https://www.gstatic.com/generate_204, interval=600";
-  return `<div class="group-syntax"><p>${t("组配置格式：", "Group definition: ")}<code>${t("类型, 成员或筛选器, 参数=值", "type, member or selector, option=value")}</code>${t("。只填一行，使用英文逗号分隔；名称单独填写，不要加“组名 =”。", ". Use one line and ASCII commas. Enter the name separately; omit the “group name =” prefix.")}</p><details><summary>${t("语法说明与示例", "Syntax guide and examples")}</summary><ul>
+  return `<div class="group-syntax" data-help><p>${t("组配置格式：", "Group definition: ")}<code>${t("类型, 成员或筛选器, 参数=值", "type, member or selector, option=value")}</code>${t("。只填一行，使用英文逗号分隔；名称单独填写，不要加“组名 =”。", ". Use one line and ASCII commas. Enter the name separately; omit the “group name =” prefix.")}</p><details><summary>${t("语法说明与示例", "Syntax guide and examples")}</summary><ul>
     <li><strong>${t("当前客户端类型：", "Types for this client: ")}</strong>${types}</li>
     <li><strong>${t("显式成员：", "Explicit members: ")}</strong>${t("填写已存在的节点名、策略组名或受支持的内置策略，例如 select, Auto, DIRECT（Auto 需已存在）。名称要完全一致；组不能引用自身，也不能形成 A → B → A 的循环。", "Use existing node or group names, or supported built-in policies, e.g. select, Auto, DIRECT (Auto must exist). Names must match exactly. Do not reference the group itself or create a cycle such as A → B → A.")}</li>
     <li><code>{all}</code> ${t("展开当前客户端可用且允许加入策略组的节点，不会选中策略组。fallback 和 subnet 不能使用此筛选器；fallback 请显式列出成员。", "expands nodes available to this client and allowed in groups; it does not select groups. fallback and subnet cannot use this selector; list fallback members explicitly.")}</li>
@@ -257,7 +310,7 @@ function groupSyntaxHelp() {
 }
 function renderGroups() {
   const client = currentClient();
-  return clientTabs() + groupSyntaxHelp() + `<p class="muted">${t("策略组仅用于当前客户端，同名组可在不同客户端分别配置。", "Policy groups belong to this client. Groups with the same name can have different settings in other clients.")}</p><div class="toolbar">${btn(icon("plus") + t("添加策略组", "Add group"), "add-group", "", "primary")}</div><div class="table-wrap"><table class="editable-table"><thead><tr><th>${t("名称", "Name")}</th><th>${t("组配置", "Group definition")}</th><th class="actions">${t("操作", "Actions")}</th></tr></thead><tbody>${Object.entries(client.groups).map(([name, spec]) => `<tr><td class="entity-name">${btn(esc(name), "edit-group", `data-name="${esc(name)}"`, "link entity-link")}${client.disabledGroups.includes(name) ? ` <span class="chip">${t("停用", "Disabled")}</span>` : ""}</td><td class="truncate">${esc(spec)}</td><td class="actions">${smallButton("edit", "edit-group", `data-name="${esc(name)}"`, t("编辑", "Edit"))}${name !== "Proxy" ? smallButton("trash", "delete-group", `data-name="${esc(name)}"`, t("删除", "Delete")) : ""}</td></tr>`).join("")}</tbody></table></div>`;
+  return clientTabs() + groupSyntaxHelp() + `<p class="muted" data-help>${t("策略组仅用于当前客户端，同名组可在不同客户端分别配置。", "Policy groups belong to this client. Groups with the same name can have different settings in other clients.")}</p><div class="toolbar">${btn(icon("plus") + t("添加策略组", "Add group"), "add-group", "", "primary")}</div><div class="table-wrap"><table class="editable-table"><thead><tr><th>${t("名称", "Name")}</th><th>${t("组配置", "Group definition")}</th><th class="actions">${t("操作", "Actions")}</th></tr></thead><tbody>${Object.entries(client.groups).map(([name, spec]) => `<tr><td class="entity-name">${btn(esc(name), "edit-group", `data-name="${esc(name)}"`, "link entity-link")}${client.disabledGroups.includes(name) ? ` <span class="chip">${t("停用", "Disabled")}</span>` : ""}</td><td class="truncate">${esc(spec)}</td><td class="actions">${smallButton("edit", "edit-group", `data-name="${esc(name)}"`, t("编辑", "Edit"))}${name !== "Proxy" ? smallButton("trash", "delete-group", `data-name="${esc(name)}"`, t("删除", "Delete")) : ""}</td></tr>`).join("")}</tbody></table></div>`;
 }
 function highlightConfigLine(line) {
   if (/^\s*(?:#|;|\/\/)/.test(line)) return `<span class="config-token-comment">${esc(line)}</span>`;
@@ -350,7 +403,7 @@ function renderSingboxNetwork() {
     const route = item.auto_route === undefined ? t("未指定", "Not specified") : item.auto_route ? t("开启", "On") : t("关闭", "Off");
     return `<tr><td><strong>${esc(item.tag || t("未命名入站", "Unnamed inbound"))}</strong><div class="help">${esc(item.type || "—")}</div></td><td>${tun ? t("接管设备流量", "Capture device traffic") : ["mixed", "http", "socks"].includes(item.type) ? t("本地代理端口", "Local proxy port") : t("接收入站连接", "Accept inbound connections")}</td><td><div class="help">${tun ? t("虚拟网卡地址", "Virtual interface addresses") : t("监听地址 / 端口", "Listen address / port")}</div>${address.length ? address.map((value) => `<code class="sb-network-address">${esc(value)}</code>`).join("") : "—"}</td><td>${tun ? `<dl><dt>${t("自动路由", "Automatic routing")}</dt><dd>${route}</dd>${item.interface_name ? `<dt>${t("接口", "Interface")}</dt><dd>${esc(item.interface_name)}</dd>` : ""}</dl>` : "—"}</td><td class="actions">${iconButton("edit", "edit-singbox-inbound", `data-index="${index}"`, t("编辑入站", "Edit inbound"))}${iconButton("trash", "delete-singbox-inbound", `data-index="${index}"`, t("删除入站", "Delete inbound"))}</td></tr>`;
   }).join("");
-  return `<section class="sb-network"><div class="section-heading"><div><h2>${t("入站管理", "Inbound connections")}</h2><p class="help">${t("TUN 接管设备流量；HTTP / SOCKS 端口供应用连接代理；Tailcat 通过 DERP 建立点对点隧道。", "TUN captures device traffic; HTTP / SOCKS ports accept proxy connections from apps; Tailcat establishes peer-to-peer tunnels through DERP.")}</p></div>${btn(t("添加入站", "Add inbound"), "edit-singbox-inbound", "", "primary")}</div><div class="table-wrap"><table><thead><tr><th>${t("入站", "Inbound")}</th><th>${t("用途", "Purpose")}</th><th>${t("地址", "Address")}</th><th>${t("网络设置", "Network settings")}</th><th>${t("操作", "Actions")}</th></tr></thead><tbody>${rows || `<tr><td colspan="5" class="empty">${t("尚未配置入站，点击「添加入站」设置流量入口。", "No inbounds configured. Add an inbound to receive traffic.")}</td></tr>`}</tbody></table></div></section>`;
+  return `<section class="sb-network"><div class="section-heading"><div><h2>${t("入站管理", "Inbound connections")}</h2><p class="help" data-help>${t("TUN 接管设备流量；HTTP / SOCKS 端口供应用连接代理；Tailcat 通过 DERP 建立点对点隧道。", "TUN captures device traffic; HTTP / SOCKS ports accept proxy connections from apps; Tailcat establishes peer-to-peer tunnels through DERP.")}</p></div>${btn(t("添加入站", "Add inbound"), "edit-singbox-inbound", "", "primary")}</div><div class="table-wrap"><table><thead><tr><th>${t("入站", "Inbound")}</th><th>${t("用途", "Purpose")}</th><th>${t("地址", "Address")}</th><th>${t("网络设置", "Network settings")}</th><th>${t("操作", "Actions")}</th></tr></thead><tbody>${rows || `<tr><td colspan="5" class="empty">${t("尚未配置入站，点击「添加入站」设置流量入口。", "No inbounds configured. Add an inbound to receive traffic.")}</td></tr>`}</tbody></table></div></section>`;
 }
 function singboxConnectionDnsHelp() {
   return t("用于解析代理节点地址，以及直连时尚未解析的目标域名。连接单独指定 DNS 时优先使用其设置；此处指定的服务器可能绕过 DNS 查询分流规则。", "Resolves proxy server addresses and target domains still unresolved when connecting directly. A connection-specific DNS resolver takes priority; a server selected here may bypass DNS query routing rules.");
@@ -361,12 +414,12 @@ function renderSingboxConnectionSettings(group) {
   const keys = group === "dns" ? ["default_domain_resolver"] : ["auto_detect_interface", "default_interface", "default_network_strategy"];
   const names = { default_domain_resolver: t("连接解析服务器", "Connection resolver"), auto_detect_interface: t("自动检测出口网卡", "Detect outbound interface"), default_interface: t("指定出口网卡", "Outbound interface"), default_network_strategy: t("网络选择策略", "Network strategy") };
   const summary = keys.filter((key) => route[key] !== undefined).map((key) => `<div><span class="muted">${names[key]}：</span>${esc(typeof route[key] === "boolean" ? route[key] ? t("开启", "On") : t("关闭", "Off") : typeof route[key] === "object" ? JSON.stringify(route[key]) : route[key])}</div>`).join("");
-  return section(title, (summary || `<p class="help">${t("使用默认设置", "Using defaults")}</p>`) + (group === "dns" ? `<p class="help">${singboxConnectionDnsHelp()}</p>` : ""), btn(t("配置", "Configure"), "edit-singbox-section", `data-key="route" data-route-group="${group}"`));
+  return section(title, (summary || `<p class="help">${t("使用默认设置", "Using defaults")}</p>`) + (group === "dns" ? `<p class="help" data-help>${singboxConnectionDnsHelp()}</p>` : ""), btn(t("配置", "Configure"), "edit-singbox-section", `data-key="route" data-route-group="${group}"`));
 }
 function renderSingboxVpn(type) {
   const title = { wireguard: "WireGuard", openconnect: "OpenConnect", "openvpn-client": "OpenVPN" }[type];
   const items = (currentClient().endpoints || []).filter((item) => item.type === type);
-  return section(title, `<p class="help">${t("连接 VPN 服务器，可在策略组和分流规则中选择此连接。", "Connect to a VPN server and use the connection in policy groups and routing rules.")}</p><div class="table-wrap"><table><thead><tr><th>${t("名称", "Name")}</th><th>${t("服务器 / 地址", "Server / Address")}</th></tr></thead><tbody>${items.map((item) => `<tr><td>${esc(item.tag || "—")}</td><td>${esc(item.server || (item.address || []).join(", ") || "—")}</td></tr>`).join("") || `<tr><td colspan="2" class="empty">${t("尚未配置连接", "No connections configured")}</td></tr>`}</tbody></table></div>`, btn(t("配置连接", "Configure connections"), "edit-singbox-section", `data-key="endpoints" data-endpoint-type="${type}"`));
+  return section(title, `<p class="help" data-help>${t("连接 VPN 服务器，可在策略组和分流规则中选择此连接。", "Connect to a VPN server and use the connection in policy groups and routing rules.")}</p><div class="table-wrap"><table><thead><tr><th>${t("名称", "Name")}</th><th>${t("服务器 / 地址", "Server / Address")}</th></tr></thead><tbody>${items.map((item) => `<tr><td>${esc(item.tag || "—")}</td><td>${esc(item.server || (item.address || []).join(", ") || "—")}</td></tr>`).join("") || `<tr><td colspan="2" class="empty">${t("尚未配置连接", "No connections configured")}</td></tr>`}</tbody></table></div>`, btn(t("配置连接", "Configure connections"), "edit-singbox-section", `data-key="endpoints" data-endpoint-type="${type}"`));
 }
 function renderSingboxSections(keys) {
   const client = currentClient();
@@ -397,7 +450,7 @@ function renderSingboxSections(keys) {
       return `<div class="sb-overview-item"><div class="section-heading"><strong>${esc(item.tag || role)}</strong>${key === "inbounds" ? `<div class="toolbar">${iconButton("edit", "edit-singbox-inbound", `data-index="${index}"`, t("编辑入站", "Edit inbound"))}${iconButton("trash", "delete-singbox-inbound", `data-index="${index}"`, t("删除入站", "Delete inbound"))}</div>` : ""}</div><span>${esc(role)} · ${esc(type)}</span><dl class="sb-overview-details">${details.map(([label, value]) => `<dt>${esc(label)}</dt><dd><code>${esc(value)}</code></dd>`).join("")}</dl></div>`;
     }).join("")}</div>` : `<p class="help">${t("尚未配置", "Not configured")}</p>`) : `<p class="sb-summary">${esc(summary)}</p>`;
     const removable = value !== undefined && !["inbounds", "dns", "route", "log", "experimental"].includes(key);
-    return section(singboxTitle(key, t), `<p class="help">${purpose[key] || ""}</p>${overview}${notes[key] ? `<p class="help">${notes[key]}</p>` : ""}`, `<div class="toolbar">${key === "inbounds" ? btn(t("添加入站", "Add inbound"), "edit-singbox-inbound") : btn(t("配置", "Configure"), "edit-singbox-section", `data-key="${key}"`)}${removable ? btn(t("恢复默认", "Use defaults"), "remove-singbox-section", `data-key="${key}"`) : ""}</div>`);
+    return section(singboxTitle(key, t), `<p class="help" data-help>${purpose[key] || ""}</p>${overview}${notes[key] ? `<p class="help" data-help>${notes[key]}</p>` : ""}`, `<div class="toolbar">${key === "inbounds" ? btn(t("添加入站", "Add inbound"), "edit-singbox-inbound") : btn(t("配置", "Configure"), "edit-singbox-section", `data-key="${key}"`)}${removable ? btn(t("恢复默认", "Use defaults"), "remove-singbox-section", `data-key="${key}"`) : ""}</div>`);
   }).join("") + `</div></div>`;
 }
 async function editSingboxSection(key, inboundIndex, endpointType, routeGroup) {
@@ -461,7 +514,7 @@ function renderTailscale() {
     const exit = surge ? node.exitNode : node.exit_node;
     return [`<tr><td>${btn(esc(name || t("未命名", "Unnamed")), "edit-tailscale", `data-index="${index}"`, "link")}</td><td>${esc(node.hostname || "—")}</td><td>${esc(exit && exit !== "none" ? exit : t("未指定", "Not selected"))}</td><td>${surge ? node.enabled ? t("启用", "Enabled") : t("停用", "Disabled") : t("已配置", "Configured")}</td><td class="actions">${smallButton("edit", "edit-tailscale", `data-index="${index}"`, t("编辑", "Edit"))}${smallButton("trash", "delete-tailscale", `data-index="${index}"`, t("删除", "Delete"))}</td></tr>`];
   }).join("");
-  return section(t("Tailscale 节点", "Tailscale nodes"), `<p class="help">${surge ? t("节点可在当前端的策略组和分流规则中使用。认证密钥仅在编辑时以密码框显示。", "Use nodes in this client's policy groups and routing rules. Auth keys are masked in the editor.") : t("使用 sing-box 1.15 原生 Tailscale endpoint。认证密钥可留空，通过客户端日志中的登录地址授权；每个实例应使用独立的状态目录。", "Uses native sing-box 1.15 Tailscale endpoints. Leave the auth key empty to sign in through the URL in client logs; use a separate state directory for each instance.")}</p><div class="table-wrap"><table class="editable-table tailscale-table"><thead><tr><th>${t("名称", "Name")}</th><th>${t("设备主机名", "Hostname")}</th><th>${t("出口节点", "Exit node")}</th><th>${t("状态", "Status")}</th><th class="actions">${t("操作", "Actions")}</th></tr></thead><tbody>${rows || `<tr><td colspan="5" class="empty">${t("尚未添加 Tailscale 节点", "No Tailscale nodes yet")}</td></tr>`}</tbody></table></div>`, btn(t("添加节点", "Add node"), "add-tailscale", "", "primary"));
+  return section(t("Tailscale 节点", "Tailscale nodes"), `<p class="help" data-help>${surge ? t("节点可在当前端的策略组和分流规则中使用。认证密钥仅在编辑时以密码框显示。", "Use nodes in this client's policy groups and routing rules. Auth keys are masked in the editor.") : t("使用 sing-box 1.15 原生 Tailscale endpoint。认证密钥可留空，通过客户端日志中的登录地址授权；每个实例应使用独立的状态目录。", "Uses native sing-box 1.15 Tailscale endpoints. Leave the auth key empty to sign in through the URL in client logs; use a separate state directory for each instance.")}</p><div class="table-wrap"><table class="editable-table tailscale-table"><thead><tr><th>${t("名称", "Name")}</th><th>${t("设备主机名", "Hostname")}</th><th>${t("出口节点", "Exit node")}</th><th>${t("状态", "Status")}</th><th class="actions">${t("操作", "Actions")}</th></tr></thead><tbody>${rows || `<tr><td colspan="5" class="empty">${t("尚未添加 Tailscale 节点", "No Tailscale nodes yet")}</td></tr>`}</tbody></table></div>`, btn(t("添加节点", "Add node"), "add-tailscale", "", "primary"));
 }
 function editTailscale(index) {
   const client = state.client, surge = client === "surge";
@@ -486,7 +539,7 @@ function editTailscale(index) {
 function renderMitm() {
   const mitm = state.config.clients.surge.mitm;
   const path = "clients.surge.mitm";
-  return section(t("MITM 证书管理", "MITM certificate management"), `<p class="muted">${t("生成或导入 Surge 使用的 CA 证书。修改后保存配置，再在客户端更新订阅。", "Generate or import a CA certificate for Surge. Save changes, then update the subscription in your client.")}</p><p id="ca-status" role="status">${mitm.caP12 ? t("已配置 CA 证书", "CA certificate configured") : t("尚未配置 CA 证书", "No CA certificate configured")}</p><div class="toolbar">${btn(t("生成证书", "Generate certificate"), "generate-ca", "", "primary")}${btn(t("导入证书", "Import certificate"), "import-ca")}${btn(t("导出证书", "Export certificate"), "export-ca", mitm.caP12 ? "" : "disabled")}</div>${field(`${path}.caPassphrase`, mitm.caPassphrase)}<details><summary>${t("查看或编辑证书数据", "View or edit certificate data")}</summary>${field(`${path}.caP12`, mitm.caP12)}</details>`) + section(t("MITM 设置", "MITM settings"), Object.entries(mitm).filter(([key]) => !["caPassphrase", "caP12"].includes(key)).map(([key, value]) => field(`${path}.${key}`, value)).join(""));
+  return section(t("MITM 证书管理", "MITM certificate management"), `<p class="muted" data-help>${t("生成或导入 Surge 使用的 CA 证书。修改后保存配置，再在客户端更新订阅。", "Generate or import a CA certificate for Surge. Save changes, then update the subscription in your client.")}</p><p id="ca-status" role="status">${mitm.caP12 ? t("已配置 CA 证书", "CA certificate configured") : t("尚未配置 CA 证书", "No CA certificate configured")}</p><div class="toolbar">${btn(t("生成证书", "Generate certificate"), "generate-ca", "", "primary")}${btn(t("导入证书", "Import certificate"), "import-ca")}${btn(t("导出证书", "Export certificate"), "export-ca", mitm.caP12 ? "" : "disabled")}</div>${field(`${path}.caPassphrase`, mitm.caPassphrase)}<details><summary>${t("查看或编辑证书数据", "View or edit certificate data")}</summary>${field(`${path}.caP12`, mitm.caP12)}</details>`) + section(t("MITM 设置", "MITM settings"), Object.entries(mitm).filter(([key]) => !["caPassphrase", "caP12"].includes(key)).map(([key, value]) => field(`${path}.${key}`, value)).join(""));
 }
 function renderRules() {
   if (state.client === "clash") return clashRouting.render();
@@ -664,19 +717,31 @@ function editSingboxDirect(index) {
 }
 
 function renderLinks() {
-  return `<p class="muted">${t("三个客户端使用同一条订阅地址，按 User-Agent 自动识别 Surge、clash或 sing-box。请在客户端中导入；链接中的 token 授予订阅读取权限。", "All three clients use this subscription URL. User-Agent identifies Surge, clash, or sing-box. Import it in your client; the token grants subscription read access.")}</p><div id="subscription-links"><p class="muted">${t("正在读取…", "Loading…")}</p></div><div class="toolbar">${btn(t("轮换读取 token", "Rotate read token"), "rotate-token", "", "danger")}</div>` + section(t("订阅检查", "Subscription check"), `<p class="help">${t("检查服务器已保存的配置。订阅更新失败时，可在这里查看具体原因；规则未就绪时，检查会启动后台准备；启用 Actions 后可在编译进度中查看三个客户端的状态。", "Check the configuration saved on the server to find out why a subscription update failed. If rules are not ready, the check starts background preparation. With Actions enabled, view all three clients in compilation progress.")}</p><div class="toolbar">${Object.entries(CLIENTS).map(([id, client]) => btn(`${t("检查", "Check")} ${esc(client.label)}`, "check-subscription", `data-client="${id}"`)).join("")}</div><div id="subscription-check-result">${renderSubscriptionCheck()}</div>`);
+  return `<p class="muted" data-help>${t("三个客户端使用同一条订阅地址，按 User-Agent 自动识别 Surge、clash或 sing-box。请在客户端中导入；链接中的 token 授予订阅读取权限。", "All three clients use this subscription URL. User-Agent identifies Surge, clash, or sing-box. Import it in your client; the token grants subscription read access.")}</p><div id="subscription-links"><p class="muted">${t("正在读取…", "Loading…")}</p></div><div class="toolbar">${btn(t("轮换读取 token", "Rotate read token"), "rotate-token", "", "danger")}</div>` + section(t("订阅检查", "Subscription check"), `<p class="help" data-help>${t("检查服务器已保存的配置。订阅更新失败时，可在这里查看具体原因；规则未就绪时，检查会启动后台准备；启用 Actions 后可在编译进度中查看三个客户端的状态。", "Check the configuration saved on the server to find out why a subscription update failed. If rules are not ready, the check starts background preparation. With Actions enabled, view all three clients in compilation progress.")}</p><div class="toolbar">${Object.entries(CLIENTS).map(([id, client]) => btn(`${t("检查", "Check")} ${esc(client.label)}`, "check-subscription", `data-client="${id}"`)).join("")}</div><div id="subscription-check-result">${renderSubscriptionCheck()}</div>`);
 }
 function renderActionsCompilationSettings() {
   const options = state.config.settings.actionsCompilation || { enabled: false, repository: "", ref: "main" };
   const path = "settings.actionsCompilation";
-  return section(t("Actions 规则编译（选配）", "Actions rule compilation (optional)"),
-    `<p class="help">${t("默认由 Worker 合并规则、去重并分桶。启用后优先使用 GitHub Actions 产物：Surge 文本规则、Clash YAML 和 sing-box SRS。Actions 产物未就绪时，由 Worker 处理并提供规则。产物保存在公开仓库，规则内容会公开。", "By default, the Worker merges, deduplicates and buckets rules. When enabled, confirmed GitHub Actions artifacts are preferred: Surge text rules, Clash YAML and sing-box SRS. The Worker processes and serves rules while Actions artifacts are pending. Artifacts are published in a public repository, making rule contents public.")}</p>`
+  return `<section class="section"><div class="section-heading"><div class="help-title">
+      <h2>${t("Actions 规则编译（选配）", "Actions rule compilation (optional)")}</h2>
+      <details class="settings-help">
+        <summary aria-label="${t("了解 Actions 规则编译", "About Actions rule compilation")}"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 0 1 5 0c0 1.7-2.5 1.8-2.5 3.5M12 16v.1"/></svg></summary>
+        <div class="settings-help-content">
+          <p>${t("将规则编译交给 GitHub Actions，减轻 Worker 处理大规则集时的超时压力。", "Offload rule compilation to GitHub Actions to reduce Worker timeouts when processing large rule sets.")}</p>
+          <p>${t("支持 Surge 文本规则、Clash YAML 和 sing-box SRS。未启用或产物未就绪时，由 Worker 处理并提供规则。", "Supports Surge text rules, Clash YAML and sing-box SRS. The Worker processes and serves rules when Actions is disabled or artifacts are not ready.")}</p>
+          <p>${t("编译结果保存在公开 GitHub 仓库，规则内容会公开。", "Compiled rules are stored in a public GitHub repository, so their contents are public.")}</p>
+          <p>${t("按顺序完成检查、安装和启用。仓库文件公开；凭据仅保存为加密数据或 GitHub Secrets。不会保存其他页面的草稿。", "Check, install and enable in order. Repository files are public; credentials remain encrypted or in GitHub Secrets. Other page drafts are not saved.")}</p>
+          <p class="help">${t("自动填入上次成功安装时使用的地址。建议填写本部署的 workers.dev 地址，避免自定义域名的人机验证；首次升级后如果地址为空，请重新填写一次。仅检查地址格式，不检查连通性；请确认地址属于本部署。实际连接由 GitHub Action 执行。", "Uses the address from the last successful installation. Prefer this deployment's workers.dev address to avoid custom-domain bot challenges. If the field is empty after upgrading, enter it once. Only address format is checked, not connectivity; ensure it belongs to your deployment. GitHub Actions makes the actual connection.")}</p>
+          <p class="help">${t("向导会安装或更新通用工作流与编译器。产物固定使用 rules 分支，按三个客户端分目录保存。", "The wizard installs or updates the shared workflow and compiler. Artifacts use the fixed rules branch with a directory for each client.")}</p>
+        </div>
+      </details>
+    </div></div>`
     + field(`${path}.enabled`, options.enabled, { label: t("启用 Actions 规则编译", "Enable Actions rule compilation") })
     + `<div id="actions-compiler-settings" ${options.enabled ? "" : "hidden"}>`
     + field(`${path}.repository`, options.repository, { label: t("公开 GitHub 仓库（owner/repo）", "Public GitHub repository (owner/repo)") })
     + field(`${path}.ref`, options.ref, { label: t("工作流分支（仓库默认分支）", "Workflow branch (repository default)") })
     + `<div class="toolbar">${btn(t("配置向导", "Setup wizard"), "actions-setup", "", "primary")}${btn(t("查看编译进度", "View compilation progress"), "actions-progress")}</div>`
-    + `</div>`);
+    + `</div></section>`;
 }
 function actionsDispatchFailure(code) {
   const hints = {
@@ -783,26 +848,28 @@ async function checkActionsUpgrade() {
 async function showActionsSetup({ automatic = false } = {}) {
   const status = await api("/api/actions-compilation/install/status");
   const settings = state.config.settings.actionsCompilation || {};
+  const tokenMask = "********";
   const callbackOrigin = status.callbackOrigin || (/^[a-z0-9-]+\.[a-z0-9-]+\.workers\.dev$/.test(location.hostname) ? location.origin : "");
   modal(t("Actions 规则编译配置向导", "Actions rule compilation setup wizard"),
-    `${automatic ? `<p role="status">${t("检测到 Actions 工作流需要更新，正在使用已保存的配置自动安装。安装失败时可修正后重试；选择跳过将关闭 Actions 规则编译，继续由 Worker 提供规则。", "The Actions workflow needs updating. Installing automatically with your saved settings. If installation fails, correct the settings and retry, or skip to disable Actions compilation and keep the Worker serving rules.")}</p>` : ""}<p>${t("按顺序完成检查、安装和启用。仓库文件公开；凭据仅保存为加密数据或 GitHub Secrets。不会保存其他页面的草稿。", "Check, install and enable in order. Repository files are public; credentials remain encrypted or in GitHub Secrets. Other page drafts are not saved.")}</p>
+    `${automatic ? `<p role="status">${t("检测到 Actions 工作流需要更新，正在使用已保存的配置自动安装。安装失败时可修正后重试；选择跳过将关闭 Actions 规则编译，继续由 Worker 提供规则。", "The Actions workflow needs updating. Installing automatically with your saved settings. If installation fails, correct the settings and retry, or skip to disable Actions compilation and keep the Worker serving rules.")}</p>` : ""}
     <label>${t("1. 公开仓库（owner/repo）", "1. Public repository (owner/repo)")}<input id="actions-setup-repo" value="${esc(settings.repository || "")}"></label>
     <p class="help"><a href="https://github.com/new" target="_blank" rel="noopener noreferrer">${t("创建仓库（勾选添加 README）", "Create repository (include a README)")}</a></p>
     <label>${t("2. 工作流访问地址", "2. Workflow callback address")}<input id="actions-setup-origin" type="url" value="${esc(callbackOrigin)}" required></label>
-    <p class="help">${t("自动填入上次成功安装时使用的地址。建议填写本部署的 workers.dev 地址，避免自定义域名的人机验证；首次升级后如果地址为空，请重新填写一次。仅检查地址格式，不检查连通性；请确认地址属于本部署。实际连接由 GitHub Action 执行。", "Uses the address from the last successful installation. Prefer this deployment's workers.dev address to avoid custom-domain bot challenges. If the field is empty after upgrading, enter it once. Only address format is checked, not connectivity; ensure it belongs to your deployment. GitHub Actions makes the actual connection.")}</p>
-    <label>${t("3. GitHub Token", "3. GitHub token")}<input id="actions-setup-token" type="password" autocomplete="new-password"></label>
-    <p class="help">${status.dispatchTokenConfigured ? t("已配置，留空沿用；填写新 Token 会替换原凭据。", "Configured; leave blank to reuse, or enter a new token to replace the stored credentials.") : t("必填。", "Required.")} ${t("仅选择目标仓库，授予 Actions、Contents、Workflows、Secrets 读写权限。同一个 Token 用于安装与日常编译，加密保存在 KV；启用期间请勿撤销。", "Select only the target repository and grant Actions, Contents, Workflows and Secrets read/write. This token is used for installation and ongoing compilation and stored encrypted in KV; keep it valid while Actions compilation is enabled.")} <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener noreferrer">${t("申请 Token", "Create token")}</a></p>
+
+    <label>${t("3. GitHub Token", "3. GitHub token")}<input id="actions-setup-token" type="password" autocomplete="new-password" value="${status.dispatchTokenConfigured ? tokenMask : ""}"></label>
+    <p class="help">${status.dispatchTokenConfigured ? t("已配置，星号表示已保存的 Token；保持不变即可沿用，替换为新 Token 后保存即可更新。", "Configured. The mask represents the saved token. Keep it unchanged to reuse it, or replace it with a new token and save to update it.") : t("必填。", "Required.")} ${t("仅选择目标仓库，授予 Actions、Contents、Workflows、Secrets 读写权限。同一个 Token 用于安装与日常编译，加密保存在 KV；启用期间请勿撤销。", "Select only the target repository and grant Actions, Contents, Workflows and Secrets read/write. This token is used for installation and ongoing compilation and stored encrypted in KV; keep it valid while Actions compilation is enabled.")} <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener noreferrer">${t("申请 Token", "Create token")}</a></p>
     <details><summary>${t("高级设置", "Advanced settings")}</summary>
     <label>${t("工作流分支（仓库默认分支）", "Workflow branch (repository default)")}<input id="actions-setup-ref" value="${esc(settings.ref || "main")}"></label>
     </details>
-    <p class="help">${t("向导会安装或更新通用工作流与编译器。产物固定使用 rules 分支，按三个客户端分目录保存。", "The wizard installs or updates the shared workflow and compiler. Artifacts use the fixed rules branch with a directory for each client.")}</p>
+
     <ol id="actions-setup-results" role="status" aria-live="polite"></ol>`, async () => {
       if (modal.installingActions) return;
       const next = { enabled: true, repository: $("#actions-setup-repo").value.trim(), ref: $("#actions-setup-ref").value.trim() };
       const invalid = validateActionsCompilationSettings(next, state.lang);
       if (invalid) throw Error(invalid);
       let token = $("#actions-setup-token").value.trim();
-      $("#actions-setup-token").value = "";
+      if (status.dispatchTokenConfigured && token === tokenMask) token = "";
+      $("#actions-setup-token").value = status.dispatchTokenConfigured ? tokenMask : "";
       if (!token && !status.dispatchTokenConfigured) throw Error(t("请填写所需 Token", "Enter the required tokens"));
       const callbackOrigin = $("#actions-setup-origin").value.trim();
       const replaceExisting = true;
@@ -843,7 +910,7 @@ async function showActionsSetup({ automatic = false } = {}) {
         modal.save = null;
         $("#modal-actions").innerHTML = btn(t("关闭", "Close"), "close-modal");
       } catch (error) { report(error.message); }
-      finally { token = ""; modal.installingActions = false; controls.forEach((control) => { control.disabled = false; }); }
+      finally { token = ""; $("#actions-setup-token").value = status.dispatchTokenConfigured ? tokenMask : ""; modal.installingActions = false; controls.forEach((control) => { control.disabled = false; }); }
     }, t("检查、安装并启用", "Check, install and enable"));
   if (modal.actionsUpgradeRequired) {
     $('#modal-actions [data-action="close-modal"]').textContent = t("跳过并关闭 Actions 编译", "Skip and disable Actions compilation");
@@ -871,9 +938,38 @@ function renderSystemOverview() {
     + section(t("订阅与抓取", "Subscription and fetching"), ["managedBaseUrl", "userAgentSurge", "userAgentClash"].map((key) => setting(key)).join(""))
     + `</div>`;
 }
-function renderSystem() {
+function renderMmdbSettings() {
   const mmdbPaths = [["Surge macOS", "~/Library/Application Support/com.nssurge.surge-mac/GeoLite2-Country.mmdb"], ["Clash Verge Windows", "%APPDATA%\\io.github.clash-verge-rev.clash-verge-rev\\Country.mmdb"], ["Clash Verge macOS", "~/Library/Application Support/io.github.clash-verge-rev.clash-verge-rev/Country.mmdb"]];
-  return renderSystemOverview() + renderActionsCompilationSettings() + section("GeoIP MMDB", `<p class="help">${t("上传 MMDB 数据库用于节点地理位置识别。", "Upload an MMDB database for node geolocation.")}</p><div id="mmdb-status"></div><div class="mmdb-upload-controls"><label for="mmdb-upload">${t("选择数据库文件", "Choose database file")}</label><input type="file" id="mmdb-upload" accept=".mmdb" ${mmdb.uploading ? "disabled" : ""}>${btn(t("上传", "Upload"), "upload-mmdb", 'id="mmdb-submit" disabled', "primary")}</div><div id="mmdb-transfer" role="status" aria-live="polite"></div><p class="help">${t("最大 25 MiB。选择文件后点击上传，成功后立即生效。", "Up to 25 MiB. Select a file, then click Upload. Changes take effect on success.")}</p><div class="mmdb-path-help help" aria-label="${t("MMDB 文件路径参考", "MMDB file path reference")}"><p>${t("可从本机客户端选择现有文件：", "Select an existing file from a local client:")}</p><ul>${mmdbPaths.map(([client, path]) => `<li><span>${esc(client)}</span><code>${esc(path)}</code></li>`).join("")}</ul></div>`) + section("Telegram", field("settings.notificationTelegramBotToken", state.config.settings.notificationTelegramBotToken) + `<div id="telegram-settings" ${state.config.settings.notificationTelegramBotToken?.trim() ? "" : "hidden"}>` + field("settings.notificationTelegramChatId", state.config.settings.notificationTelegramChatId) + `<div class="toolbar">${btn(t("生成绑定码", "Generate binding code"), "telegram-bind")}${btn(t("解除绑定", "Unbind"), "telegram-unbind", "", "danger")}</div><p class="help">${t("通知凭据保存后生效。", "Save notification credentials before binding.")}</p></div>`);
+  return `<section class="section mmdb-panel" aria-labelledby="mmdb-heading">
+    <div class="section-heading"><h2 id="mmdb-heading">GeoIP MMDB</h2>${btn(t("刷新数据库信息", "Refresh database information"), "refresh-mmdb", `id="mmdb-refresh" ${mmdb.loading || mmdb.uploading ? "disabled" : ""}`, "quiet")}</div>
+    <p class="help mmdb-description" data-help>${t("上传 MMDB 数据库用于节点地理位置识别。", "Upload an MMDB database for node geolocation.")}</p>
+    <div class="mmdb-layout">
+      <div id="mmdb-status" role="status" aria-live="polite"></div>
+      <div class="mmdb-upload-panel" aria-labelledby="mmdb-upload-heading">
+        <div class="help-title mmdb-upload-heading">
+          <h3 id="mmdb-upload-heading">${t("上传数据库", "Upload database")}</h3>
+          <details class="settings-help mmdb-help">
+            <summary aria-label="${t("查看数据库文件路径提示", "Show database file path tips")}"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 0 1 5 0c0 1.7-2.5 1.8-2.5 3.5M12 16v.1"/></svg></summary>
+    <div class="mmdb-path-help" aria-label="${t("MMDB 文件路径参考", "MMDB file path reference")}">
+      <p class="help">${t("可从本机客户端选择现有文件：", "Select an existing file from a local client:")}</p>
+      <dl>${mmdbPaths.map(([client, path]) => `<div class="mmdb-path-row"><dt>${esc(client)}</dt><dd><code>${esc(path)}</code></dd></div>`).join("")}</dl>
+    </div>
+          </details>
+        </div>
+        <div class="mmdb-upload-controls">
+          <label for="mmdb-upload">${t("选择数据库文件", "Choose database file")}</label>
+          <input type="file" id="mmdb-upload" accept=".mmdb" aria-describedby="mmdb-upload-help" ${mmdb.uploading ? "disabled" : ""}>
+          ${btn(t("上传", "Upload"), "upload-mmdb", 'id="mmdb-submit" disabled', "primary")}
+        </div>
+        <p class="help" id="mmdb-upload-help">${t("最大 25 MiB。选择文件后点击上传，成功后立即生效。", "Up to 25 MiB. Select a file, then click Upload. Changes take effect on success.")}</p>
+        <div id="mmdb-transfer" role="status" aria-live="polite"></div>
+      </div>
+    </div>
+
+  </section>`;
+}
+function renderSystem() {
+  return renderSystemOverview() + renderActionsCompilationSettings() + renderMmdbSettings() + section("Telegram", field("settings.notificationTelegramBotToken", state.config.settings.notificationTelegramBotToken) + `<div id="telegram-settings" ${state.config.settings.notificationTelegramBotToken?.trim() ? "" : "hidden"}>` + field("settings.notificationTelegramChatId", state.config.settings.notificationTelegramChatId) + `<div class="toolbar">${btn(t("生成绑定码", "Generate binding code"), "telegram-bind")}${btn(t("解除绑定", "Unbind"), "telegram-unbind", "", "danger")}</div><p class="help">${t("通知凭据保存后生效。", "Save notification credentials before binding.")}</p></div>`);
 }
 function updateSystemSettingsVisibility() {
   const actions = $("#actions-compiler-settings");
@@ -891,17 +987,22 @@ function updateMmdbView() {
   const rows = current?.uploaded ? [
     [t("当前文件", "Current file"), current.fileName || "—"],
     [t("数据库类型", "Database type"), current.databaseType || t("未知", "Unknown")],
+    [t("文件大小", "File size"), mmdbSize(current.size || 0)],
     [t("数据库版本（构建时间）", "Database version (build time)"), current.builtAt ? formatDate(current.builtAt) : t("未提供构建时间", "Build time unavailable")],
-    [t("上传时间", "Uploaded at"), formatDate(current.updatedAt)],
-    [t("文件大小", "File size"), mmdbSize(current.size || 0)]
+    [t("上传时间", "Uploaded at"), formatDate(current.updatedAt)]
   ] : [];
-  status.innerHTML = rows.map(([name, value]) => `<div class="status-row"><span>${esc(name)}</span><strong class="value">${esc(value)}</strong></div>`).join("") + (current && !current.uploaded ? `<p class="muted">${t("尚未上传 MMDB 数据库。", "No MMDB database uploaded.")}</p>` : "") + (mmdb.loading ? `<p class="muted">${t("正在读取数据库信息…", "Loading database information…")}</p>` : "") + (mmdb.statusError ? `<p class="danger-text">${t("无法读取当前数据库信息，请重试。", "Could not load current database information. Please retry.")}</p>` : "") + btn(t("刷新数据库信息", "Refresh database information"), "refresh-mmdb", mmdb.loading || mmdb.uploading ? "disabled" : "");
+  status.innerHTML = (rows.length ? `<dl class="mmdb-metadata">${rows.map(([name, value], index) => `<div${index === 0 ? ' class="mmdb-current-file"' : ""}><dt>${esc(name)}</dt><dd>${esc(value)}</dd></div>`).join("")}</dl>` : "")
+    + (current && !current.uploaded ? `<p class="muted mmdb-empty">${t("尚未上传 MMDB 数据库。", "No MMDB database uploaded.")}</p>` : "")
+    + (mmdb.loading ? `<p class="muted">${t("正在读取数据库信息…", "Loading database information…")}</p>` : "")
+    + (mmdb.statusError ? `<p class="danger-text">${t("无法读取当前数据库信息，请重试。", "Could not load current database information. Please retry.")}</p>` : "");
+  status.setAttribute("aria-busy", String(mmdb.loading));
+  $("#mmdb-refresh").disabled = mmdb.loading || mmdb.uploading;
   $("#mmdb-upload").disabled = mmdb.uploading;
   $("#mmdb-submit").disabled = !mmdb.file || mmdb.uploading;
   $("#mmdb-submit").textContent = mmdb.uploading ? t("上传中…", "Uploading…") : t("上传", "Upload");
   const selected = mmdb.file ? `<p class="mmdb-file">${t("已选择：", "Selected: ")}${esc(mmdb.file.name)} · ${mmdbSize(mmdb.file.size)}</p>` : "";
   const message = mmdb.uploading ? (mmdb.progress < 100 ? t(`正在上传 ${mmdb.progress}%`, `Uploading ${mmdb.progress}%`) : t("传输完成，正在校验并保存数据库…", "Transfer complete. Validating and saving the database…")) : mmdb.outcome === "success" ? t("上传成功，当前数据库信息已更新。", "Upload succeeded. Current database information updated.") : mmdb.outcome === "invalid" ? t("请选择非空的 .mmdb 文件，大小不能超过 25 MiB。", "Choose a nonempty .mmdb file up to 25 MiB.") : mmdb.outcome === "error" ? t(`上传未完成：${mmdb.error}。可点击上传重试，或刷新数据库信息确认当前状态。`, `Upload did not complete: ${mmdb.error}. Retry the upload or refresh database information to check the current state.`) : mmdb.file ? t("文件已准备好，请点击上传。", "File ready. Click Upload to start.") : "";
-  $("#mmdb-transfer").innerHTML = selected + (mmdb.uploading ? `<progress max="100" ${mmdb.progress < 100 ? `value="${mmdb.progress}"` : ""} aria-label="${t("MMDB 上传进度", "MMDB upload progress")}"></progress>` : "") + `<p class="${["error", "invalid"].includes(mmdb.outcome) ? "danger-text" : "muted"}">${esc(message)}</p>`;
+  $("#mmdb-transfer").innerHTML = selected + (mmdb.uploading ? `<progress max="100" ${mmdb.progress < 100 ? `value="${mmdb.progress}"` : ""} aria-label="${t("MMDB 上传进度", "MMDB upload progress")}"></progress>` : "") + (message ? `<p class="${["error", "invalid"].includes(mmdb.outcome) ? "danger-text" : "muted"}">${esc(message)}</p>` : "");
   $("#mmdb-transfer").setAttribute("aria-busy", String(mmdb.uploading));
 }
 async function loadMmdbStatus() {
@@ -977,8 +1078,10 @@ function modal(title, body, onSave, saveLabel = t("应用更改", "Apply changes
   clearInterval(modal.autoCloseTimer);
   destroyModalEditors();
   $("#modal").classList.remove("routing-order-dialog");
+  clearHeadingTip($("#modal-title"));
   $("#modal-title").textContent = title;
   $("#modal-body").innerHTML = body;
+  mountHelpTips($("#modal-body"), $("#modal-title"));
   $("#modal-actions").innerHTML = btn(t("取消", "Cancel"), "close-modal") + (onSave ? btn(saveLabel, "modal-save", "", "primary") : "");
   modal.save = onSave;
   $("#modal").showModal();
@@ -1770,7 +1873,30 @@ async function action(button) {
 function showMessage(title, data) {
   modal(title, `<pre class="preview-code">${esc(JSON.stringify(data, null, 2))}</pre>`, null);
 }
+document.addEventListener("toggle", (event) => {
+  const help = event.target.closest?.(".settings-help");
+  if (help) positionHelpTip(help);
+}, true);
+window.addEventListener("resize", () => {
+  for (const help of document.querySelectorAll(".settings-help[open]")) positionHelpTip(help);
+});
+for (const area of [$("#content"), $("#modal-body")]) {
+  area.addEventListener("scroll", () => {
+    for (const help of document.querySelectorAll(".settings-help[open]")) help.open = false;
+  });
+}
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape") return;
+  for (const help of document.querySelectorAll(".settings-help[open]")) {
+    const restoreFocus = help.contains(document.activeElement);
+    help.open = false;
+    if (restoreFocus) $("summary", help).focus();
+  }
+});
 document.addEventListener("click", (event) => {
+  for (const help of document.querySelectorAll(".settings-help[open]")) {
+    if (!help.contains(event.target)) help.open = false;
+  }
   const button = event.target.closest("[data-action]");
   if (button && !button.disabled) {
     Promise.resolve(action(button)).catch((error) => toast(error.message));

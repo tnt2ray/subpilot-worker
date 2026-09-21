@@ -128,11 +128,13 @@ Open the deployment URL and sign in with the admin token.
 5. For compiled routing, enter source URLs directly in the selected client’s routing tab and choose a policy. Sources are linked automatically within that client; move rule sets and direct rules up/down in one list. Select RULE-SET or DOMAIN-SET in Surge, behavior and interval in Clash, and the source format in sing-box.
 6. Save the configuration, run a subscription check in **Configuration links**, and copy the universal subscription URL.
 
-System settings are ordered as **Preferences → Node processing → Subscription and fetching**. Node processing shows excluded keywords as tags and feature tags as rows of names and matching keywords. Use the edit icon beside each title to make changes.
+System settings are ordered as **Preferences → Node processing → Subscription and fetching**. Choose the display time zone from a dropdown that also preserves the currently configured zone. Node processing shows excluded keywords as tags and feature tags as rows of names and matching keywords. Use the edit icon beside each title to make changes.
 
 To update an existing subscription source, proxy node, or policy group, click its name or the row’s **Edit** button. Choose **Apply changes** in the dialog, then **Save configuration** at the bottom of the page to persist the changes. On narrow screens, the action column remains visible while other details scroll horizontally.
 
 The page header and bottom action bar remain visible. Long content scrolls within the space between them, keeping the last items clear of the action bar.
+
+Headings group their text with a question mark immediately after it, with action buttons outside this group. Feature introductions and longer usage instructions appear in these help tips. Click to read, then click outside or press Escape to dismiss. Errors, progress, required inputs and save reminders remain directly visible.
 
 Drafts stay in the current page's memory while navigating between pages and clients. Reloading or closing the page loses unsaved edits. Subscription requests use saved configuration and check compatibility before generating output.
 
@@ -290,7 +292,7 @@ Only needed files are generated, alongside `README.md` and a publication receipt
 1. Prepare an initialized public repository with Actions enabled and a README. Its default branch hosts the workflow and must differ from `rules`. Use a separate repository per SubPilot deployment.
 2. Create a fine-grained GitHub token for that repository with **Actions, Contents, Workflows and Secrets: Read and write**. Complete organization approval if required.
 3. Enable and save a rule plan for at least one client. Open **System settings → Actions rule compilation → Setup wizard** and enter the repository, workflow callback address and token.
-   Use the setup wizard both to configure and replace the token. Leave it blank to reuse the stored token, or enter a new value to replace it. System settings show Actions configuration and controls only when Actions compilation is enabled. Telegram hides Chat ID and binding controls until a Bot Token is entered. Hiding fields preserves their values.
+   Use the setup wizard both to configure and replace the token. An existing token is shown as a mask; keep it unchanged to reuse it, or enter a new value to replace it. A question mark beside the outer Actions heading combines compilation, public rule visibility and setup guidance; the wizard title has no question mark. System settings show Actions configuration and controls only when Actions compilation is enabled. Telegram hides Chat ID and binding controls until a Bot Token is entered. Hiding fields preserves their values.
 4. Select **Check, install and enable**. The wizard installs `compile-rule-sets.yml`, the runner and the shared compiler, saves the new settings and submits the initial batch. On success, the page immediately updates the toggle and repository details without saving other drafts. Credentials are encrypted separately; GitHub Secrets store `SUBPILOT_ACTIONS_SECRET` and `SUBPILOT_URL`.
 5. Prefer this deployment's workers.dev callback address to avoid custom-domain bot challenges. The wizard checks format only; the first run verifies connectivity and dispatch permission.
 6. Open **View compilation progress** to inspect Surge, Clash and sing-box separately. Subscriptions can use Worker rules during compilation; update after confirmation to switch to Actions artifacts. GitHub accepting a request does not prove it is running; check repository Actions for queue and execution details.
@@ -442,7 +444,7 @@ To change the receiving chat, click **Unbind**, generate a new code, and bind ag
 
 ### GeoIP MMDB
 
-**System settings → GeoIP MMDB** shows the current file name, database type, database version (build time), upload time, and size. Existing uploads also expose their embedded build metadata; unavailable build times are explicitly labeled.
+**System settings → GeoIP MMDB** shows the current file name, database type, database version (build time), upload time, and size. Existing uploads also expose their embedded build metadata; unavailable build times are explicitly labeled. Database information and upload controls appear side by side and stack on narrow screens. Click the question mark beside Upload database to view complete client file path tips; click outside or press Escape to dismiss them.
 
 Select a MaxMind DB Country `.mmdb` file up to **25 MiB**, then click **Upload**. The page shows transfer progress followed by server validation and saving, and prevents duplicate uploads. Success immediately updates the displayed database information. Failure shows the reason and retains the selected file for retry; **Refresh database information** checks the current state. Files upload directly as binary without Base64 conversion. Uploading a replacement invalidates old region-cache results through the database version.
 

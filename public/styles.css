@@ -251,37 +251,84 @@ p {
   font-size: 12px;
   line-height: 1.6;
 }
-.mmdb-path-help ul {
-  padding-left: 20px;
-}
+.mmdb-panel { max-width: 1040px; }
+.mmdb-panel > .section-heading { flex-wrap: wrap; gap: 8px 16px; margin-bottom: 4px; }
+.mmdb-description { margin: 0 0 16px; }
+.mmdb-layout { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); align-items: start; gap: 24px; }
+#mmdb-status { min-width: 0; }
+.mmdb-metadata { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px 24px; margin: 0; }
+.mmdb-metadata dt { color: var(--muted); font-size: 12px; line-height: 1.6; }
+.mmdb-metadata dd { margin: 4px 0 0; font-size: 14px; font-weight: 550; line-height: 1.6; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.mmdb-current-file { grid-column: 1 / -1; padding-bottom: 14px; border-bottom: 1px solid var(--border); }
+.mmdb-current-file dd { font-size: 16px; font-weight: 600; }
+.mmdb-empty { margin: 0; padding: 16px 0; }
+.mmdb-upload-panel { min-width: 0; padding: 16px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
+.mmdb-upload-heading { margin-bottom: 12px; }
+.mmdb-upload-panel h3 { margin: 0; font-size: 14px; }
+.settings-help { position: relative; flex-shrink: 0; }
+.settings-help summary { display: flex; align-items: center; justify-content: center; width: 30px; height: 30px; border-radius: 6px; list-style: none; color: var(--muted); cursor: pointer; }
+.settings-help summary::-webkit-details-marker { display: none; }
+.settings-help summary:hover, .settings-help[open] summary { color: var(--blue); background: #eaf0fa; }
+.mmdb-upload-panel > .help { margin: 12px 0 0; }
 .mmdb-upload-controls {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 12px;
-  margin-top: 20px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 8px 12px;
 }
+.mmdb-upload-controls label { grid-column: 1 / -1; font-size: 12px; color: var(--muted); }
 .mmdb-upload-controls input {
   min-width: 0;
+  width: 100%;
   max-width: 100%;
+  font-size: 12px;
 }
-#mmdb-status .value,
+.mmdb-upload-controls input::file-selector-button { margin-right: 8px; padding: 7px 10px; border: 1px solid var(--border); border-radius: 6px; color: inherit; background: #fff; font: inherit; cursor: pointer; }
+.mmdb-upload-controls input:disabled::file-selector-button { cursor: not-allowed; color: var(--muted); background: var(--surface); }
 .mmdb-file {
   overflow-wrap: anywhere;
   min-width: 0;
 }
+#mmdb-transfer { font-size: 12px; line-height: 1.6; }
+#mmdb-transfer p { margin: 10px 0 0; }
 #mmdb-transfer progress {
   width: 100%;
   max-width: 480px;
   accent-color: var(--blue);
-}
-.mmdb-path-help li + li {
   margin-top: 10px;
 }
+.settings-help-content,
+.mmdb-path-help { position: absolute; z-index: 5; top: calc(100% + 8px); right: 0; width: min(620px, calc(100vw - 80px)); max-height: 50dvh; overflow: auto; padding: 16px; border: 1px solid var(--border); border-radius: 8px; background: #fff; box-shadow: 0 8px 28px #1720331a; }
+/* Keep heading text and its help control together; actions belong outside this group. */
+.help-title { display: flex; align-items: center; justify-content: flex-start; gap: 6px; min-width: 0; position: relative; }
+.help-title > :is(h1, h2, h3) { flex: 0 1 auto; margin: 0; }
+.help-title > .settings-help { position: static; }
+.help-title .settings-help-content { font-size: 13px; line-height: 1.7; color: var(--muted); }
+.settings-help-content { z-index: 60; overflow-wrap: anywhere; }
+.settings-help-content .group-syntax { margin: 0; }
+.settings-help-content .group-syntax > p { margin-top: 0; }
+.settings-help-content a { text-decoration: underline; }
+.settings-help-content > p { margin: 0; }
+.settings-help-content > p + p { margin-top: 10px; }
+.mmdb-path-help > p { margin: 0 0 8px; }
+.mmdb-path-help dl { margin: 0; }
+.mmdb-path-row { display: grid; grid-template-columns: 160px minmax(0, 1fr); gap: 12px; padding: 8px 0; font-size: 12px; line-height: 1.6; }
+.mmdb-path-row + .mmdb-path-row { border-top: 1px solid #edf1f6; }
+.mmdb-path-row dt { font-weight: 550; }
+.mmdb-path-row dd { min-width: 0; margin: 0; color: var(--muted); }
 .mmdb-path-help code {
   display: block;
   white-space: normal;
   overflow-wrap: anywhere;
+}
+@media (max-width: 960px) {
+  .mmdb-layout { grid-template-columns: minmax(0, 1fr); gap: 20px; }
+}
+@media (max-width: 520px) {
+  .mmdb-metadata { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  .mmdb-path-row { grid-template-columns: minmax(0, 1fr); gap: 3px; }
+  .mmdb-upload-controls { grid-template-columns: minmax(0, 1fr); }
+  .mmdb-upload-controls button { justify-self: start; }
 }
 .small {
   font-size: 12px;
