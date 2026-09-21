@@ -670,32 +670,54 @@ function renderSingboxSrsSettings() {
 }
 function srsDispatchFailure(code) {
   const hints = {
-    401: t("长期 Token 无效或已过期", "Persistent token is invalid or expired"),
-    403: t("检查长期 Token 的 Actions 读写权限、组织审批及 API 限流", "Check Actions read/write permission, organization approval and API rate limits"),
-    404: t("检查仓库、工作流文件名和长期 Token 的仓库访问权限", "Check repository, workflow filename and persistent token repository access"),
-    422: t("检查分支是否存在、工作流是否支持 workflow_dispatch 及输入参数", "Check branch, workflow_dispatch support and inputs")
+    401: t("GitHub Token 无效或已过期，请通过配置向导更新。", "The GitHub token is invalid or expired. Update it through the setup wizard."),
+    403: t("请检查 GitHub Token 的 Actions 读写权限、组织审批状态及 API 调用限制。", "Check the GitHub token's Actions read/write permission, organization approval and API rate limits."),
+    404: t("请检查仓库、工作流文件名，以及 GitHub Token 是否有权访问该仓库。", "Check the repository, workflow filename and the GitHub token's access to the repository."),
+    422: t("请检查工作流分支是否存在、工作流是否支持手动触发（workflow_dispatch），以及输入参数是否正确。", "Check that the workflow branch exists, the workflow supports manual dispatch (workflow_dispatch), and its inputs are valid.")
   };
-  return code ? `HTTP ${code}: ${hints[code] || t("检查 GitHub 仓库及 Actions 设置", "Check GitHub repository and Actions settings")}`
-    : t("网络异常或超时，无法确认 GitHub 是否收到请求", "Network error or timeout; GitHub receipt could not be confirmed");
+  return code ? `${hints[code] || t("请检查 GitHub 仓库和 Actions 设置后重试。", "Check the GitHub repository and Actions settings, then retry.")} (HTTP ${code})`
+    : t("网络异常或请求超时，暂时无法确认 GitHub 是否收到请求。请先查看仓库 Actions，再决定是否重试。", "A network error or timeout prevented confirmation that GitHub received the request. Check repository Actions before retrying.");
+}
+function srsProgressStage(output) {
+  const stages = {
+    workflow_update_required: [t("需更新工作流", "Workflow update required"), "warning", t("请返回系统设置，运行配置向导以更新工作流和编译脚本。", "Return to System settings and run the setup wizard to update the workflow and compiler script.")],
+    preparing: [t("准备规则中", "Preparing rules"), "pending", t("规则缓存尚未就绪，请稍后刷新。缓存准备完成后才能提交编译。", "The rule cache is not ready yet. Refresh shortly; compilation can be submitted once the cache is ready.")],
+    pending: [t("等待提交", "Waiting to submit"), "pending", t("尚未提交编译请求，等待后台处理。", "The compilation request has not been submitted yet. Waiting for background processing.")],
+    awaiting: [t("等待请求结果", "Awaiting request result"), "pending", t("已尝试提交请求，尚未确认 GitHub 是否接收。请稍后刷新。", "A submission was attempted, but receipt by GitHub is still unconfirmed. Refresh shortly.")],
+    accepted: [t("等待编译结果", "Awaiting compilation result"), "pending", t("GitHub 已接收请求，尚未确认编译完成。排队情况和执行进度请查看仓库 Actions。", "GitHub accepted the request; completion is not yet confirmed. Check repository Actions for queue status and execution progress.")],
+    dispatch_failed: [output.httpStatus ? t("提交失败", "Submission failed") : t("请求结果未确认", "Request not confirmed"), "warning", srsDispatchFailure(output.httpStatus)],
+    retrying: [t("等待重试", "Awaiting retry"), "warning", t("上次提交已超过 60 分钟，仍未确认完成。后台会再次尝试，也可手动重新提交。", "The last submission was over 60 minutes ago and completion is still unconfirmed. The background process will retry, or you can resubmit manually.")],
+    complete: [t("已就绪", "Ready"), "ready", ""]
+  };
+  const [label, tone, description] = stages[output.state] || [t("状态待确认", "Status unknown"), "pending", t("请刷新状态，或前往仓库 Actions 查看运行情况。", "Refresh the status or check repository Actions for execution details.")];
+  return { label, tone, description };
 }
 async function showSrsProgress() {
   const status = await api("/api/singbox/srs/status");
-  const labels = {
-    workflow_update_required: t("请通过配置向导更新 SRS 工作流", "Update the SRS workflow through the setup wizard"),
-    preparing: t("正在准备规则", "Preparing rules"),
-    pending: t("等待触发", "Pending dispatch"),
-    awaiting: t("已记录尝试，尚无请求结果", "Attempt recorded; request result unavailable"),
-    accepted: t("GitHub 已接受，等待完成回执", "GitHub accepted; awaiting completion receipt"),
-    dispatch_failed: t("触发请求失败或结果不确定", "Dispatch failed or outcome uncertain"),
-    retrying: t("尚未收到完成回执，等待后台重试", "No completion receipt; awaiting background retry"),
-    complete: t("已完成", "Complete")
-  };
+  const hasOutputs = status.enabled && status.total > 0;
+  const allReady = hasOutputs && status.completed === status.total;
+  const retryable = status.outputs.find((output) => ["pending", "awaiting", "accepted", "dispatch_failed", "retrying"].includes(output.state));
+  const heading = !status.enabled ? t("尚未启用 SRS 编译", "SRS compilation is not enabled")
+    : !hasOutputs ? t("暂无需要编译的规则集", "No rule sets need compilation")
+    : allReady ? t("全部规则集已就绪", "All rule sets are ready") : t("规则集准备进度", "Rule-set readiness");
+  const description = !status.enabled ? t("请在系统设置中启用 SRS 编译，并确认 sing-box 已启用规则来源编排，然后保存配置。", "Enable SRS compilation in System settings and the sing-box rule plan, then save the configuration.")
+    : !hasOutputs ? t("当前已保存配置中，没有需要转换为 SRS 的规则集。", "The saved configuration has no rule sets that need conversion to SRS.")
+    : allReady ? t("在 sing-box 中更新订阅，即可使用已就绪的 SRS 规则集。", "Update your subscription in sing-box to use the ready SRS rule sets.")
+    : t("SRS 就绪前，已准备好的 JSON 规则集仍可使用。SRS 就绪后，更新 sing-box 订阅即可使用。", "Ready JSON rule sets remain available while SRS is pending. Update your sing-box subscription once SRS is ready.");
+  const rows = status.outputs.map((output) => {
+    const stage = srsProgressStage(output);
+    return `<li class="srs-progress-item"><div class="srs-progress-item-heading"><strong>${esc(output.name)}</strong><span class="srs-progress-state ${stage.tone}">${esc(stage.label)}</span></div>
+      ${stage.description ? `<p class="srs-progress-description">${esc(stage.description)}</p>` : ""}
+      ${output.lastAttemptAt ? `<p class="help srs-progress-attempt">${t("最近提交尝试", "Last submission attempt")}: ${esc(formatDate(output.lastAttemptAt))}</p>` : ""}</li>`;
+  }).join("");
   modal(t("SRS 编译进度", "SRS compilation progress"),
-    `<p>${!status.enabled ? t("已保存配置尚未启用 SRS 或规则来源编排。", "SRS or the rule plan is disabled in the saved configuration.") : status.total === 0 ? t("没有需要编译的规则集。", "No rule sets need compilation.") : `${t("已完成规则集", "Completed rule sets")}: ${status.completed} / ${status.total}`}</p>
-    <ul>${status.outputs.map((output) => `<li><strong>${esc(output.name)}</strong>: ${esc(labels[output.state] || output.state)}${output.state === "dispatch_failed" ? ` — ${esc(srsDispatchFailure(output.httpStatus))}` : ""}</li>`).join("")}</ul>
-    ${status.outputs.some((output) => !["complete", "preparing", "workflow_update_required"].includes(output.state)) ? btn(t("强制重试全部未完成规则集", "Retry all unfinished rule sets"), "srs-force-retry", `data-output="${esc(status.outputs.find((output) => !["complete", "preparing", "workflow_update_required"].includes(output.state)).name)}"`) : ""}
-    <p class="help">${t("强制重试会触发一次全量检查，跳过已完成且未变化的规则集；可能再排入一个批次。", "Force retry schedules one batch checking all outputs and skipping unchanged completed ones; another batch may be queued.")}</p>
-    <p class="help">${t("显示已保存配置的状态；KV 同步可能略有延迟。等待结果不代表 GitHub 正在运行，请在仓库 Actions 查看具体步骤及失败原因。", "Shows saved configuration status; KV synchronization may cause a delay. Awaiting a result does not confirm a running GitHub job. Check repository Actions for execution steps and failures.")}</p>`, showSrsProgress, t("刷新状态", "Refresh status"));
+    `<div class="srs-progress">
+      <div class="srs-progress-overview" role="status"><div class="srs-progress-heading"><h3>${heading}</h3>${hasOutputs ? `<p class="srs-progress-count"><strong>${status.completed} / ${status.total}</strong><span>${t("规则集已就绪", "rule sets ready")}</span></p>` : ""}</div><p>${description}</p></div>
+      ${hasOutputs ? `<ul class="srs-progress-list" aria-label="${t("规则集状态", "Rule-set status")}">${rows}</ul>` : ""}
+      ${retryable ? `<div class="srs-progress-retry">${btn(t("重新提交编译", "Resubmit compilation"), "srs-force-retry", `data-output="${esc(retryable.name)}" aria-describedby="srs-retry-help"`)}<p class="help" id="srs-retry-help">${t("重新提交后，GitHub 将检查全部规则集，跳过已就绪且未变化的规则集。无需等待 60 分钟重试间隔，但可能新增一个排队批次。", "After resubmission, GitHub checks all rule sets and skips unchanged ready ones. This bypasses the 60-minute retry interval, but may queue an extra batch.")}</p></div>` : ""}
+      <p class="help srs-progress-note">${t("显示已保存配置的状态，更新可能略有延迟。点击“刷新状态”获取最新结果。", "Shows the saved configuration; updates may be slightly delayed. Select Refresh status for the latest result.")}</p>
+    </div>`, showSrsProgress, t("刷新状态", "Refresh status"));
+  $('#modal-actions [data-action="close-modal"]').textContent = t("关闭", "Close");
 }
 function srsCredentialSummary(status) {
   return `<p>${t("GitHub Token", "GitHub token")}: <strong>${status.dispatchTokenConfigured ? t("已配置", "Configured") : t("未配置", "Not configured")}</strong></p>
@@ -1518,7 +1540,7 @@ async function action(button) {
     buttons.forEach((button) => { button.disabled = true; });
     try {
       await api("/api/singbox/srs/retry", { method: "POST", body: JSON.stringify({ name: button.dataset.output }) });
-      toast(t("重试请求已处理，请刷新查看结果", "Retry processed; refresh to view the result"));
+      toast(t("重试请求已处理，正在更新状态…", "Retry request processed. Updating status…"));
     } finally {
       modal.retryingSrs = false;
       buttons.forEach((button) => { button.disabled = false; });
