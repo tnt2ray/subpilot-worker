@@ -277,7 +277,7 @@ sing-box 的 `.srs` 地址在自动识别模式下直接输出为独立的 `remo
 1. 准备已初始化且启用 Actions 的公开仓库，勾选添加 README。默认分支用于工作流，不能命名为 `rules`；每个 SubPilot 部署使用独立仓库。
 2. 创建 fine-grained GitHub Token，仅选择目标仓库，授予 **Actions、Contents、Workflows、Secrets: Read and write**；组织仓库如需审批请先完成。
 3. 为至少一个客户端启用规则来源编排并保存。打开 **系统设置 → Actions 规则编译 → 配置向导**，填写仓库、工作流访问地址和 Token。
-   Token 的初次配置和替换统一通过配置向导完成；已有 Token 时显示星号掩码，保持不变沿用，填写新值则替换。 系统设置中，外层 Actions 标题旁的问号集中提供功能、公开规则和配置向导说明，向导弹窗标题不再显示问号；仅在启用 Actions 编译时显示其配置和操作；Telegram 未填写 Bot Token 时隐藏 Chat ID 和绑定操作。收起配置不会清空已填写的值。
+   Token 的初次配置和替换统一通过配置向导完成；已有 Token 时显示星号掩码，保持不变沿用，填写新值则替换。向导在桌面端统一左侧标签、右侧输入框，窄屏改为上下排列；辅助链接紧随对应字段，高级设置中的分支输入框保持相同对齐。Token 下方仅提示选择仓库所有者及目标仓库，不重复列出权限；“申请 Token（预选权限）”链接预填 Actions、Contents、Secrets 读写及 Workflows 写入权限，仍需在 GitHub 选择仓库所有者并仅授权目标仓库。系统设置中，外层 Actions 标题旁的问号集中提供功能、公开规则、Token 权限和配置向导说明，向导弹窗标题不再显示问号；仅在启用 Actions 编译时显示其配置和操作；Telegram 未填写 Bot Token 时隐藏 Chat ID 和绑定操作。收起配置不会清空已填写的值。
 4. 点击 **检查、安装并启用**。向导安装 `compile-rule-sets.yml`、运行脚本和共用编译器，保存新配置并提交首批任务，成功后立即更新页面中的开关和仓库信息，不保存其他页面草稿。凭据独立加密保存；共享密钥同步为 GitHub Secret `SUBPILOT_ACTIONS_SECRET`，访问地址保存为 `SUBPILOT_URL`。
 5. 建议使用本部署的 workers.dev 地址作为工作流访问地址，避免自定义域名的人机验证。向导只检查格式；真实连通性与触发权限由首次运行验证。
 6. 打开 **查看编译进度**，按 Surge、Clash、sing-box 查看状态；编译期间可使用 Worker 规则；产物确认后，在客户端更新订阅即可切换到 Actions 版本。GitHub 接收请求仅表示提交成功，排队和实际执行情况请查看仓库 Actions。

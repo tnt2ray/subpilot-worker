@@ -730,6 +730,7 @@ function renderActionsCompilationSettings() {
           <p>${t("将规则编译交给 GitHub Actions，减轻 Worker 处理大规则集时的超时压力。", "Offload rule compilation to GitHub Actions to reduce Worker timeouts when processing large rule sets.")}</p>
           <p>${t("支持 Surge 文本规则、Clash YAML 和 sing-box SRS。未启用或产物未就绪时，由 Worker 处理并提供规则。", "Supports Surge text rules, Clash YAML and sing-box SRS. The Worker processes and serves rules when Actions is disabled or artifacts are not ready.")}</p>
           <p>${t("编译结果保存在公开 GitHub 仓库，规则内容会公开。", "Compiled rules are stored in a public GitHub repository, so their contents are public.")}</p>
+          <p>${t("GitHub Token 仅选择目标仓库，授予 Actions、Contents、Workflows、Secrets 读写权限。同一个 Token 用于安装与日常编译，加密保存在 KV；启用期间请勿撤销。", "Limit the GitHub token to the target repository and grant Actions, Contents, Workflows and Secrets read/write access. The same token is used for installation and ongoing compilation, stored encrypted in KV; keep it valid while Actions compilation is enabled.")}</p>
           <p>${t("按顺序完成检查、安装和启用。仓库文件公开；凭据仅保存为加密数据或 GitHub Secrets。不会保存其他页面的草稿。", "Check, install and enable in order. Repository files are public; credentials remain encrypted or in GitHub Secrets. Other page drafts are not saved.")}</p>
           <p class="help">${t("自动填入上次成功安装时使用的地址。建议填写本部署的 workers.dev 地址，避免自定义域名的人机验证；首次升级后如果地址为空，请重新填写一次。仅检查地址格式，不检查连通性；请确认地址属于本部署。实际连接由 GitHub Action 执行。", "Uses the address from the last successful installation. Prefer this deployment's workers.dev address to avoid custom-domain bot challenges. If the field is empty after upgrading, enter it once. Only address format is checked, not connectivity; ensure it belongs to your deployment. GitHub Actions makes the actual connection.")}</p>
           <p class="help">${t("向导会安装或更新通用工作流与编译器。产物固定使用 rules 分支，按三个客户端分目录保存。", "The wizard installs or updates the shared workflow and compiler. Artifacts use the fixed rules branch with a directory for each client.")}</p>
@@ -849,19 +850,49 @@ async function showActionsSetup({ automatic = false } = {}) {
   const status = await api("/api/actions-compilation/install/status");
   const settings = state.config.settings.actionsCompilation || {};
   const tokenMask = "********";
+  const tokenHelp = () => status.dispatchTokenConfigured
+    ? t("已配置。保留掩码沿用，输入新 Token 后保存即可替换。", "Configured. Keep the mask to reuse the token, or enter a new token and save to replace it.")
+    : t("请填写仅授权目标仓库的 Token。", "Enter a token with access to the target repository only.");
   const callbackOrigin = status.callbackOrigin || (/^[a-z0-9-]+\.[a-z0-9-]+\.workers\.dev$/.test(location.hostname) ? location.origin : "");
   modal(t("Actions 规则编译配置向导", "Actions rule compilation setup wizard"),
-    `${automatic ? `<p role="status">${t("检测到 Actions 工作流需要更新，正在使用已保存的配置自动安装。安装失败时可修正后重试；选择跳过将关闭 Actions 规则编译，继续由 Worker 提供规则。", "The Actions workflow needs updating. Installing automatically with your saved settings. If installation fails, correct the settings and retry, or skip to disable Actions compilation and keep the Worker serving rules.")}</p>` : ""}
-    <label>${t("1. 公开仓库（owner/repo）", "1. Public repository (owner/repo)")}<input id="actions-setup-repo" value="${esc(settings.repository || "")}"></label>
-    <p class="help"><a href="https://github.com/new" target="_blank" rel="noopener noreferrer">${t("创建仓库（勾选添加 README）", "Create repository (include a README)")}</a></p>
-    <label>${t("2. 工作流访问地址", "2. Workflow callback address")}<input id="actions-setup-origin" type="url" value="${esc(callbackOrigin)}" required></label>
-
-    <label>${t("3. GitHub Token", "3. GitHub token")}<input id="actions-setup-token" type="password" autocomplete="new-password" value="${status.dispatchTokenConfigured ? tokenMask : ""}"></label>
-    <p class="help">${status.dispatchTokenConfigured ? t("已配置，星号表示已保存的 Token；保持不变即可沿用，替换为新 Token 后保存即可更新。", "Configured. The mask represents the saved token. Keep it unchanged to reuse it, or replace it with a new token and save to update it.") : t("必填。", "Required.")} ${t("仅选择目标仓库，授予 Actions、Contents、Workflows、Secrets 读写权限。同一个 Token 用于安装与日常编译，加密保存在 KV；启用期间请勿撤销。", "Select only the target repository and grant Actions, Contents, Workflows and Secrets read/write. This token is used for installation and ongoing compilation and stored encrypted in KV; keep it valid while Actions compilation is enabled.")} <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener noreferrer">${t("申请 Token", "Create token")}</a></p>
-    <details><summary>${t("高级设置", "Advanced settings")}</summary>
-    <label>${t("工作流分支（仓库默认分支）", "Workflow branch (repository default)")}<input id="actions-setup-ref" value="${esc(settings.ref || "main")}"></label>
-    </details>
-
+    `<div class="actions-setup-form">
+    ${automatic ? `<p class="actions-setup-notice" role="status">${t("检测到 Actions 工作流需要更新，正在使用已保存的配置自动安装。安装失败时可修正后重试；选择跳过将关闭 Actions 规则编译，继续由 Worker 提供规则。", "The Actions workflow needs updating. Installing automatically with your saved settings. If installation fails, correct the settings and retry, or skip to disable Actions compilation and keep the Worker serving rules.")}</p>` : ""}
+    <div class="actions-setup-row">
+      <label for="actions-setup-repo">${t("公开仓库", "Public repository")}</label>
+      <div class="actions-setup-field">
+        <input id="actions-setup-repo" value="${esc(settings.repository || "")}" placeholder="owner/repo" spellcheck="false" autocapitalize="none" aria-describedby="actions-setup-repo-help">
+        <div class="actions-setup-note">
+          <p id="actions-setup-repo-help">${t("格式：owner/repo", "Format: owner/repo")}</p>
+          <a href="https://github.com/new" target="_blank" rel="noopener noreferrer">${t("创建仓库（添加 README）", "Create repository (include README)")}</a>
+        </div>
+      </div>
+    </div>
+    <div class="actions-setup-row">
+      <label for="actions-setup-origin">${t("工作流访问地址", "Workflow callback address")}</label>
+      <div class="actions-setup-field">
+        <input id="actions-setup-origin" type="url" value="${esc(callbackOrigin)}" spellcheck="false" autocapitalize="none" required>
+      </div>
+    </div>
+    <div class="actions-setup-row">
+      <label for="actions-setup-token">GitHub Token</label>
+      <div class="actions-setup-field">
+        <input id="actions-setup-token" type="password" autocomplete="new-password" value="${status.dispatchTokenConfigured ? tokenMask : ""}" aria-describedby="actions-setup-token-help actions-setup-token-scope">
+        <div class="actions-setup-note">
+          <p id="actions-setup-token-help">${tokenHelp()}</p>
+          <a href="https://github.com/settings/personal-access-tokens/new?name=SubPilot&amp;actions=write&amp;contents=write&amp;workflows=write&amp;secrets=write" target="_blank" rel="noopener noreferrer">${t("申请 Token（预选权限）", "Create token (preset permissions)")}</a>
+        </div>
+        <p class="actions-setup-note" id="actions-setup-token-scope">${t("请在 GitHub 选择仓库所有者，并仅授权目标仓库。", "On GitHub, choose the repository owner and grant access only to the target repository.")}</p>
+      </div>
+    </div>
+    <details class="actions-setup-advanced"><summary>${t("高级设置", "Advanced settings")}</summary>
+      <div class="actions-setup-row">
+        <label for="actions-setup-ref">${t("工作流分支", "Workflow branch")}</label>
+        <div class="actions-setup-field">
+          <input id="actions-setup-ref" value="${esc(settings.ref || "main")}" spellcheck="false" autocapitalize="none" aria-describedby="actions-setup-ref-help">
+          <p class="actions-setup-note" id="actions-setup-ref-help">${t("使用仓库默认分支。", "Use the repository's default branch.")}</p>
+        </div>
+      </div>
+    </details></div>
     <ol id="actions-setup-results" role="status" aria-live="polite"></ol>`, async () => {
       if (modal.installingActions) return;
       const next = { enabled: true, repository: $("#actions-setup-repo").value.trim(), ref: $("#actions-setup-ref").value.trim() };
@@ -910,8 +941,15 @@ async function showActionsSetup({ automatic = false } = {}) {
         modal.save = null;
         $("#modal-actions").innerHTML = btn(t("关闭", "Close"), "close-modal");
       } catch (error) { report(error.message); }
-      finally { token = ""; $("#actions-setup-token").value = status.dispatchTokenConfigured ? tokenMask : ""; modal.installingActions = false; controls.forEach((control) => { control.disabled = false; }); }
+      finally {
+        token = "";
+        $("#actions-setup-token").value = status.dispatchTokenConfigured ? tokenMask : "";
+        $("#actions-setup-token-help").textContent = tokenHelp();
+        modal.installingActions = false;
+        controls.forEach((control) => { control.disabled = false; });
+      }
     }, t("检查、安装并启用", "Check, install and enable"));
+  $("#modal").classList.add("actions-setup-dialog");
   if (modal.actionsUpgradeRequired) {
     $('#modal-actions [data-action="close-modal"]').textContent = t("跳过并关闭 Actions 编译", "Skip and disable Actions compilation");
   }
@@ -1077,7 +1115,7 @@ function destroyModalEditors() {
 function modal(title, body, onSave, saveLabel = t("应用更改", "Apply changes")) {
   clearInterval(modal.autoCloseTimer);
   destroyModalEditors();
-  $("#modal").classList.remove("routing-order-dialog");
+  $("#modal").classList.remove("routing-order-dialog", "actions-setup-dialog");
   clearHeadingTip($("#modal-title"));
   $("#modal-title").textContent = title;
   $("#modal-body").innerHTML = body;
