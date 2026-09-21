@@ -1,5 +1,5 @@
 import { configDocument, defaultConfigDocument, migrateConfigDocument, normalizeConfigDocument, renderConfig, OUTPUT_TARGETS } from "./config-document";
-import { retrySingboxSrsJobs } from "./singbox-srs";
+import { retryActionsCompilationJobs } from "./actions-compiler";
 import { ruleSetEnv } from "./rule-set-scope";
 import { queueChangedRuleSetUpdates, runRuleSetUpdateJobs } from "./rule-set-jobs";
 import type { AppConfig, StoredConfigDocument } from "./types";
@@ -248,16 +248,13 @@ export async function commitPreparedConfigSave(env: Env, prepared: PreparedConfi
   const verified = await env.SUBPILOT_CONFIG.get(prepared.snapshotKey);
   if (!verified || !(await tryDecryptConfigSnapshot(env, verified))) throw new Error("新配置写入校验失败，请重试。");
   await markDocumentCommitted(env);
-  if (context && (jobs.length || prepared.config.settings.singboxSrs?.enabled)) {
-    context.waitUntil((async () => {
-      const deadline = Date.now() + 25_000;
-      // Dispatch cached outputs before source refresh consumes the background budget.
-      // This also recovers an enabled integration when unchanged settings are saved.
-      await retrySingboxSrsJobs(env, prepared.config, deadline);
-      await runRuleSetUpdateJobs(env, prepared.config, {
-        jobs, deadline, loadCurrentConfig: () => loadConfig(env)
-      });
-    })().catch(() => {
+  if (context && (jobs.length || prepared.config.settings.actionsCompilation?.enabled)) {
+    const deadline = Date.now() + 25_000;
+    // Dispatch failure must not consume the Worker's fallback preparation budget.
+    context.waitUntil(retryActionsCompilationJobs(env, prepared.config, deadline));
+    context.waitUntil(runRuleSetUpdateJobs(env, prepared.config, {
+      jobs, deadline, loadCurrentConfig: () => loadConfig(env)
+    }).catch(() => {
       console.warn(JSON.stringify({ level: "warn", message: "Saved rule-set updates remain queued for scheduled processing." }));
     }));
   }

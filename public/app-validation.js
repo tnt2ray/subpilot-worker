@@ -3,25 +3,23 @@ const URL_REWRITE_TYPES = new Set(["header", "302", "reject"]);
 const MAP_LOCAL_DATA_TYPES = new Set(["file", "text", "tiny-gif", "base64"]);
 const STASH_SCRIPT_TYPES = new Set(["http-request", "http-response"]);
 
-export function validateSingboxSrsSettings(value, language = "zh") {
+export function validateActionsCompilationSettings(value, language = "zh") {
   if (!value?.enabled) return null;
   const message = (zh, en) => language === "zh" ? zh : en;
   if (typeof value.repository !== "string" || !/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?\/[A-Za-z0-9._-]{1,100}$/.test(value.repository.trim())
     || [".", ".."].includes(value.repository.trim().split("/")[1])) {
-    return message("SRS 编译的 GitHub 仓库必须填写 owner/repo。", "Enter the GitHub repository for SRS compilation as owner/repo.");
+    return message("Actions 规则编译的 GitHub 仓库必须填写 owner/repo。", "Enter the GitHub repository for Actions rule compilation as owner/repo.");
   }
   const ref = typeof value.ref === "string" ? value.ref.trim() : "";
   if (!ref || ref.length > 255 || ref === "@" || ref.startsWith("-") || /[\s\u0000-\u001f\u007f~^:?*\[\\]/.test(ref)
     || ref.includes("..") || ref.includes("@{") || ref.split("/").some((part) => !part || part.startsWith(".") || part.endsWith(".") || part.endsWith(".lock"))) {
-    return message("SRS 编译的 GitHub 分支或标签无效。", "Enter a valid GitHub branch or tag for SRS compilation.");
+    return message("Actions 规则编译的 GitHub 分支或标签无效。", "Enter a valid GitHub branch or tag for Actions rule compilation.");
   }
   if (typeof value.workflow !== "string" || value.workflow.trim().length > 128 || !/^[A-Za-z0-9][A-Za-z0-9._-]*\.ya?ml$/.test(value.workflow.trim())) {
-    return message("SRS 编译的工作流必须是 .yml 或 .yaml 文件名，不能包含路径。", "Enter the SRS workflow filename ending in .yml or .yaml, without a path.");
+    return message("Actions 规则编译的工作流必须是 .yml 或 .yaml 文件名，不能包含路径。", "Enter the Actions workflow filename ending in .yml or .yaml, without a path.");
   }
-  const branch = typeof value.outputBranch === "string" ? value.outputBranch.trim() : "";
-  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(branch) || branch.includes("..") || branch.endsWith(".") || branch.endsWith(".lock")
-    || branch === ref || branch === ref.replace(/^refs\/heads\//, "")) {
-    return message("SRS 产物分支须为独立分支名（字母、数字、点、连字符或下划线，最长 100 字符），不能与工作流分支相同。", "Use a separate output branch, up to 100 letters, digits, dots, hyphens or underscores, distinct from the workflow branch.");
+  if (["rules", "refs/heads/rules"].includes(ref)) {
+    return message("工作流分支不能使用固定产物分支 rules。", "The workflow branch must differ from the fixed output branch rules.");
   }
   return null;
 }

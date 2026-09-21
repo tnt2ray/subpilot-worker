@@ -1,21 +1,21 @@
 import { loadConfig } from "./config-store";
 import { decryptJson, encryptJson } from "./crypto-store";
-import { getSecret, requireSecret } from "./secrets";
+import { requireSecret } from "./secrets";
 import { jsonResponse, randomToken, readRequestJsonWithLimit, RequestBodyTooLargeError } from "./util";
 
-const CREDENTIALS_KEY = "integration:singbox-srs:credentials:v1";
+const CREDENTIALS_KEY = "integration:actions-compiler:credentials:v1";
 const headers = { "cache-control": "no-store, private" };
 const validToken = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z0-9_]{20,255}$/.test(value);
 const validSharedSecret = (value: unknown): value is string => typeof value === "string" && /^[\x21-\x7e]{32,256}$/.test(value);
 
-interface SrsCredentials {
+interface ActionsCredentials {
   token: string;
   sharedSecret: string;
-  storage: "kv" | "worker" | "none";
+  storage: "kv" | "none";
 }
 
 /** Separate from configuration snapshots, exports and compiled-cache cleanup. */
-export async function readSrsCredentials(env: Env): Promise<SrsCredentials> {
+export async function readActionsCredentials(env: Env): Promise<ActionsCredentials> {
   try {
     const stored = await env.SUBPILOT_CONFIG.get(CREDENTIALS_KEY);
     if (stored !== null) {
@@ -25,44 +25,42 @@ export async function readSrsCredentials(env: Env): Promise<SrsCredentials> {
       // An empty record deliberately prevents fallback after clearing credentials.
       return { token: value.token as string, sharedSecret: value.sharedSecret as string, storage: "kv" };
     }
-    const token = getSecret(env, "SINGBOX_SRS_GITHUB_TOKEN") ?? "";
-    const sharedSecret = getSecret(env, "SINGBOX_SRS_SECRET") ?? "";
-    return { token: validToken(token) ? token : "", sharedSecret: validSharedSecret(sharedSecret) ? sharedSecret : "", storage: token || sharedSecret ? "worker" : "none" };
+    return { token: "", sharedSecret: "", storage: "none" };
   } catch {
     // Do not fall back or expose decrypted content when the record is unreadable.
-    throw new Error("SRS 凭据暂时无法读取，请检查配置加密密钥和存储后重试。 / SRS credentials are unavailable; check encryption and storage.");
+    throw new Error("Actions 编译凭据暂时无法读取，请检查配置加密密钥和存储后重试。 / Actions compilation credentials are unavailable; check encryption and storage.");
   }
 }
 
-export function srsCredentialStatus(credentials: SrsCredentials) {
+export function actionsCredentialStatus(credentials: ActionsCredentials) {
   return { dispatchTokenConfigured: Boolean(credentials.token), sharedSecretConfigured: Boolean(credentials.sharedSecret), storage: credentials.storage };
 }
 
 /** Called only behind the administrator authentication gate. Never returns values. */
-export async function handleSrsCredentials(request: Request, env: Env): Promise<Response> {
+export async function handleActionsCredentials(request: Request, env: Env): Promise<Response> {
   try {
-    if (request.method === "GET") return jsonResponse(srsCredentialStatus(await readSrsCredentials(env)), { headers });
+    if (request.method === "GET") return jsonResponse(actionsCredentialStatus(await readActionsCredentials(env)), { headers });
     if (!["PUT", "DELETE"].includes(request.method)) return jsonResponse({ error: "Method not allowed" }, { status: 405, headers });
     const url = new URL(request.url);
     const local = ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
     if ((url.protocol !== "https:" && !local) || (request.headers.has("origin") && request.headers.get("origin") !== url.origin)) {
       return jsonResponse({ error: "请从当前管理页面配置凭据。 / Use this application's admin page." }, { status: 403, headers });
     }
-    let credentials: SrsCredentials;
+    let credentials: ActionsCredentials;
     if (request.method === "DELETE") {
-      if ((await loadConfig(env)).settings.singboxSrs?.enabled) return jsonResponse({ error: "请先关闭 SRS 并保存配置，再清除凭据。 / Disable SRS and save settings before clearing credentials." }, { status: 409, headers });
+      if ((await loadConfig(env)).settings.actionsCompilation?.enabled) return jsonResponse({ error: "请先关闭 Actions 编译并保存配置，再清除凭据。 / Disable Actions compilation and save settings before clearing credentials." }, { status: 409, headers });
       credentials = { token: "", sharedSecret: "", storage: "kv" };
     } else {
       if (!request.headers.get("content-type")?.toLowerCase().startsWith("application/json")) return jsonResponse({ error: "Expected application/json" }, { status: 415, headers });
       const body = await readRequestJsonWithLimit<{ token?: unknown }>(request, 2048);
       if (!body || !validToken(body.token)) return jsonResponse({ error: "请输入有效的 GitHub Token。 / Enter a valid GitHub token." }, { status: 400, headers });
-      const previous = await readSrsCredentials(env);
+      const previous = await readActionsCredentials(env);
       credentials = { token: body.token, sharedSecret: previous.sharedSecret || randomToken(32), storage: "kv" };
       delete body.token;
     }
     const encrypted = await encryptJson(requireSecret(env, "CONFIG_ENCRYPTION_KEY"), { version: 1, token: credentials.token, sharedSecret: credentials.sharedSecret });
     await env.SUBPILOT_CONFIG.put(CREDENTIALS_KEY, encrypted);
-    return jsonResponse({ ok: true, ...srsCredentialStatus(credentials) }, { headers });
+    return jsonResponse({ ok: true, ...actionsCredentialStatus(credentials) }, { headers });
   } catch (error) {
     if (error instanceof SyntaxError) return jsonResponse({ error: "请求内容不是有效的 JSON。 / Invalid JSON request." }, { status: 400, headers });
     return jsonResponse({ error: error instanceof RequestBodyTooLargeError ? "凭据请求过大。 / Credential request is too large." : "凭据操作未完成，请稍后重试。 / Could not complete the credential operation; retry shortly." }, { status: error instanceof RequestBodyTooLargeError ? 413 : 503, headers });

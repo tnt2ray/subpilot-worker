@@ -22,8 +22,14 @@ export interface AsnResolution {
   stale: boolean;
 }
 
+interface AsnCache {
+  get<T>(key: string, type: "json"): Promise<T | null>;
+  put(key: string, value: string, options?: { expirationTtl?: number }): Promise<unknown>;
+}
+type AsnEnvironment = { SUBPILOT_CONFIG: AsnCache };
+
 /** Request-local memoization; only public BGP prefix snapshots are stored in KV. */
-export function createSingboxAsnResolver(env: Env, deadline = Date.now() + 30_000): (value: string) => Promise<AsnResolution> {
+export function createSingboxAsnResolver(env: AsnEnvironment, deadline = Date.now() + 30_000): (value: string) => Promise<AsnResolution> {
   const pending = new Map<string, Promise<AsnResolution>>();
   const cutoff = Math.min(deadline, Date.now() + 30_000);
   return (value) => {
@@ -38,7 +44,7 @@ export function createSingboxAsnResolver(env: Env, deadline = Date.now() + 30_00
   };
 }
 
-async function resolvePrefixes(env: Env, asn: string, deadline: number): Promise<AsnResolution> {
+async function resolvePrefixes(env: AsnEnvironment, asn: string, deadline: number): Promise<AsnResolution> {
   const key = `${CACHE_PREFIX}${asn}`;
   const now = Date.now();
   let snapshot: PrefixSnapshot | null = null;

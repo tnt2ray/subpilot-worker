@@ -1,4 +1,4 @@
-type SecretName = "ADMIN_TOKEN_HASH" | "CONFIG_ENCRYPTION_KEY" | "SINGBOX_SRS_GITHUB_TOKEN" | "SINGBOX_SRS_SECRET";
+type SecretName = "ADMIN_TOKEN_HASH" | "CONFIG_ENCRYPTION_KEY";
 
 export function getSecret(env: Env, name: SecretName): string | undefined {
   // Optional integrations must not become required deployment bindings.

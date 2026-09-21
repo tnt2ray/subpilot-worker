@@ -1,18 +1,19 @@
-import { SRS_BATCH_PROTOCOL, srsBatchProtocolKey } from "./singbox-srs-artifacts";
+import { ACTIONS_OUTPUT_BRANCH, ACTIONS_COMPILER_PROTOCOL, actionsCompilerProtocolKey } from "./actions-compiler-artifacts";
 import { createHash } from "node:crypto";
-import workflow from "../.github/workflows/singbox-srs.yml" with { type: "text" };
-import script from "../scripts/compile-singbox-srs.mjs" with { type: "text" };
-import { validateSingboxSrsSettings } from "./config-validation";
+import workflow from "../.github/workflows/compile-rule-sets.yml" with { type: "text" };
+import compiler from "../dist/actions-compiler-runtime.mjs" with { type: "text" };
+import script from "../scripts/compile-rule-sets.mjs" with { type: "text" };
+import { validateActionsCompilationSettings } from "./config-validation";
 import { decryptJson, encryptJson } from "./crypto-store";
 import { sealGitHubSecret } from "./github-secret-seal";
 import { requireSecret } from "./secrets";
-import { readSrsCredentials, srsCredentialStatus } from "./singbox-srs-credentials";
-import type { SingboxSrsSettings } from "./types";
+import { readActionsCredentials, actionsCredentialStatus } from "./actions-compiler-credentials";
+import type { ActionsCompilationSettings } from "./types";
 import { jsonResponse, readRequestJsonWithLimit, readResponseTextWithLimit } from "./util";
 
 class InstallError extends Error {}
 const headers = { "cache-control": "no-store, private" };
-const CALLBACK_ORIGIN_KEY = "integration:singbox-srs:callback-origin:v1";
+const CALLBACK_ORIGIN_KEY = "integration:actions-compiler:callback-origin:v1";
 const sha = (value: unknown): value is string => typeof value === "string" && /^[a-f0-9]{40}$/.test(value);
 
 async function readCallbackOrigin(env: Env): Promise<string | null> {
@@ -30,24 +31,24 @@ async function readCallbackOrigin(env: Env): Promise<string | null> {
 }
 
 /** Admin-only installer. Reuses encrypted credentials when no replacement is supplied. */
-export async function handleSingboxSrsInstall(request: Request, env: Env): Promise<Response> {
+export async function handleActionsCompilationInstall(request: Request, env: Env): Promise<Response> {
   const completed: string[] = [];
   const url = new URL(request.url);
   let token = "";
   let stage = "检查安装配置 / Checking installation settings";
   try {
-    const credentials = await readSrsCredentials(env);
+    const credentials = await readActionsCredentials(env);
     const { sharedSecret } = credentials;
-    const status = srsCredentialStatus(credentials);
+    const status = actionsCredentialStatus(credentials);
     if (url.pathname.endsWith("/status") && request.method === "GET") return jsonResponse({ ...status, callbackOrigin: await readCallbackOrigin(env) }, { headers });
     if (!url.pathname.endsWith("/install") || request.method !== "POST") return jsonResponse({ error: "Method not allowed" }, { status: 405, headers });
     if (url.protocol !== "https:" || (request.headers.has("origin") && request.headers.get("origin") !== url.origin)) {
       throw new InstallError("请从当前 Worker 的 HTTPS 管理页面安装。 / Use this Worker's HTTPS admin page.");
     }
     if (!status.sharedSecretConfigured) throw new InstallError("请先在系统设置的“配置编译凭据”中保存 GitHub Token。 / Save a GitHub token in Configure compilation credentials first.");
-    const body = await readRequestJsonWithLimit<{ settings?: SingboxSrsSettings; token?: unknown; replaceExisting?: unknown; callbackOrigin?: unknown }>(request, 16 * 1024);
-    const settings = { ...body?.settings, enabled: true } as SingboxSrsSettings;
-    const invalid = validateSingboxSrsSettings(settings);
+    const body = await readRequestJsonWithLimit<{ settings?: ActionsCompilationSettings; token?: unknown; replaceExisting?: unknown; callbackOrigin?: unknown }>(request, 16 * 1024);
+    const settings = { ...body?.settings, enabled: true } as ActionsCompilationSettings;
+    const invalid = validateActionsCompilationSettings(settings);
     if (invalid) throw new InstallError(invalid);
     const suppliedToken = body.token === undefined || body.token === "" ? credentials.token : body.token;
     if (typeof suppliedToken !== "string" || !/^[A-Za-z0-9_]{20,255}$/.test(suppliedToken)) throw new InstallError("请输入有效的安装 Token。 / Enter a valid installation token.");
@@ -60,7 +61,7 @@ export async function handleSingboxSrsInstall(request: Request, env: Env): Promi
       let response: Response;
       try { response = await fetch(`${base}${path}`, {
         method, redirect: "manual", signal: AbortSignal.timeout(Math.min(15_000, deadline - Date.now())),
-        headers: { authorization: `Bearer ${authToken}`, accept: "application/vnd.github+json", "user-agent": "SubPilot-SRS-installer", "X-GitHub-Api-Version": "2022-11-28", ...(payload ? { "content-type": "application/json" } : {}) },
+        headers: { authorization: `Bearer ${authToken}`, accept: "application/vnd.github+json", "user-agent": "SubPilot-Actions-installer", "X-GitHub-Api-Version": "2022-11-28", ...(payload ? { "content-type": "application/json" } : {}) },
         ...(payload ? { body: JSON.stringify(payload) } : {})
       }); } catch (error) {
         const timeout = error instanceof Error && ["TimeoutError", "AbortError"].includes(error.name);
@@ -103,7 +104,7 @@ export async function handleSingboxSrsInstall(request: Request, env: Env): Promi
     if (repo.private !== false || repo.archived || repo.disabled || typeof repo.default_branch !== "string") throw new InstallError("请选择可写的公开仓库。 / Select a writable public repository.");
     const branch = repo.default_branch as string;
     completed.push("公开仓库可访问 / Public repository accessible");
-    if (![branch, `refs/heads/${branch}`].includes(settings.ref) || settings.outputBranch === branch) throw new InstallError("一键安装要求工作流分支为仓库默认分支，产物使用其他分支。 / Use the repository default branch for the workflow and a different output branch.");
+    if (![branch, `refs/heads/${branch}`].includes(settings.ref) || ACTIONS_OUTPUT_BRANCH === branch) throw new InstallError("一键安装要求工作流分支为仓库默认分支，产物使用其他分支。 / Use the repository default branch for the workflow and a different output branch.");
     stage = "检查编译 Token 的仓库访问 / Checking compilation token access";
     if (!credentials.token) throw new InstallError("尚未配置长期编译 Token，请先保存凭据。 / Configure the persistent compilation token first.");
     await api("/actions/workflows?per_page=1", "GET", undefined, false, credentials.token);
@@ -118,7 +119,7 @@ export async function handleSingboxSrsInstall(request: Request, env: Env): Promi
     stage = "读取默认分支提交 / Reading default branch commit";
     const commit = await api(`/git/commits/${head}`);
     if (!sha(commit.tree?.sha)) throw new InstallError("无法读取默认分支。 / Cannot read the default branch.");
-    const files = [{ path: `.github/workflows/${settings.workflow}`, content: workflow }, { path: "scripts/compile-singbox-srs.mjs", content: script }];
+    const files = [{ path: `.github/workflows/${settings.workflow}`, content: workflow }, { path: "scripts/compile-rule-sets.mjs", content: script }, { path: "scripts/actions-compiler-runtime.mjs", content: compiler }];
     const changed = [];
     for (const file of files) {
       stage = `检查文件 ${file.path} / Checking file ${file.path}`;
@@ -132,13 +133,13 @@ export async function handleSingboxSrsInstall(request: Request, env: Env): Promi
     stage = "加密工作流凭据 / Encrypting workflow credentials";
     const secrets = [
       { name: "SUBPILOT_URL", encrypted_value: sealGitHubSecret(key.key, callbackOrigin) },
-      { name: "SUBPILOT_SRS_SECRET", encrypted_value: sealGitHubSecret(key.key, sharedSecret) }
+      { name: "SUBPILOT_ACTIONS_SECRET", encrypted_value: sealGitHubSecret(key.key, sharedSecret) }
     ];
     stage = "安装工作流和脚本 / Installing workflow and script";
     if (changed.length) {
       const tree = await api("/git/trees", "POST", { base_tree: commit.tree.sha, tree: changed });
       if (!sha(tree.sha)) throw new InstallError("GitHub 未返回有效文件树。 / Invalid GitHub tree response.");
-      const created = await api("/git/commits", "POST", { message: "Install SubPilot sing-box SRS workflow", tree: tree.sha, parents: [head] });
+      const created = await api("/git/commits", "POST", { message: "Install SubPilot rule compilation workflow", tree: tree.sha, parents: [head] });
       if (!sha(created.sha)) throw new InstallError("GitHub 未返回有效提交。 / Invalid GitHub commit response.");
       await api(`/git/refs/heads/${encodeURIComponent(branch)}`, "PATCH", { sha: created.sha, force: false });
     }
@@ -151,7 +152,7 @@ export async function handleSingboxSrsInstall(request: Request, env: Env): Promi
     stage = "保存工作流访问地址 / Saving callback address";
     await env.SUBPILOT_CONFIG.put(CALLBACK_ORIGIN_KEY,
       await encryptJson(requireSecret(env, "CONFIG_ENCRYPTION_KEY"), { version: 1, origin: callbackOrigin }));
-    await env.SUBPILOT_CONFIG.put(srsBatchProtocolKey(settings), SRS_BATCH_PROTOCOL);
+    await env.SUBPILOT_CONFIG.put(actionsCompilerProtocolKey(settings), ACTIONS_COMPILER_PROTOCOL);
     return jsonResponse({ ok: true, completed, ...status, callbackOrigin }, { headers });
   } catch (error) {
     // Never expose or log response bodies, request payloads, tokens or network URLs.

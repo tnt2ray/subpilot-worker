@@ -1,3 +1,5 @@
+import { ensureActionsCompilation, readActionsManifest, usesActionsCompilation } from "./actions-compiler";
+import { githubActionsArtifactUrl } from "./actions-compiler-artifacts";
 import { getOrCreateReadToken } from "./auth";
 import { notifyRuleSetRefreshFailures } from "./notifications";
 import { compileRuleSetOutput, ensureCompiledRuleSet, readRuleSetStatus, refreshRuleSetCaches } from "./rule-set-compiler";
@@ -62,7 +64,9 @@ export async function handleRuleSetApi(request: Request, env: Env, ctx: Executio
     if (!outputName) return badRequest("Invalid rule set output name");
     if (config.ruleSets.mode !== "compiled" || !effectiveRuleSetOutputs(config.ruleSets).some((output) =>
       output.name === outputName && ruleSetOutputNeedsCompilation(config.ruleSets, output, config.renderTarget ?? "surge"))) return notFound();
-    const manifest = await readCompiledRuleSetManifest(env, outputName);
+    const output = effectiveRuleSetOutputs(config.ruleSets).find((item) => item.name === outputName)!;
+    const published = usesActionsCompilation(config) ? await readActionsManifest(env, config, output) : null;
+    const manifest = published ?? await readCompiledRuleSetManifest(env, outputName);
     if (!manifest) return notFound();
     return jsonResponse({ manifest });
   }
@@ -80,6 +84,10 @@ export async function handleRuleSetDownload(
   const resolved = resolveRuleSetDownload(config, path);
   if (!resolved) return notFound();
   const { output, bucket, target } = resolved;
+  if (usesActionsCompilation(config)) {
+    ctx.waitUntil(ensureActionsCompilation(env, config, { deadline: Date.now() + 25_000 }).catch(logRuleSetWorkerCacheError));
+  }
+  // A subscription already using a source JSON URL must never receive SRS here.
   if (target === "sing-box") return handlePreparedSingboxRuleSetDownload(request, env, ctx, config, output, bucket);
 
   let manifest;
@@ -89,6 +97,17 @@ export async function handleRuleSetDownload(
     return badRequest(error instanceof Error ? error.message : String(error));
   }
   if (!manifest) return notFound();
+  if (manifest.publication && manifestSupportsDownload(manifest, bucket, target)) {
+    return Response.redirect(githubActionsArtifactUrl(config, output.name, bucket, manifest.publication.commit), 302);
+  }
+  if (manifest.publication) {
+    // Existing subscriptions may still reference a bucket absent from the new
+    // publication. Retain a matching local version for those managed URLs.
+    const previous = await readCompiledRuleSetManifest(env, output.name);
+    manifest = previous?.outputFingerprint === manifest.outputFingerprint && manifestSupportsDownload(previous, bucket, target)
+      ? previous
+      : await compileRuleSetOutput(env, config, output, { workerOnly: true, allowStaleFallback: true }).then((result) => result.manifest);
+  }
   if (!manifestSupportsDownload(manifest, bucket, target)) return notFound();
 
   const cachedResponse = await matchCompiledRuleSetWorkerCache(request, compiledCacheVersion(manifest));
@@ -97,7 +116,7 @@ export async function handleRuleSetDownload(
   let content = await readCompiledRuleSetBucket(env, output.name, bucket, target, manifest);
   if (content === null) {
     try {
-      manifest = await compileRuleSetOutput(env, config, output, { allowStaleFallback: true }).then((result) => result.manifest);
+      manifest = await compileRuleSetOutput(env, config, output, { workerOnly: true, allowStaleFallback: true }).then((result) => result.manifest);
       if (!manifest) return notFound();
       if (!manifestSupportsDownload(manifest, bucket, target)) return notFound();
       content = await readCompiledRuleSetBucket(env, output.name, bucket, target, manifest);
@@ -122,7 +141,7 @@ async function handlePreparedSingboxRuleSetDownload(
   const prepared = await prepareRuleSetCache(env, config, [output], { sourceOnly: true });
   const manifest = prepared.manifests.get(output.name);
   if (!manifest) {
-    scheduleRuleSetRebuild(env, config, prepared.pending, ctx);
+    scheduleRuleSetRebuild(env, config, prepared.pending, ctx, { sourceOnly: true });
     if (prepared.errors.length) return jsonResponse({ error: prepared.errors.join(" ") }, { status: 422, headers: { "cache-control": "no-store" } });
     return ruleSetPreparingResponse(prepared.retryAfterSeconds, prepared.failed);
   }
@@ -135,7 +154,7 @@ async function handlePreparedSingboxRuleSetDownload(
       // A stream can exist but contain unreadable ciphertext. Rebuild it after
       // returning, just as for a missing artifact; never compile on this path.
       const repair = await prepareRuleSetCache(env, config, [output], { force: true, sourceOnly: true });
-      scheduleRuleSetRebuild(env, config, repair.pending, ctx, { force: true });
+      scheduleRuleSetRebuild(env, config, repair.pending, ctx, { force: true, sourceOnly: true });
       if (repair.errors.length) return jsonResponse({ error: repair.errors.join(" ") }, { status: 422, headers: { "cache-control": "no-store" } });
       return ruleSetPreparingResponse(repair.retryAfterSeconds, repair.failed);
     }
@@ -143,7 +162,7 @@ async function handlePreparedSingboxRuleSetDownload(
     ctx.waitUntil(cacheCompiledRuleSetResponse(request.url, compiledCacheVersion(manifest), file.clone()).catch(logRuleSetWorkerCacheError));
     response = clientRuleSetResponse(request, file);
   }
-  scheduleRuleSetRebuild(env, config, prepared.pending, ctx);
+  scheduleRuleSetRebuild(env, config, prepared.pending, ctx, { sourceOnly: true });
   return response;
 }
 
@@ -200,6 +219,7 @@ function scheduleRuleSetWorkerCacheWarm(
   requestUrl: string,
   outputNames?: string[]
 ): void {
+  if (usesActionsCompilation(config)) return;
   const deadline = Date.now() + WAIT_UNTIL_CACHE_WARM_DEADLINE_MS;
   ctx.waitUntil((async () => {
     const effectiveOutputs = effectiveRuleSetOutputs(config.ruleSets);
@@ -220,6 +240,6 @@ function scheduleRuleSetWorkerCacheWarm(
 function logRuleSetWorkerCacheError(error: unknown): void {
   console.error(JSON.stringify({
     level: "error",
-    message: error instanceof Error ? error.message : String(error)
+    message: "Rule-set background work failed; retry remains enabled."
   }));
 }

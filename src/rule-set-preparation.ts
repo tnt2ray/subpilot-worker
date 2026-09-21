@@ -5,7 +5,7 @@ import type { RuleSetOutput } from "./rule-set-types";
 import { createSingboxAsnResolver } from "./singbox-asn";
 import type { RenderConfig } from "./types";
 import { mapWithConcurrency } from "./util";
-import { prepareSingboxSrsJob, singboxSrsReady, usesSingboxSrs } from "./singbox-srs";
+import { readActionsManifest, usesActionsCompilation } from "./actions-compiler";
 
 const PREPARATION_CONCURRENCY = 3;
 const REBUILD_DEADLINE_MS = 25_000;
@@ -16,7 +16,6 @@ const REBUILD_RETRY_PREFIX = "cache:ruleSetRebuildRetry:";
 
 export interface PreparedRuleSetCache {
   manifests: Map<string, CompiledRuleSetManifest>;
-  srsReadyOutputs: Set<string>;
   pending: RuleSetOutput[];
   unavailable: string[];
   retryAfterSeconds: number;
@@ -27,7 +26,6 @@ export interface PreparedRuleSetCache {
 interface PreparedOutput {
   output: RuleSetOutput;
   manifest: CompiledRuleSetManifest | null;
-  srsReady: boolean;
   pending: boolean;
   retryAfter: number;
   failed: boolean;
@@ -39,7 +37,7 @@ interface RebuildFailure {
   code?: "configuration" | "format";
 }
 
-/** Inspect complete artifacts without downloading sources or compiling rules. */
+/** Prefer confirmed Actions artifacts, then Worker caches and bounded fallback compilation. */
 export async function prepareRuleSetCache(
   env: Env,
   config: RenderConfig,
@@ -47,25 +45,22 @@ export async function prepareRuleSetCache(
   options: { force?: boolean; sourceOnly?: boolean } = {}
 ): Promise<PreparedRuleSetCache> {
   const result: PreparedRuleSetCache = {
-    manifests: new Map(), srsReadyOutputs: new Set(), pending: [], unavailable: [],
+    manifests: new Map(), pending: [], unavailable: [],
     retryAfterSeconds: DEFAULT_RETRY_AFTER_SECONDS, failed: false, errors: []
   };
   const selected = compilationOutputs(config, outputs);
   const states: PreparedOutput[] = selected.map((output) => ({
-    output, manifest: null, srsReady: false, pending: true, retryAfter: 0, failed: false
+    output, manifest: null, pending: true, retryAfter: 0, failed: false
   }));
   await mapWithConcurrency(states, PREPARATION_CONCURRENCY, async (state) => {
     try {
       const fingerprint = await ruleSetOutputFingerprint(config, state.output);
-      const cached = options.force ? null : await readCompiledRuleSetManifest(env, state.output.name, { allowLegacy: false });
+      const published = !options.force && !options.sourceOnly && usesActionsCompilation(config)
+        ? await readActionsManifest(env, config, state.output) : null;
+      const cached = published ?? (options.force ? null : await readCompiledRuleSetManifest(env, state.output.name, { allowLegacy: false }));
       if (cached?.outputFingerprint === fingerprint) {
         state.manifest = cached;
-        state.pending = !manifestIsFresh(cached, fingerprint);
-        if (!options.sourceOnly && usesSingboxSrs(config)) {
-          // Optional binary publication must never discard a usable JSON cache.
-          state.srsReady = await singboxSrsReady(env, config, cached).catch(() => false);
-          state.pending ||= !state.srsReady;
-        }
+        state.pending = !manifestIsFresh(cached, fingerprint) || Boolean(options.sourceOnly && usesActionsCompilation(config) && workerSourceExpired(cached));
       }
       if (state.pending) {
         const failure = await readRebuildFailure(env, config, fingerprint);
@@ -77,10 +72,27 @@ export async function prepareRuleSetCache(
       state.failed = true;
     }
   });
+  // Actions never blocks a subscription when the Worker can prepare its rules.
+  // Keep a shared deadline; unfinished outputs continue through background jobs.
+  if (usesActionsCompilation(config) && !options.force) {
+    const deadline = Date.now() + REBUILD_DEADLINE_MS;
+    for (const state of states) {
+      if (state.manifest || state.failed || deadline - Date.now() < MIN_REBUILD_REMAINING_MS) continue;
+      try {
+        const compiled = await compileRuleSetOutput(env, config, state.output, {
+          workerOnly: Boolean(options.sourceOnly), allowStaleFallback: true, deadline
+        });
+        state.manifest = compiled.manifest;
+        state.pending = compiled.stale || !manifestIsFresh(compiled.manifest, await ruleSetOutputFingerprint(config, state.output));
+      } catch (error) {
+        state.failed = true;
+        if (error instanceof RuleSetCompileError) state.error = error.message;
+      }
+    }
+  }
   for (const state of states) {
     if (state.manifest) result.manifests.set(state.output.name, state.manifest);
     else result.unavailable.push(state.output.name);
-    if (state.srsReady) result.srsReadyOutputs.add(state.output.name);
     result.failed ||= state.failed;
     if (state.error && !result.errors.includes(state.error)) result.errors.push(state.error);
     result.retryAfterSeconds = Math.max(result.retryAfterSeconds, Math.ceil((state.retryAfter - Date.now()) / 1000));
@@ -99,7 +111,7 @@ export function scheduleRuleSetRebuild(
   config: RenderConfig,
   outputs: RuleSetOutput[],
   ctx: Pick<ExecutionContext, "waitUntil">,
-  options: { force?: boolean } = {}
+  options: { force?: boolean; sourceOnly?: boolean } = {}
 ): void {
   const selected = compilationOutputs(config, outputs);
   if (!selected.length) return;
@@ -109,17 +121,18 @@ export function scheduleRuleSetRebuild(
       if (deadline - Date.now() < MIN_REBUILD_REMAINING_MS) break;
       let fingerprint: string | undefined;
       try {
+        if (!options.sourceOnly && usesActionsCompilation(config) && await readActionsManifest(env, config, output)) continue;
         fingerprint = await ruleSetOutputFingerprint(config, output);
         const cached = await readCompiledRuleSetManifest(env, output.name, { allowLegacy: false });
-        if (!options.force && cached && manifestIsFresh(cached, fingerprint)) {
-          await prepareSingboxSrsJob(env, config, cached, deadline);
+        if (!options.force && cached && manifestIsFresh(cached, fingerprint)
+          && !(options.sourceOnly && usesActionsCompilation(config) && workerSourceExpired(cached))) {
           continue;
         }
         if ((await readRebuildFailure(env, config, fingerprint)).retryAfter > Date.now()) continue;
         if (deadline - Date.now() < MIN_REBUILD_REMAINING_MS) break;
         const resolveAsn = createSingboxAsnResolver(env, deadline);
         const compiled = await compileRuleSetOutput(env, config, output, {
-          allowStaleFallback: true, deadline,
+          workerOnly: Boolean(options.sourceOnly), forceSourceRefresh: Boolean(options.sourceOnly), allowStaleFallback: true, deadline,
           asnResolver: async (value) => {
             const result = await resolveAsn(value);
             // Never publish a partial output when an ASN has no usable fallback.
@@ -150,8 +163,12 @@ function compilationOutputs(config: RenderConfig, outputs?: RuleSetOutput[]): Ru
   });
 }
 
+function workerSourceExpired(manifest: CompiledRuleSetManifest): boolean {
+  return Date.now() - Date.parse(manifest.updatedAt) >= 24 * 60 * 60_000;
+}
+
 function manifestIsFresh(manifest: CompiledRuleSetManifest, fingerprint: string): boolean {
-  return Boolean(manifest.storageId) && manifest.outputFingerprint === fingerprint
+  return Boolean(manifest.storageId || manifest.publication) && manifest.outputFingerprint === fingerprint
     && (manifest.asnExpiresAt === undefined || manifest.asnExpiresAt > Date.now());
 }
 

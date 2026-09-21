@@ -734,36 +734,36 @@ dialog footer {
   padding: 15px 20px;
   border-top: 1px solid var(--border);
 }
-.srs-progress { display: grid; gap: 18px; }
-.srs-progress-overview {
+.actions-progress { display: grid; gap: 18px; }
+.actions-progress-overview {
   padding: 16px;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--surface);
 }
-.srs-progress-heading,
-.srs-progress-item-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
-.srs-progress-heading h3 { margin: 0; }
-.srs-progress-count { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; margin: 0; }
-.srs-progress-count strong { font-size: 22px; font-variant-numeric: tabular-nums; }
-.srs-progress-count span { font-size: 12px; color: var(--muted); }
-.srs-progress-overview > p { margin: 8px 0 0; color: var(--muted); }
-.srs-progress-list { list-style: none; padding: 0; margin: 0; }
-.srs-progress-item { padding: 14px 0; border-bottom: 1px solid var(--border); }
-.srs-progress-item:first-child { padding-top: 0; }
-.srs-progress-item-heading strong { min-width: 0; flex: 1 1 180px; overflow-wrap: anywhere; }
-.srs-progress-state { max-width: 100%; padding: 4px 9px; border-radius: 5px; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
-.srs-progress-state.pending { color: #1d4ed8; background: #eff6ff; }
-.srs-progress-state.warning { color: #854d0e; background: #fff7e6; }
-.srs-progress-state.ready { color: #166534; background: #f0faf3; }
-.srs-progress-description { margin: 8px 0 0; color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
-.srs-progress-attempt { margin: 5px 0 0; }
-.srs-progress-retry { display: grid; justify-items: start; gap: 8px; }
-.srs-progress-retry .help,
-.srs-progress-note { margin: 0; }
+.actions-progress-heading,
+.actions-progress-item-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.actions-progress-heading h3 { margin: 0; }
+.actions-progress-count { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; margin: 0; }
+.actions-progress-count strong { font-size: 22px; font-variant-numeric: tabular-nums; }
+.actions-progress-count span { font-size: 12px; color: var(--muted); }
+.actions-progress-overview > p { margin: 8px 0 0; color: var(--muted); }
+.actions-progress-list { list-style: none; padding: 0; margin: 0; }
+.actions-progress-item { padding: 14px 0; border-bottom: 1px solid var(--border); }
+.actions-progress-item:first-child { padding-top: 0; }
+.actions-progress-item-heading strong { min-width: 0; flex: 1 1 180px; overflow-wrap: anywhere; }
+.actions-progress-state { max-width: 100%; padding: 4px 9px; border-radius: 5px; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.actions-progress-state.pending { color: #1d4ed8; background: #eff6ff; }
+.actions-progress-state.warning { color: #854d0e; background: #fff7e6; }
+.actions-progress-state.ready { color: #166534; background: #f0faf3; }
+.actions-progress-description { margin: 8px 0 0; color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+.actions-progress-attempt { margin: 5px 0 0; }
+.actions-progress-retry { display: grid; justify-items: start; gap: 8px; }
+.actions-progress-retry .help,
+.actions-progress-note { margin: 0; }
 @media (max-width: 520px) {
-  .srs-progress-heading { align-items: flex-start; flex-direction: column; gap: 8px; }
-  .srs-progress-item-heading { align-items: flex-start; }
+  .actions-progress-heading { align-items: flex-start; flex-direction: column; gap: 8px; }
+  .actions-progress-item-heading { align-items: flex-start; }
 }
 .mobile-only {
   display: none;
@@ -1167,3 +1167,5 @@ dialog.routing-order-dialog { margin: 0 0 0 auto; width: min(600px, 100vw); max-
 .sb-dns-page .actions { white-space: nowrap; width: 168px; }
 .sb-dns-page .client-config-values { max-height: 180px; overflow: auto; }
 .sb-dns-page .section { margin-bottom: 18px; padding-bottom: 18px; }
+
+.actions-progress-client h3 { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }

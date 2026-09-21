@@ -83,6 +83,7 @@ export interface CompiledRuleSetBucketMeta {
 }
 
 export interface CompiledRuleSetManifest {
+  publication?: { confirmedAt: number; commit: string; jobId: string; integration: string; target: import("./types").Target };
   dnsRuleCount?: number;
   provider?: { behavior: RuleSetBucket; interval: number };
   surgeType?: "RULE-SET" | "DOMAIN-SET";

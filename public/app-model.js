@@ -9,7 +9,7 @@ const LABELS = {
   featureTagRules: "节点特征标签",
   updateCheckEnabled: "检查版本更新",
   displayTimeZone: "显示时区",
-  singboxSrs: "sing-box SRS 编译",
+  actionsCompilation: "Actions 规则编译",
   repository: "GitHub 仓库（owner/repo）",
   ref: "GitHub 分支或标签",
   workflow: "GitHub 工作流文件名",

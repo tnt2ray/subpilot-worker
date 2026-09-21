@@ -193,8 +193,7 @@ export interface StaticProxyNodeConfig {
   includeInGroups: boolean;
 }
 
-export interface SingboxSrsSettings {
-  outputBranch: string;
+export interface ActionsCompilationSettings {
   enabled: boolean;
   repository: string;
   ref: string;
@@ -219,7 +218,7 @@ export interface RenderConfig {
     featureTagRules: string[];
     updateCheckEnabled: boolean;
     displayTimeZone: string;
-    singboxSrs?: SingboxSrsSettings;
+    actionsCompilation?: ActionsCompilationSettings;
     notificationChannel: NotificationChannel;
     notificationTelegramChatId: string;
     notificationTelegramBotToken: string;

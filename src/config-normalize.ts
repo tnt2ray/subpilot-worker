@@ -10,7 +10,7 @@ import {
 } from "./rule-set-types";
 import { ruleSetPathName } from "./managed-url";
 import { inferUrlRewriteMitmHostnames } from "./surge-url-rewrite";
-import { CHAIN_EXIT_PROTOCOLS, type RenderConfig, type ChainExitProtocol, type NotificationChannel, type SingboxSrsSettings, type SourceConfig, type StaticProxyNodeConfig, type SurgeIpv6VifMode, type Target } from "./types";
+import { CHAIN_EXIT_PROTOCOLS, type RenderConfig, type ChainExitProtocol, type NotificationChannel, type ActionsCompilationSettings, type SourceConfig, type StaticProxyNodeConfig, type SurgeIpv6VifMode, type Target } from "./types";
 import { normalizeDisplayTimeZone } from "./util";
 
 const SURGE_IPV6_VIF_MODES = ["off", "auto", "always"] as const satisfies readonly SurgeIpv6VifMode[];
@@ -54,7 +54,7 @@ export function normalizeConfig(input: RenderConfig): RenderConfig {
       featureTagRules: stringArray(input.settings?.featureTagRules, DEFAULT_CONFIG.settings.featureTagRules),
       updateCheckEnabled: input.settings?.updateCheckEnabled === true,
       displayTimeZone: normalizeDisplayTimeZone(input.settings?.displayTimeZone),
-      singboxSrs: normalizeSingboxSrsSettings(input.settings?.singboxSrs),
+      actionsCompilation: normalizeActionsCompilationSettings(input.settings?.actionsCompilation),
       notificationChannel: notificationChannelFromTelegramToken(notificationTelegramBotToken),
       notificationTelegramChatId: notificationTelegramBotToken ? stringValue(input.settings?.notificationTelegramChatId, "") : "",
       notificationTelegramBotToken,
@@ -73,14 +73,13 @@ export function normalizeConfig(input: RenderConfig): RenderConfig {
   };
 }
 
-function normalizeSingboxSrsSettings(input: unknown): SingboxSrsSettings {
-  const value = input && typeof input === "object" && !Array.isArray(input) ? input as Partial<SingboxSrsSettings> : {};
+function normalizeActionsCompilationSettings(input: unknown): ActionsCompilationSettings {
+  const value = input && typeof input === "object" && !Array.isArray(input) ? input as Partial<ActionsCompilationSettings> : {};
   return {
     enabled: value.enabled === true,
     repository: stringValue(value.repository, "").trim(),
     ref: stringValue(value.ref, "main").trim(),
-    workflow: stringValue(value.workflow, "singbox-srs.yml").trim(),
-    outputBranch: stringValue(value.outputBranch, "srs").trim()
+    workflow: stringValue(value.workflow, "compile-rule-sets.yml").trim()
   };
 }
 

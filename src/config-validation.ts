@@ -85,32 +85,30 @@ export function validateManagedBaseUrl(config: { settings?: { managedBaseUrl?: u
   return null;
 }
 
-export function validateSingboxSrsSettings(value: RenderConfig["settings"]["singboxSrs"]): string | null {
+export function validateActionsCompilationSettings(value: RenderConfig["settings"]["actionsCompilation"]): string | null {
   if (!value?.enabled) return null;
   if (typeof value.repository !== "string" || !/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?\/[A-Za-z0-9._-]{1,100}$/.test(value.repository)
     || [".", ".."].includes(value.repository.split("/")[1]!)) {
-    return "SRS 编译的 GitHub 仓库必须填写 owner/repo。";
+    return "Actions 规则编译的 GitHub 仓库必须填写 owner/repo。";
   }
   if (typeof value.ref !== "string" || !value.ref || value.ref.length > 255 || value.ref === "@" || value.ref.startsWith("-")
     || /[\s\u0000-\u001f\u007f~^:?*\[\\]/.test(value.ref) || value.ref.includes("..") || value.ref.includes("@{")
     || value.ref.split("/").some((part) => !part || part.startsWith(".") || part.endsWith(".") || part.endsWith(".lock"))) {
-    return "SRS 编译的 GitHub 分支或标签无效。";
+    return "Actions 规则编译的 GitHub 分支或标签无效。";
   }
   if (typeof value.workflow !== "string" || value.workflow.length > 128 || !/^[A-Za-z0-9][A-Za-z0-9._-]*\.ya?ml$/.test(value.workflow)) {
-    return "SRS 编译的工作流必须是 .yml 或 .yaml 文件名，不能包含路径。";
+    return "Actions 规则编译的工作流必须是 .yml 或 .yaml 文件名，不能包含路径。";
   }
-  if (typeof value.outputBranch !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(value.outputBranch)
-    || value.outputBranch.includes("..") || value.outputBranch.endsWith(".") || value.outputBranch.endsWith(".lock")
-    || value.outputBranch === value.ref || value.outputBranch === value.ref.replace(/^refs\/heads\//, "")) {
-    return "SRS 产物分支须为独立分支名（字母、数字、点、连字符或下划线，最长 100 字符），不能与工作流分支相同。";
+  if (["rules", "refs/heads/rules"].includes(value.ref)) {
+    return "工作流分支不能使用固定产物分支 rules。";
   }
   return null;
 }
 
 export function validateConfigEntityLimits(config: RenderConfig, options: { allowUnresolvedPolicies?: boolean } = {}): string | null {
   if (!config.settings || typeof config.settings !== "object") return "基础设置格式无效";
-  const srsError = validateSingboxSrsSettings(config.settings.singboxSrs);
-  if (srsError) return srsError;
+  const actionsError = validateActionsCompilationSettings(config.settings.actionsCompilation);
+  if (actionsError) return actionsError;
   if (!config.groups || typeof config.groups !== "object" || Array.isArray(config.groups)) return "策略组配置格式无效";
   if (!Array.isArray(config.disabledGroups)) return "禁用策略组配置格式无效";
   if (!Array.isArray(config.sources)) return "订阅源配置格式无效";

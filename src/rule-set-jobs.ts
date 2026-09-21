@@ -40,9 +40,8 @@ export async function queueChangedRuleSetUpdates(
     for (const output of compilationOutputs(selected)) {
       const fingerprint = await ruleSetOutputFingerprint(selected, output);
       const old = previousOutputs.get(output.name);
-      const srsChanged = target === "sing-box" && selected.settings.singboxSrs?.enabled
-        && JSON.stringify(previous.settings.singboxSrs) !== JSON.stringify(selected.settings.singboxSrs);
-      if (old && !srsChanged && await ruleSetOutputFingerprint(previous, old) === fingerprint) continue;
+      const processorChanged = JSON.stringify(previous.settings.actionsCompilation) !== JSON.stringify(selected.settings.actionsCompilation);
+      if (old && !processorChanged && await ruleSetOutputFingerprint(previous, old) === fingerprint) continue;
       jobs.push(await writeJob(env, target, output.name, fingerprint));
     }
   }
@@ -92,7 +91,10 @@ export async function runRuleSetUpdateJobs(
         allowStaleFallback: true,
         forceSourceRefresh: true,
         skipUnchangedSources: true,
-        canPublish: async () => jobMatchesConfig(job, await options.loadCurrentConfig()),
+        canPublish: async () => {
+          const latest = await options.loadCurrentConfig();
+          return jobMatchesConfig(job, latest);
+        },
         deadline: options.deadline,
         asnResolver: async (value) => {
           const resolved = await resolveAsn(value);

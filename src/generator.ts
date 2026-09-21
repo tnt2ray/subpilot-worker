@@ -1,3 +1,4 @@
+import { ensureActionsCompilation, usesActionsCompilation } from "./actions-compiler";
 import { validateSingboxOutput } from "./singbox-validation";
 import { validateSurgeRules } from "./surge-rules";
 import { validateClashLikeRules } from "./clash-rules";
@@ -87,10 +88,12 @@ export async function generateConfig(
   env = ruleSetEnv(env, target);
   const renderTarget = target;
   const diagnostics: ConfigDiagnostic[] = [];
-  // JSON preparation can outlive a client's configuration download timeout.
-  // Wait only for required JSON caches; optional SRS publication falls back
-  // to these complete sources until each output's binaries are confirmed.
-  const ruleSetCache = target === "sing-box" ? await prepareRuleSetCache(env, config) : undefined;
+  if (usesActionsCompilation(config) && options.context) {
+    options.context.waitUntil(ensureActionsCompilation(env, config, { deadline: Date.now() + 25_000 })
+      .catch(() => console.warn(JSON.stringify({ level: "warn", message: "Actions dispatch deferred; Worker fallback remains enabled." }))));
+  }
+  // Actions readiness is optional: use complete Worker rules while publication is pending.
+  const ruleSetCache = target === "sing-box" || usesActionsCompilation(config) ? await prepareRuleSetCache(env, config) : undefined;
   if (ruleSetCache?.unavailable.length) {
     if (options.context) scheduleRuleSetRebuild(env, config, ruleSetCache.pending, options.context);
     return {
@@ -102,7 +105,7 @@ export async function generateConfig(
         : [{ target, severity: "error", code: "rule-cache-pending", path: "ruleSets",
         message: ruleSetCache.failed
           ? "规则集缓存暂不可用，后台生成失败；请检查规则来源或稍后重试。"
-          : "JSON 规则缓存正在后台生成，请稍后重试更新配置。" }]
+          : usesActionsCompilation(config) ? "Worker 正在准备可用规则，Actions 也会继续编译；请稍后重试。" : "JSON 规则缓存正在后台生成，请稍后重试更新配置。" }]
     };
   }
   let prepared: PreparedOutput;
@@ -121,7 +124,7 @@ export async function generateConfig(
   let proxyCount = prepared.nodes.length;
   try {
     content = target === "sing-box"
-      ? buildSingbox(config, prepared.nodes, prepared.hostEntries, requestUrl, diagnostics, ruleSetCache!.manifests, ruleSetCache!.srsReadyOutputs)
+      ? buildSingbox(config, prepared.nodes, prepared.hostEntries, requestUrl, diagnostics, ruleSetCache!.manifests)
       : buildTargetContent(config, target, prepared.nodes, prepared.hostEntries, requestUrl, prepared.ruleSetPlan);
     const resolved = omitEmptyPolicyGroups(config, target, content);
     config = resolved.config;

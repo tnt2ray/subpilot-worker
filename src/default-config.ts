@@ -21,7 +21,7 @@ export const DEFAULT_CONFIG: RenderConfig = {
     ],
     updateCheckEnabled: false,
     displayTimeZone: DEFAULT_DISPLAY_TIME_ZONE,
-    singboxSrs: { enabled: false, repository: "", ref: "main", workflow: "singbox-srs.yml", outputBranch: "srs" },
+    actionsCompilation: { enabled: false, repository: "", ref: "main", workflow: "compile-rule-sets.yml" },
     notificationChannel: "off",
     notificationTelegramChatId: "",
     notificationTelegramBotToken: "",
