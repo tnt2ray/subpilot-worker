@@ -1,4 +1,5 @@
 import { decryptJson } from "./crypto-store";
+import { maintainCompletedCleanupMarkers, migrateLegacyActionsConfigSettings, migrateRetiredConfigSnapshots } from "./config-store";
 import { requireSecret } from "./secrets";
 import { sha256Hex } from "./util";
 
@@ -15,6 +16,7 @@ const RECORD_KEYS = {
 type RecordKind = keyof typeof RECORD_KEYS;
 const RECORD_KINDS = ["credentials", "callbackOrigin"] as const;
 const GRACE_MS = 5 * 60_000;
+const SUPERSEDED_RECORD_TTL_SECONDS = 10 * 60;
 const MAX_KEYS = 200;
 const PAGE_SIZE = 100;
 const MAX_PAGES = 4;
@@ -35,6 +37,12 @@ interface MigrationState {
   hashes: Record<RecordKind, string | null>;
   sweepHadDeletes: boolean;
   retire: Partial<Record<RecordKind, { hash: string; notBefore: number }>>;
+  settingsComplete?: boolean;
+  snapshotsComplete?: boolean;
+  snapshotProgress?: { after?: string };
+  markersComplete?: boolean;
+  retiredCandidates?: Partial<Record<RecordKind, boolean>>;
+  upgradeComplete?: boolean;
 }
 
 /** A present record is authoritative even when empty or unreadable. Callers validate it. */
@@ -53,14 +61,29 @@ export async function maintainActionsIntegrationMigration(env: Env, deadline = D
   const cutoff = Math.min(deadline, Date.now() + 25_000);
   checkDeadline(cutoff);
   const stored = await env.SUBPILOT_CONFIG.get(ACTIONS_INTEGRATION_MIGRATION_KEY);
-  const state = parseState(stored) ?? {
+  const state: MigrationState = parseState(stored) ?? {
     version: 1, phase: "copy", notBefore: 0, stage: 0,
     hashes: { credentials: null, callbackOrigin: null }, sweepHadDeletes: false, retire: {}
-  } satisfies MigrationState;
+  };
+  if (state.upgradeComplete) return;
   const before = JSON.stringify(state);
   try {
+    if (!state.settingsComplete) {
+      checkDeadline(cutoff);
+      state.settingsComplete = await migrateLegacyActionsConfigSettings(env);
+    }
+    if (!state.snapshotsComplete) {
+      checkDeadline(cutoff);
+      state.snapshotProgress ??= {};
+      state.snapshotsComplete = await migrateRetiredConfigSnapshots(env, state.snapshotProgress, cutoff);
+      if (state.snapshotsComplete) delete state.snapshotProgress;
+    }
+    if (!state.markersComplete) {
+      checkDeadline(cutoff);
+      state.markersComplete = await maintainCompletedCleanupMarkers(env, cutoff);
+    }
     if (state.phase === "done") {
-      await retireMigratedRecords(env, state, cutoff);
+      await completeUpgrade(env, state, cutoff);
       return;
     }
     const preserved = await preserveRecords(env, cutoff);
@@ -105,8 +128,8 @@ export async function maintainActionsIntegrationMigration(env: Env, deadline = D
     if (state.stage === CLEANUP_PREFIXES.length) {
       if (state.sweepHadDeletes) restartGrace(state);
       else {
-        await retireMigratedRecords(env, state, cutoff);
         state.phase = "done";
+        await completeUpgrade(env, state, cutoff);
       }
     }
   } finally {
@@ -151,34 +174,35 @@ async function preserveRecords(env: Env, deadline: number): Promise<{
   return { hashes, legacyPresent };
 }
 
-/** Reclaim a candidate only after the same valid primary has survived a full grace period. */
-async function retireMigratedRecords(env: Env, state: MigrationState, deadline: number): Promise<void> {
-  for (const kind of RECORD_KINDS) {
-    checkDeadline(deadline);
-    const keys = RECORD_KEYS[kind];
-    const candidate = await env.SUBPILOT_CONFIG.get(keys.migrated);
-    if (candidate === null) {
-      delete state.retire[kind];
-      continue;
-    }
-    const current = await env.SUBPILOT_CONFIG.get(keys.current);
-    if (current === null) {
-      delete state.retire[kind];
-      continue;
-    }
-    await validateRecord(env, kind, current);
-    const hash = await sha256Hex(current);
-    const previous = state.retire[kind];
-    if (!previous || previous.hash !== hash) {
-      state.retire[kind] = { hash, notBefore: Date.now() + GRACE_MS };
-      continue;
-    }
-    if (Date.now() < previous.notBefore) continue;
-    checkDeadline(deadline);
-    if (await env.SUBPILOT_CONFIG.get(keys.current) !== current) continue;
-    await env.SUBPILOT_CONFIG.delete(keys.migrated);
-    delete state.retire[kind];
+/** Expiry supplies the propagation grace period without a permanent polling task. */
+export async function expireSupersededActionsRecord(env: Env, kind: RecordKind, committedCiphertext?: string, deadline = Date.now() + 25_000): Promise<void> {
+  checkDeadline(deadline);
+  const keys = RECORD_KEYS[kind];
+  const candidate = await env.SUBPILOT_CONFIG.get(keys.migrated);
+  if (candidate === null) return;
+  // A successful primary write is authoritative even before cached reads see it.
+  // Callers may pass this proof only after awaiting that write successfully.
+  const current = committedCiphertext ?? await env.SUBPILOT_CONFIG.get(keys.current);
+  if (current === null) return;
+  await validateRecord(env, kind, current);
+  checkDeadline(deadline);
+  if (committedCiphertext === undefined && await env.SUBPILOT_CONFIG.get(keys.current) !== current) {
+    throw new Error("Actions integration record changed; retirement is deferred.");
   }
+  // Keep the primary, including an explicit empty-credentials record, untouched.
+  await env.SUBPILOT_CONFIG.put(keys.migrated, candidate, { expirationTtl: SUPERSEDED_RECORD_TTL_SECONDS });
+}
+
+async function completeUpgrade(env: Env, state: MigrationState, deadline: number): Promise<void> {
+  if (state.phase !== "done" || !state.settingsComplete || !state.snapshotsComplete || !state.markersComplete) return;
+  state.retiredCandidates ??= {};
+  for (const kind of RECORD_KINDS) {
+    if (state.retiredCandidates[kind]) continue;
+    await expireSupersededActionsRecord(env, kind, undefined, deadline);
+    state.retiredCandidates[kind] = true;
+  }
+  state.retire = {};
+  state.upgradeComplete = true;
 }
 
 async function validateRecord(env: Env, kind: RecordKind, ciphertext: string): Promise<void> {
@@ -221,7 +245,16 @@ function parseState(stored: string | null): MigrationState | null {
       || typeof state.sweepHadDeletes !== "boolean"
       || !state.hashes || typeof state.hashes !== "object" || Array.isArray(state.hashes)
       || !state.retire || typeof state.retire !== "object" || Array.isArray(state.retire)) throw new Error();
+    for (const field of ["settingsComplete", "snapshotsComplete", "markersComplete", "upgradeComplete"] as const) {
+      if (state[field] !== undefined && typeof state[field] !== "boolean") throw new Error();
+    }
+    if (state.snapshotProgress !== undefined && (!state.snapshotProgress || typeof state.snapshotProgress !== "object"
+      || Array.isArray(state.snapshotProgress) || (state.snapshotProgress.after !== undefined && typeof state.snapshotProgress.after !== "string"))) throw new Error();
+    if (state.retiredCandidates !== undefined && (!state.retiredCandidates || typeof state.retiredCandidates !== "object"
+      || Array.isArray(state.retiredCandidates))) throw new Error();
+    if (state.upgradeComplete && (state.phase !== "done" || !state.settingsComplete || !state.snapshotsComplete || !state.markersComplete)) throw new Error();
     for (const kind of RECORD_KINDS) {
+      if (state.retiredCandidates?.[kind] !== undefined && typeof state.retiredCandidates[kind] !== "boolean") throw new Error();
       if (state.hashes[kind] !== null && (typeof state.hashes[kind] !== "string" || !HASH.test(state.hashes[kind]))) throw new Error();
       const retire = state.retire[kind];
       if (retire && (typeof retire.hash !== "string" || !HASH.test(retire.hash) || !Number.isSafeInteger(retire.notBefore) || retire.notBefore < 0)) throw new Error();

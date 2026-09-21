@@ -350,15 +350,16 @@ async function writeConfigSnapshot(env: Env, config: RenderConfig, key = CONFIG_
 }
 
 /** Persist the settings rename without making an old snapshot newer than a concurrent save. */
-export async function migrateLegacyActionsConfigSettings(env: Env): Promise<void> {
+export async function migrateLegacyActionsConfigSettings(env: Env): Promise<boolean> {
   const selected = await readStoredConfigSnapshot(env);
-  if (!selected.key || !selected.config || selected.config.migrationRequired) return;
+  if (!selected.key || !selected.config) return !selected.found;
+  if (selected.config.migrationRequired) return false;
   const stored = await env.SUBPILOT_CONFIG.get(selected.key);
-  if (stored === null) return;
+  if (stored === null) return false;
   const secret = requireSecret(env, "CONFIG_ENCRYPTION_KEY");
   const snapshot = await decryptJson<ConfigSnapshot>(secret, stored);
   if (snapshot.version !== CONFIG_SNAPSHOT_VERSION || !snapshot.config?.settings
-    || !Object.hasOwn(snapshot.config.settings, "singboxSrs")) return;
+    || !Object.hasOwn(snapshot.config.settings, "singboxSrs")) return true;
   const settings = { ...snapshot.config.settings,
     actionsCompilation: withDefaultConfigSettings(snapshot.config.settings).actionsCompilation };
   Reflect.deleteProperty(settings, "singboxSrs");
@@ -382,6 +383,7 @@ export async function migrateLegacyActionsConfigSettings(env: Env): Promise<void
   }
   // Retain the usual rollback snapshots and apply the existing bounded pruning.
   await pruneConfigSnapshotVersions(env, { key, logicalTime: configSnapshotLogicalTimeFromKey(key) });
+  return true;
 }
 
 async function readStoredConfigSnapshot(env: Env): Promise<StoredConfigSnapshotResult> {
@@ -549,8 +551,8 @@ function configSnapshotLogicalTimeFromKey(key: string): number {
 type CleanupState = "missing" | "pending" | "complete";
 
 async function maintainConfigCleanup(env: Env): Promise<void> {
+  if (await env.SUBPILOT_CONFIG.get(`${CONFIG_SNAPSHOT_CLEANUP_COMPLETE_PREFIX}retained`) === "done") return;
   if (!await env.SUBPILOT_CONFIG.get(DOCUMENT_MIGRATION_COMMITTED)) return;
-  await cleanupRetiredSnapshots(env);
   const state = await retryConfigCleanup(env);
   if (state !== "missing") return;
   if ((await legacyConfigKeys(env)).length > 0) {
@@ -736,6 +738,7 @@ async function writeReadTokenRecord(env: Env, record: ReadTokenRecord, key = REA
 }
 
 async function maintainReadTokenCleanup(env: Env, ensureScheduled: boolean): Promise<void> {
+  if (await env.SUBPILOT_CONFIG.get(`${READ_TOKEN_CLEANUP_COMPLETE_PREFIX}retained`) === "done") return;
   const state = await retryReadTokenCleanup(env);
   if (state === "missing" && ensureScheduled) await scheduleReadTokenCleanupIfNeeded(env);
 }
@@ -1024,30 +1027,46 @@ export async function completeDocumentMigration(env: Env, document: AppConfig): 
   return saved;
 }
 
-async function cleanupRetiredSnapshots(env: Env): Promise<void> {
+/** One upgrade pass; callers persist the cursor and stop invoking it after completion. */
+export async function migrateRetiredConfigSnapshots(env: Env, progress: { after?: string }, deadline = Date.now() + 25_000): Promise<boolean> {
   const committed = Number(await env.SUBPILOT_CONFIG.get(DOCUMENT_MIGRATION_COMMITTED));
-  if (!committed || Date.now() - committed < CONFIG_SNAPSHOT_CLEANUP_GRACE_MS) return;
-  const keys = [...await listKvKeys(env, CONFIG_SNAPSHOT_VERSION_PREFIX), ...await listKvKeys(env, CONFIG_MIGRATED_SNAPSHOT_PREFIX), CONFIG_SNAPSHOT_KEY, CONFIG_MIGRATED_SNAPSHOT_KEY];
-  for (const key of keys.slice(0, CONFIG_SNAPSHOT_CLEANUP_BATCH_SIZE)) {
+  if (!committed) return !await env.SUBPILOT_CONFIG.get(CONFIG_SNAPSHOT_KEY)
+    && !await env.SUBPILOT_CONFIG.get(CONFIG_MIGRATED_SNAPSHOT_KEY)
+    && !(await env.SUBPILOT_CONFIG.list({ prefix: CONFIG_SNAPSHOT_VERSION_PREFIX, limit: 1 })).keys.length
+    && !(await env.SUBPILOT_CONFIG.list({ prefix: CONFIG_MIGRATED_SNAPSHOT_PREFIX, limit: 1 })).keys.length;
+  if (Date.now() - committed < CONFIG_SNAPSHOT_CLEANUP_GRACE_MS) return false;
+  const keys = [...await listKvKeys(env, CONFIG_SNAPSHOT_VERSION_PREFIX), ...await listKvKeys(env, CONFIG_MIGRATED_SNAPSHOT_PREFIX), CONFIG_SNAPSHOT_KEY, CONFIG_MIGRATED_SNAPSHOT_KEY]
+    .sort().filter((key) => progress.after === undefined || key > progress.after);
+  const batch = keys.slice(0, CONFIG_SNAPSHOT_CLEANUP_BATCH_SIZE);
+  for (const key of batch) {
+    if (Date.now() >= deadline) return false;
     const value = await env.SUBPILOT_CONFIG.get(key);
-    if (!value) continue;
-    try {
-      const snapshot = await decryptJson<{ config?: { version?: number } }>(requireSecret(env, "CONFIG_ENCRYPTION_KEY"), value);
-      if (snapshot.config?.version === 1) await env.SUBPILOT_CONFIG.delete(key);
-    } catch { /* A damaged revision is handled by regular snapshot maintenance. */ }
+    if (value) {
+      let version: number | undefined;
+      try {
+        const snapshot = await decryptJson<{ config?: { version?: number } }>(requireSecret(env, "CONFIG_ENCRYPTION_KEY"), value);
+        version = snapshot.config?.version;
+      } catch { /* A damaged revision is handled by regular snapshot maintenance. */ }
+      if (version === 1) await env.SUBPILOT_CONFIG.delete(key);
+    }
+    progress.after = key;
   }
+  return keys.length === batch.length;
 }
 
 /** Scheduled housekeeping for redundant completion/pending markers only. */
-export async function maintainCompletedCleanupMarkers(env: Env, deadline = Date.now() + 25_000): Promise<void> {
+export async function maintainCompletedCleanupMarkers(env: Env, deadline = Date.now() + 25_000): Promise<boolean> {
   const cutoff = Math.min(deadline, Date.now() + 25_000);
+  let complete = true;
   let remaining = 200;
   let listCalls = 0;
   const families = [
     { complete: CONFIG_SNAPSHOT_CLEANUP_COMPLETE_BASE_PREFIX, version: CURRENT_KV_SCHEMA_VERSION,
-      pending: CONFIG_SNAPSHOT_CLEANUP_PENDING_KEY, grace: CONFIG_SNAPSHOT_CLEANUP_GRACE_MS },
+      pending: CONFIG_SNAPSHOT_CLEANUP_PENDING_KEY, grace: CONFIG_SNAPSHOT_CLEANUP_GRACE_MS,
+      hasLegacy: async () => (await legacyConfigKeys(env)).length > 0 },
     { complete: "auth:read_token_cleanup_complete:", version: READ_TOKEN_RECORD_VERSION,
-      pending: READ_TOKEN_CLEANUP_PENDING_KEY, grace: READ_TOKEN_CLEANUP_GRACE_MS }
+      pending: READ_TOKEN_CLEANUP_PENDING_KEY, grace: READ_TOKEN_CLEANUP_GRACE_MS,
+      hasLegacy: () => legacyReadTokenKeysExist(env) }
   ];
   const checkDeadline = () => {
     if (Date.now() >= cutoff) throw new Error("Cleanup marker maintenance reached its deadline.");
@@ -1061,11 +1080,12 @@ export async function maintainCompletedCleanupMarkers(env: Env, deadline = Date.
   };
 
   for (const family of families) {
-    if (remaining < 2 || listCalls >= 32) return;
+    if (remaining < 2 || listCalls >= 32) return false;
     checkDeadline();
     const currentPrefix = `${family.complete}${family.version}:`;
     const retainedKey = `${currentPrefix}retained`;
     let retained = await env.SUBPILOT_CONFIG.get(retainedKey);
+    if (retained === "done") continue;
     if (retained === null || retained === "1") {
       let completed = retained === "1";
       let cursor: string | undefined;
@@ -1081,20 +1101,31 @@ export async function maintainCompletedCleanupMarkers(env: Env, deadline = Date.
         if (!page.cursor || page.cursor === cursor) throw new Error("Cleanup marker listing did not advance.");
         cursor = page.cursor;
       }
-      if (!completed) continue;
+      if (!completed) {
+        if (remaining < 2 || listCalls >= 30) return false;
+        // Record the empty case too, so fresh installations stop request-time scans.
+        const oldComplete = await listPage(family.complete, 1);
+        const oldPending = await listPage(`${family.pending}:`, 1);
+        if (oldComplete.keys.length || oldPending.keys.length || await env.SUBPILOT_CONFIG.get(family.pending) !== null || await family.hasLegacy()) {
+          complete = false;
+          continue;
+        }
+      }
       checkDeadline();
       const timestamp = String(Date.now());
       await env.SUBPILOT_CONFIG.put(retainedKey, timestamp);
       retained = await env.SUBPILOT_CONFIG.get(retainedKey);
       if (retained !== timestamp) throw new Error("Retained cleanup marker is not yet verified.");
       // No deletion in the invocation that establishes the propagation anchor.
+      complete = false;
       continue;
     }
     const retainedAt = Number(retained);
     if (!Number.isSafeInteger(retainedAt) || retainedAt < 1_000_000_000_000 || retainedAt > Date.now()) {
       throw new Error("Retained cleanup marker is invalid; cleanup is deferred.");
     }
-    if (Date.now() < retainedAt + family.grace) continue;
+    if (Date.now() < retainedAt + family.grace) { complete = false; continue; }
+    let removed = false;
     const confirmRetained = async () => {
       checkDeadline();
       return await env.SUBPILOT_CONFIG.get(retainedKey) === retained && Date.now() >= retainedAt + family.grace;
@@ -1107,6 +1138,7 @@ export async function maintainCompletedCleanupMarkers(env: Env, deadline = Date.
         remaining -= batch.length;
         const results = await Promise.allSettled(batch.map((key) => env.SUBPILOT_CONFIG.delete(key)));
         if (results.some((result) => result.status === "rejected")) throw new Error("Cleanup marker removal is incomplete.");
+        removed = true;
       }
     };
     // A fixed pending key is outside the colon-suffixed list prefix.
@@ -1128,7 +1160,14 @@ export async function maintainCompletedCleanupMarkers(env: Env, deadline = Date.
         if (!page.cursor || page.cursor === cursor) throw new Error("Cleanup marker listing did not advance.");
         cursor = page.cursor;
       }
-      if (remaining < 2 || listCalls >= 32) return;
+      if (remaining < 2 || listCalls >= 32) return false;
     }
+    if (!await confirmRetained()) throw new Error("Retained cleanup marker changed; cleanup is deferred.");
+    // Verify an empty sweep after propagation before retiring this task permanently.
+    const next = removed ? String(Date.now()) : "done";
+    await env.SUBPILOT_CONFIG.put(retainedKey, next);
+    if (await env.SUBPILOT_CONFIG.get(retainedKey) !== next) throw new Error("Cleanup completion is not yet verified.");
+    if (removed) complete = false;
   }
+  return complete;
 }

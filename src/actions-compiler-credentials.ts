@@ -1,5 +1,5 @@
 import { loadConfig } from "./config-store";
-import { ACTIONS_CREDENTIALS_KEY, readActionsIntegrationRecord } from "./actions-compiler-migration";
+import { ACTIONS_CREDENTIALS_KEY, expireSupersededActionsRecord, readActionsIntegrationRecord } from "./actions-compiler-migration";
 import { decryptJson, encryptJson } from "./crypto-store";
 import { requireSecret } from "./secrets";
 import { jsonResponse, randomToken, readRequestJsonWithLimit, RequestBodyTooLargeError } from "./util";
@@ -62,6 +62,7 @@ export async function handleActionsCredentials(request: Request, env: Env): Prom
     }
     const encrypted = await encryptJson(requireSecret(env, "CONFIG_ENCRYPTION_KEY"), { version: 1, token: credentials.token, sharedSecret: credentials.sharedSecret });
     await env.SUBPILOT_CONFIG.put(ACTIONS_CREDENTIALS_KEY, encrypted);
+    await expireSupersededActionsRecord(env, "credentials", encrypted);
     return jsonResponse({ ok: true, ...actionsCredentialStatus(credentials) }, { headers });
   } catch (error) {
     if (error instanceof SyntaxError) return jsonResponse({ error: "请求内容不是有效的 JSON。 / Invalid JSON request." }, { status: 400, headers });

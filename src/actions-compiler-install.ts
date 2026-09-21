@@ -8,7 +8,7 @@ import { decryptJson, encryptJson } from "./crypto-store";
 import { sealGitHubSecret } from "./github-secret-seal";
 import { requireSecret } from "./secrets";
 import { readActionsCredentials, actionsCredentialStatus } from "./actions-compiler-credentials";
-import { ACTIONS_CALLBACK_ORIGIN_KEY, readActionsIntegrationRecord } from "./actions-compiler-migration";
+import { ACTIONS_CALLBACK_ORIGIN_KEY, expireSupersededActionsRecord, readActionsIntegrationRecord } from "./actions-compiler-migration";
 import type { ActionsCompilationSettings } from "./types";
 import { jsonResponse, readRequestJsonWithLimit, readResponseTextWithLimit } from "./util";
 
@@ -154,8 +154,9 @@ export async function handleActionsCompilationInstall(request: Request, env: Env
       completed.push(`${secret.name} 已配置 / configured`);
     }
     stage = "保存工作流访问地址 / Saving callback address";
-    await env.SUBPILOT_CONFIG.put(ACTIONS_CALLBACK_ORIGIN_KEY,
-      await encryptJson(requireSecret(env, "CONFIG_ENCRYPTION_KEY"), { version: 1, origin: callbackOrigin }));
+    const encryptedCallbackOrigin = await encryptJson(requireSecret(env, "CONFIG_ENCRYPTION_KEY"), { version: 1, origin: callbackOrigin });
+    await env.SUBPILOT_CONFIG.put(ACTIONS_CALLBACK_ORIGIN_KEY, encryptedCallbackOrigin);
+    await expireSupersededActionsRecord(env, "callbackOrigin", encryptedCallbackOrigin);
     await env.SUBPILOT_CONFIG.put(actionsCompilerProtocolKey(settings), ACTIONS_COMPILER_PROTOCOL);
     return jsonResponse({ ok: true, completed, ...status, callbackOrigin }, { headers });
   } catch (error) {
