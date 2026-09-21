@@ -4,6 +4,7 @@ import workflow from "../scripts/compile-rule-sets.yml" with { type: "text" };
 import compiler from "../dist/actions-compiler-runtime.mjs" with { type: "text" };
 import script from "../scripts/compile-rule-sets.mjs" with { type: "text" };
 import { validateActionsCompilationSettings } from "./config-validation";
+import { normalizeActionsWorkflowFilename } from "./config-normalize";
 import { decryptJson, encryptJson } from "./crypto-store";
 import { sealGitHubSecret } from "./github-secret-seal";
 import { requireSecret } from "./secrets";
@@ -50,6 +51,7 @@ export async function handleActionsCompilationInstall(request: Request, env: Env
     const settings = { ...body?.settings, enabled: true } as ActionsCompilationSettings;
     const invalid = validateActionsCompilationSettings(settings);
     if (invalid) throw new InstallError(invalid);
+    settings.workflow = normalizeActionsWorkflowFilename(settings.workflow);
     const suppliedToken = body.token === undefined || body.token === "" ? credentials.token : body.token;
     if (typeof suppliedToken !== "string" || !/^[A-Za-z0-9_]{20,255}$/.test(suppliedToken)) throw new InstallError("请输入有效的安装 Token。 / Enter a valid installation token.");
     token = suppliedToken;

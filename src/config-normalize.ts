@@ -90,8 +90,13 @@ function normalizeActionsCompilationSettings(input: unknown): ActionsCompilation
     enabled: value.enabled === true,
     repository: stringValue(value.repository, "").trim(),
     ref: stringValue(value.ref, "main").trim(),
-    workflow: stringValue(value.workflow, "compile-rule-sets.yml").trim()
+    workflow: normalizeActionsWorkflowFilename(stringValue(value.workflow, "compile-rule-sets.yml").trim())
   };
+}
+
+/** The previous default now names the shared compiler; custom filenames stay intact. */
+export function normalizeActionsWorkflowFilename(workflow: string): string {
+  return workflow === "singbox-srs.yml" ? "compile-rule-sets.yml" : workflow;
 }
 
 function normalizeGroups(input: Record<string, string>): Record<string, string> {
