@@ -273,9 +273,8 @@ Clash and Surge sources require conversion for sing-box even with one URL. `IP-A
 The Worker configures rule-set download routing when generating profiles:
 - **sing-box**: generated remote rule sets use `http_client.detour: "Proxy"`.
 - **Clash / Mihomo**: HTTP rule providers default to `proxy: Proxy`, preserving explicitly configured download proxies. File and inline providers are unchanged.
-- **Surge**: routes to download hosts referenced by remote RULE-SET, DOMAIN-SET and rule-set DNS entries are prepended before ordinary rules, with duplicate hosts removed. Surge has no equivalent per-rule-set download proxy parameter, so these routes also affect other requests to the same hosts; redirect destinations still follow normal routing.
 
-After upgrading, update client subscriptions and select a working node in `Proxy`. Surge cannot rely on the new profile's rules during initial import, before its engine starts, or in forced direct mode; use an existing working proxy profile to complete the initial import when necessary.
+After upgrading, update client subscriptions and select a working node in `Proxy`.
 
 
 In automatic mode, each sing-box `.srs` URL becomes an independent `remote` / `binary` rule set downloaded and updated by the client. Select SRS explicitly for binary URLs without that extension. When an entry mixes SRS and text sources, each SRS remains independent and only text is merged and compiled; all use the entry's outbound policy. The Worker does not download, parse or cache user-supplied native SRS sources. With a DNS resolver assigned, SRS is referenced directly by native DNS rules and must be suitable for DNS matching; text sources still contribute only standalone domain rules.

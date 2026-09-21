@@ -5,7 +5,6 @@ import { toSurgeLine } from "./parsers";
 import { buildSurgeGroups, type SurgeGroupOutput } from "./policy-groups";
 import { rewriteUnavailableGroupRuleTargets, SURGE_BUILT_IN_RULE_POLICIES } from "./rule-targets";
 import { parseHostEntries } from "./host-entries";
-import { splitRuleLine } from "./rule-line";
 import type { CompiledRuleSetReferencePlan } from "./rule-set-compiler";
 import type { RenderConfig, HostEntry, ProxyNode } from "./types";
 
@@ -154,49 +153,14 @@ function appendSurgeRuleSection(
   ruleSetPlan?: CompiledRuleSetReferencePlan
 ): void {
   const rules = config.ruleSets.mode === "compiled" && ruleSetPlan ? ruleSetPlan.surgeRules : config.surge.rules;
-  const downloadRules = surgeRuleSetDownloadRules(rules, [
-    ...config.surge.hosts,
-    ...(config.ruleSets.mode === "compiled" ? ruleSetPlan?.surgeDnsHosts ?? [] : [])
-  ]);
-  sections.push(renderSection("Rule", [...downloadRules, ...rewriteUnavailableGroupRuleTargets(
+  sections.push(renderSection("Rule", rewriteUnavailableGroupRuleTargets(
     config,
     rules,
     nodes,
     new Set(groupOutputs.map((group) => group.name)),
     "surge",
     tailscalePolicies
-  )]));
-}
-
-// Surge routes external resource requests through its rule system, rather than
-// exposing a per-rule-set download proxy. These host routes must not depend on
-// the remote rule sets they are needed to download.
-function surgeRuleSetDownloadRules(rules: string[], hostLines: string[]): string[] {
-  const hosts = new Set<string>();
-  const addUrl = (value: string): void => {
-    try {
-      const url = new URL(value.trim().replace(/^(["'])(.*)\1$/, "$2"));
-      if (url.protocol === "https:" || url.protocol === "http:") hosts.add(url.hostname.replace(/^\[|\]$/g, ""));
-    } catch { /* Internal rule sets and local paths do not need download routes. */ }
-  };
-  const collect = (line: string): void => {
-    const parts = splitRuleLine(line);
-    const type = parts[0]?.toUpperCase();
-    if (type === "RULE-SET" || type === "DOMAIN-SET") addUrl(parts[1] ?? "");
-    else if (type === "AND" || type === "OR" || type === "NOT") {
-      for (const child of splitRuleLine(parts[1] ?? "")) {
-        if (child.startsWith("(") && child.endsWith(")")) collect(child.slice(1, -1));
-      }
-    }
-  };
-  rules.forEach(collect);
-  for (const line of hostLines) {
-    const match = /^(?:RULE-SET|DOMAIN-SET):(.+?)\s*=\s*server:/i.exec(line.trim());
-    if (match) addUrl(match[1]!);
-  }
-  return [...hosts].map((host) => isIPv4(host) ? `IP-CIDR,${host}/32,Proxy,no-resolve`
-    : isIPv6(host) ? `IP-CIDR6,${host}/128,Proxy,no-resolve`
-    : `DOMAIN,${host},Proxy`);
+  )));
 }
 
 function resolveRuntimeTailscalePolicies(
