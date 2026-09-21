@@ -1037,3 +1037,98 @@ async function cleanupRetiredSnapshots(env: Env): Promise<void> {
     } catch { /* A damaged revision is handled by regular snapshot maintenance. */ }
   }
 }
+
+/** Scheduled housekeeping for redundant completion/pending markers only. */
+export async function maintainCompletedCleanupMarkers(env: Env, deadline = Date.now() + 25_000): Promise<void> {
+  const cutoff = Math.min(deadline, Date.now() + 25_000);
+  let remaining = 200;
+  let listCalls = 0;
+  const families = [
+    { complete: CONFIG_SNAPSHOT_CLEANUP_COMPLETE_BASE_PREFIX, version: CURRENT_KV_SCHEMA_VERSION,
+      pending: CONFIG_SNAPSHOT_CLEANUP_PENDING_KEY, grace: CONFIG_SNAPSHOT_CLEANUP_GRACE_MS },
+    { complete: "auth:read_token_cleanup_complete:", version: READ_TOKEN_RECORD_VERSION,
+      pending: READ_TOKEN_CLEANUP_PENDING_KEY, grace: READ_TOKEN_CLEANUP_GRACE_MS }
+  ];
+  const checkDeadline = () => {
+    if (Date.now() >= cutoff) throw new Error("Cleanup marker maintenance reached its deadline.");
+  };
+  const listPage = async (prefix: string, limit: number, cursor?: string) => {
+    checkDeadline();
+    listCalls += 1;
+    const page = await env.SUBPILOT_CONFIG.list({ prefix, limit: Math.min(limit, remaining), ...(cursor ? { cursor } : {}) });
+    remaining -= page.keys.length;
+    return page;
+  };
+
+  for (const family of families) {
+    if (remaining < 2 || listCalls >= 32) return;
+    checkDeadline();
+    const currentPrefix = `${family.complete}${family.version}:`;
+    const retainedKey = `${currentPrefix}retained`;
+    let retained = await env.SUBPILOT_CONFIG.get(retainedKey);
+    if (retained === null || retained === "1") {
+      let completed = retained === "1";
+      let cursor: string | undefined;
+      // Inspect the current version directly; many older versions cannot hide it.
+      while (!completed && remaining > 0 && listCalls < 32) {
+        const page = await listPage(currentPrefix, Math.min(100, remaining), cursor);
+        for (const { name } of page.keys) {
+          if (!name.startsWith(currentPrefix)) continue;
+          checkDeadline();
+          if (await env.SUBPILOT_CONFIG.get(name) === "1") { completed = true; break; }
+        }
+        if (completed || page.list_complete) break;
+        if (!page.cursor || page.cursor === cursor) throw new Error("Cleanup marker listing did not advance.");
+        cursor = page.cursor;
+      }
+      if (!completed) continue;
+      checkDeadline();
+      const timestamp = String(Date.now());
+      await env.SUBPILOT_CONFIG.put(retainedKey, timestamp);
+      retained = await env.SUBPILOT_CONFIG.get(retainedKey);
+      if (retained !== timestamp) throw new Error("Retained cleanup marker is not yet verified.");
+      // No deletion in the invocation that establishes the propagation anchor.
+      continue;
+    }
+    const retainedAt = Number(retained);
+    if (!Number.isSafeInteger(retainedAt) || retainedAt < 1_000_000_000_000 || retainedAt > Date.now()) {
+      throw new Error("Retained cleanup marker is invalid; cleanup is deferred.");
+    }
+    if (Date.now() < retainedAt + family.grace) continue;
+    const confirmRetained = async () => {
+      checkDeadline();
+      return await env.SUBPILOT_CONFIG.get(retainedKey) === retained && Date.now() >= retainedAt + family.grace;
+    };
+    const remove = async (keys: string[]) => {
+      for (let offset = 0; offset < keys.length; offset += 10) {
+        if (!await confirmRetained()) throw new Error("Retained cleanup marker changed; cleanup is deferred.");
+        const batch = keys.slice(offset, offset + Math.min(10, remaining));
+        if (!batch.length) return;
+        remaining -= batch.length;
+        const results = await Promise.allSettled(batch.map((key) => env.SUBPILOT_CONFIG.delete(key)));
+        if (results.some((result) => result.status === "rejected")) throw new Error("Cleanup marker removal is incomplete.");
+      }
+    };
+    // A fixed pending key is outside the colon-suffixed list prefix.
+    checkDeadline();
+    remaining -= 1;
+    if (await env.SUBPILOT_CONFIG.get(family.pending) !== null) await remove([family.pending]);
+    const prefixes = [
+      `${family.pending}:`,
+      // Enumerating exact supported versions never touches future-version markers.
+      ...Array.from({ length: family.version }, (_, index) => `${family.complete}${index + 1}:`)
+    ];
+    for (const prefix of prefixes) {
+      let cursor: string | undefined;
+      while (remaining >= 2 && listCalls < 32) {
+        const page = await listPage(prefix, Math.min(100, Math.floor(remaining / 2)), cursor);
+        const keys = page.keys.map(({ name }) => name).filter((key) => key.startsWith(prefix) && key !== retainedKey);
+        await remove(keys);
+        if (page.list_complete) break;
+        if (!page.cursor || page.cursor === cursor) throw new Error("Cleanup marker listing did not advance.");
+        cursor = page.cursor;
+      }
+      if (remaining < 2 || listCalls >= 32) return;
+    }
+  }
+}

@@ -9,7 +9,7 @@ import { validateManagedBaseUrl, validateConfigEntityLimits, validateProxyPolicy
 import { assertSafeConfigText } from "./config-text-safety";
 import type { AppConfig, RenderConfig } from "./types";
 import { clearSessionCookie, createSession, getOrCreateReadToken, isAdminRequest, rotateReadToken, sessionCookie, validateAdminToken, validateReadToken } from "./auth";
-import { loadConfig, migrateLegacyActionsConfigSettings, normalizeTarget, saveConfig, withInferredManagedBaseUrl } from "./config-store";
+import { loadConfig, maintainCompletedCleanupMarkers, migrateLegacyActionsConfigSettings, normalizeTarget, saveConfig, withInferredManagedBaseUrl } from "./config-store";
 import { readConfigFetchStats, recordConfigFetch } from "./fetch-stats";
 import { generateConfig, generateForRequest, inferTarget } from "./generator";
 import { handleGeoIpMmdbUpload, readGeoIpMmdbStatus } from "./geoip-admin";
@@ -57,11 +57,12 @@ export default {
   async scheduled(controller: ScheduledController, env: Env, _ctx: ExecutionContext): Promise<void> {
     const config = await loadConfig(env);
     if (controller.cron === RULE_SET_REBUILD_CRON) {
-      try {
-        await migrateLegacyActionsConfigSettings(env);
-        await maintainActionsIntegrationMigration(env, Date.now() + 25_000);
-      } catch {
-        console.warn(JSON.stringify({ level: "warn", message: "Actions integration migration remains pending; scheduled maintenance will retry." }));
+      for (const maintain of [migrateLegacyActionsConfigSettings, maintainActionsIntegrationMigration, maintainCompletedCleanupMarkers]) {
+        try {
+          await maintain(env);
+        } catch {
+          console.warn(JSON.stringify({ level: "warn", message: "Configuration maintenance remains pending; scheduled maintenance will retry." }));
+        }
       }
       const deadline = Date.now() + SCHEDULED_REFRESH_DEADLINE_MS;
       await runRuleSetUpdateJobs(env, config, {

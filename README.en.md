@@ -304,11 +304,13 @@ Settings use `settings.actionsCompilation`; status is available at `GET /api/act
 
 The existing five-minute maintenance task persists the renamed settings and migrates encrypted credentials and the callback address. After read-back verification and a propagation grace period of at least five minutes, it removes old SRS credentials, addresses, protocol markers, job caches and publication receipts in bounded batches. Rule contents still used by Worker fallback remain available. Interrupted migration resumes automatically, and completed migration stops scanning legacy keys. Configuration snapshots retain the usual three rollback versions; no manual KV operations are required.
 
+Completed configuration and subscription-token migrations also reclaim leftover pending markers and obsolete or duplicate completion markers, retaining one current completion marker per family to prevent maintenance records from accumulating.
+
 Encrypted rule-plan snapshots remain in KV for 24 hours for authenticated Actions downloads. Normal Actions runs download original source bodies to temporary runner storage, remove them on completion and exclude them from the repository. Worker fallback uses the existing encrypted source and compiled-rule caches. The Worker keeps Actions publication metadata without storing or proxying its artifact bodies. Rule-set names and generated rules are public; source addresses, Worker addresses and credentials are excluded from artifacts and logs. The token and shared secret are encrypted separately and excluded from configuration exports. Replacing the token preserves the shared secret; clearing and reconfiguring requires reinstalling the workflow. `ADMIN_TOKEN_HASH` and `CONFIG_ENCRYPTION_KEY` remain Worker Secrets.
 
 Deployment builds run `npm run build:actions` to bundle the shared compiler for installation by the wizard. Generated files live in ignored `dist/` and are not committed; dependency installation also builds the bundle.
 
-The workflow template ships as `scripts/compile-rule-sets.yml` for compatibility with older archive updaters. The setup wizard installs it into the target repository's `.github/workflows/` directory. Updating from v2.2.2 requires neither manual template copying nor a KV schema migration.
+The workflow template ships as `scripts/compile-rule-sets.yml` for compatibility with older archive updaters. The setup wizard installs it into the target repository's `.github/workflows/` directory. Updating from v2.2.2 requires neither manual template copying nor manual KV migration commands.
 
 ### Subscription checks
 
