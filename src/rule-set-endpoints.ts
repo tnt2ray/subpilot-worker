@@ -98,7 +98,7 @@ export async function handleRuleSetDownload(
   }
   if (!manifest) return notFound();
   if (manifest.publication && manifestSupportsDownload(manifest, bucket, target)) {
-    return Response.redirect(githubActionsArtifactUrl(config, output.name, bucket, manifest.publication.commit), 302);
+    return Response.redirect(githubActionsArtifactUrl(config, output.name, bucket), 302);
   }
   if (manifest.publication) {
     // Existing subscriptions may still reference a bucket absent from the new

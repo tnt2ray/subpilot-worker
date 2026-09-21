@@ -9,7 +9,7 @@ import { effectiveRuleSetOutputs, planRuleSetOutputs, ruleSetOutputNeedsCompilat
 import type { RuleSetOutput } from "./rule-set-types";
 import { requireSecret } from "./secrets";
 import { readActionsCredentials } from "./actions-compiler-credentials";
-import { githubActionsArtifactUrl, ACTIONS_COMPILER_PROTOCOL, ACTIONS_WORKFLOW_FILENAME, actionsCompilerProtocolKey, actionsArtifactDirectory, actionsArtifactPath, actionsOutputKey, type ActionsBucket } from "./actions-compiler-artifacts";
+import { githubActionsManifestUrl, ACTIONS_COMPILER_PROTOCOL, ACTIONS_WORKFLOW_FILENAME, actionsCompilerProtocolKey, actionsArtifactDirectory, actionsArtifactPath, actionsOutputKey, type ActionsBucket } from "./actions-compiler-artifacts";
 import type { RenderConfig, Target } from "./types";
 import { jsonResponse, notFound, readRequestJsonWithLimit, readResponseTextWithLimit, sha256Hex, timingSafeEqualString, unauthorized } from "./util";
 
@@ -156,7 +156,7 @@ export async function handleActionsCompilationStatus(env: Env): Promise<Response
         hasPublishedVersion: Boolean(manifest), ...(manifest ? { publishedAt: manifest.updatedAt } : {}),
         ...(lastAttemptAt ? { lastAttemptAt } : {}), ...(current?.httpStatus ? { httpStatus: current.httpStatus } : {}) };
     }));
-    return jsonResponse({ enabled, total: outputs.length, completed: outputs.filter((output) => output.state === "complete").length, outputs }, { headers: NO_STORE });
+    return jsonResponse({ enabled, workflowReady, total: outputs.length, completed: outputs.filter((output) => output.state === "complete").length, outputs }, { headers: NO_STORE });
   } catch { return jsonResponse({ error: "暂时无法读取 Actions 编译状态，请稍后重试。 / Actions compilation status is unavailable; retry shortly." }, { status: 503, headers: NO_STORE }); }
 }
 export async function handleActionsCompilationRetry(request: Request, env: Env): Promise<Response> {
@@ -220,7 +220,7 @@ export async function handleActionsCompilationJobApi(request: Request, env: Env)
   let receiptText: string | undefined;
   const repository = config.settings.actionsCompilation!.repository.split("/").map(encodeURIComponent).join("/");
   const path = actionsArtifactPath(job.target, job.output.name, "manifest").split("/").map(encodeURIComponent).join("/");
-  for (const address of [githubActionsArtifactUrl(config, job.output.name, "manifest", body.commit), `https://api.github.com/repos/${repository}/contents/${path}?ref=${body.commit}`]) {
+  for (const address of [githubActionsManifestUrl(config, job.output.name, body.commit), `https://api.github.com/repos/${repository}/contents/${path}?ref=${body.commit}`]) {
     try {
       const response = await fetch(address, { redirect: "manual", signal: AbortSignal.timeout(8_000), headers: { accept: "application/vnd.github.raw+json", "user-agent": "SubPilot-Actions" } });
       if (!response.ok) { await response.body?.cancel().catch(() => undefined); continue; }

@@ -514,7 +514,7 @@ function appendCompiledOutputReferences(
   const artifacts = planRuleSetArtifacts(manifest.buckets, target, manifest.provider?.behavior, manifest.surgeType);
   if (target === "surge") {
     for (const artifact of artifacts) {
-      const url = manifest.publication ? githubActionsArtifactUrl(config, output.name, artifact.bucket, manifest.publication.commit) : managedRuleSetUrlForRequest(config, requestUrl, output.name, artifact.bucket, target);
+      const url = manifest.publication ? githubActionsArtifactUrl(config, output.name, artifact.bucket) : managedRuleSetUrlForRequest(config, requestUrl, output.name, artifact.bucket, target);
       const options = surgeRuleSetOptions(output);
       const type = artifact.bucket === "domain" ? "DOMAIN-SET" : "RULE-SET";
       if (output.dnsServer && artifact.behavior !== "ipcidr") plan.surgeDnsHosts!.push(`${type}:${url} = server:${output.dnsServer}`);
@@ -523,7 +523,7 @@ function appendCompiledOutputReferences(
     return;
   }
   for (const artifact of artifacts) {
-    const url = manifest.publication ? githubActionsArtifactUrl(config, output.name, artifact.bucket, manifest.publication.commit) : managedRuleSetUrlForRequest(config, requestUrl, output.name, artifact.bucket, target);
+    const url = manifest.publication ? githubActionsArtifactUrl(config, output.name, artifact.bucket) : managedRuleSetUrlForRequest(config, requestUrl, output.name, artifact.bucket, target);
     const providerName = compiledRuleProviderName(output.name, artifact.bucket);
     plan.clashRuleProviders[providerName] = {
       type: "http",

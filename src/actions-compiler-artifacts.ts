@@ -33,10 +33,20 @@ export function actionsArtifactPath(target: Target, outputName: string, bucket: 
   return `${actionsArtifactDirectory(target, outputName)}/${bucket === "manifest" ? "manifest.json" : `${names[bucket]}.${extension}`}`;
 }
 
-export function githubActionsArtifactUrl(config: RenderConfig, outputName: string, bucket: ActionsBucket | "manifest", commit: string): string {
+/** Client rule URLs follow the output branch across recompilations. */
+export function githubActionsArtifactUrl(config: RenderConfig, outputName: string, bucket: ActionsBucket): string {
+  return githubActionsUrl(config, outputName, bucket, ACTIONS_OUTPUT_BRANCH);
+}
+
+/** Publication verification still reads the exact commit reported by Actions. */
+export function githubActionsManifestUrl(config: RenderConfig, outputName: string, commit: string): string {
+  return githubActionsUrl(config, outputName, "manifest", commit);
+}
+
+function githubActionsUrl(config: RenderConfig, outputName: string, bucket: ActionsBucket | "manifest", ref: string): string {
   const repository = config.settings.actionsCompilation!.repository.split("/").map(encodeURIComponent).join("/");
   const path = actionsArtifactPath(config.renderTarget ?? "surge", outputName, bucket).split("/").map(encodeURIComponent).join("/");
-  return `https://raw.githubusercontent.com/${repository}/${encodeURIComponent(commit)}/${path}`;
+  return `https://raw.githubusercontent.com/${repository}/${encodeURIComponent(ref)}/${path}`;
 }
 
 export function actionsCompilerProtocolKey(settings: ActionsCompilationSettings): string {

@@ -124,13 +124,13 @@ export function buildSingbox(config: RenderConfig, nodes: ProxyNode[], hosts: Ho
             if (!manifest.dnsRuleCount) diagnostics.push(issue("clients.singbox.ruleSets", "rule-dns-empty", "warning", `${item.output.name} 没有可用于 DNS 匹配的独立域名规则，未生成 DNS 绑定。`));
             else {
               const tag = `${item.output.name}-dns`;
-              ruleSets.push({ type: "remote", tag, format: binaryRuleSets ? "binary" : "source", url: binaryRuleSets ? githubActionsArtifactUrl(config, item.output.name, "dns", manifest.publication!.commit) : managedRuleSetUrlForRequest(config, requestUrl, item.output.name, "dns", "sing-box"), http_client: { engine: "go" }, update_interval: "1d" });
+              ruleSets.push({ type: "remote", tag, format: binaryRuleSets ? "binary" : "source", url: binaryRuleSets ? githubActionsArtifactUrl(config, item.output.name, "dns") : managedRuleSetUrlForRequest(config, requestUrl, item.output.name, "dns", "sing-box"), http_client: { engine: "go" }, update_interval: "1d" });
               dnsRules.push({ rule_set: [tag], action: "route", server: item.output.dnsServer });
             }
           }
           for (const artifact of planRuleSetArtifacts(manifest.buckets, "sing-box")) {
             const tag = `${item.output.name}-${artifact.bucket}`;
-            ruleSets.push({ type: "remote", tag, format: binaryRuleSets ? "binary" : "source", url: binaryRuleSets ? githubActionsArtifactUrl(config, item.output.name, artifact.bucket, manifest.publication!.commit) : managedRuleSetUrlForRequest(config, requestUrl, item.output.name, artifact.bucket, "sing-box"), http_client: { engine: "go" }, update_interval: "1d" });
+            ruleSets.push({ type: "remote", tag, format: binaryRuleSets ? "binary" : "source", url: binaryRuleSets ? githubActionsArtifactUrl(config, item.output.name, artifact.bucket) : managedRuleSetUrlForRequest(config, requestUrl, item.output.name, artifact.bucket, "sing-box"), http_client: { engine: "go" }, update_interval: "1d" });
             rules.push({ rule_set: [tag], ...policyAction(item.output.policy) });
           }
         }

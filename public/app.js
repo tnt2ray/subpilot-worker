@@ -660,11 +660,11 @@ function renderActionsCompilationSettings() {
   return section(t("Actions 规则编译（选配）", "Actions rule compilation (optional)"),
     `<p class="help">${t("默认由 Worker 合并规则、去重并分桶。启用后优先使用 GitHub Actions 产物：Surge 文本规则、Clash YAML 和 sing-box SRS。Actions 产物未就绪时，由 Worker 处理并提供规则。产物保存在公开仓库，规则内容会公开。", "By default, the Worker merges, deduplicates and buckets rules. When enabled, confirmed GitHub Actions artifacts are preferred: Surge text rules, Clash YAML and sing-box SRS. The Worker processes and serves rules while Actions artifacts are pending. Artifacts are published in a public repository, making rule contents public.")}</p>`
     + field(`${path}.enabled`, options.enabled, { label: t("启用 Actions 规则编译", "Enable Actions rule compilation") })
-    + `<div id="actions-compiler-settings">`
+    + `<div id="actions-compiler-settings" ${options.enabled ? "" : "hidden"}>`
     + field(`${path}.repository`, options.repository, { label: t("公开 GitHub 仓库（owner/repo）", "Public GitHub repository (owner/repo)") })
     + field(`${path}.ref`, options.ref, { label: t("工作流分支（仓库默认分支）", "Workflow branch (repository default)") })
     + `<div class="toolbar">${btn(t("配置向导", "Setup wizard"), "actions-setup", "", "primary")}${btn(t("查看编译进度", "View compilation progress"), "actions-progress")}</div>`
-    + `<p class="help">${t("先创建公开仓库并添加 README，再通过配置向导安装并启用。GitHub Token 需要目标仓库 Actions、Contents、Workflows、Secrets 读写权限；凭据独立加密保存，不包含在配置导出中。首次处理或规则配置变更后，Actions 产物未就绪时由 Worker 接管；产物确认后，下次更新订阅会优先使用 Actions 版本。关闭并保存后恢复 Worker 处理。", "Create a public repository with a README, then use the setup wizard to install and enable compilation. The GitHub token needs Actions, Contents, Workflows and Secrets read/write access. Credentials are encrypted separately and excluded from configuration exports. During initial setup or rule-plan changes, the Worker handles rules while Actions artifacts are pending. Once confirmed, Actions artifacts are preferred on the next subscription update. Disable and save to resume Worker processing.")}</p></div>`);
+    + `</div>`);
 }
 function actionsDispatchFailure(code) {
   const hints = {
@@ -723,12 +723,57 @@ async function showActionsProgress() {
     </div>`, showActionsProgress, t("刷新状态", "Refresh status"));
   $('#modal-actions [data-action="close-modal"]').textContent = t("关闭", "Close");
 }
-async function showActionsSetup() {
+function applyActionsSettings(settings) {
+  state.config.settings.actionsCompilation = settings;
+  if (state.saved) {
+    const baseline = JSON.parse(state.saved);
+    baseline.settings.actionsCompilation = settings;
+    state.saved = JSON.stringify(baseline);
+  }
+  const section = $("#actions-compiler-settings")?.closest("section");
+  if (section) section.outerHTML = renderActionsCompilationSettings();
+  updateStatus();
+}
+async function skipActionsUpgrade() {
+  if (modal.installingActions || modal.skippingActionsUpgrade) return;
+  modal.skippingActionsUpgrade = true;
+  const controls = [...$("#modal").querySelectorAll("input, button")];
+  controls.forEach((control) => { control.disabled = true; });
+  try {
+    const current = await api("/api/config");
+    const settings = { ...current.settings.actionsCompilation, enabled: false };
+    const updated = await api("/api/config", { method: "PATCH", body: JSON.stringify({ version: 3, settings: { actionsCompilation: settings } }) });
+    applyActionsSettings(updated.settings.actionsCompilation);
+    modal.actionsUpgradeRequired = false;
+    modal.skippingActionsUpgrade = false;
+    closeModal();
+    toast(t("已关闭 Actions 规则编译，继续由 Worker 提供规则。", "Actions rule compilation is disabled. The Worker continues serving rules."));
+  } catch (error) {
+    toast(t("关闭未保存，请重试：", "Disabling was not saved. Please retry: ") + error.message);
+  } finally {
+    modal.skippingActionsUpgrade = false;
+    controls.forEach((control) => { control.disabled = false; });
+  }
+}
+async function checkActionsUpgrade() {
+  if (state.migration || !state.config.settings.actionsCompilation?.enabled) return;
+  try {
+    const status = await api("/api/actions-compilation/status");
+    if (!status.enabled || status.workflowReady !== false) return;
+    modal.actionsUpgradeRequired = true;
+    await showActionsSetup({ automatic: true });
+  } catch (error) {
+    modal(t("暂时无法检查 Actions 工作流", "Unable to check the Actions workflow"),
+      `<p>${esc(error.message)}</p>`, checkActionsUpgrade, t("重新检查", "Retry check"));
+    if (modal.actionsUpgradeRequired) $('#modal-actions [data-action="close-modal"]').textContent = t("跳过并关闭 Actions 编译", "Skip and disable Actions compilation");
+  }
+}
+async function showActionsSetup({ automatic = false } = {}) {
   const status = await api("/api/actions-compilation/install/status");
   const settings = state.config.settings.actionsCompilation || {};
   const callbackOrigin = status.callbackOrigin || (/^[a-z0-9-]+\.[a-z0-9-]+\.workers\.dev$/.test(location.hostname) ? location.origin : "");
   modal(t("Actions 规则编译配置向导", "Actions rule compilation setup wizard"),
-    `<p>${t("按顺序完成检查、安装和启用。仓库文件公开；凭据仅保存为加密数据或 GitHub Secrets。不会保存其他页面的草稿。", "Check, install and enable in order. Repository files are public; credentials remain encrypted or in GitHub Secrets. Other page drafts are not saved.")}</p>
+    `${automatic ? `<p role="status">${t("检测到 Actions 工作流需要更新，正在使用已保存的配置自动安装。安装失败时可修正后重试；选择跳过将关闭 Actions 规则编译，继续由 Worker 提供规则。", "The Actions workflow needs updating. Installing automatically with your saved settings. If installation fails, correct the settings and retry, or skip to disable Actions compilation and keep the Worker serving rules.")}</p>` : ""}<p>${t("按顺序完成检查、安装和启用。仓库文件公开；凭据仅保存为加密数据或 GitHub Secrets。不会保存其他页面的草稿。", "Check, install and enable in order. Repository files are public; credentials remain encrypted or in GitHub Secrets. Other page drafts are not saved.")}</p>
     <label>${t("1. 公开仓库（owner/repo）", "1. Public repository (owner/repo)")}<input id="actions-setup-repo" value="${esc(settings.repository || "")}"></label>
     <p class="help"><a href="https://github.com/new" target="_blank" rel="noopener noreferrer">${t("创建仓库（勾选添加 README）", "Create repository (include a README)")}</a></p>
     <label>${t("2. 工作流访问地址", "2. Workflow callback address")}<input id="actions-setup-origin" type="url" value="${esc(callbackOrigin)}" required></label>
@@ -768,11 +813,8 @@ async function showActionsSetup() {
           report(t(zh, en === "configured" ? `${zh.split(" ")[0]} configured` : en || zh));
         }
         const updated = await api("/api/config", { method: "PATCH", body: JSON.stringify({ version: 3, settings: { actionsCompilation: next } }) });
-        state.config.settings.actionsCompilation = updated.settings.actionsCompilation;
-        if (state.saved) { const baseline = JSON.parse(state.saved); baseline.settings.actionsCompilation = updated.settings.actionsCompilation; state.saved = JSON.stringify(baseline); }
-        const actionsSection = $("#actions-compiler-settings")?.closest("section");
-        if (actionsSection) actionsSection.outerHTML = renderActionsCompilationSettings();
-        updateStatus();
+        applyActionsSettings(updated.settings.actionsCompilation);
+        modal.actionsUpgradeRequired = false;
         status.dispatchTokenConfigured = true;
         report(t("已启用并保存。后台将向 Actions 提交规则处理任务；关闭窗口后可查看各客户端进度。", "Enabled and saved. Rule processing will be submitted to Actions; close this dialog to view progress for each client."));
         const countdown = document.createElement("p");
@@ -791,12 +833,29 @@ async function showActionsSetup() {
       } catch (error) { report(error.message); }
       finally { token = ""; modal.installingActions = false; controls.forEach((control) => { control.disabled = false; }); }
     }, t("检查、安装并启用", "Check, install and enable"));
+  if (modal.actionsUpgradeRequired) {
+    $('#modal-actions [data-action="close-modal"]').textContent = t("跳过并关闭 Actions 编译", "Skip and disable Actions compilation");
+  }
+  if (automatic) {
+    try { await modal.save?.(); }
+    catch (error) {
+      const item = document.createElement("li");
+      item.textContent = error.message;
+      $("#actions-setup-results").append(item);
+    }
+  }
 }
 function renderSystem() {
   const mmdbPaths = [["Surge macOS", "~/Library/Application Support/com.nssurge.surge-mac/GeoLite2-Country.mmdb"], ["Clash Verge Windows", "%APPDATA%\\io.github.clash-verge-rev.clash-verge-rev\\Country.mmdb"], ["Clash Verge macOS", "~/Library/Application Support/io.github.clash-verge-rev.clash-verge-rev/Country.mmdb"]];
   const telegramFields = ["notificationTelegramBotToken", "notificationTelegramChatId"];
   const hidden = ["userAgentStash", "userAgentShadowrocket", "notificationChannel", "notificationTelegramWebhookSecret", "actionsCompilation", ...telegramFields];
-  return section(t("系统设置", "System settings"), Object.entries(state.config.settings).filter(([key]) => !hidden.includes(key)).map(([key, value]) => field(`settings.${key}`, value)).join("")) + renderActionsCompilationSettings() + section("GeoIP MMDB", `<p class="help">${t("上传 MMDB 数据库用于节点地理位置识别。", "Upload an MMDB database for node geolocation.")}</p><div id="mmdb-status"></div><div class="mmdb-upload-controls"><label for="mmdb-upload">${t("选择数据库文件", "Choose database file")}</label><input type="file" id="mmdb-upload" accept=".mmdb" ${mmdb.uploading ? "disabled" : ""}>${btn(t("上传", "Upload"), "upload-mmdb", 'id="mmdb-submit" disabled', "primary")}</div><div id="mmdb-transfer" role="status" aria-live="polite"></div><p class="help">${t("最大 25 MiB。选择文件后点击上传，成功后立即生效。", "Up to 25 MiB. Select a file, then click Upload. Changes take effect on success.")}</p><div class="mmdb-path-help help" aria-label="${t("MMDB 文件路径参考", "MMDB file path reference")}"><p>${t("可从本机客户端选择现有文件：", "Select an existing file from a local client:")}</p><ul>${mmdbPaths.map(([client, path]) => `<li><span>${esc(client)}</span><code>${esc(path)}</code></li>`).join("")}</ul></div>`) + section("Telegram", telegramFields.map((key) => field(`settings.${key}`, state.config.settings[key])).join("") + `<div class="toolbar">${btn(t("生成绑定码", "Generate binding code"), "telegram-bind")}${btn(t("解除绑定", "Unbind"), "telegram-unbind", "", "danger")}</div><p class="help">${t("通知凭据保存后生效。", "Save notification credentials before binding.")}</p>`);
+  return section(t("系统设置", "System settings"), Object.entries(state.config.settings).filter(([key]) => !hidden.includes(key)).map(([key, value]) => field(`settings.${key}`, value)).join("")) + renderActionsCompilationSettings() + section("GeoIP MMDB", `<p class="help">${t("上传 MMDB 数据库用于节点地理位置识别。", "Upload an MMDB database for node geolocation.")}</p><div id="mmdb-status"></div><div class="mmdb-upload-controls"><label for="mmdb-upload">${t("选择数据库文件", "Choose database file")}</label><input type="file" id="mmdb-upload" accept=".mmdb" ${mmdb.uploading ? "disabled" : ""}>${btn(t("上传", "Upload"), "upload-mmdb", 'id="mmdb-submit" disabled', "primary")}</div><div id="mmdb-transfer" role="status" aria-live="polite"></div><p class="help">${t("最大 25 MiB。选择文件后点击上传，成功后立即生效。", "Up to 25 MiB. Select a file, then click Upload. Changes take effect on success.")}</p><div class="mmdb-path-help help" aria-label="${t("MMDB 文件路径参考", "MMDB file path reference")}"><p>${t("可从本机客户端选择现有文件：", "Select an existing file from a local client:")}</p><ul>${mmdbPaths.map(([client, path]) => `<li><span>${esc(client)}</span><code>${esc(path)}</code></li>`).join("")}</ul></div>`) + section("Telegram", field("settings.notificationTelegramBotToken", state.config.settings.notificationTelegramBotToken) + `<div id="telegram-settings" ${state.config.settings.notificationTelegramBotToken?.trim() ? "" : "hidden"}>` + field("settings.notificationTelegramChatId", state.config.settings.notificationTelegramChatId) + `<div class="toolbar">${btn(t("生成绑定码", "Generate binding code"), "telegram-bind")}${btn(t("解除绑定", "Unbind"), "telegram-unbind", "", "danger")}</div><p class="help">${t("通知凭据保存后生效。", "Save notification credentials before binding.")}</p></div>`);
+}
+function updateSystemSettingsVisibility() {
+  const actions = $("#actions-compiler-settings");
+  if (actions) actions.hidden = !state.config.settings.actionsCompilation?.enabled;
+  const telegram = $("#telegram-settings");
+  if (telegram) telegram.hidden = !state.config.settings.notificationTelegramBotToken?.trim();
 }
 function mmdbSize(size) {
   return `${(size / 1024 / 1024).toFixed(2)} MiB`;
@@ -907,7 +966,8 @@ function modal(title, body, onSave, saveLabel = t("应用更改", "Apply changes
   });
 }
 function closeModal() {
-  if (modal.generatingCa || modal.installingActions || modal.retryingActions) return;
+  if (modal.generatingCa || modal.installingActions || modal.retryingActions || modal.skippingActionsUpgrade) return;
+  if (modal.actionsUpgradeRequired) { void skipActionsUpgrade(); return; }
   for (const input of document.querySelectorAll("#actions-setup-token")) input.value = "";
   destroyModalEditors();
   clearInterval(modal.autoCloseTimer);
@@ -1336,6 +1396,7 @@ async function reviewMigration() {
     closeModal();
     render();
     toast(t("配置升级已完成", "Configuration upgrade completed"));
+    await checkActionsUpgrade();
   }, t("确认升级", "Confirm upgrade"));
 }
 async function loadLinks() {
@@ -1710,6 +1771,7 @@ document.addEventListener("input", (event) => {
     state.invalid.delete(path);
     input.removeAttribute("aria-invalid");
     changed();
+    if (["settings.actionsCompilation.enabled", "settings.notificationTelegramBotToken"].includes(path)) updateSystemSettingsVisibility();
   } catch {
     state.invalid.set(path, input.value);
     input.setAttribute("aria-invalid", "true");
@@ -1791,7 +1853,7 @@ $("#modal").addEventListener("close", () => {
 });
 $("#modal").addEventListener("cancel", destroyModalEditors);
 $("#close-modal").addEventListener("click", closeModal);
-$("#modal").addEventListener("cancel", (event) => { if (modal.generatingCa || modal.installingActions || modal.retryingActions) event.preventDefault(); });
+$("#modal").addEventListener("cancel", (event) => { if (modal.generatingCa || modal.installingActions || modal.retryingActions || modal.skippingActionsUpgrade || modal.actionsUpgradeRequired) event.preventDefault(); });
 $("#menu").addEventListener("click", () => document.body.classList.toggle("menu-open"));
 $("#language").addEventListener("click", () => {
   state.lang = state.lang === "zh" ? "en" : "zh";
@@ -1824,7 +1886,7 @@ window.addEventListener("hashchange", async () => {
   if (state.page === "system") loadMmdbStatus();
 });
 window.addEventListener("beforeunload", (event) => {
-  if (dirty() || state.invalid.size || mmdb.uploading || modal.generatingCa || modal.installingActions) {
+  if (dirty() || state.invalid.size || mmdb.uploading || modal.generatingCa || modal.installingActions || modal.skippingActionsUpgrade) {
     event.preventDefault();
     event.returnValue = "";
   }
@@ -1846,6 +1908,7 @@ async function load() {
   await loadSharedProxyNames().catch((error) => toast(error.message));
   state.page = navigationPage();
   render();
+  await checkActionsUpgrade();
   await Promise.all([refreshStatus(), state.page === "system" ? loadMmdbStatus() : Promise.resolve()]);
 }
 load().catch((error) => {
