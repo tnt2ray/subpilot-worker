@@ -655,7 +655,7 @@ function renderLinks() {
   return `<p class="muted">${t("三个客户端使用同一条订阅地址，按 User-Agent 自动识别 Surge、clash或 sing-box。请在客户端中导入；链接中的 token 授予订阅读取权限。", "All three clients use this subscription URL. User-Agent identifies Surge, clash, or sing-box. Import it in your client; the token grants subscription read access.")}</p><div id="subscription-links"><p class="muted">${t("正在读取…", "Loading…")}</p></div><div class="toolbar">${btn(t("轮换读取 token", "Rotate read token"), "rotate-token", "", "danger")}</div>` + section(t("订阅检查", "Subscription check"), `<p class="help">${t("检查服务器已保存的配置。订阅更新失败时，可在这里查看具体原因；规则未就绪时，检查会启动后台准备；启用 Actions 后可在编译进度中查看三个客户端的状态。", "Check the configuration saved on the server to find out why a subscription update failed. If rules are not ready, the check starts background preparation. With Actions enabled, view all three clients in compilation progress.")}</p><div class="toolbar">${Object.entries(CLIENTS).map(([id, client]) => btn(`${t("检查", "Check")} ${esc(client.label)}`, "check-subscription", `data-client="${id}"`)).join("")}</div><div id="subscription-check-result">${renderSubscriptionCheck()}</div>`);
 }
 function renderActionsCompilationSettings() {
-  const options = state.config.settings.actionsCompilation || { enabled: false, repository: "", ref: "main", workflow: "compile-rule-sets.yml" };
+  const options = state.config.settings.actionsCompilation || { enabled: false, repository: "", ref: "main" };
   const path = "settings.actionsCompilation";
   return section(t("Actions 规则编译（选配）", "Actions rule compilation (optional)"),
     `<p class="help">${t("默认由 Worker 合并规则、去重并分桶。启用后优先使用 GitHub Actions 产物：Surge 文本规则、Clash YAML 和 sing-box SRS。Actions 产物未就绪时，由 Worker 处理并提供规则。产物保存在公开仓库，规则内容会公开。", "By default, the Worker merges, deduplicates and buckets rules. When enabled, confirmed GitHub Actions artifacts are preferred: Surge text rules, Clash YAML and sing-box SRS. The Worker processes and serves rules while Actions artifacts are pending. Artifacts are published in a public repository, making rule contents public.")}</p>`
@@ -663,16 +663,14 @@ function renderActionsCompilationSettings() {
     + `<div id="actions-compiler-settings">`
     + field(`${path}.repository`, options.repository, { label: t("公开 GitHub 仓库（owner/repo）", "Public GitHub repository (owner/repo)") })
     + field(`${path}.ref`, options.ref, { label: t("工作流分支（仓库默认分支）", "Workflow branch (repository default)") })
-    + field(`${path}.workflow`, options.workflow, { label: t("工作流文件名", "Workflow filename") })
-    + `<p class="help">${t("产物固定保存到 rules 分支，按 Surge/、Clash/、Sing-Box/ 分目录存放。工作流使用仓库默认分支，不能使用 rules。", "Artifacts use the fixed rules branch, organized under Surge/, Clash/ and Sing-Box/. The workflow uses the repository default branch, which must differ from rules.")}</p>`
-    + `<div class="toolbar">${btn(t("配置向导", "Setup wizard"), "actions-setup", "", "primary")}${btn(t("查看编译进度", "View compilation progress"), "actions-progress")}${btn(t("管理凭据", "Manage credentials"), "actions-credentials")}</div>`
+    + `<div class="toolbar">${btn(t("配置向导", "Setup wizard"), "actions-setup", "", "primary")}${btn(t("查看编译进度", "View compilation progress"), "actions-progress")}</div>`
     + `<p class="help">${t("先创建公开仓库并添加 README，再通过配置向导安装并启用。GitHub Token 需要目标仓库 Actions、Contents、Workflows、Secrets 读写权限；凭据独立加密保存，不包含在配置导出中。首次处理或规则配置变更后，Actions 产物未就绪时由 Worker 接管；产物确认后，下次更新订阅会优先使用 Actions 版本。关闭并保存后恢复 Worker 处理。", "Create a public repository with a README, then use the setup wizard to install and enable compilation. The GitHub token needs Actions, Contents, Workflows and Secrets read/write access. Credentials are encrypted separately and excluded from configuration exports. During initial setup or rule-plan changes, the Worker handles rules while Actions artifacts are pending. Once confirmed, Actions artifacts are preferred on the next subscription update. Disable and save to resume Worker processing.")}</p></div>`);
 }
 function actionsDispatchFailure(code) {
   const hints = {
     401: t("GitHub Token 无效或已过期，请通过配置向导更新。", "The GitHub token is invalid or expired. Update it through the setup wizard."),
     403: t("请检查 GitHub Token 的 Actions 读写权限、组织审批状态及 API 调用限制。", "Check the GitHub token's Actions read/write permission, organization approval and API rate limits."),
-    404: t("请检查仓库、工作流文件名，以及 GitHub Token 是否有权访问该仓库。", "Check the repository, workflow filename and the GitHub token's access to the repository."),
+    404: t("请检查仓库及 GitHub Token 的访问权限，并通过配置向导重新安装工作流。", "Check the repository and the GitHub token's access, then reinstall the workflow through the setup wizard."),
     422: t("请检查工作流分支是否存在、工作流是否支持手动触发（workflow_dispatch），以及输入参数是否正确。", "Check that the workflow branch exists, the workflow supports manual dispatch (workflow_dispatch), and its inputs are valid.")
   };
   return code ? `${hints[code] || t("请检查 GitHub 仓库和 Actions 设置后重试。", "Check the GitHub repository and Actions settings, then retry.")} (HTTP ${code})`
@@ -725,52 +723,6 @@ async function showActionsProgress() {
     </div>`, showActionsProgress, t("刷新状态", "Refresh status"));
   $('#modal-actions [data-action="close-modal"]').textContent = t("关闭", "Close");
 }
-function actionsCredentialSummary(status) {
-  return `<p>${t("GitHub Token", "GitHub token")}: <strong>${status.dispatchTokenConfigured ? t("已配置", "Configured") : t("未配置", "Not configured")}</strong></p>
-    <p>${t("共享密钥", "Shared secret")}: <strong>${status.sharedSecretConfigured ? t("已配置", "Configured") : t("保存 Token 时自动生成", "Generated when saving the token")}</strong></p>`;
-}
-function setActionsCredentialsBusy(busy) {
-  modal.savingActionsCredentials = busy;
-  for (const control of $("#modal").querySelectorAll("button, input")) control.disabled = busy;
-}
-async function showActionsCredentials() {
-  const status = await api("/api/actions-compilation/credentials");
-  modal(t("Actions 编译凭据", "Actions compilation credentials"),
-    `<div id="actions-credential-status" role="status" aria-live="polite">${actionsCredentialSummary(status)}</div>
-    <label for="actions-credential-token">${t("新的GitHub Token", "New persistent GitHub token")}</label>
-    <input id="actions-credential-token" type="password" autocomplete="new-password" spellcheck="false" maxlength="255">
-    <p class="help"><a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener noreferrer">${t("前往 GitHub 创建 Token（新窗口）", "Create a token on GitHub (opens in a new window)")}</a></p>
-    <p class="help">${t("仅选择目标仓库，授予 Actions、Contents、Workflows、Secrets 读写权限。凭据独立保存，无需保存整份配置；原值不会回显。替换 Token 不会轮换共享密钥。首次保存后请一键安装工作流。", "Select only the target repository and grant Actions, Contents, Workflows and Secrets read/write access. Credentials are saved independently of configuration saves; stored values are never displayed. Replacing the token preserves the shared secret. Install the workflow after the first save.")}</p>
-    ${btn(t("清除编译凭据", "Clear compilation credentials"), "clear-actions-credentials", "", "danger")}
-    <p id="actions-credential-result" role="status" aria-live="polite"></p>`, async () => {
-      if (modal.savingActionsCredentials || modal.retryingActions) return;
-      const input = $("#actions-credential-token");
-      let token = input.value.trim();
-      input.value = "";
-      if (!/^[A-Za-z0-9_]{20,255}$/.test(token)) throw Error(t("请输入有效的 GitHub Token", "Enter a valid GitHub token"));
-      setActionsCredentialsBusy(true);
-      const result = $("#actions-credential-result");
-      result.textContent = t("正在保存凭据…", "Saving credentials…");
-      try {
-        const saved = await api("/api/actions-compilation/credentials", { method: "PUT", body: JSON.stringify({ token }) });
-        $("#actions-credential-status").innerHTML = actionsCredentialSummary(saved);
-        result.textContent = t("凭据已保存。首次配置或清除后重新配置，请关闭此窗口并一键安装工作流。", "Credentials saved. After initial setup or reconfiguration following a clear, close this dialog and install the workflow.");
-      } catch (error) { result.textContent = error.message; }
-      finally { token = ""; setActionsCredentialsBusy(false); }
-    }, t("保存凭据", "Save credentials"));
-}
-function showClearActionsCredentials() {
-  modal(t("清除 Actions 编译凭据", "Clear Actions compilation credentials"),
-    `<p>${t("请先关闭 Actions 编译并保存配置。清除后，新的编译任务和工作流回调将无法认证。已有 GitHub 文件不会删除。再次配置后需要重新安装工作流以同步新共享密钥。", "Disable Actions compilation and save settings first. Clearing prevents authentication for new compilation jobs and workflow callbacks. Existing GitHub files remain. Reconfigure and reinstall the workflow to synchronize the new shared secret.")}</p>`, async () => {
-      if (modal.savingActionsCredentials || modal.retryingActions) return;
-      setActionsCredentialsBusy(true);
-      try {
-        await api("/api/actions-compilation/credentials", { method: "DELETE" });
-      } finally { setActionsCredentialsBusy(false); }
-      closeModal();
-      toast(t("编译凭据已清除", "Compilation credentials cleared"));
-    }, t("确认清除", "Confirm clear"));
-}
 async function showActionsSetup() {
   const status = await api("/api/actions-compilation/install/status");
   const settings = state.config.settings.actionsCompilation || {};
@@ -782,14 +734,14 @@ async function showActionsSetup() {
     <label>${t("2. 工作流访问地址", "2. Workflow callback address")}<input id="actions-setup-origin" type="url" value="${esc(callbackOrigin)}" required></label>
     <p class="help">${t("自动填入上次成功安装时使用的地址。建议填写本部署的 workers.dev 地址，避免自定义域名的人机验证；首次升级后如果地址为空，请重新填写一次。仅检查地址格式，不检查连通性；请确认地址属于本部署。实际连接由 GitHub Action 执行。", "Uses the address from the last successful installation. Prefer this deployment's workers.dev address to avoid custom-domain bot challenges. If the field is empty after upgrading, enter it once. Only address format is checked, not connectivity; ensure it belongs to your deployment. GitHub Actions makes the actual connection.")}</p>
     <label>${t("3. GitHub Token", "3. GitHub token")}<input id="actions-setup-token" type="password" autocomplete="new-password"></label>
-    <p class="help">${status.dispatchTokenConfigured ? t("已配置，留空沿用；原 Token 需具备以下全部权限。", "Configured; leave blank to reuse. The stored token must have all permissions below.") : t("必填。", "Required.")} ${t("仅选择目标仓库，授予 Actions、Contents、Workflows、Secrets 读写权限。同一个 Token 用于安装与日常编译，加密保存在 KV；启用期间请勿撤销。", "Select only the target repository and grant Actions, Contents, Workflows and Secrets read/write. This token is used for installation and ongoing compilation and stored encrypted in KV; keep it valid while Actions compilation is enabled.")} <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener noreferrer">${t("申请 Token", "Create token")}</a></p>
+    <p class="help">${status.dispatchTokenConfigured ? t("已配置，留空沿用；填写新 Token 会替换原凭据。", "Configured; leave blank to reuse, or enter a new token to replace the stored credentials.") : t("必填。", "Required.")} ${t("仅选择目标仓库，授予 Actions、Contents、Workflows、Secrets 读写权限。同一个 Token 用于安装与日常编译，加密保存在 KV；启用期间请勿撤销。", "Select only the target repository and grant Actions, Contents, Workflows and Secrets read/write. This token is used for installation and ongoing compilation and stored encrypted in KV; keep it valid while Actions compilation is enabled.")} <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener noreferrer">${t("申请 Token", "Create token")}</a></p>
     <details><summary>${t("高级设置", "Advanced settings")}</summary>
     <label>${t("工作流分支（仓库默认分支）", "Workflow branch (repository default)")}<input id="actions-setup-ref" value="${esc(settings.ref || "main")}"></label>
     </details>
     <p class="help">${t("向导会安装或更新通用工作流与编译器。产物固定使用 rules 分支，按三个客户端分目录保存。", "The wizard installs or updates the shared workflow and compiler. Artifacts use the fixed rules branch with a directory for each client.")}</p>
     <ol id="actions-setup-results" role="status" aria-live="polite"></ol>`, async () => {
       if (modal.installingActions) return;
-      const next = { enabled: true, repository: $("#actions-setup-repo").value.trim(), ref: $("#actions-setup-ref").value.trim(), workflow: settings.workflow || "compile-rule-sets.yml" };
+      const next = { enabled: true, repository: $("#actions-setup-repo").value.trim(), ref: $("#actions-setup-ref").value.trim() };
       const invalid = validateActionsCompilationSettings(next, state.lang);
       if (invalid) throw Error(invalid);
       let token = $("#actions-setup-token").value.trim();
@@ -839,9 +791,6 @@ async function showActionsSetup() {
       } catch (error) { report(error.message); }
       finally { token = ""; modal.installingActions = false; controls.forEach((control) => { control.disabled = false; }); }
     }, t("检查、安装并启用", "Check, install and enable"));
-}
-async function showActionsInstaller() {
-  await showActionsSetup();
 }
 function renderSystem() {
   const mmdbPaths = [["Surge macOS", "~/Library/Application Support/com.nssurge.surge-mac/GeoLite2-Country.mmdb"], ["Clash Verge Windows", "%APPDATA%\\io.github.clash-verge-rev.clash-verge-rev\\Country.mmdb"], ["Clash Verge macOS", "~/Library/Application Support/io.github.clash-verge-rev.clash-verge-rev/Country.mmdb"]];
@@ -958,8 +907,8 @@ function modal(title, body, onSave, saveLabel = t("应用更改", "Apply changes
   });
 }
 function closeModal() {
-  if (modal.generatingCa || modal.installingActions || modal.savingActionsCredentials || modal.retryingActions) return;
-  for (const input of document.querySelectorAll("#actions-install-token, #actions-credential-token, #actions-setup-token")) input.value = "";
+  if (modal.generatingCa || modal.installingActions || modal.retryingActions) return;
+  for (const input of document.querySelectorAll("#actions-setup-token")) input.value = "";
   destroyModalEditors();
   clearInterval(modal.autoCloseTimer);
   $("#modal").close();
@@ -1532,14 +1481,6 @@ async function action(button) {
     closeModal();
     return;
   }
-  if (name === "actions-credentials") {
-    await showActionsCredentials();
-    return;
-  }
-  if (name === "clear-actions-credentials") {
-    showClearActionsCredentials();
-    return;
-  }
   if (name === "actions-force-retry") {
     if (modal.retryingActions) return;
     modal.retryingActions = true;
@@ -1561,10 +1502,6 @@ async function action(button) {
   }
   if (name === "actions-setup") {
     await showActionsSetup();
-    return;
-  }
-  if (name === "install-actions") {
-    await showActionsInstaller();
     return;
   }
   if (name === "modal-save") {
@@ -1767,7 +1704,7 @@ document.addEventListener("input", (event) => {
     else if (input.dataset.kind === "json") value = JSON.parse(value);
     if (path.startsWith("clients.singbox")) validateNativeShape(value, path);
     if (path.startsWith("settings.actionsCompilation.") && !isObject(state.config.settings.actionsCompilation)) {
-      state.config.settings.actionsCompilation = { enabled: false, repository: "", ref: "main", workflow: "compile-rule-sets.yml" };
+      state.config.settings.actionsCompilation = { enabled: false, repository: "", ref: "main" };
     }
     setPath(state.config, path, value);
     state.invalid.delete(path);
@@ -1850,11 +1787,11 @@ $("#save").addEventListener("click", () => save().catch((error) => toast(error.m
 
 $("#modal").addEventListener("close", () => {
   clearInterval(modal.autoCloseTimer);
-  for (const input of document.querySelectorAll("#actions-install-token, #actions-credential-token, #actions-setup-token")) input.value = "";
+  for (const input of document.querySelectorAll("#actions-setup-token")) input.value = "";
 });
 $("#modal").addEventListener("cancel", destroyModalEditors);
 $("#close-modal").addEventListener("click", closeModal);
-$("#modal").addEventListener("cancel", (event) => { if (modal.generatingCa || modal.installingActions || modal.savingActionsCredentials || modal.retryingActions) event.preventDefault(); });
+$("#modal").addEventListener("cancel", (event) => { if (modal.generatingCa || modal.installingActions || modal.retryingActions) event.preventDefault(); });
 $("#menu").addEventListener("click", () => document.body.classList.toggle("menu-open"));
 $("#language").addEventListener("click", () => {
   state.lang = state.lang === "zh" ? "en" : "zh";
@@ -1887,7 +1824,7 @@ window.addEventListener("hashchange", async () => {
   if (state.page === "system") loadMmdbStatus();
 });
 window.addEventListener("beforeunload", (event) => {
-  if (dirty() || state.invalid.size || mmdb.uploading || modal.generatingCa || modal.installingActions || modal.savingActionsCredentials) {
+  if (dirty() || state.invalid.size || mmdb.uploading || modal.generatingCa || modal.installingActions) {
     event.preventDefault();
     event.returnValue = "";
   }

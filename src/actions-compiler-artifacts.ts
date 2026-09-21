@@ -4,6 +4,7 @@ import type { RenderConfig, ActionsCompilationSettings, Target } from "./types";
 export type ActionsBucket = "domain" | "ipcidr" | "combined" | "dns";
 export const ACTIONS_COMPILER_PROTOCOL = "1";
 export const ACTIONS_OUTPUT_BRANCH = "rules";
+export const ACTIONS_WORKFLOW_FILENAME = "compile-rule-sets.yml";
 export const ACTIONS_CLIENT_DIRECTORIES: Record<Target, string> = { surge: "Surge", clash: "Clash", "sing-box": "Sing-Box" };
 
 export function actionsOutputKey(target: Target, outputName: string): string {
@@ -39,6 +40,6 @@ export function githubActionsArtifactUrl(config: RenderConfig, outputName: strin
 }
 
 export function actionsCompilerProtocolKey(settings: ActionsCompilationSettings): string {
-  const identity = createHash("sha256").update(JSON.stringify([settings.repository.toLowerCase(), settings.ref, settings.workflow])).digest("hex");
+  const identity = createHash("sha256").update(JSON.stringify([settings.repository.toLowerCase(), settings.ref, ACTIONS_WORKFLOW_FILENAME])).digest("hex");
   return `integration:actions-compiler:protocol:${identity}`;
 }

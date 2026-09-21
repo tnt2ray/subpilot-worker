@@ -1,5 +1,6 @@
 import { configDocument, defaultConfigDocument, migrateConfigDocument, normalizeConfigDocument, renderConfig, OUTPUT_TARGETS } from "./config-document";
 import { retryActionsCompilationJobs } from "./actions-compiler";
+import { ACTIONS_WORKFLOW_FILENAME } from "./actions-compiler-artifacts";
 import { ruleSetEnv } from "./rule-set-scope";
 import { queueChangedRuleSetUpdates, runRuleSetUpdateJobs } from "./rule-set-jobs";
 import type { AppConfig, StoredConfigDocument } from "./types";
@@ -351,6 +352,10 @@ async function writeConfigSnapshot(env: Env, config: RenderConfig, key = CONFIG_
 
 /** Persist the settings rename without making an old snapshot newer than a concurrent save. */
 export async function migrateLegacyActionsConfigSettings(env: Env): Promise<boolean> {
+  return migrateActionsConfigSettings(env, "actions-v1");
+}
+
+async function migrateActionsConfigSettings(env: Env, migration: "actions-v1" | "workflow-v1"): Promise<boolean> {
   const selected = await readStoredConfigSnapshot(env);
   if (!selected.key || !selected.config) return !selected.found;
   if (selected.config.migrationRequired) return false;
@@ -358,21 +363,29 @@ export async function migrateLegacyActionsConfigSettings(env: Env): Promise<bool
   if (stored === null) return false;
   const secret = requireSecret(env, "CONFIG_ENCRYPTION_KEY");
   const snapshot = await decryptJson<ConfigSnapshot>(secret, stored);
-  if (snapshot.version !== CONFIG_SNAPSHOT_VERSION || !snapshot.config?.settings
-    || !Object.hasOwn(snapshot.config.settings, "singboxSrs")) return true;
-  const settings = { ...snapshot.config.settings,
-    actionsCompilation: withDefaultConfigSettings(snapshot.config.settings).actionsCompilation };
-  Reflect.deleteProperty(settings, "singboxSrs");
+  if (snapshot.version !== CONFIG_SNAPSHOT_VERSION || !snapshot.config?.settings) return true;
+  const settings = { ...snapshot.config.settings };
+  if (migration === "actions-v1") {
+    if (!Object.hasOwn(settings, "singboxSrs")) return true;
+    settings.actionsCompilation = withDefaultConfigSettings(settings).actionsCompilation;
+    Reflect.deleteProperty(settings, "singboxSrs");
+  } else {
+    if (!settings.actionsCompilation || typeof settings.actionsCompilation !== "object"
+      || !Object.hasOwn(settings.actionsCompilation, "workflow")) return true;
+    settings.actionsCompilation = { ...settings.actionsCompilation };
+    Reflect.deleteProperty(settings.actionsCompilation, "workflow");
+  }
   const migrated = { ...snapshot, config: { ...snapshot.config, settings } };
   let key: string;
   if (selected.key.startsWith(CONFIG_SNAPSHOT_VERSION_PREFIX)) {
     // Keep the original timestamp and sequence. The sibling precedes only its
     // source snapshot; a later administrator save always retains precedence.
-    key = `${selected.key}:actions-v1`;
+    key = `${selected.key}:${migration}`;
   } else {
     const updatedAt = Date.parse(snapshot.config.updatedAt ?? "");
     const logicalTime = Number.isSafeInteger(updatedAt) && updatedAt > 0 && updatedAt <= Date.now() ? updatedAt : 0;
     key = `${CONFIG_SNAPSHOT_VERSION_PREFIX}${String(CONFIG_SNAPSHOT_LOGICAL_TIME_MAX - logicalTime).padStart(16, "0")}:${CONFIG_SNAPSHOT_LOGICAL_TIME_MAX}:~actions-v1:${await sha256Hex(selected.key)}`;
+    if (migration === "workflow-v1") key += ":workflow-v1";
   }
   if (await env.SUBPILOT_CONFIG.get(key) === null) {
     await env.SUBPILOT_CONFIG.put(key, await encryptJson(secret, migrated));
@@ -384,6 +397,57 @@ export async function migrateLegacyActionsConfigSettings(env: Env): Promise<bool
   // Retain the usual rollback snapshots and apply the existing bounded pruning.
   await pruneConfigSnapshotVersions(env, { key, logicalTime: configSnapshotLogicalTimeFromKey(key) });
   return true;
+}
+
+/** One bounded pass removes obsolete workflow identities before snapshot pruning. */
+export async function migrateActionsWorkflowSettings(env: Env, progress: { stage?: number; cursor?: string }, deadline = Date.now() + 25_000): Promise<boolean> {
+  const prefixes = [CONFIG_SNAPSHOT_VERSION_PREFIX, CONFIG_MIGRATED_SNAPSHOT_PREFIX];
+  const secret = requireSecret(env, "CONFIG_ENCRYPTION_KEY");
+  const retiredProtocols = new Set<string>();
+  async function removeRetiredProtocol(key: string): Promise<void> {
+    const stored = await env.SUBPILOT_CONFIG.get(key);
+    if (stored === null) return;
+    let snapshot: { config?: { settings?: Record<string, unknown> } };
+    try { snapshot = await decryptJson(secret, stored); }
+    catch { return; } // Damaged rollback copies are handled by snapshot maintenance.
+    const settings = snapshot?.config?.settings;
+    for (const candidate of [settings?.actionsCompilation, settings?.singboxSrs]) {
+      if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) continue;
+      const value = candidate as Record<string, unknown>;
+      if (typeof value.repository !== "string" || typeof value.ref !== "string" || typeof value.workflow !== "string"
+        || value.workflow === ACTIONS_WORKFLOW_FILENAME) continue;
+      const identity = await sha256Hex(JSON.stringify([value.repository.toLowerCase(), value.ref, value.workflow]));
+      if (retiredProtocols.has(identity)) continue;
+      await env.SUBPILOT_CONFIG.delete(`integration:actions-compiler:protocol:${identity}`);
+      retiredProtocols.add(identity);
+    }
+  }
+  for (let pages = 0; (progress.stage ?? 0) < prefixes.length && pages < 2; pages += 1) {
+    if (Date.now() >= deadline) return false;
+    const page = await env.SUBPILOT_CONFIG.list({ prefix: prefixes[progress.stage ?? 0]!, limit: 20,
+      ...(progress.cursor ? { cursor: progress.cursor } : {}) });
+    for (const { name } of page.keys) {
+      if (Date.now() >= deadline) return false;
+      await removeRetiredProtocol(name);
+    }
+    if (page.list_complete) {
+      progress.stage = (progress.stage ?? 0) + 1;
+      delete progress.cursor;
+    } else {
+      if (!page.cursor || page.cursor === progress.cursor) throw new Error("Workflow migration listing did not advance.");
+      progress.cursor = page.cursor;
+    }
+  }
+  if ((progress.stage ?? 0) < prefixes.length) return false;
+  if (progress.stage === prefixes.length) {
+    for (const key of [CONFIG_SNAPSHOT_KEY, CONFIG_MIGRATED_SNAPSHOT_KEY]) {
+      if (Date.now() >= deadline) return false;
+      await removeRetiredProtocol(key);
+    }
+    progress.stage += 1;
+  }
+  if (Date.now() >= deadline) return false;
+  return migrateActionsConfigSettings(env, "workflow-v1");
 }
 
 async function readStoredConfigSnapshot(env: Env): Promise<StoredConfigSnapshotResult> {
@@ -534,11 +598,14 @@ async function pruneConfigSnapshotVersions(env: Env, current: ConfigSnapshotRevi
 }
 
 function compareConfigSnapshotKeys(left: string, right: string): number {
-  const suffix = ":actions-v1";
-  const leftSource = left.endsWith(suffix) ? left.slice(0, -suffix.length) : left;
-  const rightSource = right.endsWith(suffix) ? right.slice(0, -suffix.length) : right;
+  const suffix = /(?::(?:actions|workflow)-v1)+$/;
+  const leftMigrations = left.match(suffix)?.[0] ?? "";
+  const rightMigrations = right.match(suffix)?.[0] ?? "";
+  const leftSource = left.slice(0, left.length - leftMigrations.length);
+  const rightSource = right.slice(0, right.length - rightMigrations.length);
   if (leftSource !== rightSource) return leftSource < rightSource ? -1 : 1;
-  return Number(right.endsWith(suffix)) - Number(left.endsWith(suffix));
+  const priority = (migrations: string) => Number(migrations.includes(":workflow-v1")) * 2 + Number(migrations.includes(":actions-v1"));
+  return priority(rightMigrations) - priority(leftMigrations) || (left === right ? 0 : left < right ? -1 : 1);
 }
 
 function configSnapshotLogicalTimeFromKey(key: string): number {

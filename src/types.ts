@@ -197,7 +197,6 @@ export interface ActionsCompilationSettings {
   enabled: boolean;
   repository: string;
   ref: string;
-  workflow: string;
 }
 
 export interface RenderConfig {

@@ -1,10 +1,9 @@
-import { ACTIONS_OUTPUT_BRANCH, ACTIONS_COMPILER_PROTOCOL, actionsCompilerProtocolKey } from "./actions-compiler-artifacts";
+import { ACTIONS_OUTPUT_BRANCH, ACTIONS_COMPILER_PROTOCOL, ACTIONS_WORKFLOW_FILENAME, actionsCompilerProtocolKey } from "./actions-compiler-artifacts";
 import { createHash } from "node:crypto";
 import workflow from "../scripts/compile-rule-sets.yml" with { type: "text" };
 import compiler from "../dist/actions-compiler-runtime.mjs" with { type: "text" };
 import script from "../scripts/compile-rule-sets.mjs" with { type: "text" };
 import { validateActionsCompilationSettings } from "./config-validation";
-import { normalizeActionsWorkflowFilename } from "./config-normalize";
 import { decryptJson, encryptJson } from "./crypto-store";
 import { sealGitHubSecret } from "./github-secret-seal";
 import { requireSecret } from "./secrets";
@@ -46,12 +45,11 @@ export async function handleActionsCompilationInstall(request: Request, env: Env
     if (url.protocol !== "https:" || (request.headers.has("origin") && request.headers.get("origin") !== url.origin)) {
       throw new InstallError("请从当前 Worker 的 HTTPS 管理页面安装。 / Use this Worker's HTTPS admin page.");
     }
-    if (!status.sharedSecretConfigured) throw new InstallError("请先在系统设置的“配置编译凭据”中保存 GitHub Token。 / Save a GitHub token in Configure compilation credentials first.");
+    if (!status.sharedSecretConfigured) throw new InstallError("请在配置向导中填写 GitHub Token 并重新安装。 / Enter a GitHub token in the setup wizard and retry installation.");
     const body = await readRequestJsonWithLimit<{ settings?: ActionsCompilationSettings; token?: unknown; replaceExisting?: unknown; callbackOrigin?: unknown }>(request, 16 * 1024);
-    const settings = { ...body?.settings, enabled: true } as ActionsCompilationSettings;
+    const settings = { enabled: true, repository: body?.settings?.repository, ref: body?.settings?.ref } as ActionsCompilationSettings;
     const invalid = validateActionsCompilationSettings(settings);
     if (invalid) throw new InstallError(invalid);
-    settings.workflow = normalizeActionsWorkflowFilename(settings.workflow);
     const suppliedToken = body.token === undefined || body.token === "" ? credentials.token : body.token;
     if (typeof suppliedToken !== "string" || !/^[A-Za-z0-9_]{20,255}$/.test(suppliedToken)) throw new InstallError("请输入有效的安装 Token。 / Enter a valid installation token.");
     token = suppliedToken;
@@ -112,7 +110,7 @@ export async function handleActionsCompilationInstall(request: Request, env: Env
     completed.push("公开仓库可访问 / Public repository accessible");
     if (![branch, `refs/heads/${branch}`].includes(settings.ref) || ACTIONS_OUTPUT_BRANCH === branch) throw new InstallError("一键安装要求工作流分支为仓库默认分支，产物使用其他分支。 / Use the repository default branch for the workflow and a different output branch.");
     stage = "检查编译 Token 的仓库访问 / Checking compilation token access";
-    if (!credentials.token) throw new InstallError("尚未配置长期编译 Token，请先保存凭据。 / Configure the persistent compilation token first.");
+    if (!credentials.token) throw new InstallError("请在配置向导中填写 GitHub Token 并重新安装。 / Enter a GitHub token in the setup wizard and retry installation.");
     await api("/actions/workflows?per_page=1", "GET", undefined, false, credentials.token);
     completed.push("编译 Token 可读取 Actions（写入权限由首次触发验证） / Actions readable; first dispatch verifies write permission");
     stage = "读取仓库 Secrets 公钥 / Reading repository Secrets public key";
@@ -125,7 +123,7 @@ export async function handleActionsCompilationInstall(request: Request, env: Env
     stage = "读取默认分支提交 / Reading default branch commit";
     const commit = await api(`/git/commits/${head}`);
     if (!sha(commit.tree?.sha)) throw new InstallError("无法读取默认分支。 / Cannot read the default branch.");
-    const files = [{ path: `.github/workflows/${settings.workflow}`, content: workflow }, { path: "scripts/compile-rule-sets.mjs", content: script }, { path: "scripts/actions-compiler-runtime.mjs", content: compiler }];
+    const files = [{ path: `.github/workflows/${ACTIONS_WORKFLOW_FILENAME}`, content: workflow }, { path: "scripts/compile-rule-sets.mjs", content: script }, { path: "scripts/actions-compiler-runtime.mjs", content: compiler }];
     const changed = [];
     for (const file of files) {
       stage = `检查文件 ${file.path} / Checking file ${file.path}`;

@@ -96,9 +96,6 @@ export function validateActionsCompilationSettings(value: RenderConfig["settings
     || value.ref.split("/").some((part) => !part || part.startsWith(".") || part.endsWith(".") || part.endsWith(".lock"))) {
     return "Actions 规则编译的 GitHub 分支或标签无效。";
   }
-  if (typeof value.workflow !== "string" || value.workflow.length > 128 || !/^[A-Za-z0-9][A-Za-z0-9._-]*\.ya?ml$/.test(value.workflow)) {
-    return "Actions 规则编译的工作流必须是 .yml 或 .yaml 文件名，不能包含路径。";
-  }
   if (["rules", "refs/heads/rules"].includes(value.ref)) {
     return "工作流分支不能使用固定产物分支 rules。";
   }

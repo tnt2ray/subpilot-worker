@@ -12,7 +12,6 @@ const LABELS = {
   actionsCompilation: "Actions 规则编译",
   repository: "GitHub 仓库（owner/repo）",
   ref: "GitHub 分支或标签",
-  workflow: "GitHub 工作流文件名",
   notificationChannel: "通知渠道",
   notificationTelegramChatId: "Telegram Chat ID",
   notificationTelegramBotToken: "Telegram Bot Token",

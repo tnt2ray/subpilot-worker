@@ -21,7 +21,7 @@ export const DEFAULT_CONFIG: RenderConfig = {
     ],
     updateCheckEnabled: false,
     displayTimeZone: DEFAULT_DISPLAY_TIME_ZONE,
-    actionsCompilation: { enabled: false, repository: "", ref: "main", workflow: "compile-rule-sets.yml" },
+    actionsCompilation: { enabled: false, repository: "", ref: "main" },
     notificationChannel: "off",
     notificationTelegramChatId: "",
     notificationTelegramBotToken: "",

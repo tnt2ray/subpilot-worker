@@ -9,7 +9,7 @@ import { effectiveRuleSetOutputs, planRuleSetOutputs, ruleSetOutputNeedsCompilat
 import type { RuleSetOutput } from "./rule-set-types";
 import { requireSecret } from "./secrets";
 import { readActionsCredentials } from "./actions-compiler-credentials";
-import { githubActionsArtifactUrl, ACTIONS_COMPILER_PROTOCOL, actionsCompilerProtocolKey, actionsArtifactDirectory, actionsArtifactPath, actionsOutputKey, type ActionsBucket } from "./actions-compiler-artifacts";
+import { githubActionsArtifactUrl, ACTIONS_COMPILER_PROTOCOL, ACTIONS_WORKFLOW_FILENAME, actionsCompilerProtocolKey, actionsArtifactDirectory, actionsArtifactPath, actionsOutputKey, type ActionsBucket } from "./actions-compiler-artifacts";
 import type { RenderConfig, Target } from "./types";
 import { jsonResponse, notFound, readRequestJsonWithLimit, readResponseTextWithLimit, sha256Hex, timingSafeEqualString, unauthorized } from "./util";
 
@@ -43,7 +43,10 @@ export async function validateActionsCompilationCredentials(env: Env, config: { 
   return null;
 }
 async function integrationFingerprint(config: RenderConfig): Promise<string> {
-  return sha256Hex(JSON.stringify([ACTIONS_COMPILER_PROTOCOL, config.settings.actionsCompilation]));
+  const settings = config.settings.actionsCompilation;
+  return sha256Hex(JSON.stringify([ACTIONS_COMPILER_PROTOCOL, settings && {
+    enabled: settings.enabled, repository: settings.repository, ref: settings.ref, workflow: ACTIONS_WORKFLOW_FILENAME
+  }]));
 }
 async function jobForOutput(config: RenderConfig, output: RuleSetOutput): Promise<CompilationJob> {
   const target = config.renderTarget ?? "surge";
@@ -118,7 +121,7 @@ export async function ensureActionsCompilation(env: Env, config: RenderConfig, o
   const repository = settings.repository.split("/").map(encodeURIComponent).join("/");
   let httpStatus: number | undefined, accepted = false;
   try {
-    const response = await fetch(`https://api.github.com/repos/${repository}/actions/workflows/${encodeURIComponent(settings.workflow)}/dispatches`, {
+    const response = await fetch(`https://api.github.com/repos/${repository}/actions/workflows/${ACTIONS_WORKFLOW_FILENAME}/dispatches`, {
       method: "POST", redirect: "manual", headers: { accept: "application/vnd.github+json", "content-type": "application/json", authorization: `Bearer ${credentials.token}`, "user-agent": "SubPilot-Actions", "x-github-api-version": "2022-11-28" },
       body: JSON.stringify({ ref: settings.ref, inputs: { job_id: batch.id } }),
       signal: AbortSignal.timeout(Math.max(1, Math.min(8_000, (options.deadline ?? Date.now() + 8_000) - Date.now())))

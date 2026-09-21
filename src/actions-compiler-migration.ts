@@ -1,5 +1,5 @@
 import { decryptJson } from "./crypto-store";
-import { maintainCompletedCleanupMarkers, migrateLegacyActionsConfigSettings, migrateRetiredConfigSnapshots } from "./config-store";
+import { maintainCompletedCleanupMarkers, migrateActionsWorkflowSettings, migrateLegacyActionsConfigSettings, migrateRetiredConfigSnapshots } from "./config-store";
 import { requireSecret } from "./secrets";
 import { sha256Hex } from "./util";
 
@@ -43,6 +43,8 @@ interface MigrationState {
   markersComplete?: boolean;
   retiredCandidates?: Partial<Record<RecordKind, boolean>>;
   upgradeComplete?: boolean;
+  workflowComplete?: boolean;
+  workflowProgress?: { stage?: number; cursor?: string };
 }
 
 /** A present record is authoritative even when empty or unreadable. Callers validate it. */
@@ -65,9 +67,16 @@ export async function maintainActionsIntegrationMigration(env: Env, deadline = D
     version: 1, phase: "copy", notBefore: 0, stage: 0,
     hashes: { credentials: null, callbackOrigin: null }, sweepHadDeletes: false, retire: {}
   };
-  if (state.upgradeComplete) return;
+  if (state.upgradeComplete && state.workflowComplete) return;
   const before = JSON.stringify(state);
   try {
+    if (!state.workflowComplete) {
+      state.workflowProgress ??= {};
+      state.workflowComplete = await migrateActionsWorkflowSettings(env, state.workflowProgress, cutoff);
+      if (!state.workflowComplete) return;
+      delete state.workflowProgress;
+    }
+    if (state.upgradeComplete) return;
     if (!state.settingsComplete) {
       checkDeadline(cutoff);
       state.settingsComplete = await migrateLegacyActionsConfigSettings(env);
@@ -245,11 +254,14 @@ function parseState(stored: string | null): MigrationState | null {
       || typeof state.sweepHadDeletes !== "boolean"
       || !state.hashes || typeof state.hashes !== "object" || Array.isArray(state.hashes)
       || !state.retire || typeof state.retire !== "object" || Array.isArray(state.retire)) throw new Error();
-    for (const field of ["settingsComplete", "snapshotsComplete", "markersComplete", "upgradeComplete"] as const) {
+    for (const field of ["settingsComplete", "snapshotsComplete", "markersComplete", "upgradeComplete", "workflowComplete"] as const) {
       if (state[field] !== undefined && typeof state[field] !== "boolean") throw new Error();
     }
     if (state.snapshotProgress !== undefined && (!state.snapshotProgress || typeof state.snapshotProgress !== "object"
       || Array.isArray(state.snapshotProgress) || (state.snapshotProgress.after !== undefined && typeof state.snapshotProgress.after !== "string"))) throw new Error();
+    if (state.workflowProgress !== undefined && (!state.workflowProgress || typeof state.workflowProgress !== "object" || Array.isArray(state.workflowProgress)
+      || (state.workflowProgress.stage !== undefined && (!Number.isInteger(state.workflowProgress.stage) || state.workflowProgress.stage < 0 || state.workflowProgress.stage > 3))
+      || (state.workflowProgress.cursor !== undefined && typeof state.workflowProgress.cursor !== "string"))) throw new Error();
     if (state.retiredCandidates !== undefined && (!state.retiredCandidates || typeof state.retiredCandidates !== "object"
       || Array.isArray(state.retiredCandidates))) throw new Error();
     if (state.upgradeComplete && (state.phase !== "done" || !state.settingsComplete || !state.snapshotsComplete || !state.markersComplete)) throw new Error();

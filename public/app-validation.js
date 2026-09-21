@@ -15,9 +15,6 @@ export function validateActionsCompilationSettings(value, language = "zh") {
     || ref.includes("..") || ref.includes("@{") || ref.split("/").some((part) => !part || part.startsWith(".") || part.endsWith(".") || part.endsWith(".lock"))) {
     return message("Actions 规则编译的 GitHub 分支或标签无效。", "Enter a valid GitHub branch or tag for Actions rule compilation.");
   }
-  if (typeof value.workflow !== "string" || value.workflow.trim().length > 128 || !/^[A-Za-z0-9][A-Za-z0-9._-]*\.ya?ml$/.test(value.workflow.trim())) {
-    return message("Actions 规则编译的工作流必须是 .yml 或 .yaml 文件名，不能包含路径。", "Enter the Actions workflow filename ending in .yml or .yaml, without a path.");
-  }
   if (["rules", "refs/heads/rules"].includes(ref)) {
     return message("工作流分支不能使用固定产物分支 rules。", "The workflow branch must differ from the fixed output branch rules.");
   }
