@@ -128,6 +128,8 @@ Open the deployment URL and sign in with the admin token.
 5. For compiled routing, enter source URLs directly in the selected client’s routing tab and choose a policy. Sources are linked automatically within that client; move rule sets and direct rules up/down in one list. Select RULE-SET or DOMAIN-SET in Surge, behavior and interval in Clash, and the source format in sing-box.
 6. Save the configuration, run a subscription check in **Configuration links**, and copy the universal subscription URL.
 
+System settings are ordered as **Preferences → Node processing → Subscription and fetching**. Node processing shows excluded keywords as tags and feature tags as rows of names and matching keywords. Use the edit icon beside each title to make changes.
+
 To update an existing subscription source, proxy node, or policy group, click its name or the row’s **Edit** button. Choose **Apply changes** in the dialog, then **Save configuration** at the bottom of the page to persist the changes. On narrow screens, the action column remains visible while other details scroll horizontally.
 
 The page header and bottom action bar remain visible. Long content scrolls within the space between them, keeping the last items clear of the action bar.

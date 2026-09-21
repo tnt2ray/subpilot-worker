@@ -1132,9 +1132,38 @@ dialog.routing-order-dialog { margin: 0 0 0 auto; width: min(600px, 100vw); max-
 #modal .config-code-editor .cm-header { color: #1d4ed8; font-weight: 600; }
 
 .config-preview-field { min-width: 0; margin: 8px 0 14px; }
+.keyword-tags { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.keyword-tags > .chip { max-width: 100%; margin: 0; border-radius: 999px; padding: 4px 10px; overflow-wrap: anywhere; }
 .config-preview-field > .section-heading { margin-bottom: 6px; font-size: 14px; }
 .client-settings-nested > .config-preview-field { grid-column: 1 / -1; }
 .config-preview-field .client-config-values { max-height: 360px; overflow: auto; }
+.system-overview { max-width: 1040px; }
+.system-overview > .section { margin-bottom: 20px; padding-bottom: 20px; }
+.system-overview > .section:last-child { border-bottom: 1px solid var(--border); }
+.system-preference-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 40px; }
+.system-preference-fields .form-row { grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 16px; }
+.system-preference-fields .form-row > label { padding-top: 0; }
+.system-preference-fields .field { max-width: 240px; }
+.system-overview .config-preview-field > .section-heading { justify-content: flex-start; gap: 6px; margin-bottom: 8px; }
+.system-overview .config-preview-field .icon-button { flex-shrink: 0; width: 32px; height: 32px; padding: 6px; border: 0; background: transparent; color: var(--muted); box-shadow: none; }
+.system-overview .config-preview-field .icon-button:hover { background: #f0f4fa; color: var(--blue); }
+.system-node-settings .config-preview-field { margin: 0; padding-bottom: 16px; }
+.system-node-settings .config-preview-field + .config-preview-field { padding-top: 12px; border-top: 1px solid var(--border); }
+.system-node-settings > .form-row { grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 16px; max-width: 420px; margin-top: 2px; }
+.system-node-settings > .form-row > label { padding-top: 0; }
+.feature-tag-list { margin: 0; }
+.feature-tag-row { display: grid; grid-template-columns: minmax(80px, 120px) minmax(0, 1fr); align-items: baseline; gap: 12px; padding: 7px 0; }
+.feature-tag-row + .feature-tag-row { border-top: 1px solid #edf1f6; }
+.feature-tag-row dt { color: var(--blue); font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
+.feature-tag-row dd { margin: 0; min-width: 0; }
+@media (max-width: 960px) {
+  .system-preference-fields { grid-template-columns: minmax(0, 1fr); gap: 2px; max-width: 520px; }
+}
+@media (max-width: 480px) {
+  .system-preference-fields .form-row { grid-template-columns: minmax(100px, 1fr) minmax(0, 1.25fr); gap: 12px; }
+  .system-preference-fields .field:has(.toggle) { justify-self: end; }
+  .feature-tag-row { grid-template-columns: minmax(0, 1fr); gap: 6px; padding: 10px 0; }
+}
 .sb-basic-fields > .sb-field { padding: 9px 0; }
 .sb-basic-fields > .sb-field:not(:has(details)) { display: grid; grid-template-columns: minmax(130px, 180px) minmax(0, 1fr); align-items: center; gap: 12px; }
 .sb-basic-fields .sb-label { margin: 0; padding-right: 0; font-size: 13px; }

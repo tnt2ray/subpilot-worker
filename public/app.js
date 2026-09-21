@@ -94,6 +94,18 @@ function field(path, value, options = {}) {
   if (path === "clients.clash.tun.stack") options = { ...options, options: ["system", "gvisor", "mixed", "mips"] };
   if (path === "clients.clash.dnsEnhancedMode") options = { ...options, options: ["fake-ip", "redir-host"] };
   const textList = isTextList(key, value);
+  if (!options.local && path === "settings.excludeKeywords" && textList) {
+    return `<div class="config-preview-field"><div class="section-heading"><span id="${id}-label">${esc(title)}</span>${iconButton("edit", "edit-json", `data-path="${esc(path)}" data-lines="true"`, t("编辑排除关键词", "Edit excluded keywords"))}</div>${value.length ? `<ul class="keyword-tags" aria-labelledby="${id}-label">${value.map((keyword) => `<li class="chip">${esc(keyword)}</li>`).join("")}</ul>` : `<p class="help">${t("未配置", "Not configured")}</p>`}</div>`;
+  }
+  if (!options.local && path === "settings.featureTagRules" && textList) {
+    const rows = value.map((line) => {
+      const separator = line.indexOf("=");
+      const name = (separator < 0 ? line : line.slice(0, separator)).trim();
+      const keywords = (separator < 0 ? line : line.slice(separator + 1)).split(",").map((item) => item.trim()).filter(Boolean);
+      return `<div class="feature-tag-row"><dt>${esc(name || t("未命名", "Unnamed"))}</dt><dd>${keywords.length ? `<ul class="keyword-tags">${keywords.map((keyword) => `<li class="chip">${esc(keyword)}</li>`).join("")}</ul>` : `<span class="muted">${t("未配置", "Not configured")}</span>`}</dd></div>`;
+    }).join("");
+    return `<div class="config-preview-field"><div class="section-heading"><span id="${id}-label">${esc(title)}</span>${iconButton("edit", "edit-json", `data-path="${esc(path)}" data-lines="true"`, t("编辑节点特征标签", "Edit node feature tags"))}</div>${rows ? `<dl class="feature-tag-list" aria-labelledby="${id}-label">${rows}</dl>` : `<p class="help">${t("未配置", "Not configured")}</p>`}</div>`;
+  }
   const structured = value && typeof value === "object";
   const multiline = options.multiline || typeof value === "string" && value.includes("\n");
   if (!options.local && !/token|secret|password|passphrase|authKey|caP12/i.test(key) && (textList || structured || multiline)) {
@@ -845,11 +857,23 @@ async function showActionsSetup({ automatic = false } = {}) {
     }
   }
 }
+function renderSystemOverview() {
+  const settings = state.config.settings;
+  const setting = (key, title) => field(`settings.${key}`, settings[key], title ? { label: title } : {});
+  return `<div class="system-overview">`
+    + section(t("界面偏好", "Preferences"), `<div class="system-preference-fields">`
+      + setting("displayTimeZone", t("显示时区", "Display time zone"))
+      + setting("updateCheckEnabled", t("检查版本更新", "Check for updates")) + `</div>`)
+    + section(t("节点处理", "Node processing"), `<div class="system-node-settings">`
+      + setting("excludeKeywords", t("排除关键词", "Excluded keywords"))
+      + setting("featureTagRules", t("节点特征标签", "Node feature tags"))
+      + setting("geoipRenameEnabled", t("GeoIP 节点重命名", "GeoIP node renaming")) + `</div>`)
+    + section(t("订阅与抓取", "Subscription and fetching"), ["managedBaseUrl", "userAgentSurge", "userAgentClash"].map((key) => setting(key)).join(""))
+    + `</div>`;
+}
 function renderSystem() {
   const mmdbPaths = [["Surge macOS", "~/Library/Application Support/com.nssurge.surge-mac/GeoLite2-Country.mmdb"], ["Clash Verge Windows", "%APPDATA%\\io.github.clash-verge-rev.clash-verge-rev\\Country.mmdb"], ["Clash Verge macOS", "~/Library/Application Support/io.github.clash-verge-rev.clash-verge-rev/Country.mmdb"]];
-  const telegramFields = ["notificationTelegramBotToken", "notificationTelegramChatId"];
-  const hidden = ["userAgentStash", "userAgentShadowrocket", "notificationChannel", "notificationTelegramWebhookSecret", "actionsCompilation", ...telegramFields];
-  return section(t("系统设置", "System settings"), Object.entries(state.config.settings).filter(([key]) => !hidden.includes(key)).map(([key, value]) => field(`settings.${key}`, value)).join("")) + renderActionsCompilationSettings() + section("GeoIP MMDB", `<p class="help">${t("上传 MMDB 数据库用于节点地理位置识别。", "Upload an MMDB database for node geolocation.")}</p><div id="mmdb-status"></div><div class="mmdb-upload-controls"><label for="mmdb-upload">${t("选择数据库文件", "Choose database file")}</label><input type="file" id="mmdb-upload" accept=".mmdb" ${mmdb.uploading ? "disabled" : ""}>${btn(t("上传", "Upload"), "upload-mmdb", 'id="mmdb-submit" disabled', "primary")}</div><div id="mmdb-transfer" role="status" aria-live="polite"></div><p class="help">${t("最大 25 MiB。选择文件后点击上传，成功后立即生效。", "Up to 25 MiB. Select a file, then click Upload. Changes take effect on success.")}</p><div class="mmdb-path-help help" aria-label="${t("MMDB 文件路径参考", "MMDB file path reference")}"><p>${t("可从本机客户端选择现有文件：", "Select an existing file from a local client:")}</p><ul>${mmdbPaths.map(([client, path]) => `<li><span>${esc(client)}</span><code>${esc(path)}</code></li>`).join("")}</ul></div>`) + section("Telegram", field("settings.notificationTelegramBotToken", state.config.settings.notificationTelegramBotToken) + `<div id="telegram-settings" ${state.config.settings.notificationTelegramBotToken?.trim() ? "" : "hidden"}>` + field("settings.notificationTelegramChatId", state.config.settings.notificationTelegramChatId) + `<div class="toolbar">${btn(t("生成绑定码", "Generate binding code"), "telegram-bind")}${btn(t("解除绑定", "Unbind"), "telegram-unbind", "", "danger")}</div><p class="help">${t("通知凭据保存后生效。", "Save notification credentials before binding.")}</p></div>`);
+  return renderSystemOverview() + renderActionsCompilationSettings() + section("GeoIP MMDB", `<p class="help">${t("上传 MMDB 数据库用于节点地理位置识别。", "Upload an MMDB database for node geolocation.")}</p><div id="mmdb-status"></div><div class="mmdb-upload-controls"><label for="mmdb-upload">${t("选择数据库文件", "Choose database file")}</label><input type="file" id="mmdb-upload" accept=".mmdb" ${mmdb.uploading ? "disabled" : ""}>${btn(t("上传", "Upload"), "upload-mmdb", 'id="mmdb-submit" disabled', "primary")}</div><div id="mmdb-transfer" role="status" aria-live="polite"></div><p class="help">${t("最大 25 MiB。选择文件后点击上传，成功后立即生效。", "Up to 25 MiB. Select a file, then click Upload. Changes take effect on success.")}</p><div class="mmdb-path-help help" aria-label="${t("MMDB 文件路径参考", "MMDB file path reference")}"><p>${t("可从本机客户端选择现有文件：", "Select an existing file from a local client:")}</p><ul>${mmdbPaths.map(([client, path]) => `<li><span>${esc(client)}</span><code>${esc(path)}</code></li>`).join("")}</ul></div>`) + section("Telegram", field("settings.notificationTelegramBotToken", state.config.settings.notificationTelegramBotToken) + `<div id="telegram-settings" ${state.config.settings.notificationTelegramBotToken?.trim() ? "" : "hidden"}>` + field("settings.notificationTelegramChatId", state.config.settings.notificationTelegramChatId) + `<div class="toolbar">${btn(t("生成绑定码", "Generate binding code"), "telegram-bind")}${btn(t("解除绑定", "Unbind"), "telegram-unbind", "", "danger")}</div><p class="help">${t("通知凭据保存后生效。", "Save notification credentials before binding.")}</p></div>`);
 }
 function updateSystemSettingsVisibility() {
   const actions = $("#actions-compiler-settings");
