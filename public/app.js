@@ -879,7 +879,7 @@ async function showActionsSetup({ automatic = false } = {}) {
         <input id="actions-setup-token" type="password" autocomplete="new-password" value="${status.dispatchTokenConfigured ? tokenMask : ""}" aria-describedby="actions-setup-token-help actions-setup-token-scope">
         <div class="actions-setup-note">
           <p id="actions-setup-token-help">${tokenHelp()}</p>
-          <a href="https://github.com/settings/personal-access-tokens/new?name=SubPilot&amp;actions=write&amp;contents=write&amp;workflows=write&amp;secrets=write" target="_blank" rel="noopener noreferrer">${t("申请 Token（预选权限）", "Create token (preset permissions)")}</a>
+          <a href="https://github.com/settings/personal-access-tokens/new?name=SubPilot&amp;expires_in=none&amp;actions=write&amp;contents=write&amp;workflows=write&amp;secrets=write" target="_blank" rel="noopener noreferrer">${t("申请 Token（预选权限）", "Create token (preset permissions)")}</a>
         </div>
         <p class="actions-setup-note" id="actions-setup-token-scope">${t("请在 GitHub 选择仓库所有者，并仅授权目标仓库。", "On GitHub, choose the repository owner and grant access only to the target repository.")}</p>
       </div>

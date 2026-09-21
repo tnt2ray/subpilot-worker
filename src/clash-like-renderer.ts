@@ -242,7 +242,12 @@ function buildClashLikeConfigData(
     ? options.ruleSetPlan.clashRuleProviders
     : parseClashRuleProvidersYaml(options.ruleProvidersYaml);
   if (Object.keys(ruleProviders).length > 0) {
-    data["rule-providers"] = ruleProviders;
+    data["rule-providers"] = Object.fromEntries(Object.entries(ruleProviders).map(([name, provider]) => [
+      name,
+      options.target === "clash" && provider.type === "http"
+        ? { ...provider, proxy: provider.proxy || "Proxy" }
+        : provider
+    ]));
   }
   if (options.target === "clash" && config.ruleSets.mode === "compiled" && Object.keys(options.ruleSetPlan?.clashDnsPolicy ?? {}).length) {
     if (!data.dns) throw new Error("规则集指定 DNS 需要启用 Clash DNS。");
