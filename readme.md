@@ -43,12 +43,12 @@ npm run setup
 
 全新安装时，脚本会：
 
-1. 从 `wrangler.example.jsonc` 生成本地 `wrangler.jsonc`，创建或配置 `SUBPILOT_CONFIG` KV namespace。R2 是可选项，默认不创建或绑定。
+1. 从 `wrangler.example.jsonc` 生成本地 `wrangler.jsonc`，创建或配置 `SUBPILOT_CONFIG` KV namespace。
 2. 询问上游订阅刷新间隔，范围为 1～24 小时，默认 12 小时。
 3. 核实远端 Secrets；缺少管理员凭据时要求输入至少 24 个字符的 token，缺少配置加密密钥时使用指定值或生成密钥。
 4. 将缺失的 `ADMIN_TOKEN_HASH`（token 的 SHA-256 hash）和 `CONFIG_ENCRYPTION_KEY` 通过 `wrangler deploy --secrets-file` 补齐并部署；临时密钥文件会在命令结束后删除。
 
-请把管理员 token 保存在密码管理器中。普通 Worker（JSON）和 GitHub Actions 均不需要 R2。以后要启用 WASM，可在部署项目目录运行 `npm run setup -- --enable-r2`；脚本会创建私有桶、写入 `RULE_SET_ARTIFACTS` 绑定并重新部署，已保存的首选 WASM 模式会自动恢复。若已有本地 `wrangler.jsonc`，脚本会复用配置，核实并保留已有 Secrets，只补齐缺失项；已有明确的 R2 绑定会继续沿用。首次安装因 token 无效或部署失败而中断后，可修正问题并重新运行 `npm run setup`；本地配置文件的存在不会导致跳过未完成的 Secrets 初始化。无法核实远端状态时停止，不写入 Secrets。手动安装见下方独立步骤。
+请把管理员 token 保存在密码管理器中。若已有本地 `wrangler.jsonc`，脚本会复用配置，核实并保留已有 Secrets，只补齐缺失项。首次安装因 token 无效或部署失败而中断后，可修正问题并重新运行 `npm run setup`；本地配置文件的存在不会导致跳过未完成的 Secrets 初始化。无法核实远端状态时停止，不写入 Secrets。手动安装见下方独立步骤。
 
 仅在明确要替换管理员 token 和加密密钥时使用 `npm run setup -- --force-secrets`。替换现有 `CONFIG_ENCRYPTION_KEY` 会使原密钥加密的数据无法解密。
 
@@ -64,7 +64,6 @@ npm run setup
 | `SUBPILOT_ADMIN_TOKEN` | 至少 24 个字符的管理员 token。 |
 | `SUBPILOT_CONFIG_ENCRYPTION_KEY` | 指定加密密钥；未提供时自动生成。复用已有加密数据时必须与原密钥匹配。 |
 | `SUBPILOT_SOURCE_REFRESH_HOURS` | 上游刷新间隔，1～24 小时，默认 12。 |
-| `SUBPILOT_RULE_SET_ARTIFACTS_BUCKET` | 可选的 R2 桶名称；设置此变量会启用 R2，未设置时默认不创建 R2。 |
 | `SUBPILOT_LOGIN_RATE_LIMIT_NAMESPACE_ID` | 可选的限流 namespace ID，取值 1～4294967295；默认从 Worker 名称稳定派生。 |
 
 初始化会配置登录限流：同一 Cloudflare 位置内，每个客户端 IP 每分钟最多尝试 10 次。通过安全的环境变量管理方式提供凭据，避免写进命令历史或仓库。
@@ -82,7 +81,7 @@ cp wrangler.example.jsonc wrangler.jsonc
 wrangler kv namespace create SUBPILOT_CONFIG
 ```
 
-在 `wrangler.jsonc` 中填写自己的 Worker 名称，并将创建得到的 namespace ID 写入 `kv_namespaces[0].id`。普通 Worker 不需要 R2。仅在要启用 WASM 时，先配置好基础部署，再运行 `npm run setup -- --enable-r2`；也可通过 `SUBPILOT_RULE_SET_ARTIFACTS_BUCKET` 指定桶名。再生成管理员 token 的 SHA-256 hash：
+在 `wrangler.jsonc` 中填写自己的 Worker 名称，将创建得到的 namespace ID 写入 `kv_namespaces[0].id`。再生成管理员 token 的 SHA-256 hash：
 
 ```bash
 read -r -s -p 'Admin token: ' SUBPILOT_ADMIN_TOKEN
@@ -238,7 +237,7 @@ sing-box 的 DNS 页将原生规则放在默认折叠的“高级 DNS 规则”�
 
 - Surge 生成 `[Host]` 的 `RULE-SET:` / `DOMAIN-SET:` DNS 映射，要求 Mac 5.10+ / iOS 5.14.3+。已有 Host 映射优先，规则集按本页顺序匹配；代理远端解析不保证使用指定 DNS。指定 DNS 的条目不参与按策略聚合。
 - Clash 生成 `dns.nameserver-policy`，要求启用 DNS；`ipcidr` provider 不允许指定 DNS。此设置选择解析服务器，不改变 DNS 连接出口，也不保证代理远端解析行为。
-- sing-box 单独生成域名规则集：普通 Worker 及临时回退使用 `-dns.json`，WASM 产物就绪时使用 `-dns.srs`，Actions 产物就绪时使用 `Sing-Box/<规则集名称>/dns-domains.srs`，包含独立 DOMAIN、DOMAIN-SUFFIX、DOMAIN-KEYWORD、DOMAIN-REGEX、DOMAIN-WILDCARD 规则；排除 IP、进程和逻辑组合。绑定按本页顺序优先于 DNS 页原生规则，无可用域名时提示。删除或重命名所引用的 DNS 服务器后，需更新绑定才能保存。
+- sing-box 单独生成 `-dns.json` 域名规则集（Actions 产物就绪后为 `Sing-Box/<规则集名称>/dns-domains.srs`），包含独立 DOMAIN、DOMAIN-SUFFIX、DOMAIN-KEYWORD、DOMAIN-REGEX、DOMAIN-WILDCARD 规则；排除 IP、进程和逻辑组合。绑定按本页顺序优先于 DNS 页原生规则，无可用域名时提示。删除或重命名所引用的 DNS 服务器后，需更新绑定才能保存。
 
 
 1. 选择客户端，打开“分流规则”，添加规则集或单条规则。
@@ -256,7 +255,7 @@ sing-box 的 DNS 页将原生规则放在默认折叠的“高级 DNS 规则”�
 
 Surge 编译保留用户指定的 `no-resolve`，不会因包含 IP-CIDR 自动添加；来源中的 `extended-matching` 保留在 RULE-SET 中。DOMAIN-SET 无法表达的规则选项，以及其他客户端无法等价转换的扩展匹配，会产生诊断并阻止不兼容输出。Clash 原生 HTTP provider 未填写 `path` 时，自动分配互不冲突的缓存路径，并避开已显式指定的路径。
 
-sing-box 使用 Clash 或 Surge 来源时，即使只有一个 URL 也需要转换。`IP-ASN` 展开为 IPv4/IPv6 CIDR，定期更新；查询失败时优先使用旧缓存，无数据则跳过并提示。`USER-AGENT`、`URL-REGEX` 等不支持的规则被跳过，来源下载失败或格式错误会报错。Worker 生成的远程规则集统一通过 `Proxy` 策略组下载（`http_client.detour: "Proxy"`），包括 Actions SRS、Worker 托管 JSON / SRS 和原生 SRS 来源；请在客户端为 `Proxy` 选择可用代理节点。此设置只影响规则下载，不改变规则的流量出口策略。
+sing-box 使用 Clash 或 Surge 来源时，即使只有一个 URL 也需要转换。`IP-ASN` 展开为 IPv4/IPv6 CIDR，定期更新；查询失败时优先使用旧缓存，无数据则跳过并提示。`USER-AGENT`、`URL-REGEX` 等不支持的规则被跳过，来源下载失败或格式错误会报错。Worker 生成的远程规则集统一通过 `Proxy` 策略组下载（`http_client.detour: "Proxy"`），包括 Actions SRS、Worker 托管 JSON 和原生 SRS 来源；请在客户端为 `Proxy` 选择可用代理节点。此设置只影响规则下载，不改变规则的流量出口策略。
 
 
 规则集下载代理由 Worker 在生成配置时设置：
@@ -270,25 +269,11 @@ sing-box 的 `.srs` 地址在自动识别模式下直接输出为独立的 `remo
 
 启用 sing-box 统一规则后，原生路由与规则集表单仍可编辑；原生规则继续先于统一规则匹配。Clash 从原生规则转换时，清理历史共享或 Surge 规则计划，仅保留本次原生规则及其提供者；转换失败时保留原配置。
 
-合并或转换后的规则文件由系统命名，Surge 和 Clash 分别使用 `.list` 和 `.yaml`；sing-box 在默认的普通 Worker 模式及临时回退时使用 `.json`，WASM 和 Actions 产物就绪时使用 `.srs`。三端可使用相同名称。
+合并或转换后的规则文件由系统命名，Surge、Clash、sing-box 默认分别使用 `.list`、`.yaml`、`.json` 扩展名；启用下述选配功能后，sing-box 使用 `.srs`。三端可使用相同名称。
 
-### 规则编译模式
+### Actions 规则编译（选配）
 
-在 **系统设置 → 规则编译 → 首选编译模式** 中三选一，保存后生效，默认使用普通 Worker。该选项表示首选编译器：WASM 或 Actions 失败、产物未就绪时临时回退普通 Worker；首选产物就绪后自动恢复使用，已保存的模式不会因回退而改变。模式选择只影响需要合并或转换的规则，客户端直连来源和原生 SRS 保持原有行为。
-
-| 模式 | 处理位置 | sing-box 产物 | Surge / Clash 产物 |
-| --- | --- | --- | --- |
-| 普通 Worker（默认） | Worker 获取、合并、去重、转换和分桶，不调用 WASM | JSON | `.list` / `.yaml` |
-| WASM | Worker 获取来源，同一 WASM 内核合并、去重、重新分桶并编译 SRS | 就绪时 SRS，回退时 JSON | `.list` / `.yaml` |
-| GitHub Actions | GitHub 获取来源，运行与 WASM 模式完全相同的内核 | 就绪时 SRS，回退时 JSON | `.list` / `.yaml` |
-
-WASM 与 Actions 使用同一份固定版本 WASM 模块：规则合并、去重和重新分桶均在该内核完成，sing-box SRS 编译基于 **1.15.0-alpha.7**。两种模式共用来源解析与转换逻辑、聚合内核和 SRS 编译路径；WASM 的 SRS 产物加密保存到 R2，Actions 的产物发布到 GitHub。R2 与 Actions 相互独立且均为可选功能：普通 Worker 和 Actions 不依赖 R2；选择 WASM 时若未配置 R2，系统保留 WASM 首选模式并临时使用普通 Worker 回退。可在系统设置查看启用步骤。Actions 不再另行下载原生 sing-box CLI。首选编译失败、产物未就绪或 Actions 本轮刷新尚未确认时，Worker 读取或准备独立的备用规则缓存，sing-box 使用 JSON。即使留有上次产物，本轮失败或未确认期间也会临时回退。备用处理不改写所选模式，也不覆盖 WASM 或 Actions 产物。首选编译仍会重试，就绪后在客户端下一次更新订阅配置时恢复使用，sing-box 恢复为 SRS。Worker 备用缓存也可能尚未生成，来源或转换也可能失败，此时仍会暂时返回 HTTP `503` 与 `Retry-After` 或相应错误，请稍后重试或修正规则。切换首选模式保留仓库、分支和加密凭据，Actions 的配置与操作仅在选择 Actions 时显示。
-
-未配置 R2 时，普通 Worker 的加密文本与 JSON 产物直接保存在 KV；配置 R2 后，普通 Worker 可将产物保存在 R2，WASM 的 SRS 产物则必须使用 R2。独立的 Worker 回退缓存保存在 KV，且不会覆盖首选产物。R2 编译清单和持久清理队列保存在 KV；规则集版本替换或删除时同步清理对应的旧 R2 对象，若 R2 暂时不可用则由每 5 分钟维护任务重试。首次安装和升级默认不创建 R2；要启用 WASM 时运行 `npm run setup -- --enable-r2`，或在 setup 前设置 `SUBPILOT_RULE_SET_ARTIFACTS_BUCKET`。
-
-更改首选模式后，请在客户端更新订阅配置以使用对应的规则格式与地址。自动回退的 JSON 与恢复后的 SRS 也通过下一次订阅配置更新切换；单独刷新规则文件不会改变配置中声明的格式。已经发出的托管 `.json` 地址持续返回 JSON，不会塞入 SRS 二进制，即使首选 WASM / Actions 已恢复；必要时由 Worker 准备兼容 JSON。旧托管 `.srs` 地址仅返回可用的 WASM 二进制，或在 Actions 模式下跳转到对应的已发布 SRS；没有有效 SRS 时提示更新订阅配置，不能用 JSON 替代。
-
-### Actions 规则编译配置
+默认关闭。关闭时，Worker 保留现有的来源获取、规则合并、去重、格式转换与重新分桶能力，生成 Surge `.list`、Clash `.yaml` 和 sing-box `.json`。启用后，三个客户端需要合并或转换的规则集统一交给 GitHub Actions：Actions 直接下载原始规则来源，使用与 Worker 共用的编译核心完成处理，再将 sing-box 规则编译成 SRS（sing-box **1.15.0-alpha.7**）。Worker 优先使用已确认的 Actions 产物；产物未就绪时，复用匹配当前配置的本地缓存，缺失时自行获取来源、合并、去重并分桶，保持订阅可用。
 
 产物分支固定为 **`rules`**，没有可编辑的产物分支设置。三个客户端分目录存放，同名规则集相互独立：
 
@@ -302,27 +287,29 @@ WASM 与 Actions 使用同一份固定版本 WASM 模块：规则合并、去重
 
 1. 准备已初始化且启用 Actions 的公开仓库，勾选添加 README。默认分支用于工作流，不能命名为 `rules`；每个 SubPilot 部署使用独立仓库。
 2. 创建 fine-grained GitHub Token，仅选择目标仓库，授予 **Actions、Contents、Workflows、Secrets: Read and write**；组织仓库如需审批请先完成。
-3. 为至少一个客户端启用规则来源编排并保存。打开 **系统设置 → 规则编译**，选择 **GitHub Actions → 配置向导**，填写仓库、工作流访问地址和 Token。
-   Token 的初次配置和替换统一通过配置向导完成；已有 Token 时显示星号掩码，保持不变沿用，填写新值则替换。向导在桌面端统一左侧标签、右侧输入框，窄屏改为上下排列；辅助链接紧随对应字段，高级设置中的分支输入框保持相同对齐。Token 下方仅提示选择仓库所有者及目标仓库，不重复列出权限；“申请 Token（预选权限）”链接预选永不过期（受组织有效期策略限制），并预填 Actions、Contents、Secrets 读写及 Workflows 写入权限，仍需在 GitHub 选择仓库所有者并仅授权目标仓库。系统设置中，外层规则编译标题旁的问号集中提供功能、公开规则、Token 权限和配置向导说明，向导弹窗标题不再显示问号；仅在选择 Actions 模式时显示其配置和操作；Telegram 未填写 Bot Token 时隐藏 Chat ID 和绑定操作。收起配置不会清空已填写的值。
-4. 点击 **检查、安装并启用**。向导安装 `compile-rule-sets.yml`、运行脚本和共用编译器，保存新配置并提交首批任务，成功后立即更新页面中的模式和仓库信息，不保存其他页面草稿。凭据独立加密保存；共享密钥同步为 GitHub Secret `SUBPILOT_ACTIONS_SECRET`，访问地址保存为 `SUBPILOT_URL`。
+3. 为至少一个客户端启用规则来源编排并保存。打开 **系统设置 → Actions 规则编译 → 配置向导**，填写仓库、工作流访问地址和 Token。
+   Token 的初次配置和替换统一通过配置向导完成；已有 Token 时显示星号掩码，保持不变沿用，填写新值则替换。向导在桌面端统一左侧标签、右侧输入框，窄屏改为上下排列；辅助链接紧随对应字段，高级设置中的分支输入框保持相同对齐。Token 下方仅提示选择仓库所有者及目标仓库，不重复列出权限；“申请 Token（预选权限）”链接预选永不过期（受组织有效期策略限制），并预填 Actions、Contents、Secrets 读写及 Workflows 写入权限，仍需在 GitHub 选择仓库所有者并仅授权目标仓库。系统设置中，外层 Actions 标题旁的问号集中提供功能、公开规则、Token 权限和配置向导说明，向导弹窗标题不再显示问号；仅在启用 Actions 编译时显示其配置和操作；Telegram 未填写 Bot Token 时隐藏 Chat ID 和绑定操作。收起配置不会清空已填写的值。
+4. 点击 **检查、安装并启用**。向导安装 `compile-rule-sets.yml`、运行脚本和共用编译器，保存新配置并提交首批任务，成功后立即更新页面中的开关和仓库信息，不保存其他页面草稿。凭据独立加密保存；共享密钥同步为 GitHub Secret `SUBPILOT_ACTIONS_SECRET`，访问地址保存为 `SUBPILOT_URL`。
 5. 建议使用本部署的 workers.dev 地址作为工作流访问地址，避免自定义域名的人机验证。向导只检查格式；真实连通性与触发权限由首次运行验证。
-6. 打开 **查看编译进度**，按 Surge、Clash、sing-box 查看状态；本轮编译尚未确认时临时使用 Worker 备用规则；首选产物确认后，下一次更新订阅配置会自动恢复 Actions，sing-box 从 JSON 切回 SRS。GitHub 接收请求仅表示提交成功，排队和实际执行情况请查看仓库 Actions。
+6. 打开 **查看编译进度**，按 Surge、Clash、sing-box 查看状态；编译期间可使用 Worker 规则；产物确认后，在客户端更新订阅即可切换到 Actions 版本。GitHub 接收请求仅表示提交成功，排队和实际执行情况请查看仓库 Actions。
 
-首次选择 Actions、规则计划变化或编译失败时，缺少匹配的已确认产物就会临时回退普通 Worker，Actions 仍在后台提交或等待编译任务。同一客户端需要的首选产物未全部就绪时，该客户端统一使用普通 Worker 备用规则；其所需备用缓存也必须全部就绪。编译进度分别显示各规则集的备用准备情况，不代表整份订阅已经可用。配置未变化且已有确认产物时，来源刷新或编译失败可沿用该已发布版本。仅当所需首选产物和备用规则都未就绪，或来源、配置存在错误时，订阅更新才需要等待或报错；回退并不保证每次请求都立即成功。
+首次启用、规则计划变化或 Actions 编译失败时，未就绪的规则由 Worker 接管，Actions 提交或回调失败不会阻断 Worker 处理。每个规则集独立选择已确认的远程产物或匹配当前配置的 Worker 缓存，允许同一份订阅混用两者。sing-box 回退时使用 JSON；Actions 确认后，新订阅改用 SRS，已下发的托管 JSON 地址仍返回 JSON，并继续按需刷新。配置未变化且已有确认产物时，来源刷新或编译失败可沿用该已发布版本。关闭开关并保存后统一使用 Worker。
 
-保存规则变更、手动刷新和每日刷新均可触发 Actions。一次任务批量检查三个客户端的规则集，同一来源在该批次内只下载一次；来源内容、编译输入和有效 ASN 数据均未变化时复用已发布产物。需要重新编译时，runner 每批从本部署的认证接口下载一次与 Worker 相同的 WASM 内核，核对安装脚本内固定的 SHA-256 后复用，用于三个客户端的规则聚合及 sing-box SRS 编译。单项失败不阻止其他规则集发布。现有每 5 分钟维护任务检查未完成任务，自动提交间隔为 60 分钟；“重新提交编译”可跳过该间隔。无需额外 GitHub 定时任务。
+Worker 会在有限请求预算内尝试生成缺失的规则；仅当远程产物与本地完整规则都不可用，且来源失败或处理尚未完成时，才返回原有错误或 HTTP `503` 与 `Retry-After`，并继续后台准备。不会仅因 Actions 尚未完成而拒绝订阅，也不会使用与当前规则计划不匹配的旧缓存。
+
+保存规则变更、手动刷新和每日刷新均可触发 Actions。一次任务批量检查三个客户端的规则集，同一来源在该批次内只下载一次；来源内容、编译输入和有效 ASN 数据均未变化时复用已发布产物。sing-box 编译器仅在需要生成 SRS 时下载，且每批只下载一次。单项失败不阻止其他规则集发布。现有每 5 分钟维护任务检查未完成任务，自动提交间隔为 60 分钟；“重新提交编译”可跳过该间隔。无需额外 GitHub 定时任务。
 
 每个规则集的文件和清单以同一次提交原子发布，删除该目录内不再需要的旧分桶文件，保留其他目录；分支冲突会重试，不使用强制推送。Worker 仍校验具体提交中的公开清单；向 Surge、Clash 和 sing-box 输出的规则地址统一使用固定的 `rules` 分支，不包含提交号。规则内容重新编译后，客户端按规则更新周期拉取最新内容，无需更新主配置；从旧提交地址切换或规则目录、分桶发生变化时，仍需更新一次主配置。公开文件和 Git 历史不会因关闭功能或删除规则集而自动移除。
 
-首选编译模式保存在 `settings.ruleCompilationMode`，取值为 `worker`、`wasm` 或 `actions`，默认 `worker`，临时回退不修改此字段。旧配置未带模式且 `actionsCompilation.enabled` 为 `true` 时迁移为 `actions`。`settings.actionsCompilation` 保留仓库和分支，其 `enabled` 字段始终由所选模式同步为 `mode === "actions"`；状态接口为 `GET /api/actions-compilation/status`。工作流文件名由 Worker 固定为 `compile-rule-sets.yml`，页面不再提供文件名设置，安装和触发均忽略客户端传入的旧字段。升级会一次性清理当前 KV 配置中的旧文件名及其失效协议记录，复用已有迁移状态，完成后停止扫描。旧仓库、分支、开关，以及 KV 中保存的加密 Token、共享密钥和访问地址继续沿用；新配置和新凭据记录始终优先，已清除的凭据不会被恢复。原工作流使用其他文件名的部署需通过配置向导安装固定名称的工作流，期间没有可用 Actions 产物时可临时使用 Worker 备用规则。 已启用 Actions 但尚未完成工作流更新时，首次进入管理页面会使用已保存的仓库、访问地址和 Token 自动尝试安装一次，并弹窗显示进度和结果，无需确认。失败时可在向导中修正后重试；选择跳过会保存为普通 Worker 模式，sing-box 使用 JSON 规则。更新成功或切换到其他模式后不再提示，无需额外 KV 提醒标记。
+配置字段统一为 `settings.actionsCompilation`，仅保存启用状态、仓库和分支；状态接口为 `GET /api/actions-compilation/status`。工作流文件名由 Worker 固定为 `compile-rule-sets.yml`，页面不再提供文件名设置，安装和触发均忽略客户端传入的旧字段。升级会一次性清理当前 KV 配置中的旧文件名及其失效协议记录，复用已有迁移状态，完成后停止扫描。旧仓库、分支、开关，以及 KV 中保存的加密 Token、共享密钥和访问地址继续沿用；新配置和新凭据记录始终优先，已清除的凭据不会被恢复。原工作流使用其他文件名的部署需通过配置向导安装固定名称的工作流，期间由 Worker 提供规则。 已启用 Actions 但尚未完成工作流更新时，首次进入管理页面会使用已保存的仓库、访问地址和 Token 自动尝试安装一次，并弹窗显示进度和结果，无需确认。失败时可在向导中修正后重试；选择跳过会保存关闭 Actions 编译并继续由 Worker 提供规则。更新成功或关闭后不再提示，无需额外 KV 提醒标记。
 
-旧数据迁移是一次性升级任务：仅在未完成时借用现有五分钟任务分批推进，持久化新设置并迁移加密凭据和访问地址。读回校验成功并经过至少五分钟传播宽限期后，清理旧 SRS 的凭据、地址、协议标记、任务缓存和发布回执。完成后只读取既有完成状态并立即跳过，不再扫描、解密或清理旧数据；中断时从已保存进度继续。Worker 模式使用的规则正文和正常的三个配置回滚版本保留，无需手动操作 KV。
+旧数据迁移是一次性升级任务：仅在未完成时借用现有五分钟任务分批推进，持久化新设置并迁移加密凭据和访问地址。读回校验成功并经过至少五分钟传播宽限期后，清理旧 SRS 的凭据、地址、协议标记、任务缓存和发布回执。完成后只读取既有完成状态并立即跳过，不再扫描、解密或清理旧数据；中断时从已保存进度继续。仍用于 Worker 回退的规则正文和正常的三个配置回滚版本保留，无需手动操作 KV。
 
 配置旧快照及配置、订阅令牌的冗余迁移标记也只清理一次，完成状态复用现有记录；日常读取配置不再附带旧快照清理。之后更新或清空凭据、保存访问地址时，被替换的迁移记录设置十分钟过期，自动回收，无需长期轮询。五分钟任务仍负责正常的未完成规则编译。
 
-规则计划快照在 KV 中加密保存 24 小时，供 Actions 认证下载；正常 Actions 编译的来源正文由 runner 下载至临时目录，执行结束后清理，不写入仓库；普通 Worker、WASM 及临时回退均加密缓存本地来源与编译结果；Actions 的备用 Worker 缓存独立于其远程产物。Worker 保存 Actions 发布元数据，不存储或代理其产物正文。规则集名称和生成的规则内容会公开，来源地址、Worker 地址和访问凭据不写入产物或任务日志。Token 与共享密钥独立加密保存，不进入配置导出；替换 Token 保留共享密钥，清除后重新配置则须重装工作流。`ADMIN_TOKEN_HASH`、`CONFIG_ENCRYPTION_KEY` 仍由 Worker Secrets 管理。
+规则计划快照在 KV 中加密保存 24 小时，供 Actions 认证下载；正常 Actions 编译的来源正文由 runner 下载至临时目录，执行结束后清理，不写入仓库；Worker 接管时按原有方式加密缓存来源和本地编译结果。Worker 保存 Actions 发布元数据，不存储或代理其产物正文。规则集名称和生成的规则内容会公开，来源地址、Worker 地址和访问凭据不写入产物或任务日志。Token 与共享密钥独立加密保存，不进入配置导出；替换 Token 保留共享密钥，清除后重新配置则须重装工作流。`ADMIN_TOKEN_HASH`、`CONFIG_ENCRYPTION_KEY` 仍由 Worker Secrets 管理。
 
-部署构建会运行 `npm run build:worker`：检查固定版本 WASM 内核及其校验和，将同一文件复制为供认证下载的静态资产，并从共享编译核心生成供配置向导安装的独立 Actions 脚本。已构建的 WASM 模块及校验和随源代码分发并包含在部署产物中，但普通 Worker 模式不会调用它；重新构建它需要 Go 1.25.5 或更高版本，运行和部署不需要 Go 工具链。Actions 脚本生成在被忽略的 `dist/`，内核静态副本生成在被忽略的 `public/vendor/rule-kernel.wasm`，两者均不提交到源仓库；安装依赖时也会自动构建。向导仍只安装工作流及两个 JavaScript 文件，无需把 WASM 二进制写入 GitHub 仓库。Actions 协议升级后需要通过配置向导更新工作流和脚本。
+部署构建会运行 `npm run build:actions`，从共享编译核心生成供配置向导安装的独立脚本。生成文件位于被忽略的 `dist/`，不提交到源仓库；安装依赖时也会自动构建。
 
 工作流模板随 `scripts/compile-rule-sets.yml` 分发，兼容旧版压缩包更新器；配置向导将其安装到目标仓库的 `.github/workflows/`。从 v2.2.2 更新无需手动补充模板，也无需手动执行 KV 迁移命令。
 
@@ -336,7 +323,7 @@ WASM 与 Actions 使用同一份固定版本 WASM 模块：规则合并、去重
 
 ### 更新程序
 
-先阅读 [Release 说明](https://github.com/tnt2ray/subpilot-worker/releases)，保留本地 `wrangler.jsonc` 中的 Worker 名称、KV ID、自定义路由和已有 Secrets。**以下命令会更新程序并部署到配置中的 Worker：**
+先阅读 [Release 说明](https://github.com/tnt2ray/subpilot-worker/releases)，保留本地 `wrangler.jsonc` 和已有 Secrets。**以下命令会更新程序并部署到配置中的 Worker：**
 
 ```bash
 npm run update
@@ -347,7 +334,7 @@ npm run update
 | Git 克隆 | 要求已跟踪文件无改动，再执行 `git pull --ff-only` 更新当前分支。 |
 | Release 发布包 | 优先下载最新 Release 的 `subpilot-worker-vX.Y.Z.tar.gz`，覆盖受管理的程序文件；附件缺失时回退源码包。 |
 
-两种方式都会保留本地 Worker 配置和 Secrets、安装运行依赖并部署。升级脚本会沿用已有的 `RULE_SET_ARTIFACTS` 桶；没有该绑定时不创建 R2，也不影响普通 Worker 或 Actions。以后启用 WASM 时，在项目目录运行 `npm run setup -- --enable-r2`，即可创建私有桶、配置绑定并重新部署。脚本也会保留已有订阅周期并补齐每 5 分钟待办续建任务。`npm run update -- --no-deploy` 仍会更新代码、依赖和本地配置，只跳过最后的 Worker 部署，因此不是只读检查。更新后请核对[定时任务](#缓存与运行边界)。
+两种方式都保留本地 Wrangler 配置、安装运行依赖并部署；安装脚本会在保留已有订阅周期的同时补齐每 5 分钟待办续建任务。`npm run update -- --no-deploy` 仅跳过最后的部署，仍会更新代码、依赖和本地配置，不是只读检查。更新后请核对[定时任务](#缓存与运行边界)。
 
 侧栏“退出登录”下方显示当前版本，检测到新版本时显示绿色“有更新”。版本更新检查默认关闭，可在“系统设置”启用。启用后定时任务每天最多检查一次 GitHub Releases；已绑定 Telegram 时会提醒新版本，同一版本不会重复提醒。
 
@@ -381,19 +368,19 @@ npm run migrate -- --url "https://your-worker.example" --apply
 
 启用的上游订阅定时写入加密缓存，配置生成优先使用缓存；上游失败时尽量沿用已有内容。概览页显示缓存覆盖、更新时间和各项状态，并提供手动刷新。刷新可以部分成功；达到执行截止时间后不再启动新获取或编译任务，失败项单独报告。
 
-规则选择优先使用与当前配置和编译版本匹配的首选产物。普通 Worker 使用 JSON；WASM / Actions 就绪时使用 SRS，否则临时使用独立的 Worker JSON 备用缓存，后台继续准备首选产物。首次生成、规则变更或升级可能同时令首选与备用缓存不可用，此时服务端返回 HTTP `503` 和 `Retry-After`，并在后台分批准备规则；来源或格式错误会按实际原因报错。“订阅检查”也会触发准备并显示当前状态。首选产物恢复后，客户端下一次更新订阅配置自动切回 SRS；已发出的 JSON 下载地址仍返回 JSON。
+未启用 Actions 时，sing-box 配置和托管规则文件下载只读取与当前配置及编译版本匹配的完整 JSON 规则缓存。首次生成、规则变更或升级导致 JSON 缓存失效时，服务端及时返回 HTTP `503` 和 `Retry-After`，并在后台分批生成规则；请按提示稍后再次更新配置。“订阅检查”也会触发准备并显示当前状态，全部必需 JSON 缓存就绪后即返回完整配置。启用 Actions 编译时优先使用已确认的远程产物，未就绪时由 Worker 接管；远程产物确认后更新订阅即可切换。
 
-保存影响规则输出的配置后，系统立即记录 KV 待办并启动后台更新；达到单次执行预算时，未完成项由每 5 分钟定时任务继续处理。关闭管理页或不再更新客户端不会停止待办推进。配置了 R2 时，每 5 分钟任务也会重试持久化队列中的 R2 过期产物清理；该任务不会每 5 分钟重新抓取所有上游。setup/update 只沿用已有 R2 绑定，不会默认创建；启用 R2 沿用现有 `CONFIG_ENCRYPTION_KEY`，无需新增 Worker Secret。
+保存影响规则输出的配置后，系统立即记录 KV 待办并启动后台更新；达到单次执行预算时，未完成项由每 5 分钟定时任务继续处理。关闭管理页或不再更新客户端不会停止待办推进。每 5 分钟任务只处理待办，不会每 5 分钟重新抓取所有上游；无需新增存储绑定或密钥。
 
 每日规则任务检查上游正文的内容摘要（hash），在来源内容、相关配置或编译版本变化、ASN 数据到期，以及缓存缺失时重新编译。正文未变时保留已有来源正文；其他编译输入仍匹配且完整产物可用时跳过重编译。旧版本产物没有来源摘要时，下一次规则检查会补建一次，以建立后续变化判断的依据。批量检查逐源处理，避免同时保留所有来源全文。
 
-以下为普通 Worker、WASM 及临时回退的本地缓存行为；Actions 的重试、日志与远程产物保留方式见上文。
+以下为 Worker 本地编译的缓存行为；Actions 的重试、日志与远程产物保留方式见上文。
 
-后台生成失败的规则会短暂退避后重试，其他规则可继续准备；已识别的来源格式或配置引用错误会在后续订阅检查中显示，并返回 HTTP `422`。普通 Worker 在仅 ASN 数据过期且配置与编译版本仍匹配时，可继续下载已有完整产物，同时在后台更新 ASN 数据；WASM / Actions 则临时使用 Worker 备用规则，等待首选产物恢复。后台 ASN 查询未完成且没有可用旧前缀时，不发布缺少规则的新产物。后台任务有执行预算，大批规则可能需要多轮待办续建才能全部完成。
+后台生成失败的规则会短暂退避后重试，其他规则可继续准备；已识别的来源格式或配置引用错误会在后续订阅检查中显示，并返回 HTTP `422`。如果只是 ASN 数据过期，且配置与编译版本仍匹配，可继续下载已有完整产物，同时在后台更新 ASN 数据。后台 ASN 查询未完成且没有可用旧前缀时，不发布缺少规则的新产物。后台任务有执行预算，大批规则可能需要多轮待办续建才能全部完成。
 
-规则来源按 URL 共用一份完整加密缓存；订阅源按 URL 与实际 User-Agent 共用一份。成功获取的新内容覆盖原内容，不保存来源历史。R2 可用时首选编译产物写入独立版本后切换当前指针并清理旧对象；未配置 R2 时，普通 Worker 版本保存在 KV。备用 Worker 缓存始终与首选产物分开保存在 KV。边缘缓存按固定地址覆盖，并校验版本。
+规则来源按 URL 共用一份完整加密缓存；订阅源按 URL 与实际 User-Agent 共用一份。成功获取的新内容覆盖原内容，不保存来源历史。编译产物在新版本完整写入后清理旧版本，仅保留最新成功版本；边缘缓存按固定地址覆盖，并校验版本。
 
-删除规则集、来源或修改下载地址并保存后，后台清理失去生效引用的来源缓存、元数据和已启用的 R2 编译产物；仍被其他规则或客户端引用的缓存保留。未被任何规则条目引用的来源配置同时移除。历史缓存会在保存或刷新时自动清理；R2 删除调用同步执行，失败项由 KV 持久清理队列重试。边缘节点中的旧缓存副本受缓存有效期约束，下载入口读取到已保存的新配置后，不再使用已删除规则的副本。
+删除规则集、来源或修改下载地址并保存后，后台清理失去生效引用的来源缓存、元数据和编译产物；仍被其他规则或客户端引用的缓存保留。未被任何规则条目引用的来源配置同时移除。历史缓存会在保存或刷新时自动清理，无需 KV 数据结构迁移或额外部署步骤。边缘节点中的旧缓存副本受缓存有效期约束，下载入口读取到已保存的新配置后，不再使用已删除规则的副本。
 
 本地 `wrangler.jsonc` 的三个定时任务示例：
 
@@ -419,9 +406,7 @@ npm run migrate -- --url "https://your-worker.example" --apply
 | 单个远程输入 | 订阅源 4 MiB；Worker 或 Actions 下载的文本规则源 16 MiB，为加密存储及内存预留空间；客户端直连来源不受此限制 |
 | 单个订阅源 | 2,500 个节点、5,000 条 Host |
 | 所有订阅源合计 | 10,000 个节点、20,000 条 Host；最终输出最多 15,000 个节点 |
-| 普通 Worker 规则编译 | 不设规则条数上限；仍受来源大小、运行资源与产物存储容量约束 |
-| WASM / Actions 结构化聚合 | 输入和输出各最多 8 MiB；超过限制时使用普通 Worker 备用规则，首选模式保持不变 |
-| 单个 SRS 产物 | 最多 24 MiB |
+| 单个规则输出编译 | 不设输入字符总量或规则条数上限；仍受运行资源与产物存储容量约束 |
 | 最终客户端配置 | 最多 8 × 1024 × 1024 个字符 |
 | GeoIP 地区补全 | 每次生成最多查询 100 个不同 IP |
 | 规则覆盖诊断 | 最多展开 24 个外部源，合计 8 × 1024 × 1024 个字符和 5,000 条规则 |
@@ -482,10 +467,7 @@ npm run migrate -- --url "https://your-worker.example" --apply
 | Worker 名称、KV namespace ID、自定义域名 | 未跟踪的本地 `wrangler.jsonc` |
 | 管理员 token 的 SHA-256 hash | Worker Secret `ADMIN_TOKEN_HASH`，不保存 token 明文 |
 | 配置加密密钥 | Worker Secret `CONFIG_ENCRYPTION_KEY` |
-| 配置快照、上游正文、Bot Token、可恢复读取 token | 加密的 Workers KV 数据 |
-| Worker 编译清单、版本索引与持久清理队列 | Workers KV；启用 R2 时另存加密的 R2 当前版本指针 |
-| 普通 Worker 编译的 Surge/Clash 文本规则与 sing-box JSON | 默认加密保存在 Workers KV；配置 R2 后可改存私有桶 |
-| WASM 编译的 sing-box SRS | 使用 `CONFIG_ENCRYPTION_KEY` 加密的私有 R2 桶（WASM 的可选依赖） |
+| 配置快照、上游与规则缓存、Worker 编译的 JSON/文本规则、Bot Token、可恢复读取 token | 加密的 Workers KV 数据 |
 | 选配 GitHub Actions 生成的规则产物 | 公开 GitHub 仓库的固定 `rules` 分支，按客户端分目录 |
 | Actions 工作流触发 token、共享密钥 | 独立加密 KV 记录；共享密钥另存于 Actions Secret |
 | 管理员会话 | HttpOnly 签名 Cookie，不创建 `session:*` KV 键 |

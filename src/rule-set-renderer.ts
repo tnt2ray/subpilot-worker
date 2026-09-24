@@ -6,14 +6,13 @@ import type { RuleSetBucket, RuleSetOutputTarget } from "./rule-set-types";
 export function renderCompiledRuleSetBucket(
   rules: CompiledRuleSetRule[],
   bucket: RuleSetBucket,
-  target: RuleSetOutputTarget,
-  mergeValues = true
+  target: RuleSetOutputTarget
 ): string {
   const compatible = rules.flatMap((rule) => {
     const rendered = renderRuleSetRuleForTarget(rule.raw, target);
     return rendered ? [rendered === rule.raw ? rule : { ...rule, raw: rendered }] : [];
   });
-  if (target === "sing-box") return renderSingboxRules(compatible, mergeValues);
+  if (target === "sing-box") return renderSingboxRules(compatible);
   if (target === "surge") return renderSurgeRuleSetBucket(compatible, bucket);
   return renderClashLikeRuleSetBucket(compatible, bucket);
 }
@@ -21,8 +20,7 @@ export function renderCompiledRuleSetBucket(
 export function renderCombinedRuleSet(
   buckets: Record<RuleSetBucket, CompiledRuleSetRule[]>,
   target: RuleSetOutputTarget,
-  options: { includesDomains: boolean; includesIpCidr: boolean },
-  mergeValues = true
+  options: { includesDomains: boolean; includesIpCidr: boolean }
 ): string {
   const rules = [
     ...(options.includesDomains ? buckets.domain : []),
@@ -32,7 +30,7 @@ export function renderCombinedRuleSet(
     const rendered = renderRuleSetRuleForTarget(rule.raw, target);
     return rendered ? [rendered === rule.raw ? rule : { ...rule, raw: rendered }] : [];
   });
-  if (target === "sing-box") return renderSingboxRules(rules, mergeValues);
+  if (target === "sing-box") return renderSingboxRules(rules);
   if (target === "surge") return `${rules.map((rule) => rule.raw).join("\n")}\n`;
   return renderYamlPayload(rules.map((rule) => rule.raw));
 }
@@ -73,10 +71,7 @@ function normalizeDomain(value: string): string {
   return value.trim().replace(/^\+\./, "").replace(/^\*\./, "").replace(/^\./, "").replace(/\.$/, "").toLowerCase();
 }
 
-export function renderSingboxRules(rules: CompiledRuleSetRule[], mergeValues = true): string {
-  // WASM/Actions only translate individual rules here. The shared kernel owns
-  // field aggregation and value deduplication before writing the binary SRS.
-  if (!mergeValues) return JSON.stringify({ version: 4, rules: rules.map((rule) => convertRule(rule.raw, true).rule!) }) + "\n";
+export function renderSingboxRules(rules: CompiledRuleSetRule[]): string {
   // Merge values only within the same field. Separate headless rules retain OR
   // semantics across fields such as process_name, domain_suffix and ip_cidr.
   const groups = new Map<string, unknown[]>();

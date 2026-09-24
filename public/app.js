@@ -5,7 +5,7 @@ import { newTailscaleNode, tailscaleForm, updateTailscaleForm, readTailscaleForm
 import { createSingboxForm, createSingboxGroupForm, singboxSections, singboxTitle } from "./singbox-ui.js";
 import { createClashRoutingUi } from "./clash-routing-ui.js";
 import { validateActionsCompilationSettings } from "./app-validation.js";
-import { CLIENTS, NAV, LABELS, CLIENT_SECTIONS, RULE_FIELDS, LEGACY_RULE_FIELDS, getPath, getRuleCompilationMode, setPath, splitRule } from "./app-model.js";
+import { CLIENTS, NAV, LABELS, CLIENT_SECTIONS, RULE_FIELDS, LEGACY_RULE_FIELDS, getPath, setPath, splitRule } from "./app-model.js";
 const $ = (selector, root = document) => root.querySelector(selector);
 const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
 const state = { config: null, saved: "", page: "status", client: "surge", section: "network", lang: localStorage.getItem("subpilot-language") || "zh", invalid: /* @__PURE__ */ new Map(), busy: false, migration: false, migrationData: null, stats: null, requestPage: 0, refreshingSources: false, system: null };
@@ -123,7 +123,7 @@ function field(path, value, options = {}) {
   const common = `id="${id}" data-field="${esc(path)}" ${state.invalid.has(path) ? 'aria-invalid="true"' : ""}`;
   if (typeof value === "boolean") control = `<input class="toggle" type="checkbox" ${common} ${value ? "checked" : ""} ${options.disabled ? "disabled" : ""}>`;
   else if (typeof value === "number") control = `<input type="number" ${common} data-kind="number" value="${esc(value)}">`;
-  else if (options.options) control = `<select ${common}>${options.options.map((item) => `<option value="${esc(item)}" ${item === value ? "selected" : ""}>${esc(options.optionLabels?.[item] || item)}</option>`).join("")}</select>`;
+  else if (options.options) control = `<select ${common}>${options.options.map((item) => `<option value="${esc(item)}" ${item === value ? "selected" : ""}>${esc(item)}</option>`).join("")}</select>`;
   else if (isTextList(key, value)) control = `<textarea ${common} data-kind="lines" rows="${Math.min(8, Math.max(3, value.length))}" spellcheck="false">${esc(value.join("\n"))}</textarea><div class="help">${esc(options.help || t("每行一项", "One item per line"))}</div>`;
   else if (value && typeof value === "object") control = `<textarea ${common} data-kind="json" class="code" rows="${Math.min(13, Math.max(4, JSON.stringify(value, null, 2).split("\n").length))}" spellcheck="false">${esc(JSON.stringify(value, null, 2))}</textarea><div class="help">JSON · ${t("保留完整原生字段", "Preserves native fields")}</div>`;
   else if (options.multiline || String(value).includes("\n")) control = `<textarea ${common} data-kind="text" class="code" rows="${options.rows || 7}" spellcheck="false">${esc(value)}</textarea>`;
@@ -725,20 +725,15 @@ function renderLinks() {
 }
 function renderActionsCompilationSettings() {
   const options = state.config.settings.actionsCompilation || { enabled: false, repository: "", ref: "main" };
-  const mode = getRuleCompilationMode(state.config.settings);
   const path = "settings.actionsCompilation";
-  const wasmR2Unavailable = mode === "wasm" && state.system?.ruleArtifacts?.r2Configured === false;
   return `<section class="section"><div class="section-heading"><div class="help-title">
-      <h2>${t("规则编译", "Rule compilation")}</h2>
+      <h2>${t("Actions 规则编译（选配）", "Actions rule compilation (optional)")}</h2>
       <details class="settings-help">
-        <summary aria-label="${t("了解规则编译模式", "About rule compilation modes")}"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 0 1 5 0c0 1.7-2.5 1.8-2.5 3.5M12 16v.1"/></svg></summary>
+        <summary aria-label="${t("了解 Actions 规则编译", "About Actions rule compilation")}"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 0 1 5 0c0 1.7-2.5 1.8-2.5 3.5M12 16v.1"/></svg></summary>
         <div class="settings-help-content">
-          <p>${t("选择一种首选编译模式，保存后生效。普通 Worker 为默认模式，生成 sing-box JSON；WASM 在 Worker 内编译 sing-box SRS；Actions 在 GitHub 编译 SRS。Surge 和 Clash 在三种模式下均使用文本规则。", "Choose one preferred compilation mode and save to apply it. Standard Worker is the default and produces sing-box JSON; WASM compiles sing-box SRS inside the Worker; Actions compiles SRS on GitHub. Surge and Clash use text rules in all three modes.")}</p>
-          <p>${t("WASM 与 Actions 使用同一个 WASM 内核完成规则合并、去重、重新分桶和 SRS 编译；本地 WASM 产物加密保存在 R2，Actions 产物发布到 GitHub。", "WASM and Actions use the same WASM kernel for merging, deduplication, rebucketing and SRS compilation. Local WASM artifacts are encrypted in R2; Actions artifacts are published to GitHub.")}</p>
-          <p>${t("WASM 或 Actions 编译失败、产物未就绪时，临时使用普通 Worker 备用规则；所选模式保持不变，首选产物就绪后自动恢复使用。备用缓存独立存储，不覆盖首选产物。Worker 也需要准备缓存，来源失败或缓存未就绪时仍可能暂时无法更新订阅。", "If WASM or Actions fails or its artifacts are pending, Standard Worker provides fallback rules. Your selected mode stays unchanged, and ready preferred artifacts are used automatically. Fallback caches are stored separately and do not replace preferred artifacts. Worker caches also need preparation; source errors or pending caches can temporarily prevent subscription updates.")}</p>
-          <p>${t("sing-box 回退时使用 JSON，恢复首选 SRS 会在客户端下一次更新订阅配置时生效。已发出的 JSON 地址始终返回 JSON；旧 SRS 地址没有可用二进制产物时会提示更新订阅配置。", "sing-box uses JSON during fallback and returns to preferred SRS on the client's next subscription configuration update. Previously issued JSON URLs keep returning JSON; old SRS URLs without usable binary artifacts request a subscription configuration update.")}</p>
-          <p>${t("选择 Actions 可将大规则集的编译交给 GitHub，减轻 Worker 处理压力。切换模式会保留已填写的仓库、分支和凭据。", "Actions moves large rule-set compilation to GitHub to reduce Worker load. Switching modes preserves the repository, branch and credentials.")}</p>
-          <p>${t("Actions 编译结果保存在公开 GitHub 仓库，规则内容会公开。", "Actions artifacts are stored in a public GitHub repository, so their contents are public.")}</p>
+          <p>${t("将规则编译交给 GitHub Actions，减轻 Worker 处理大规则集时的超时压力。", "Offload rule compilation to GitHub Actions to reduce Worker timeouts when processing large rule sets.")}</p>
+          <p>${t("支持 Surge 文本规则、Clash YAML 和 sing-box SRS。未启用或产物未就绪时，由 Worker 处理并提供规则。", "Supports Surge text rules, Clash YAML and sing-box SRS. The Worker processes and serves rules when Actions is disabled or artifacts are not ready.")}</p>
+          <p>${t("编译结果保存在公开 GitHub 仓库，规则内容会公开。", "Compiled rules are stored in a public GitHub repository, so their contents are public.")}</p>
           <p>${t("GitHub Token 仅选择目标仓库，授予 Actions、Contents、Workflows、Secrets 读写权限。同一个 Token 用于安装与日常编译，加密保存在 KV；启用期间请勿撤销。", "Limit the GitHub token to the target repository and grant Actions, Contents, Workflows and Secrets read/write access. The same token is used for installation and ongoing compilation, stored encrypted in KV; keep it valid while Actions compilation is enabled.")}</p>
           <p>${t("按顺序完成检查、安装和启用。仓库文件公开；凭据仅保存为加密数据或 GitHub Secrets。不会保存其他页面的草稿。", "Check, install and enable in order. Repository files are public; credentials remain encrypted or in GitHub Secrets. Other page drafts are not saved.")}</p>
           <p class="help">${t("自动填入上次成功安装时使用的地址。建议填写本部署的 workers.dev 地址，避免自定义域名的人机验证；首次升级后如果地址为空，请重新填写一次。仅检查地址格式，不检查连通性；请确认地址属于本部署。实际连接由 GitHub Action 执行。", "Uses the address from the last successful installation. Prefer this deployment's workers.dev address to avoid custom-domain bot challenges. If the field is empty after upgrading, enter it once. Only address format is checked, not connectivity; ensure it belongs to your deployment. GitHub Actions makes the actual connection.")}</p>
@@ -746,9 +741,8 @@ function renderActionsCompilationSettings() {
         </div>
       </details>
     </div></div>`
-    + field("settings.ruleCompilationMode", mode, { label: t("首选编译模式", "Preferred compilation mode"), options: ["worker", "wasm", "actions"], optionLabels: { worker: t("普通 Worker（JSON，默认）", "Standard Worker (JSON, default)"), wasm: t("WASM（Worker 内编译 SRS）", "WASM (SRS inside Worker)"), actions: "GitHub Actions (SRS)" } })
-    + `<div id="wasm-r2-notice" class="notice warning" role="status" ${wasmR2Unavailable ? "" : "hidden"}><strong>${t("WASM 尚未启用", "WASM is not enabled yet")}</strong><p>${t("此部署尚未配置 R2。WASM 仍会保留为首选模式，当前由普通 Worker 提供回退规则（sing-box 使用 JSON）。在部署项目目录运行", "This deployment has no R2 binding. WASM remains the preferred mode while Standard Worker provides fallback rules (sing-box uses JSON). From the project directory used to deploy this Worker, run")}</p><p><code>npm run setup -- --enable-r2</code></p><p>${t("setup 会创建私有 R2 桶、写入 RULE_SET_ARTIFACTS 绑定并重新部署；完成后 WASM 会自动恢复。自定义桶名可通过 SUBPILOT_RULE_SET_ARTIFACTS_BUCKET 指定。", "Setup creates a private R2 bucket, adds the RULE_SET_ARTIFACTS binding and redeploys. WASM resumes automatically afterward. Set SUBPILOT_RULE_SET_ARTIFACTS_BUCKET to use a custom bucket name.")}</p></div>`
-    + `<div id="actions-compiler-settings" ${mode === "actions" ? "" : "hidden"}>`
+    + field(`${path}.enabled`, options.enabled, { label: t("启用 Actions 规则编译", "Enable Actions rule compilation") })
+    + `<div id="actions-compiler-settings" ${options.enabled ? "" : "hidden"}>`
     + field(`${path}.repository`, options.repository, { label: t("公开 GitHub 仓库（owner/repo）", "Public GitHub repository (owner/repo)") })
     + field(`${path}.ref`, options.ref, { label: t("工作流分支（仓库默认分支）", "Workflow branch (repository default)") })
     + `<div class="toolbar">${btn(t("配置向导", "Setup wizard"), "actions-setup", "", "primary")}${btn(t("查看编译进度", "View compilation progress"), "actions-progress")}</div>`
@@ -785,16 +779,16 @@ async function showActionsProgress() {
   const heading = !status.enabled ? t("尚未启用 Actions 编译", "Actions compilation is not enabled")
     : !hasOutputs ? t("暂无需要编译的规则集", "No rule sets need compilation")
     : allReady ? t("Actions 产物全部就绪", "All Actions artifacts are ready") : t("Actions 编译进度", "Actions compilation progress");
-  const description = !status.enabled ? t("当前使用已保存的普通 Worker 或 WASM 模式。可在系统设置中选择 Actions 并通过配置向导启用。", "The saved mode is Standard Worker or WASM. Select Actions in System settings and enable it through the setup wizard.")
+  const description = !status.enabled ? t("当前由 Worker 处理规则。可在系统设置中通过配置向导启用 Actions 规则编译。", "Rules are currently processed by the Worker. Enable Actions rule compilation through the setup wizard in System settings.")
     : !hasOutputs ? t("当前已保存配置中，没有需要合并或转换的规则集。请检查各客户端的规则来源编排。", "The saved configuration has no rule sets requiring merging or conversion. Check the rule plans for each client.")
-    : allReady ? t("下一次更新客户端订阅配置时会自动使用已发布的 Actions 规则；sing-box 将从备用 JSON 恢复为 SRS。", "The next client subscription configuration update automatically uses published Actions rules; sing-box returns from fallback JSON to SRS.")
-    : t("Actions 正在处理或确认结果。缺少可用 Actions 产物时临时使用普通 Worker 备用规则，所选模式保持不变；产物就绪后，下次更新订阅配置会自动恢复 Actions。", "Actions processing or publication confirmation is pending. Standard Worker provides fallback rules when usable Actions artifacts are missing, without changing your selected mode. Ready Actions artifacts are used on the next subscription configuration update.");
+    : allReady ? t("在对应客户端中更新订阅，即可使用已发布的规则集。", "Update the subscription in each client to use the published rule sets.")
+    : t("Actions 正在后台处理或确认结果。未就绪的规则由 Worker 处理，更新订阅无需等待 Actions 完成。", "Actions processing or publication confirmation is pending. The Worker handles unready rule sets, so subscription updates do not need to wait for Actions.");
   const renderRow = (output) => {
     const stage = actionsProgressStage(output);
     return `<li class="actions-progress-item"><div class="actions-progress-item-heading"><strong>${esc(output.name)}</strong><span class="actions-progress-state ${stage.tone}">${esc(stage.label)}</span></div>
       ${stage.description ? `<p class="actions-progress-description">${esc(stage.description)}</p>` : ""}
-      ${output.hasPublishedVersion && output.state !== "complete" ? `<p class="help">${t("已有上次产物；本次刷新未确认期间临时使用普通 Worker 备用规则。", "Previous artifacts exist; Standard Worker fallback is selected until this refresh is confirmed.")}</p>` : ""}
-      ${output.state !== "complete" ? `<p class="help">${output.workerFallbackReady ? t("该规则集的普通 Worker 备用规则已就绪，sing-box 使用 JSON；同一客户端需要的备用规则全部就绪后即可更新订阅。", "This rule set's Standard Worker fallback is ready, using JSON for sing-box. Subscription updates require all fallback rules needed by this client to be ready.") : t("该规则集的 Worker 备用规则也在准备，订阅更新可能需要稍后重试；来源失败时请查看订阅检查。", "Worker fallback rules for this set are also pending. Subscription updates may need a retry; check Subscription check for source errors.")}</p>` : ""}
+      ${output.hasPublishedVersion && output.state !== "complete" ? `<p class="help">${t("刷新期间可继续使用已发布的规则。", "Previously published rules remain available during refresh.")}</p>` : ""}
+      ${!output.hasPublishedVersion ? `<p class="help">${output.workerFallbackReady ? t("当前由 Worker 缓存提供规则，订阅可继续使用。", "Worker-cached rules are available for subscriptions.") : t("Worker 将按需准备规则，无需等待 Actions 产物。", "The Worker prepares rules on demand without waiting for Actions artifacts.")}</p>` : ""}
       ${output.lastAttemptAt ? `<p class="help actions-progress-attempt">${t("最近提交尝试", "Last submission attempt")}: ${esc(formatDate(output.lastAttemptAt))}</p>` : ""}</li>`;
   };
   const rows = ["surge", "clash", "sing-box"].map((target) => {
@@ -812,13 +806,10 @@ async function showActionsProgress() {
   $('#modal-actions [data-action="close-modal"]').textContent = t("关闭", "Close");
 }
 function applyActionsSettings(settings) {
-  const mode = getRuleCompilationMode(settings);
-  state.config.settings.actionsCompilation = settings.actionsCompilation;
-  state.config.settings.ruleCompilationMode = mode;
+  state.config.settings.actionsCompilation = settings;
   if (state.saved) {
     const baseline = JSON.parse(state.saved);
-    baseline.settings.actionsCompilation = settings.actionsCompilation;
-    baseline.settings.ruleCompilationMode = mode;
+    baseline.settings.actionsCompilation = settings;
     state.saved = JSON.stringify(baseline);
   }
   const section = $("#actions-compiler-settings")?.closest("section");
@@ -833,12 +824,12 @@ async function skipActionsUpgrade() {
   try {
     const current = await api("/api/config");
     const settings = { ...current.settings.actionsCompilation, enabled: false };
-    const updated = await api("/api/config", { method: "PATCH", body: JSON.stringify({ version: 3, settings: { ruleCompilationMode: "worker", actionsCompilation: settings } }) });
-    applyActionsSettings(updated.settings);
+    const updated = await api("/api/config", { method: "PATCH", body: JSON.stringify({ version: 3, settings: { actionsCompilation: settings } }) });
+    applyActionsSettings(updated.settings.actionsCompilation);
     modal.actionsUpgradeRequired = false;
     modal.skippingActionsUpgrade = false;
     closeModal();
-    toast(t("已切换为普通 Worker 模式，sing-box 使用 JSON 规则。", "Switched to Standard Worker mode. sing-box uses JSON rules."));
+    toast(t("已关闭 Actions 规则编译，继续由 Worker 提供规则。", "Actions rule compilation is disabled. The Worker continues serving rules."));
   } catch (error) {
     toast(t("关闭未保存，请重试：", "Disabling was not saved. Please retry: ") + error.message);
   } finally {
@@ -847,7 +838,7 @@ async function skipActionsUpgrade() {
   }
 }
 async function checkActionsUpgrade() {
-  if (state.migration || getRuleCompilationMode(state.config.settings) !== "actions") return;
+  if (state.migration || !state.config.settings.actionsCompilation?.enabled) return;
   try {
     const status = await api("/api/actions-compilation/status");
     if (!status.enabled || status.workflowReady !== false) return;
@@ -869,7 +860,7 @@ async function showActionsSetup({ automatic = false } = {}) {
   const callbackOrigin = status.callbackOrigin || (/^[a-z0-9-]+\.[a-z0-9-]+\.workers\.dev$/.test(location.hostname) ? location.origin : "");
   modal(t("Actions 规则编译配置向导", "Actions rule compilation setup wizard"),
     `<div class="actions-setup-form">
-    ${automatic ? `<p class="actions-setup-notice" role="status">${t("检测到 Actions 工作流需要更新，正在使用已保存的配置自动安装。安装失败时可修正后重试；选择跳过将保存为普通 Worker 模式，sing-box 使用 JSON 规则。", "The Actions workflow needs updating. Installing automatically with your saved settings. If installation fails, correct the settings and retry, or skip to save Standard Worker mode with JSON rules for sing-box.")}</p>` : ""}
+    ${automatic ? `<p class="actions-setup-notice" role="status">${t("检测到 Actions 工作流需要更新，正在使用已保存的配置自动安装。安装失败时可修正后重试；选择跳过将关闭 Actions 规则编译，继续由 Worker 提供规则。", "The Actions workflow needs updating. Installing automatically with your saved settings. If installation fails, correct the settings and retry, or skip to disable Actions compilation and keep the Worker serving rules.")}</p>` : ""}
     <div class="actions-setup-row">
       <label for="actions-setup-repo">${t("公开仓库", "Public repository")}</label>
       <div class="actions-setup-field">
@@ -935,8 +926,8 @@ async function showActionsSetup({ automatic = false } = {}) {
           const [zh, en] = step.split(" / ");
           report(t(zh, en === "configured" ? `${zh.split(" ")[0]} configured` : en || zh));
         }
-        const updated = await api("/api/config", { method: "PATCH", body: JSON.stringify({ version: 3, settings: { ruleCompilationMode: "actions", actionsCompilation: next } }) });
-        applyActionsSettings(updated.settings);
+        const updated = await api("/api/config", { method: "PATCH", body: JSON.stringify({ version: 3, settings: { actionsCompilation: next } }) });
+        applyActionsSettings(updated.settings.actionsCompilation);
         modal.actionsUpgradeRequired = false;
         status.dispatchTokenConfigured = true;
         report(t("已启用并保存。后台将向 Actions 提交规则处理任务；关闭窗口后可查看各客户端进度。", "Enabled and saved. Rule processing will be submitted to Actions; close this dialog to view progress for each client."));
@@ -1024,10 +1015,7 @@ function renderSystem() {
 }
 function updateSystemSettingsVisibility() {
   const actions = $("#actions-compiler-settings");
-  const mode = getRuleCompilationMode(state.config.settings);
-  if (actions) actions.hidden = mode !== "actions";
-  const wasmNotice = $("#wasm-r2-notice");
-  if (wasmNotice) wasmNotice.hidden = mode !== "wasm" || state.system?.ruleArtifacts?.r2Configured !== false;
+  if (actions) actions.hidden = !state.config.settings.actionsCompilation?.enabled;
   const telegram = $("#telegram-settings");
   if (telegram) telegram.hidden = !state.config.settings.notificationTelegramBotToken?.trim();
 }
@@ -1517,7 +1505,7 @@ function confirmDelete(message, operation) {
 }
 async function save() {
   if (state.invalid.size || state.busy) return;
-  const actionsError = validateActionsCompilationSettings(state.config.settings.actionsCompilation, state.lang, getRuleCompilationMode(state.config.settings));
+  const actionsError = validateActionsCompilationSettings(state.config.settings.actionsCompilation, state.lang);
   if (actionsError) throw Error(actionsError);
   state.busy = true;
   updateStatus();
@@ -1597,7 +1585,7 @@ async function refreshStatus() {
   }
   if (values[1].status === "fulfilled") state.system = values[1].value;
   renderSidebarVersion();
-  if (["status", "system"].includes(state.page)) render();
+  if (state.page === "status") render();
 }
 async function action(button) {
   if (["client", "section", "add-rule", "edit-rule", "add-direct", "edit-direct", "add-output", "edit-output", "add-group", "edit-group", "add-tailscale", "edit-tailscale", "edit-singbox-section"].includes(button.dataset.action)) await loadSharedProxyNames().catch((error) => toast(error.message));
@@ -1968,15 +1956,14 @@ document.addEventListener("input", (event) => {
     } else if (input.dataset.kind === "lines") value = value.split("\n").map((line) => line.trim()).filter(Boolean);
     else if (input.dataset.kind === "json") value = JSON.parse(value);
     if (path.startsWith("clients.singbox")) validateNativeShape(value, path);
-    if ((path === "settings.ruleCompilationMode" || path.startsWith("settings.actionsCompilation.")) && !isObject(state.config.settings.actionsCompilation)) {
+    if (path.startsWith("settings.actionsCompilation.") && !isObject(state.config.settings.actionsCompilation)) {
       state.config.settings.actionsCompilation = { enabled: false, repository: "", ref: "main" };
     }
     setPath(state.config, path, value);
-    if (path === "settings.ruleCompilationMode") state.config.settings.actionsCompilation.enabled = value === "actions";
     state.invalid.delete(path);
     input.removeAttribute("aria-invalid");
     changed();
-    if (["settings.ruleCompilationMode", "settings.notificationTelegramBotToken"].includes(path)) updateSystemSettingsVisibility();
+    if (["settings.actionsCompilation.enabled", "settings.notificationTelegramBotToken"].includes(path)) updateSystemSettingsVisibility();
   } catch {
     state.invalid.set(path, input.value);
     input.setAttribute("aria-invalid", "true");

@@ -12,8 +12,6 @@ import { refreshRuleSetCaches, type RuleSetRefreshResult } from "./rule-set-comp
 import { allCompiledRuleSetSources, refreshRuleSetSourceCaches } from "./rule-set-cache";
 import { configDocument, renderConfig, OUTPUT_TARGETS } from "./config-document";
 import { ruleSetEnv } from "./rule-set-scope";
-import { ruleCompilationMode } from "./rule-compilation-mode";
-import { createRuleSetPublicationGuard } from "./rule-set-publication";
 import { refreshSourceCache } from "./source-cache";
 import { formatSourceCacheStatusLines } from "./source-cache-format";
 import { fetchWithTimeout } from "./upstream-fetch";
@@ -281,21 +279,18 @@ function scheduleTelegramRuleSetRefresh(
   if (!token) return;
   ctx.waitUntil((async () => {
     try {
-      if (ruleCompilationMode(config) === "actions") {
+      if (config.settings.actionsCompilation?.enabled) {
         try {
           await ensureActionsCompilation(env, config, { force: true, refresh: true, deadline });
-          await sendTelegramBotMessage(token, chatId, "已提交 Actions 编译请求；产物未就绪时临时使用普通 Worker，Actions 就绪后在下次更新订阅配置时自动恢复。");
+          await sendTelegramBotMessage(token, chatId, "已提交 Actions 编译请求；远程产物未就绪的规则由 Worker 处理，请在管理页查看编译进度。");
         } catch {
-          await sendTelegramBotMessage(token, chatId, "Actions 请求暂未确认，请在管理页查看状态并重试；订阅将临时使用普通 Worker 备用规则，首选模式保持不变。");
+          await sendTelegramBotMessage(token, chatId, "Actions 请求暂未确认，Worker 将继续处理未就绪的规则，后台会重试 Actions。");
         }
-        return;
       }
-      const sourceRefresh = await refreshRuleSetSourceCaches(env, config, allCompiledRuleSetSources(config), { deadline, pruneUnexpected: true });
+      const sourceRefresh = config.settings.actionsCompilation?.enabled ? undefined
+        : await refreshRuleSetSourceCaches(env, config, allCompiledRuleSetSources(config), { deadline, pruneUnexpected: true });
       for (const target of targets) {
-        const selected = renderConfig(document, target);
-        const result = await refreshRuleSetCaches(ruleSetEnv(env, target), selected, undefined, {
-          deadline, sourceRefresh, canPublish: createRuleSetPublicationGuard(env, selected)
-        });
+        const result = await refreshRuleSetCaches(ruleSetEnv(env, target), renderConfig(document, target), undefined, { deadline, ...(sourceRefresh ? { sourceRefresh } : { skipActionsDispatch: true }) });
         await sendTelegramBotMessage(token, chatId, `${target}\n${formatTelegramRuleSetRefreshResultMessage(result, config.settings.displayTimeZone)}`);
       }
     } catch (error) {

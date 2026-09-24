@@ -6,7 +6,6 @@ import { ruleSetEnv } from "./rule-set-scope";
 import type { RuleSetOutput } from "./rule-set-types";
 import { createSingboxAsnResolver } from "./singbox-asn";
 import type { RenderConfig, Target } from "./types";
-import { ruleCompilationMode } from "./rule-compilation-mode";
 
 export const RULE_SET_REBUILD_CRON = "*/5 * * * *";
 const JOB_PREFIX = "cache:ruleSetJob:";
@@ -41,7 +40,7 @@ export async function queueChangedRuleSetUpdates(
     for (const output of compilationOutputs(selected)) {
       const fingerprint = await ruleSetOutputFingerprint(selected, output);
       const old = previousOutputs.get(output.name);
-      const processorChanged = ruleCompilationMode(previous) !== ruleCompilationMode(selected);
+      const processorChanged = JSON.stringify(previous.settings.actionsCompilation) !== JSON.stringify(selected.settings.actionsCompilation);
       if (old && !processorChanged && await ruleSetOutputFingerprint(previous, old) === fingerprint) continue;
       jobs.push(await writeJob(env, target, output.name, fingerprint));
     }
@@ -77,11 +76,6 @@ export async function runRuleSetUpdateJobs(
       const current = first && options.jobs ? config : await options.loadCurrentConfig();
       first = false;
       const selected = renderConfig(configDocument(current), job.target);
-      if (ruleCompilationMode(selected) === "actions") {
-        // A new local-compiler job can become visible before its mode change.
-        if (Date.now() - job.createdAt >= CONFIG_VISIBILITY_GRACE_MS) await removeJob(env, job);
-        continue;
-      }
       const output = compilationOutputs(selected).find((item) => item.name === job.outputName);
       if (!output || await ruleSetOutputFingerprint(selected, output) !== job.fingerprint) {
         // A cron location can briefly observe the job before the saved config.
@@ -136,7 +130,7 @@ async function jobMatchesConfig(job: RuleSetRebuildJob, config: RenderConfig): P
 }
 
 function compilationOutputs(config: RenderConfig): RuleSetOutput[] {
-  if (config.ruleSets.mode !== "compiled" || ruleCompilationMode(config) === "actions") return [];
+  if (config.ruleSets.mode !== "compiled") return [];
   return effectiveRuleSetOutputs(config.ruleSets).filter((output) => output.enabled
     && ruleSetOutputNeedsCompilation(config.ruleSets, output, config.renderTarget ?? "surge"));
 }

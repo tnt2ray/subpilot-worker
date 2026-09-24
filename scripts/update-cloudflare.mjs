@@ -28,7 +28,6 @@ const MANAGED_PATHS = [
   "src",
   "test",
   "tsconfig.json",
-  "wasm",
   "wrangler.example.jsonc"
 ];
 

@@ -3,10 +3,10 @@ const URL_REWRITE_TYPES = new Set(["header", "302", "reject"]);
 const MAP_LOCAL_DATA_TYPES = new Set(["file", "text", "tiny-gif", "base64"]);
 const STASH_SCRIPT_TYPES = new Set(["http-request", "http-response"]);
 
-export function validateActionsCompilationSettings(value, language = "zh", mode = value?.enabled ? "actions" : "worker") {
-  if (mode !== "actions") return null;
+export function validateActionsCompilationSettings(value, language = "zh") {
+  if (!value?.enabled) return null;
   const message = (zh, en) => language === "zh" ? zh : en;
-  if (typeof value?.repository !== "string" || !/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?\/[A-Za-z0-9._-]{1,100}$/.test(value.repository.trim())
+  if (typeof value.repository !== "string" || !/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?\/[A-Za-z0-9._-]{1,100}$/.test(value.repository.trim())
     || [".", ".."].includes(value.repository.trim().split("/")[1])) {
     return message("Actions 规则编译的 GitHub 仓库必须填写 owner/repo。", "Enter the GitHub repository for Actions rule compilation as owner/repo.");
   }

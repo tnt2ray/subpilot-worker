@@ -29,12 +29,8 @@ import {
 import { directRuleSetSource, effectiveRuleSetOutputs, isSingboxBinarySource, planRuleSetOutputs, ruleSetOutputNeedsCompilation } from "./rule-set-outputs";
 import type { RenderConfig } from "./types";
 import { createSingboxAsnResolver } from "./singbox-asn";
-import { createActionsManifestReader, ensureActionsCompilation, readActionsManifest, usesActionsCompilation } from "./actions-compiler";
+import { ensureActionsCompilation, readActionsManifest, usesActionsCompilation } from "./actions-compiler";
 import { githubActionsArtifactUrl } from "./actions-compiler-artifacts";
-import { ruleCompilationMode, workerFallbackConfig } from "./rule-compilation-mode";
-import { aggregateRuleSet } from "./singbox-srs";
-import { ruleSetArtifactsBucket, workerFallbackEnv } from "./rule-set-scope";
-import { readWasmCompilationFailure, recordWasmCompilationFailure, wasmCompilationFailureUnresolved } from "./rule-set-wasm-failure";
 
 export interface RuleSetRefreshResult {
   queued?: boolean;
@@ -80,7 +76,7 @@ export interface CompiledRuleSetReferencePlan {
 }
 
 interface CompileOptions {
-  /** Retained for managed downloads; this never overrides the selected compiler. */
+  /** Managed JSON downloads must retain source format after Actions publishes SRS. */
   workerOnly?: boolean;
   asnResolver?: ReturnType<typeof createSingboxAsnResolver>;
   allowStaleFallback?: boolean;
@@ -102,32 +98,11 @@ export async function compileRuleSetOutput(
   output: RuleSetOutput,
   options: CompileOptions = {}
 ): Promise<{ manifest: CompiledRuleSetManifest; stale: boolean; unchanged?: boolean }> {
-  const mode = ruleCompilationMode(config);
-  if (mode === "actions") {
+  if (!options.workerOnly && usesActionsCompilation(config)) {
     const manifest = await readActionsManifest(env, config, output);
     if (manifest) return { manifest, stale: false };
-    throw new Error("Actions 规则产物尚未就绪，请查看编译进度并稍后重试。");
   }
-  if (mode !== "wasm") return compileRuleSetSourceOutput(env, config, output, options);
-  const target = config.renderTarget ?? "surge";
-  const fingerprint = await ruleSetOutputFingerprint(config, output);
-  try {
-    if (!ruleSetArtifactsBucket(env)) {
-      throw new Error("WASM 模式需要启用可选的 R2 规则产物存储；请运行 npm run setup -- --enable-r2 后重新部署。");
-    }
-    const failedAt = await readWasmCompilationFailure(env, target, fingerprint);
-    const previous = failedAt ? await readCompiledRuleSetManifest(env, output.name, { allowLegacy: false }) : null;
-    const needsRecovery = wasmCompilationFailureUnresolved(failedAt, previous?.outputFingerprint === fingerprint ? previous : null);
-    const result = await compileRuleSetSourceOutput(env, config, output, {
-      ...options, ...(needsRecovery ? { skipUnchangedSources: false } : {})
-    });
-    // A retained WASM artifact cannot stand in for a failed preferred refresh.
-    if (result.stale) throw new Error("WASM 规则编译失败，首选产物暂不可用。");
-    return result;
-  } catch (error) {
-    await recordWasmCompilationFailure(env, target, fingerprint);
-    throw error;
-  }
+  return compileRuleSetSourceOutput(env, config, output, options);
 }
 
 async function compileRuleSetSourceOutput(
@@ -136,13 +111,10 @@ async function compileRuleSetSourceOutput(
   output: RuleSetOutput,
   options: CompileOptions
 ): Promise<{ manifest: CompiledRuleSetManifest; stale: boolean; unchanged?: boolean }> {
-  const compilationMode = ruleCompilationMode(config);
-  if (compilationMode === "actions") throw new Error("Actions 模式不允许在 Worker 中编译规则。");
   const outputFingerprint = await ruleSetOutputFingerprint(config, output);
-  const stored = options.skipUnchangedSources
+  const previous = options.skipUnchangedSources
     ? await readCompiledRuleSetManifest(env, output.name, { allowLegacy: false }).catch(() => null)
     : null;
-  const previous = stored && manifestMatchesCompiler(config, stored) ? stored : null;
   if (previous) {
     const refreshed = await refreshedSourceHashes(config, output, options);
     if (refreshed && canReuseCompiledOutput(previous, outputFingerprint, refreshed.hashes)) {
@@ -152,7 +124,6 @@ async function compileRuleSetSourceOutput(
   let compiled;
   try {
     compiled = await compileRuleSetContent(config, output, {
-      ...(compilationMode === "wasm" ? { aggregateRules: aggregateRuleSet } : {}),
       ...(options.deadline !== undefined ? { deadline: options.deadline } : {}),
       reuseManifest: (hashes) => previous && canReuseCompiledOutput(previous, outputFingerprint, hashes) ? previous : null,
       asnResolver: options.asnResolver ?? createSingboxAsnResolver(env, options.deadline),
@@ -180,19 +151,12 @@ async function compileRuleSetSourceOutput(
     throw error;
   }
   const { manifest, buckets, stale: usedCachedSource } = compiled;
-  if (compilationMode === "wasm") {
-    if (usedCachedSource) throw new Error("Compilation requires complete current source data");
-    const target = config.renderTarget ?? "surge";
-    if (manifest.buckets.some((bucket) => bucket.targetCounts?.[target] !== bucket.count)) {
-      throw new Error("Rules cannot be represented by the target client");
-    }
-  }
   if (compiled.unchanged) return { manifest, stale: usedCachedSource, unchanged: true };
   if (previous && canReuseCompiledOutput(previous, outputFingerprint, manifest.sourceContentHashes ?? {})) {
     return { manifest: previous, stale: usedCachedSource, unchanged: true };
   }
   try {
-    await writeCompiledRuleSet(env, manifest, buckets, { compilationMode, ...(options.canPublish ? { canPublish: options.canPublish } : {}) });
+    await writeCompiledRuleSet(env, manifest, buckets, options.canPublish ? { canPublish: options.canPublish } : {});
   } catch (error) {
     const existing = options.allowStaleFallback
       ? await readCompiledRuleSetManifest(env, output.name).catch(() => null)
@@ -217,36 +181,16 @@ async function compileRuleSetSourceOutput(
 export async function ensureCompiledRuleSet(
   env: Env,
   config: RenderConfig,
-  output: RuleSetOutput,
-  options: { canPublish?: () => Promise<boolean> } = {}
+  output: RuleSetOutput
 ): Promise<CompiledRuleSetManifest> {
-  if (ruleCompilationMode(config) === "actions") {
+  if (usesActionsCompilation(config)) {
     const published = await readActionsManifest(env, config, output);
     if (published) return published;
-    throw new Error("Actions 规则产物尚未就绪，请查看编译进度并稍后重试。");
   }
   const cached = await readCompiledRuleSetManifest(env, output.name);
-  const fingerprint = await ruleSetOutputFingerprint(config, output);
-  const wasmFailed = ruleCompilationMode(config) === "wasm" && wasmCompilationFailureUnresolved(
-    await readWasmCompilationFailure(env, config.renderTarget ?? "surge", fingerprint), cached
-  );
-  if (!wasmFailed && cached?.outputFingerprint === fingerprint && manifestMatchesCompiler(config, cached)
+  if (cached?.outputFingerprint === await ruleSetOutputFingerprint(config, output)
     && (cached.asnExpiresAt === undefined || cached.asnExpiresAt > Date.now())) return cached;
-  return compileRuleSetOutput(env, config, output, { allowStaleFallback: true, ...options }).then((result) => result.manifest);
-}
-
-/** Older manifests must still provide all artifacts required by the selected compiler. */
-export function manifestMatchesCompiler(config: RenderConfig, manifest: CompiledRuleSetManifest): boolean {
-  const mode = ruleCompilationMode(config);
-  if (mode !== "actions" && manifest.compilationMode && manifest.compilationMode !== mode) return false;
-  if (mode !== "wasm" || config.renderTarget !== "sing-box") return true;
-  if (manifest.storageBackend !== "r2") return false;
-  const required = new Set<NonNullable<CompiledRuleSetManifest["srsBuckets"]>[number]>(
-    planRuleSetArtifacts(manifest.buckets, "sing-box", manifest.provider?.behavior, manifest.surgeType)
-      .map((artifact) => artifact.bucket)
-  );
-  if ((manifest.dnsRuleCount ?? 0) > 0) required.add("dns");
-  return [...required].every((bucket) => manifest.srsBuckets?.includes(bucket));
+  return compileRuleSetOutput(env, config, output, { allowStaleFallback: true }).then((result) => result.manifest);
 }
 
 function canReuseCompiledOutput(
@@ -301,14 +245,13 @@ export async function refreshRuleSetCaches(
       try {
         await ensureActionsCompilation(env, config, { force: true, refresh: true, ...(options.deadline ? { deadline: options.deadline } : {}) });
         queued = true;
-        warnings.push("已提交 Actions 编译请求，请等待远程产物就绪。");
-      } catch { warnings.push("Actions 请求暂未确认，后台将重试；请在编译进度中查看状态。"); }
+        warnings.push("已提交 Actions 编译请求；远程产物未就绪的规则由 Worker 处理。");
+      } catch { warnings.push("Actions 请求暂未确认；Worker 继续处理未就绪的规则，后台将重试 Actions。"); }
     }
-    return {
-      queued, refreshed: 0, unchanged: 0, failed: 0, cached: 0, deleted: 0,
-      updatedAt: new Date().toISOString(), warnings, failures: [], outputFailures: [], pendingOutputNames: [],
-      outputs: refreshDeadlineExceeded(options.deadline) ? [] : await readRuleSetStatus(env, config)
-    };
+    const fallbackOutputs: RuleSetOutput[] = [];
+    for (const output of outputs) if (!await readActionsManifest(env, config, output)) fallbackOutputs.push(output);
+    const result = await refreshRuleSetOutputs(env, config, fallbackOutputs, ruleSetSourcesForOutputs(config, fallbackOutputs, true), false, options);
+    return { ...result, queued, warnings: [...warnings, ...result.warnings] };
   }
   const sourcesToRefresh = ruleSetSourcesForOutputs(config, outputs, Boolean(outputName));
   return refreshRuleSetOutputs(env, config, outputs, sourcesToRefresh, !outputName, options);
@@ -397,8 +340,7 @@ async function refreshRuleSetOutputs(
       const existing = refreshDeadlineExceeded(options.deadline)
         ? null
         : await readCompiledRuleSetManifest(env, output.name);
-      const usedCachedManifest = ruleCompilationMode(config) !== "wasm"
-        && existing?.outputFingerprint === await ruleSetOutputFingerprint(config, output);
+      const usedCachedManifest = existing !== null;
       if (usedCachedManifest) cached += 1;
       outputFailures.push({ outputName: output.name, reason, usedCachedManifest });
       warnings.add(`${output.name}: ${reason}${usedCachedManifest ? "，继续使用旧编译缓存" : ""}`);
@@ -426,30 +368,14 @@ function refreshDeadlineExceeded(deadline: number | undefined): boolean {
 
 export async function readRuleSetStatus(env: Env, config: RenderConfig): Promise<CompiledRuleSetStatusItem[]> {
   if (config.ruleSets.mode !== "compiled") return [];
-  const mode = ruleCompilationMode(config);
-  const wasmNeedsR2 = mode === "wasm" && !ruleSetArtifactsBucket(env);
-  const readActions = usesActionsCompilation(config) ? await createActionsManifestReader(env, config) : null;
   return Promise.all(effectiveRuleSetOutputs(config.ruleSets).map(async (output) => {
     if (!ruleSetOutputNeedsCompilation(config.ruleSets, output, config.renderTarget ?? "surge")) return {
       outputName: output.name, enabled: output.enabled, direct: true, updatedAt: null,
       ruleCount: 0, duplicateCount: 0, buckets: [], artifacts: [], warnings: [], cached: false
     };
-    const published = readActions ? await readActions(output) : null;
-    const stored = readActions ? published : await readCompiledRuleSetManifest(env, output.name);
-    const fingerprint = await ruleSetOutputFingerprint(config, output);
-    let manifest = stored?.outputFingerprint === fingerprint && manifestMatchesCompiler(config, stored) ? stored : null;
-    const wasmFailed = mode === "wasm" && wasmCompilationFailureUnresolved(
-      await readWasmCompilationFailure(env, config.renderTarget ?? "surge", fingerprint), manifest
-    );
-    if (wasmFailed) manifest = null;
-    let fallback = false;
-    if (!manifest && mode !== "worker") {
-      const backup = await readCompiledRuleSetManifest(workerFallbackEnv(env, config.renderTarget ?? "surge"), output.name, { allowLegacy: false });
-      if (backup?.outputFingerprint === await ruleSetOutputFingerprint(workerFallbackConfig(config), output)) {
-        manifest = backup;
-        fallback = true;
-      }
-    }
+    const published = usesActionsCompilation(config) ? await readActionsManifest(env, config, output) : null;
+    const stored = published ?? await readCompiledRuleSetManifest(env, output.name);
+    const manifest = stored?.outputFingerprint === await ruleSetOutputFingerprint(config, output) ? stored : null;
     const target = config.renderTarget ?? "surge";
     const actionsPending = usesActionsCompilation(config) && !published;
     const count = (bucket: RuleSetBucket): number => manifest?.buckets.find((item) => item.bucket === bucket)?.targetCounts?.[target] ?? 0;
@@ -464,12 +390,7 @@ export async function readRuleSetStatus(env: Env, config: RenderConfig): Promise
         behavior: artifact.behavior,
         count: artifact.behavior === "domain" ? count("domain") : artifact.behavior === "ipcidr" ? count("ipcidr") : count("classical") + (artifact.includesDomains ? count("domain") : 0) + (artifact.includesIpCidr ? count("ipcidr") : 0)
       })),
-      warnings: [...(manifest?.warnings ?? []), ...(fallback ? [wasmNeedsR2
-        ? "WASM 需要可选的 R2 存储；当前使用普通 Worker 回退。配置 R2 后将自动恢复 WASM。"
-        : "当前使用普通 Worker 备用规则，首选产物就绪后自动恢复。"]
-        : actionsPending ? ["Actions 与普通 Worker 备用产物仍在准备，请稍后重试。"]
-          : wasmNeedsR2 ? ["WASM 需要可选的 R2 存储；启用并重新部署后即可恢复 WASM。"]
-            : wasmFailed ? ["WASM 编译失败，普通 Worker 备用产物仍在准备，请稍后重试。"] : [])],
+      warnings: [...(manifest?.warnings ?? []), ...(actionsPending ? [manifest ? "Actions 产物未就绪，当前由 Worker 提供规则。" : "Actions 产物未就绪，Worker 正在准备规则。"] : [])],
       cached: Boolean(manifest)
     };
   }));
@@ -479,8 +400,7 @@ export async function buildCompiledRuleSetReferencePlan(
   env: Env,
   config: RenderConfig,
   target: RuleSetOutputTarget,
-  requestUrl: string,
-  manifests?: ReadonlyMap<string, CompiledRuleSetManifest>
+  requestUrl: string
 ): Promise<CompiledRuleSetReferencePlan> {
   const plan: CompiledRuleSetReferencePlan = {
     surgeDnsHosts: [],
@@ -554,8 +474,7 @@ export async function buildCompiledRuleSetReferencePlan(
         }
         continue;
       }
-      const manifest = manifests ? manifests.get(output.name) : await ensureCompiledRuleSet(env, config, output);
-      if (!manifest) throw new Error("规则集缓存尚未就绪，请稍后重试。");
+      const manifest = await ensureCompiledRuleSet(env, config, output);
       const compatibleCount = manifest.buckets.reduce((sum, bucket) => sum + (bucket.targetCounts?.[target] ?? 0), 0);
       if (compatibleCount !== manifest.ruleCount) throw new Error("规则集中存在当前输出端无法等价表达的规则。");
       const surgeStart = plan.surgeRules.length;

@@ -10,9 +10,8 @@ import {
 } from "./rule-set-types";
 import { ruleSetPathName } from "./managed-url";
 import { inferUrlRewriteMitmHostnames } from "./surge-url-rewrite";
-import { CHAIN_EXIT_PROTOCOLS, type RenderConfig, type ChainExitProtocol, type NotificationChannel, type ActionsCompilationSettings, type RuleCompilationMode, type SourceConfig, type StaticProxyNodeConfig, type SurgeIpv6VifMode, type Target } from "./types";
+import { CHAIN_EXIT_PROTOCOLS, type RenderConfig, type ChainExitProtocol, type NotificationChannel, type ActionsCompilationSettings, type SourceConfig, type StaticProxyNodeConfig, type SurgeIpv6VifMode, type Target } from "./types";
 import { normalizeDisplayTimeZone } from "./util";
-import { ruleCompilationMode } from "./rule-compilation-mode";
 
 const SURGE_IPV6_VIF_MODES = ["off", "auto", "always"] as const satisfies readonly SurgeIpv6VifMode[];
 type ClashLikeBaseConfig = Pick<
@@ -35,7 +34,6 @@ export function normalizeTarget(value: string | null | undefined): Target | null
 }
 
 export function normalizeConfig(input: RenderConfig): RenderConfig {
-  const settings = withDefaultConfigSettings(input.settings);
   const chain = normalizeChain(input.chain);
   const groups = normalizeGroups(typeof input.groups === "object" && input.groups ? input.groups : DEFAULT_CONFIG.groups);
   const notificationTelegramBotToken = stringValue(input.settings?.notificationTelegramBotToken, "");
@@ -56,8 +54,7 @@ export function normalizeConfig(input: RenderConfig): RenderConfig {
       featureTagRules: stringArray(input.settings?.featureTagRules, DEFAULT_CONFIG.settings.featureTagRules),
       updateCheckEnabled: input.settings?.updateCheckEnabled === true,
       displayTimeZone: normalizeDisplayTimeZone(input.settings?.displayTimeZone),
-      ruleCompilationMode: settings.ruleCompilationMode,
-      actionsCompilation: settings.actionsCompilation,
+      actionsCompilation: withDefaultConfigSettings(input.settings).actionsCompilation,
       notificationChannel: notificationChannelFromTelegramToken(notificationTelegramBotToken),
       notificationTelegramChatId: notificationTelegramBotToken ? stringValue(input.settings?.notificationTelegramChatId, "") : "",
       notificationTelegramBotToken,
@@ -77,23 +74,13 @@ export function normalizeConfig(input: RenderConfig): RenderConfig {
 }
 
 /** Resolve renamed settings before defaults can hide a legacy value. */
-export function withDefaultConfigSettings(input: unknown): RenderConfig["settings"] & { ruleCompilationMode: RuleCompilationMode; actionsCompilation: ActionsCompilationSettings } {
+export function withDefaultConfigSettings(input: unknown): RenderConfig["settings"] & { actionsCompilation: ActionsCompilationSettings } {
   const raw = input && typeof input === "object" && !Array.isArray(input) ? input as Record<string, unknown> : {};
   const { singboxSrs, ...current } = raw;
-  const requestedMode = current.ruleCompilationMode;
-  if (requestedMode !== undefined && requestedMode !== "worker" && requestedMode !== "wasm" && requestedMode !== "actions") {
-    throw new Error("规则编译方式必须为普通 Worker、WASM 或 Actions。");
-  }
-  const actions = normalizeActionsCompilationSettings(Object.hasOwn(current, "actionsCompilation") ? current.actionsCompilation : singboxSrs);
-  const mode = ruleCompilationMode({ settings: {
-    ...(requestedMode ? { ruleCompilationMode: requestedMode } : {}),
-    actionsCompilation: actions
-  } });
   return {
     ...DEFAULT_CONFIG.settings,
     ...current,
-    ruleCompilationMode: mode,
-    actionsCompilation: { ...actions, enabled: mode === "actions" }
+    actionsCompilation: normalizeActionsCompilationSettings(Object.hasOwn(current, "actionsCompilation") ? current.actionsCompilation : singboxSrs)
   };
 }
 

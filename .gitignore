@@ -4,7 +4,6 @@ __pycache__/main.cpython-39.pyc
 node_modules/
 .wrangler/
 dist/
-/public/vendor/rule-kernel.wasm
 worker-configuration.d.ts
 .dev.vars
 /wrangler.jsonc

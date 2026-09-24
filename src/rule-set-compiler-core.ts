@@ -9,12 +9,8 @@ import type { RenderConfig } from "./types";
 import { sha256Hex } from "./util";
 import type { AsnResolution } from "./singbox-asn";
 import { validateRuleMatchValue } from "./rule-value-validation";
-import { ruleCompilationMode } from "./rule-compilation-mode";
-import { RULE_KERNEL_MAX_BYTES, type AggregationRule, type RuleSetAggregator } from "./rule-set-kernel";
 
-export type RuleCompilationConfig = Pick<RenderConfig, "ruleSets" | "renderTarget"> & {
-  settings?: Pick<RenderConfig["settings"], "ruleCompilationMode" | "actionsCompilation">;
-};
+export type RuleCompilationConfig = Pick<RenderConfig, "ruleSets" | "renderTarget">;
 export type RuleSetCompileErrorCode = "configuration" | "format";
 export class RuleSetCompileError extends Error {
   constructor(readonly code: RuleSetCompileErrorCode) {
@@ -24,7 +20,7 @@ export class RuleSetCompileError extends Error {
     this.name = "RuleSetCompileError";
   }
 }
-const RULE_SET_COMPILER_REVISION = 18;
+const RULE_SET_COMPILER_REVISION = 15;
 export async function ruleSetSourceCacheKey(url: string): Promise<string> {
   return `cache:ruleSetSource:${await sha256Hex(url)}`;
 }
@@ -37,23 +33,11 @@ export async function compileRuleSetContent(
     loadSource: (source: RuleSetSource) => Promise<RuleSetSourceFetchResult>;
     asnResolver: (value: string) => Promise<AsnResolution>;
     deadline?: number;
-    aggregateRules?: RuleSetAggregator;
     reuseManifest?: (hashes: Record<string, string>) => CompiledRuleSetManifest | null;
   }
 ) {
   const outputFingerprint = await ruleSetOutputFingerprint(config, output);
-  let buckets = emptyBuckets();
-  const kernel = ruleCompilationMode(config) !== "worker";
-  if (kernel && !options.aggregateRules) throw new Error("The selected compiler requires the shared WASM rule kernel");
-  const kernelRules: AggregationRule[] = [];
-  const asnExpansions: Record<string, AggregationRule[]> = Object.create(null);
-  let kernelSink = kernelRules;
-  let kernelBytes = 256;
-  const appendKernelRule = (rule: AggregationRule, sink = kernelSink): void => {
-    kernelBytes += new TextEncoder().encode(JSON.stringify(rule)).byteLength + 1;
-    if (kernelBytes > RULE_KERNEL_MAX_BYTES) throw new Error("Rule aggregation input exceeds the size limit");
-    sink.push(rule);
-  };
+  const buckets = emptyBuckets();
   const sourceContentHashes: Record<string, string> = {};
   const warnings: string[] = [];
   const sourceErrors: string[] = [];
@@ -84,17 +68,12 @@ export async function compileRuleSetContent(
     }
     if (singbox && rule.type === "IP-ASN" && !validateRuleMatchValue(rule.type, rule.value)
       && splitRuleLine(rule.raw).slice(2).every((option) => ["no-resolve", "src"].includes(option))) {
-      if (kernel) {
-        appendKernelRule({ ...rule, asnExpansionKey: rule.normalizedKey }, kernelRules);
-        // Coalesce network lookups only; every original rule reaches the kernel.
-        if (!asnRules.has(rule.normalizedKey)) asnRules.set(rule.normalizedKey, rule);
-      } else if (asnRules.has(rule.normalizedKey)) duplicateCount += 1;
+      if (asnRules.has(rule.normalizedKey)) duplicateCount += 1;
       else asnRules.set(rule.normalizedKey, rule);
       return;
     }
     recordTargetCompatibility(rule, compatibility, targets);
     if (singbox && renderRuleSetRuleForTarget(rule.raw, "sing-box") === null) return;
-    if (kernel) { appendKernelRule(rule); return; }
     if (seen.has(rule.normalizedKey)) { duplicateCount += 1; return; }
     seen.add(rule.normalizedKey);
     if (rule.type === "DOMAIN") {
@@ -182,10 +161,6 @@ export async function compileRuleSetContent(
       usedCachedSource ||= result.stale;
       if (result.warning) warnings.push(result.warning);
       const options = splitRuleLine(rule.raw).slice(2);
-      if (kernel) {
-        kernelBytes += new TextEncoder().encode(JSON.stringify(rule.normalizedKey)).byteLength + 4;
-        kernelSink = asnExpansions[rule.normalizedKey] = [];
-      }
       parseInlineRuleSetLines(result.prefixes.map((prefix) => [prefix.includes(":") ? "IP-CIDR6" : "IP-CIDR", prefix, ...options].join(",")), rule.label, acceptRule);
     }
   }
@@ -195,15 +170,8 @@ export async function compileRuleSetContent(
     throw new Error(sourceErrors.join("; "));
   }
 
-  if (kernel) {
-    const aggregated = await options.aggregateRules!({ operation: "aggregate", version: 1,
-      ...(config.renderTarget ? { target: config.renderTarget } : {}), rules: kernelRules, asnExpansions });
-    buckets = aggregated.buckets;
-    duplicateCount = aggregated.duplicateCount;
-    warnings.push(...aggregated.warnings);
-  }
   for (const warning of compatibilityWarnings(compatibility)) warnings.push(warning);
-  if (!kernel && (!config.renderTarget || config.renderTarget === "surge") && buckets.classical.some((rule) =>
+  if ((!config.renderTarget || config.renderTarget === "surge") && buckets.classical.some((rule) =>
     ["DOMAIN", "DOMAIN-SUFFIX", "DOMAIN-KEYWORD"].includes(rule.type)
     && splitRuleLine(rule.raw).slice(2).some((option) => option.toLowerCase() === "extended-matching"))) {
     // Surge applies a domain rule's flag to the entire RULE-SET. Keep those
@@ -246,7 +214,6 @@ export async function ruleSetOutputFingerprint(config: RuleCompilationConfig, ou
   return sha256Hex(JSON.stringify({
     compilerRevision: config.renderTarget === "sing-box" || config.renderTarget === "clash" ? RULE_SET_COMPILER_REVISION + 1 : RULE_SET_COMPILER_REVISION,
     target: config.renderTarget ?? "surge",
-    compilationMode: ruleCompilationMode(config),
     policy: output.policy,
     sourceIds: output.sourceIds,
     sources: output.sourceIds.map((id) => {

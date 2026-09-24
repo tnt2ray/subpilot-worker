@@ -1,11 +1,10 @@
 import { handleActionsCompilationInstall } from "./actions-compiler-install";
 import { maintainActionsIntegrationMigration } from "./actions-compiler-migration";
-import { allCompiledRuleSetSources, cleanupExpiredCompiledRuleSetR2Artifacts, refreshRuleSetSourceCaches } from "./rule-set-cache";
+import { allCompiledRuleSetSources, refreshRuleSetSourceCaches } from "./rule-set-cache";
 import { configDocument, normalizeConfigDocument, renderConfig, OUTPUT_TARGETS } from "./config-document";
 import { migrateClashRouting } from "./clash-routing-migration";
 import { exportConfigBeforeMigration, loadConfigMigration, completeDocumentMigration } from "./config-store";
-import { ruleSetArtifactsBucket, ruleSetEnv, workerFallbackEnv } from "./rule-set-scope";
-import { ruleCompilationMode } from "./rule-compilation-mode";
+import { ruleSetEnv } from "./rule-set-scope";
 import { validateManagedBaseUrl, validateConfigEntityLimits, validateProxyPolicyNameConflicts, validateRuleSetOutputNames } from "./config-validation";
 import { assertSafeConfigText } from "./config-text-safety";
 import type { AppConfig, RenderConfig } from "./types";
@@ -56,22 +55,6 @@ export default {
     }
   },
   async scheduled(controller: ScheduledController, env: Env, _ctx: ExecutionContext): Promise<void> {
-    if (controller.cron === RULE_SET_REBUILD_CRON) {
-      const targetCleanupEnvs = OUTPUT_TARGETS.map((target) => ruleSetEnv(env, target));
-      const fallbackCleanupEnvs = OUTPUT_TARGETS.map((target) => workerFallbackEnv(env, target));
-      const cleanupScopes = [
-        { env, relatedEnvs: targetCleanupEnvs },
-        ...targetCleanupEnvs.map((targetEnv) => ({ env: targetEnv, relatedEnvs: targetCleanupEnvs })),
-        ...fallbackCleanupEnvs.map((fallbackEnv) => ({ env: fallbackEnv, relatedEnvs: [] }))
-      ];
-      for (const scope of cleanupScopes) {
-        try {
-          await cleanupExpiredCompiledRuleSetR2Artifacts(scope.env, Date.now(), scope.relatedEnvs);
-        } catch {
-          console.warn(JSON.stringify({ level: "warn", message: "过期 R2 规则产物清理将在下次五分钟维护任务重试。" }));
-        }
-      }
-    }
     const config = await loadConfig(env);
     if (controller.cron === RULE_SET_REBUILD_CRON) {
       try {
@@ -89,12 +72,12 @@ export default {
     if (controller.cron === RULE_SET_REFRESH_CRON) {
       const deadline = Date.now() + SCHEDULED_REFRESH_DEADLINE_MS;
       if (!OUTPUT_TARGETS.some((target) => renderConfig(configDocument(config), target).ruleSets.mode === "compiled")) return;
-      if (ruleCompilationMode(config) === "actions") {
+      if (config.settings.actionsCompilation?.enabled) {
         _ctx.waitUntil(ensureActionsCompilation(env, config, { refresh: true, deadline: Date.now() + 25_000 })
-          .catch(() => console.warn(JSON.stringify({ level: "warn", message: "Actions refresh deferred; a scheduled retry will follow." }))));
-        return;
+          .catch(() => console.warn(JSON.stringify({ level: "warn", message: "Actions refresh deferred; Worker fallback continues." }))));
       }
-      const sourceRefresh = await refreshRuleSetSourceCaches(env, config, allCompiledRuleSetSources(config), { deadline, pruneUnexpected: true });
+      const sourceRefresh = config.settings.actionsCompilation?.enabled ? undefined
+        : await refreshRuleSetSourceCaches(env, config, allCompiledRuleSetSources(config), { deadline, pruneUnexpected: true });
       for (const target of OUTPUT_TARGETS) {
         const selected = renderConfig(configDocument(config), target);
         if (selected.ruleSets.mode !== "compiled") continue;
@@ -275,7 +258,6 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
         version: APP_VERSION,
         releaseRepository: RELEASE_REPOSITORY
       },
-      ruleArtifacts: { r2Configured: Boolean(ruleSetArtifactsBucket(env)) },
       update: await readCachedUpdateStatus(env)
     });
   }
@@ -333,18 +315,11 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
       if ((request.method === "PUT" || body.version !== undefined) && body.version !== 3) return jsonResponse({ error: "配置格式已升级，请刷新页面后重新编辑。" }, { status: 409 });
       const existing = configDocument(current);
       const input = request.method === "PATCH" ? { ...existing, ...body, settings: { ...existing.settings, ...body.settings }, clients: { ...existing.clients, ...body.clients } } : body;
-      // Older clients only know the Actions toggle. Explicit new mode choices
-      // take precedence, while legacy PATCH requests still select a compiler.
-      if (request.method === "PATCH" && body.settings && !Object.hasOwn(body.settings, "ruleCompilationMode")
-        && body.settings.actionsCompilation?.enabled !== undefined) {
-        input.settings.ruleCompilationMode = body.settings.actionsCompilation.enabled === true ? "actions" : "worker";
-      }
       document = normalizeConfigDocument(input);
       const error = validateDocumentForSave(document) || await validateActionsCompilationCredentials(env, document);
       if (error) return badRequest(error);
     } catch { return badRequest("配置格式无效或超过大小限制。"); }
-    if (ruleCompilationMode(document) !== "actions"
-      && configDocument(current).clients.clash.ruleSets.mode === "manual" && document.clients.clash.ruleSets.mode === "compiled") {
+    if (configDocument(current).clients.clash.ruleSets.mode === "manual" && document.clients.clash.ruleSets.mode === "compiled") {
       const selected = renderConfig(document, "clash");
       // Validate the active plan using matching compiled caches or compile each
       // needed output on demand. A forced refresh also fetches dormant sources
@@ -466,7 +441,7 @@ function scheduleChangedSourceRefresh(
 }
 
 async function warmScheduledRuleSetWorkerCache(env: Env, config: Awaited<ReturnType<typeof loadConfig>>): Promise<void> {
-  if (ruleCompilationMode(config) === "actions") return;
+  if (config.settings.actionsCompilation?.enabled) return;
   const token = await getOrCreateReadToken(env);
   if (!token || !config.settings.managedBaseUrl) return;
   await warmCompiledRuleSetWorkerCache(env, config, config.settings.managedBaseUrl, token);

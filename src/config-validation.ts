@@ -104,9 +104,6 @@ export function validateActionsCompilationSettings(value: RenderConfig["settings
 
 export function validateConfigEntityLimits(config: RenderConfig, options: { allowUnresolvedPolicies?: boolean } = {}): string | null {
   if (!config.settings || typeof config.settings !== "object") return "基础设置格式无效";
-  if (config.settings.ruleCompilationMode !== undefined && !["worker", "wasm", "actions"].includes(config.settings.ruleCompilationMode)) {
-    return "规则编译方式必须为普通 Worker、WASM 或 Actions。";
-  }
   const actionsError = validateActionsCompilationSettings(config.settings.actionsCompilation);
   if (actionsError) return actionsError;
   if (!config.groups || typeof config.groups !== "object" || Array.isArray(config.groups)) return "策略组配置格式无效";

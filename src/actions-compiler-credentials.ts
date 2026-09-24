@@ -1,5 +1,4 @@
 import { loadConfig } from "./config-store";
-import { ruleCompilationMode } from "./rule-compilation-mode";
 import { ACTIONS_CREDENTIALS_KEY, expireSupersededActionsRecord, readActionsIntegrationRecord } from "./actions-compiler-migration";
 import { decryptJson, encryptJson } from "./crypto-store";
 import { requireSecret } from "./secrets";
@@ -51,7 +50,7 @@ export async function handleActionsCredentials(request: Request, env: Env): Prom
     }
     let credentials: ActionsCredentials;
     if (request.method === "DELETE") {
-      if (ruleCompilationMode(await loadConfig(env)) === "actions") return jsonResponse({ error: "请先切换为普通 Worker 或 WASM 并保存配置，再清除凭据。 / Switch to Worker or WASM and save settings before clearing credentials." }, { status: 409, headers });
+      if ((await loadConfig(env)).settings.actionsCompilation?.enabled) return jsonResponse({ error: "请先关闭 Actions 编译并保存配置，再清除凭据。 / Disable Actions compilation and save settings before clearing credentials." }, { status: 409, headers });
       credentials = { token: "", sharedSecret: "", storage: "kv" };
     } else {
       if (!request.headers.get("content-type")?.toLowerCase().startsWith("application/json")) return jsonResponse({ error: "Expected application/json" }, { status: 415, headers });

@@ -15,8 +15,6 @@ const PLACEHOLDER_KV_ID = "00000000000000000000000000000000";
 const DEFAULT_SOURCE_REFRESH_HOURS = 12;
 const RULE_SET_REFRESH_CRON = "0 16 * * *";
 const RULE_SET_REBUILD_CRON = "*/5 * * * *";
-const RULE_SET_ARTIFACTS_BINDING_NAME = "RULE_SET_ARTIFACTS";
-const PLACEHOLDER_RULE_SET_ARTIFACTS_BUCKET = "subpilot-rule-set-artifacts";
 const MIN_ADMIN_TOKEN_LENGTH = 24;
 const LOGIN_RATE_LIMIT_BINDING_NAME = "LOGIN_RATE_LIMITER";
 const REQUIRED_SECRET_NAMES = ["ADMIN_TOKEN_HASH", "CONFIG_ENCRYPTION_KEY"];
@@ -281,71 +279,6 @@ async function ensureKvNamespace() {
   process.stdout.write("KV namespace id written to local wrangler.jsonc.\n");
 }
 
-function validR2BucketName(value) {
-  return typeof value === "string" && value.length >= 3 && value.length <= 63
-    && /^[a-z0-9][a-z0-9-]*[a-z0-9]$/.test(value);
-}
-
-function defaultRuleSetBucketName(workerName) {
-  const normalized = String(workerName || "subpilot-worker").toLowerCase();
-  const stem = normalized.replace(/[^a-z0-9-]+/g, "-").replace(/-+/g, "-").replace(/^-+|-+$/g, "").slice(0, 32).replace(/-+$/g, "") || "worker";
-  const suffix = sha256Hex(`subpilot:${normalized}:rule-set-artifacts`).slice(0, 10);
-  return `subpilot-${stem}-${suffix}-artifacts`;
-}
-
-function createRuleSetR2Bucket(bucketName) {
-  const result = spawnSync("wrangler", ["r2", "bucket", "create", bucketName, "--config", CONFIG_PATH], { encoding: "utf8" });
-  if (result.status === 0) return;
-  const output = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
-  if (/already exists|already been created|bucket[^\n]*exists/i.test(output)) return;
-  process.stderr.write("Could not create the R2 bucket for compiled rule artifacts. Check Wrangler authentication and R2 permissions; no Worker Secrets were changed.\n");
-  process.exit(result.status ?? 1);
-}
-
-function ensureRuleSetArtifactBucket(createdConfig) {
-  const config = readJsonConfig();
-  const configured = Array.isArray(config.r2_buckets) ? config.r2_buckets : [];
-  const existing = configured.find((binding) => binding?.binding === RULE_SET_ARTIFACTS_BINDING_NAME);
-  const requested = String(process.env.SUBPILOT_RULE_SET_ARTIFACTS_BUCKET ?? "").trim();
-  const existingBucketName = typeof existing?.bucket_name === "string" ? existing.bucket_name.trim() : "";
-  const isTemplatePlaceholder = existingBucketName === PLACEHOLDER_RULE_SET_ARTIFACTS_BUCKET;
-  const explicitlyEnabled = args.has("--enable-r2") || Boolean(requested);
-  if (!existing && !explicitlyEnabled) return;
-  if (isTemplatePlaceholder && !explicitlyEnabled) {
-    config.r2_buckets = configured.filter((binding) => binding?.binding !== RULE_SET_ARTIFACTS_BINDING_NAME);
-    writeJsonConfig(config);
-    process.stdout.write("R2 artifact storage is optional and remains disabled.\n");
-    return;
-  }
-  const bucketName = requested || (createdConfig || !existing || isTemplatePlaceholder
-    ? defaultRuleSetBucketName(config.name)
-    : existingBucketName);
-  if (!validR2BucketName(bucketName)) {
-    process.stderr.write("SUBPILOT_RULE_SET_ARTIFACTS_BUCKET must be a 3–63 character lowercase R2 bucket name.\n");
-    process.exit(1);
-  }
-  // Always ensure the selected bucket exists. This also completes setup after
-  // an earlier run failed while creating the bucket, without replacing a
-  // custom bucket already selected in local wrangler.jsonc.
-  createRuleSetR2Bucket(bucketName);
-  if (existingBucketName === bucketName) return;
-  config.r2_buckets = [
-    ...configured.filter((binding) => binding?.binding !== RULE_SET_ARTIFACTS_BINDING_NAME),
-    { ...(existing ?? {}), binding: RULE_SET_ARTIFACTS_BINDING_NAME, bucket_name: bucketName }
-  ];
-  writeJsonConfig(config);
-  process.stdout.write("Configured persistent R2 storage for compiled rule artifacts.\n");
-}
-
-function ensureWorkerBuildCommand() {
-  const config = readJsonConfig();
-  const current = config.build?.command;
-  if (current !== "npm run build:actions") return;
-  config.build = { ...config.build, command: "npm run build:worker" };
-  writeJsonConfig(config);
-  process.stdout.write("Updated Worker build command to include the sing-box WASI compiler check.\n");
-}
-
 function sha256Hex(value) {
   return createHash("sha256").update(value).digest("hex");
 }
@@ -436,8 +369,6 @@ if (existingConfigOnly && !existsSync(CONFIG_PATH)) {
 const createdConfig = ensureConfigFile();
 replaceWorkerName(process.env.SUBPILOT_WORKER_NAME);
 if (!existingConfigOnly) await ensureKvNamespace();
-ensureRuleSetArtifactBucket(createdConfig);
-ensureWorkerBuildCommand();
 ensureLoginRateLimitBinding(createdConfig);
 await configureSourceRefreshSchedule(createdConfig);
 ensureRuleSetRebuildSchedule();

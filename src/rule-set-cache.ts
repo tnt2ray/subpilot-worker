@@ -1,4 +1,4 @@
-import { decryptBytes, decryptText, encryptBytes, encryptText } from "./crypto-store";
+import { decryptText, encryptText } from "./crypto-store";
 import { deleteKvKeys, listKvKeys, readKvJson } from "./kv-helpers";
 import { renderCombinedRuleSet, renderCompiledRuleSetBucket } from "./rule-set-renderer";
 import type { CompiledRuleSetRule } from "./rule-set-parser";
@@ -12,17 +12,12 @@ import { requireSecret } from "./secrets";
 import type { RenderConfig } from "./types";
 import { randomToken, readResponseTextWithLimit, sha256Hex } from "./util";
 import { fetchWithTimeout, waitForRetry } from "./upstream-fetch";
-import { compileSingboxRuleSet } from "./singbox-srs";
-import { ruleSetArtifactsBucket } from "./rule-set-scope";
 
 export const RULE_SET_SOURCE_CACHE_PREFIX = "cache:ruleSetSource:";
 export const RULE_SET_SOURCE_CACHE_META_PREFIX = "cache:ruleSetSourceMeta:";
 export const RULE_SET_SOURCE_CACHE_META_INDEX_KEY = "cache:ruleSetSourceMeta:index";
 export const COMPILED_RULE_SET_PREFIX = "cache:compiledRuleSet:";
 export const COMPILED_RULE_SET_META_PREFIX = "cache:compiledRuleSetMeta:";
-const LEGACY_COMPILED_RULE_SET_R2_PREFIX = "subpilot/rule-sets/v1/";
-const COMPILED_RULE_SET_R2_PREFIX = "subpilot/rule-sets/v2/";
-const COMPILED_RULE_SET_R2_CLEANUP_PREFIX = "cache:compiledRuleSetR2Cleanup:";
 
 const MAX_RULE_SET_SOURCE_FETCH_RETRIES = 1;
 const RULE_SET_SOURCE_FETCH_ATTEMPT_TIMEOUT_MS = 8_000;
@@ -34,12 +29,9 @@ const MAX_RULE_SET_SOURCE_CACHE_MIGRATIONS_PER_PRUNE = 100;
 // Leave room for encryption/base64 within KV's value limit and Worker memory.
 const MAX_RULE_SET_SOURCE_CONTENT_BYTES = 16 * 1024 * 1024;
 const MAX_COMPILED_RULE_SET_PLAINTEXT_CHARACTERS = 16 * 1024 * 1024;
-const MAX_COMPILED_RULE_SET_R2_VALUE_BYTES = 24 * 1024 * 1024;
 const MAX_COMPILED_RULE_SET_KV_VALUE_BYTES = 24 * 1024 * 1024;
 const COMPILED_RULE_SET_PUBLISH_GRACE_MS = 5 * 60 * 1000;
-const COMPILED_RULE_SET_UNAVAILABLE_TTL_SECONDS = 60;
 const MAX_COMPILED_MANIFEST_CANDIDATES = 8;
-const MAX_COMPILED_R2_CLEANUP_RECORDS_PER_RUN = 50;
 
 export class InvalidRuleSetSourceResponseError extends Error {}
 
@@ -90,13 +82,6 @@ export interface CompiledRuleSetBucketMeta {
   targetCounts?: Partial<Record<RuleSetOutputTarget, number>>;
 }
 
-export interface CompiledRuleSetArtifactReference {
-  bucket: RuleSetDownloadBucket;
-  target: RuleSetOutputTarget;
-  format: "text" | "srs";
-  key: string;
-}
-
 export interface CompiledRuleSetManifest {
   publication?: { confirmedAt: number; commit: string; jobId: string; integration: string; target: import("./types").Target };
   dnsRuleCount?: number;
@@ -114,10 +99,6 @@ export interface CompiledRuleSetManifest {
   buckets: CompiledRuleSetBucketMeta[];
   warnings: string[];
   storageId?: string | undefined;
-  storageBackend?: "r2" | "kv";
-  compilationMode?: "worker" | "wasm";
-  r2Artifacts?: CompiledRuleSetArtifactReference[];
-  srsBuckets?: Array<"domain" | "ipcidr" | "combined" | "dns">;
 }
 
 export interface CompiledRuleSetStatusItem {
@@ -371,14 +352,7 @@ export async function pruneCompiledRuleSetCaches(env: Env, config: RenderConfig)
   return deleted;
 }
 
-export async function readCompiledRuleSetManifest(
-  env: Env,
-  outputName: string,
-  options: { allowLegacy?: boolean; compilationMode?: "worker" | "wasm" } = {}
-): Promise<CompiledRuleSetManifest | null> {
-  const r2Head = await readCompiledRuleSetR2Head(env, outputName,
-    options.compilationMode ? { compilationMode: options.compilationMode } : {});
-  if (r2Head.available && r2Head.present) return r2Head.visible ? r2Head.manifest : null;
+export async function readCompiledRuleSetManifest(env: Env, outputName: string, options: { allowLegacy?: boolean } = {}): Promise<CompiledRuleSetManifest | null> {
   const headPage = await listKvKeyPage(
     env,
     compiledRuleSetVersionHeadPrefix(outputName),
@@ -395,7 +369,7 @@ export async function readCompiledRuleSetManifest(
       versioned
       && versioned.outputName === outputName
       && versioned.storageId === storageId
-      && await compiledManifestContentIsVisible(env, versioned, options.compilationMode)
+      && await compiledManifestContentIsVisible(env, versioned)
     ) return versioned;
   }
 
@@ -415,15 +389,14 @@ export async function readCompiledRuleSetManifest(
         versioned
         && versioned.outputName === outputName
         && versioned.storageId === storageId
-        && await compiledManifestContentIsVisible(env, versioned, options.compilationMode)
+        && await compiledManifestContentIsVisible(env, versioned)
       ) return versioned;
     }
   }
   // The legacy mutable manifest has no corresponding artifact visibility check.
   // Cache-only downloads must rebuild it as a complete version before use.
   if (options.allowLegacy === false) return null;
-  const legacy = normalizeCompiledManifest(await readKvJson<unknown>(env, compiledRuleSetMetaKey(outputName)));
-  return legacy?.storageBackend === "r2" && !ruleSetArtifactsBucket(env) ? null : legacy;
+  return normalizeCompiledManifest(await readKvJson<unknown>(env, compiledRuleSetMetaKey(outputName)));
 }
 
 export async function readCompiledRuleSetBucket(
@@ -434,39 +407,9 @@ export async function readCompiledRuleSetBucket(
   manifest?: CompiledRuleSetManifest
 ): Promise<string | null> {
   const selectedManifest = manifest ?? await readCompiledRuleSetManifest(env, outputName);
-  if (selectedManifest?.storageBackend === "r2") {
-    const artifact = selectedManifest.r2Artifacts?.find((item) => item.format === "text" && item.bucket === bucket && item.target === target);
-    if (!artifact) {
-      if (selectedManifest.storageId) await markCompiledRuleSetVersionUnavailable(env, selectedManifest.outputName, selectedManifest.storageId);
-      return null;
-    }
-    try {
-      const bucket = ruleSetArtifactsBucket(env);
-      if (!bucket) return null;
-      const object = await bucket.get(artifact.key);
-      if (!object || object.size > MAX_COMPILED_RULE_SET_R2_VALUE_BYTES) {
-        if (selectedManifest.storageId) await markCompiledRuleSetVersionUnavailable(env, selectedManifest.outputName, selectedManifest.storageId);
-        return null;
-      }
-      const encrypted = new Uint8Array(await object.arrayBuffer());
-      return new TextDecoder().decode(await decryptBytes(requireSecret(env, "CONFIG_ENCRYPTION_KEY"), encrypted));
-    } catch {
-      if (selectedManifest.storageId) await markCompiledRuleSetVersionUnavailable(env, selectedManifest.outputName, selectedManifest.storageId);
-      return null;
-    }
-  }
   const key = compiledRuleSetContentKey(outputName, bucket, target, selectedManifest?.storageId);
-  let stored: string | null;
-  try {
-    stored = await env.SUBPILOT_CONFIG.get(key);
-  } catch {
-    if (selectedManifest?.storageId) await markCompiledRuleSetVersionUnavailable(env, selectedManifest.outputName, selectedManifest.storageId);
-    return null;
-  }
-  if (stored === null) {
-    if (selectedManifest?.storageId) await markCompiledRuleSetVersionUnavailable(env, selectedManifest.outputName, selectedManifest.storageId);
-    return null;
-  }
+  const stored = await env.SUBPILOT_CONFIG.get(key);
+  if (stored === null) return null;
   try {
     return await readEncryptedCacheContent(env, key, stored);
   } catch {
@@ -474,40 +417,6 @@ export async function readCompiledRuleSetBucket(
     // it may have been published less than a second ago, and a delete would
     // violate KV's same-key write limit. A later compilation publishes a new
     // version and bounded garbage collection removes the old one after grace.
-    if (selectedManifest?.storageId) await markCompiledRuleSetVersionUnavailable(env, selectedManifest.outputName, selectedManifest.storageId);
-    return null;
-  }
-}
-
-export async function readCompiledRuleSetSrs(
-  env: Env,
-  outputName: string,
-  bucket: "domain" | "ipcidr" | "combined" | "dns",
-  manifest: CompiledRuleSetManifest
-): Promise<Uint8Array | null> {
-  if (manifest.outputName !== outputName || manifest.storageBackend !== "r2" || !manifest.storageId) return null;
-  if (!manifest.srsBuckets?.includes(bucket)) {
-    if (compiledRuleSetManifestExpectsSrsBucket(manifest, bucket)) {
-      await markCompiledRuleSetVersionUnavailable(env, manifest.outputName, manifest.storageId);
-    }
-    return null;
-  }
-  const artifact = manifest.r2Artifacts?.find((item) => item.format === "srs" && item.bucket === bucket && item.target === "sing-box");
-  if (!artifact) {
-    await markCompiledRuleSetVersionUnavailable(env, manifest.outputName, manifest.storageId);
-    return null;
-  }
-  try {
-    const bucket = ruleSetArtifactsBucket(env);
-    if (!bucket) return null;
-    const object = await bucket.get(artifact.key);
-    if (!object || object.size > MAX_COMPILED_RULE_SET_R2_VALUE_BYTES) {
-      await markCompiledRuleSetVersionUnavailable(env, manifest.outputName, manifest.storageId);
-      return null;
-    }
-    return await decryptBytes(requireSecret(env, "CONFIG_ENCRYPTION_KEY"), new Uint8Array(await object.arrayBuffer()));
-  } catch {
-    await markCompiledRuleSetVersionUnavailable(env, manifest.outputName, manifest.storageId);
     return null;
   }
 }
@@ -516,214 +425,44 @@ export async function writeCompiledRuleSet(
   env: Env,
   manifest: CompiledRuleSetManifest,
   buckets: Record<RuleSetBucket, CompiledRuleSetRule[]>,
-  options: { compilationMode: "worker" | "wasm"; canPublish?: () => Promise<boolean> }
-): Promise<void> {
-  const artifactBucket = ruleSetArtifactsBucket(env);
-  if (!artifactBucket) {
-    if (options.compilationMode === "wasm") {
-      throw new Error("WASM 模式需要启用可选的 R2 规则产物存储；请运行 npm run setup -- --enable-r2 后重新部署。当前订阅将使用普通 Worker 回退。");
-    }
-    await writeCompiledRuleSetToKv(env, manifest, buckets, options);
-    return;
-  }
-  const storageId = compiledRuleSetStorageId();
-  manifest.storageId = storageId;
-  manifest.storageBackend = "r2";
-  manifest.compilationMode = options.compilationMode;
-  const outputKey = await sha256Hex(manifest.outputName.normalize("NFC"));
-  const artifacts: CompiledRuleSetArtifactReference[] = [];
-  const addArtifact = (bucket: RuleSetDownloadBucket, target: RuleSetOutputTarget, format: "text" | "srs"): void => {
-    artifacts.push({
-      bucket, target, format,
-      key: `${COMPILED_RULE_SET_R2_PREFIX}${outputKey}/${storageId}/${target}/${format}/${bucket}`
-    });
-  };
-  for (const bucket of RULE_SET_BUCKETS) {
-    if (buckets[bucket].length === 0) continue;
-    const bucketMeta = manifest.buckets.find((item) => item.bucket === bucket);
-    for (const target of RULE_SET_TARGETS) {
-      if (bucketMeta && !bucketMeta.targets.includes(target)) continue;
-      addArtifact(bucket, target, "text");
-    }
-  }
-  const combinedArtifacts = new Map<RuleSetOutputTarget, ReturnType<typeof planRuleSetArtifacts>[number]>();
-  for (const target of RULE_SET_TARGETS) {
-    const combined = planRuleSetArtifacts(manifest.buckets, target, manifest.provider?.behavior, manifest.surgeType)
-      .find((artifact) => artifact.bucket === "combined");
-    if (combined) {
-      combinedArtifacts.set(target, combined);
-      addArtifact("combined", target, "text");
-    }
-  }
-  const dnsRules = manifest.dnsRuleCount === undefined ? null : [...buckets.domain, ...buckets.classical].filter((rule) =>
-    ["DOMAIN", "DOMAIN-SUFFIX", "DOMAIN-KEYWORD", "DOMAIN-REGEX", "DOMAIN-WILDCARD"].includes(rule.type)
-    && renderRuleSetRuleForTarget(rule.raw, "sing-box") !== null);
-  if (dnsRules) {
-    manifest.dnsRuleCount = dnsRules.length;
-    if (dnsRules.length) addArtifact("dns", "sing-box", "text");
-  }
-  if (options.compilationMode === "wasm") {
-    const singboxArtifacts = planRuleSetArtifacts(manifest.buckets, "sing-box", manifest.provider?.behavior, manifest.surgeType);
-    for (const artifact of singboxArtifacts) addArtifact(artifact.bucket, "sing-box", "srs");
-    if (dnsRules?.length) addArtifact("dns", "sing-box", "srs");
-  }
-  manifest.r2Artifacts = artifacts;
-  manifest.srsBuckets = [...new Set(artifacts.filter((artifact) => artifact.format === "srs")
-    .map((artifact) => artifact.bucket).filter((bucket): bucket is "domain" | "ipcidr" | "combined" | "dns" => bucket !== "classical"))];
-
-  // Rebuilds must be able to replace an unavailable head with a fresh storageId.
-  const previousHead = await readCompiledRuleSetR2Head(env, manifest.outputName, { checkArtifactVisibility: false });
-  if (!previousHead.available) throw new Error("R2 规则产物存储暂不可用，编译结果未发布。");
-  const previous = previousHead.manifest;
-  let stagingQueueKey: string | null = null;
-  let previousQueueKey: string | null = null;
-  const writtenKvKeys = new Set<string>();
-  let published = false;
-  try {
-    stagingQueueKey = await enqueueCompiledRuleSetR2Cleanup(env, manifest.outputName, storageId,
-      artifacts.map((artifact) => artifact.key), Date.now() + COMPILED_RULE_SET_PUBLISH_GRACE_MS);
-    if (previous?.storageBackend === "r2" && previous.storageId && previous.storageId !== storageId) {
-      previousQueueKey = await enqueueCompiledRuleSetR2Cleanup(env, manifest.outputName, previous.storageId,
-        (previous.r2Artifacts ?? []).map((artifact) => artifact.key), Date.now() + COMPILED_RULE_SET_PUBLISH_GRACE_MS);
-    }
-
-    const encryptionKey = requireSecret(env, "CONFIG_ENCRYPTION_KEY");
-    const writtenArtifacts: CompiledRuleSetArtifactReference[] = [];
-    for (const artifact of artifacts) {
-      let content: string;
-      if (artifact.bucket === "dns") {
-        if (!dnsRules) throw new Error("DNS rule artifact was not prepared");
-        content = renderSingboxRules(dnsRules, artifact.format !== "srs");
-      } else if (artifact.bucket === "combined") {
-        const combined = combinedArtifacts.get(artifact.target);
-        if (!combined) throw new Error("Combined rule artifact was not prepared");
-        content = renderCombinedRuleSet(buckets, artifact.target, combined, artifact.format !== "srs");
-      } else {
-        content = renderCompiledRuleSetBucket(buckets[artifact.bucket], artifact.bucket, artifact.target, artifact.format !== "srs");
-      }
-      let bytes: Uint8Array;
-      if (artifact.format === "srs") {
-        // A WASM failure must leave the previous complete publication intact.
-        bytes = await compileSingboxRuleSet(content);
-      } else {
-        bytes = new TextEncoder().encode(content);
-      }
-      if (artifact.format === "text" && content.length > MAX_COMPILED_RULE_SET_PLAINTEXT_CHARACTERS) {
-        throw new Error(`编译规则集产物超过 ${MAX_COMPILED_RULE_SET_PLAINTEXT_CHARACTERS} 字符限制`);
-      }
-      const encrypted = await encryptBytes(encryptionKey, bytes);
-      if (encrypted.byteLength > MAX_COMPILED_RULE_SET_R2_VALUE_BYTES) {
-        throw new Error(`编译规则集加密产物超过 ${MAX_COMPILED_RULE_SET_R2_VALUE_BYTES} 字节 R2 限制`);
-      }
-      await artifactBucket.put(artifact.key, encrypted, {
-        httpMetadata: { contentType: artifact.format === "srs" ? "application/octet-stream" : compiledRuleSetArtifactContentType(artifact.target) },
-        customMetadata: { managedBy: "subpilot", storageId, format: artifact.format }
-      });
-      writtenArtifacts.push(artifact);
-    }
-
-    manifest.r2Artifacts = writtenArtifacts;
-    manifest.srsBuckets = [...new Set(writtenArtifacts.filter((artifact) => artifact.format === "srs")
-      .map((artifact) => artifact.bucket).filter((bucket): bucket is "domain" | "ipcidr" | "combined" | "dns" => bucket !== "classical"))];
-
-    if (options.canPublish && !await options.canPublish()) {
-      throw new Error("Rule-set configuration changed before cache publication.");
-    }
-    const metaKey = compiledRuleSetVersionMetaKey(manifest.outputName, storageId);
-    writtenKvKeys.add(metaKey);
-    await env.SUBPILOT_CONFIG.put(metaKey, JSON.stringify(manifest));
-    const headKey = compiledRuleSetVersionHeadKey(manifest.outputName, storageId);
-    writtenKvKeys.add(headKey);
-    await env.SUBPILOT_CONFIG.put(headKey, storageId).catch(() => {
-      console.warn(JSON.stringify({ level: "warn", message: "R2 编译产物索引更新失败，将使用版本清单继续服务。" }));
-    });
-    await writeCompiledRuleSetR2Head(env, manifest.outputName, { state: "active", storageId, manifest });
-    published = true;
-  } catch (error) {
-    await deleteKvKeys(env, [...writtenKvKeys]).catch(logCompiledCacheCleanupFailure);
-    if (!published && stagingQueueKey) {
-      try {
-        const current = await readCompiledRuleSetR2Head(env, manifest.outputName, { checkArtifactVisibility: false });
-        if (current.available && (!current.present || current.state === "deleted"
-          || current.state === "active" && current.storageId !== storageId)) {
-          await deleteQueuedCompiledRuleSetR2Artifacts(env, stagingQueueKey);
-        }
-      } catch {
-        logCompiledCacheCleanupFailure();
-      }
-    }
-    throw error;
-  }
-  if (stagingQueueKey) await env.SUBPILOT_CONFIG.delete(stagingQueueKey).catch(logCompiledCacheCleanupFailure);
-  // A later configuration can commit while publication is in flight. Preserve
-  // its artifacts; the caller reconciles any completed obsolete publication.
-  if (options.canPublish) {
-    try { if (!await options.canPublish()) return; }
-    catch { return; }
-  }
-  if (previous?.storageBackend === "r2" && previous.storageId && previous.storageId !== storageId && previousQueueKey) {
-    await deleteQueuedCompiledRuleSetR2Artifacts(env, previousQueueKey).catch(logCompiledCacheCleanupFailure);
-  }
-  await pruneOldCompiledRuleSetVersions(env, manifest.outputName, storageId).catch(logCompiledCacheCleanupFailure);
-}
-
-async function writeCompiledRuleSetToKv(
-  env: Env,
-  manifest: CompiledRuleSetManifest,
-  buckets: Record<RuleSetBucket, CompiledRuleSetRule[]>,
-  options: { compilationMode: "worker" | "wasm"; canPublish?: () => Promise<boolean> }
+  options: { canPublish?: () => Promise<boolean> } = {}
 ): Promise<void> {
   const storageId = compiledRuleSetStorageId();
   manifest.storageId = storageId;
-  manifest.storageBackend = "kv";
-  manifest.compilationMode = options.compilationMode;
-  delete manifest.r2Artifacts;
-  delete manifest.srsBuckets;
   const writtenKeys = new Set<string>();
   const writeContent = async (key: string, content: string): Promise<void> => {
-    if (content.length > MAX_COMPILED_RULE_SET_PLAINTEXT_CHARACTERS) {
-      throw new Error(`编译规则集产物超过 ${MAX_COMPILED_RULE_SET_PLAINTEXT_CHARACTERS} 字符限制`);
-    }
-    const encrypted = await encryptCacheContent(env, content);
-    if (new TextEncoder().encode(encrypted).byteLength > MAX_COMPILED_RULE_SET_KV_VALUE_BYTES) {
-      throw new Error(`编译规则集加密产物超过 ${MAX_COMPILED_RULE_SET_KV_VALUE_BYTES} 字节 KV 限制`);
-    }
     writtenKeys.add(key);
-    await env.SUBPILOT_CONFIG.put(key, encrypted);
+    await writeEncryptedCompiledContent(env, key, content);
   };
   try {
     for (const bucket of RULE_SET_BUCKETS) {
-      if (!buckets[bucket].length) continue;
+      const rules = buckets[bucket];
+      if (rules.length === 0) continue;
       const bucketMeta = manifest.buckets.find((item) => item.bucket === bucket);
       for (const target of RULE_SET_TARGETS) {
         if (bucketMeta && !bucketMeta.targets.includes(target)) continue;
-        await writeContent(
-          compiledRuleSetContentKey(manifest.outputName, bucket, target, storageId),
-          renderCompiledRuleSetBucket(buckets[bucket], bucket, target)
-        );
+        const key = compiledRuleSetContentKey(manifest.outputName, bucket, target, storageId);
+        const content = renderCompiledRuleSetBucket(rules, bucket, target);
+        await writeContent(key, content);
       }
     }
     for (const target of RULE_SET_TARGETS) {
-      const combined = planRuleSetArtifacts(manifest.buckets, target, manifest.provider?.behavior, manifest.surgeType)
-        .find((artifact) => artifact.bucket === "combined");
+      const combined = planRuleSetArtifacts(manifest.buckets, target, manifest.provider?.behavior, manifest.surgeType).find((artifact) => artifact.bucket === "combined");
       if (!combined) continue;
-      await writeContent(
-        compiledRuleSetContentKey(manifest.outputName, "combined", target, storageId),
-        renderCombinedRuleSet(buckets, target, combined)
-      );
+      const key = compiledRuleSetContentKey(manifest.outputName, "combined", target, storageId);
+      const content = renderCombinedRuleSet(buckets, target, combined);
+      await writeContent(key, content);
     }
     if (manifest.dnsRuleCount !== undefined) {
       const dnsRules = [...buckets.domain, ...buckets.classical].filter((rule) =>
         ["DOMAIN", "DOMAIN-SUFFIX", "DOMAIN-KEYWORD", "DOMAIN-REGEX", "DOMAIN-WILDCARD"].includes(rule.type)
         && renderRuleSetRuleForTarget(rule.raw, "sing-box") !== null);
       manifest.dnsRuleCount = dnsRules.length;
-      if (dnsRules.length) {
-        await writeContent(
-          compiledRuleSetContentKey(manifest.outputName, "dns", "sing-box", storageId),
-          renderSingboxRules(dnsRules)
-        );
-      }
+      if (dnsRules.length) await writeContent(
+        compiledRuleSetContentKey(manifest.outputName, "dns", "sing-box", storageId), renderSingboxRules(dnsRules));
     }
+    // Publish the manifest only after every artifact. Track exact keys so a
+    // failed write can be cleaned even before KV listing sees the new objects.
     if (options.canPublish && !await options.canPublish()) {
       throw new Error("Rule-set configuration changed before cache publication.");
     }
@@ -732,17 +471,18 @@ async function writeCompiledRuleSetToKv(
     await env.SUBPILOT_CONFIG.put(metaKey, JSON.stringify(manifest));
     const headKey = compiledRuleSetVersionHeadKey(manifest.outputName, storageId);
     writtenKeys.add(headKey);
+    // The manifest already committed this complete version. A failed index
+    // write must not remove it; readers can discover the version metadata.
     await env.SUBPILOT_CONFIG.put(headKey, storageId).catch(() => {
-      console.warn(JSON.stringify({ level: "warn", message: "KV 编译产物索引更新失败，将使用版本清单继续服务。" }));
+      console.warn(JSON.stringify({ level: "warn", message: "编译缓存索引更新失败，将使用独立版本元数据。" }));
     });
   } catch (error) {
     await deleteKvKeys(env, [...writtenKeys]).catch(logCompiledCacheCleanupFailure);
     throw error;
   }
-  if (options.canPublish) {
-    try { if (!await options.canPublish()) return; }
-    catch { return; }
-  }
+  // A later configuration can commit while publication is in flight. Preserve
+  // its artifacts; the caller reconciles any completed obsolete publication.
+  if (options.canPublish && !await options.canPublish()) return;
   await pruneOldCompiledRuleSetVersions(env, manifest.outputName, storageId).catch(logCompiledCacheCleanupFailure);
 }
 
@@ -755,18 +495,6 @@ export async function deleteCompiledRuleSet(env: Env, outputName: string): Promi
     listKvKeys(env, compiledRuleSetMetaOutputPrefix(outputName)),
     listKvKeys(env, compiledRuleSetContentOutputPrefix(outputName))
   ]);
-  const r2Head = await readCompiledRuleSetR2Head(env, outputName, { checkArtifactVisibility: false });
-  const manifests = new Map<string, CompiledRuleSetManifest>();
-  for (const key of metaKeys.filter((item) => item.startsWith(compiledRuleSetVersionMetaPrefix(outputName)))) {
-    const stored = normalizeCompiledManifest(await readKvJson<unknown>(env, key));
-    if (stored?.storageBackend === "r2" && stored.storageId) manifests.set(stored.storageId, stored);
-  }
-  if (r2Head.manifest?.storageBackend === "r2" && r2Head.manifest.storageId) {
-    manifests.set(r2Head.manifest.storageId, r2Head.manifest);
-  }
-  if (manifests.size && !r2Head.available) throw new Error("R2 规则产物存储暂不可用，无法清理过期产物。");
-  if (r2Head.available) await writeCompiledRuleSetR2Head(env, outputName, { state: "deleted" });
-  for (const manifest of manifests.values()) await deleteCompiledRuleSetR2Artifacts(env, manifest);
   const keys = [...new Set([
     ...metaKeys,
     ...contentKeys,
@@ -828,191 +556,15 @@ function compiledRuleSetStorageId(): string {
   return `${String(Date.now()).padStart(16, "0")}-${randomToken(8)}`;
 }
 
-interface CompiledRuleSetR2HeadPayload {
-  version: 1;
-  outputKey: string;
-  state: "active" | "deleted";
-  storageId?: string;
-  manifest?: CompiledRuleSetManifest;
-}
-
-interface CompiledRuleSetR2HeadRead {
-  available: boolean;
-  present: boolean;
-  visible: boolean;
-  state?: "active" | "deleted";
-  storageId?: string;
-  manifest: CompiledRuleSetManifest | null;
-}
-
-interface CompiledRuleSetR2CleanupRecord {
-  outputName: string;
-  storageId: string;
-  cleanupAfter: number;
-  keys: string[];
-}
-
-function compiledRuleSetR2CleanupQueueKey(cleanupAfter: number): string {
-  return `${COMPILED_RULE_SET_R2_CLEANUP_PREFIX}${String(cleanupAfter).padStart(16, "0")}:${randomToken(8)}`;
-}
-
-async function readCompiledRuleSetR2Head(
-  env: Env,
-  outputName: string,
-  options: { checkArtifactVisibility?: boolean; compilationMode?: "worker" | "wasm" } = {}
-): Promise<CompiledRuleSetR2HeadRead> {
-  const bucket = ruleSetArtifactsBucket(env);
-  if (!bucket) return { available: false, present: false, visible: false, manifest: null };
-  const outputKey = await sha256Hex(outputName.normalize("NFC"));
-  let object: R2ObjectBody | null;
-  try {
-    object = await bucket.get(`${COMPILED_RULE_SET_R2_PREFIX}heads/${outputKey}`);
-  } catch {
-    return { available: false, present: false, visible: false, manifest: null };
+async function writeEncryptedCompiledContent(env: Env, key: string, content: string): Promise<void> {
+  if (content.length > MAX_COMPILED_RULE_SET_PLAINTEXT_CHARACTERS) {
+    throw new Error(`编译规则集产物超过 ${MAX_COMPILED_RULE_SET_PLAINTEXT_CHARACTERS} 字符限制`);
   }
-  if (!object) return { available: true, present: false, visible: false, manifest: null };
-  if (object.size > 1024 * 1024) return { available: true, present: true, visible: false, manifest: null };
-  try {
-    const decrypted = await decryptBytes(requireSecret(env, "CONFIG_ENCRYPTION_KEY"), new Uint8Array(await object.arrayBuffer()));
-    const payload = JSON.parse(new TextDecoder().decode(decrypted)) as Partial<CompiledRuleSetR2HeadPayload>;
-    if (payload.version !== 1 || payload.outputKey !== outputKey || (payload.state !== "active" && payload.state !== "deleted")) {
-      return { available: true, present: true, visible: false, manifest: null };
-    }
-    if (payload.state === "deleted") return { available: true, present: true, visible: true, state: "deleted", manifest: null };
-    const manifest = normalizeCompiledManifest(payload.manifest);
-    if (!manifest || manifest.outputName !== outputName || manifest.storageBackend !== "r2"
-      || typeof payload.storageId !== "string" || manifest.storageId !== payload.storageId) {
-      return {
-        available: true, present: true, visible: false, state: "active",
-        ...(typeof payload.storageId === "string" ? { storageId: payload.storageId } : {}),
-        manifest: null
-      };
-    }
-    // Cleanup only needs the committed storage ID; probing every artifact for
-    // each queued version would multiply R2 reads during scheduled GC.
-    const visible = options.checkArtifactVisibility === false
-      ? true
-      : await compiledManifestContentIsVisible(env, manifest, options.compilationMode);
-    return { available: true, present: true, visible, state: "active", storageId: payload.storageId, manifest };
-  } catch {
-    return { available: true, present: true, visible: false, manifest: null };
+  const encrypted = await encryptCacheContent(env, content);
+  if (encrypted.length > MAX_COMPILED_RULE_SET_KV_VALUE_BYTES) {
+    throw new Error(`编译规则集加密产物超过 ${MAX_COMPILED_RULE_SET_KV_VALUE_BYTES} 字节 KV 限制`);
   }
-}
-
-async function writeCompiledRuleSetR2Head(
-  env: Env,
-  outputName: string,
-  payload: Omit<CompiledRuleSetR2HeadPayload, "version" | "outputKey">
-): Promise<void> {
-  const outputKey = await sha256Hex(outputName.normalize("NFC"));
-  const key = `${COMPILED_RULE_SET_R2_PREFIX}heads/${outputKey}`;
-  const body = new TextEncoder().encode(JSON.stringify({ version: 1, outputKey, ...payload } satisfies CompiledRuleSetR2HeadPayload));
-  const encrypted = await encryptBytes(requireSecret(env, "CONFIG_ENCRYPTION_KEY"), body);
-  const bucket = ruleSetArtifactsBucket(env);
-  if (!bucket) throw new Error("R2 规则产物存储未配置。");
-  await bucket.put(key, encrypted, {
-    httpMetadata: { contentType: "application/octet-stream" },
-    customMetadata: { managedBy: "subpilot", kind: "compiled-rule-set-head", state: payload.state }
-  });
-}
-
-async function enqueueCompiledRuleSetR2Cleanup(
-  env: Env,
-  outputName: string,
-  storageId: string,
-  keys: string[],
-  cleanupAfter: number
-): Promise<string | null> {
-  const uniqueKeys = [...new Set(keys)];
-  if (!uniqueKeys.length) return null;
-  const key = compiledRuleSetR2CleanupQueueKey(cleanupAfter);
-  const record: CompiledRuleSetR2CleanupRecord = { outputName, storageId, cleanupAfter, keys: uniqueKeys };
-  await env.SUBPILOT_CONFIG.put(key, JSON.stringify(record));
-  return key;
-}
-
-async function readCompiledRuleSetR2CleanupRecord(env: Env, key: string): Promise<CompiledRuleSetR2CleanupRecord | null> {
-  const value = await env.SUBPILOT_CONFIG.get<unknown>(key, "json");
-  if (!value || typeof value !== "object") return null;
-  const record = value as Partial<CompiledRuleSetR2CleanupRecord>;
-  if (typeof record.outputName !== "string" || typeof record.storageId !== "string"
-    || typeof record.cleanupAfter !== "number" || !Number.isFinite(record.cleanupAfter)
-    || !Array.isArray(record.keys) || record.keys.some((item) => typeof item !== "string"
-      || !item.startsWith(COMPILED_RULE_SET_R2_PREFIX) && !item.startsWith(LEGACY_COMPILED_RULE_SET_R2_PREFIX))) return null;
-  return { outputName: record.outputName, storageId: record.storageId, cleanupAfter: record.cleanupAfter, keys: [...new Set(record.keys)] as string[] };
-}
-
-async function deleteQueuedCompiledRuleSetR2Artifacts(env: Env, queueKey: string): Promise<void> {
-  const record = await readCompiledRuleSetR2CleanupRecord(env, queueKey);
-  if (!record) {
-    await env.SUBPILOT_CONFIG.delete(queueKey);
-    return;
-  }
-  const bucket = ruleSetArtifactsBucket(env);
-  if (!bucket) throw new Error("R2 规则产物存储未配置。");
-  await bucket.delete(record.keys);
-  await env.SUBPILOT_CONFIG.delete(queueKey);
-}
-
-async function deleteCompiledRuleSetR2Artifacts(env: Env, manifest: CompiledRuleSetManifest): Promise<void> {
-  if (manifest.storageBackend !== "r2" || !manifest.storageId) return;
-  const queueKey = await enqueueCompiledRuleSetR2Cleanup(env, manifest.outputName, manifest.storageId,
-    (manifest.r2Artifacts ?? []).map((artifact) => artifact.key), Date.now());
-  if (queueKey) {
-    try { await deleteQueuedCompiledRuleSetR2Artifacts(env, queueKey); }
-    catch { console.warn(JSON.stringify({ level: "warn", message: "过期 R2 规则产物已排入持久化清理队列。" })); }
-  }
-}
-
-export async function cleanupExpiredCompiledRuleSetR2Artifacts(env: Env, now = Date.now(), relatedEnvs: Env[] = []): Promise<number> {
-  if (!ruleSetArtifactsBucket(env)) return 0;
-  const page = await env.SUBPILOT_CONFIG.list({ prefix: COMPILED_RULE_SET_R2_CLEANUP_PREFIX, limit: MAX_COMPILED_R2_CLEANUP_RECORDS_PER_RUN });
-  const manifestScopes = [...new Set([env, ...relatedEnvs])];
-  let cleaned = 0;
-  for (const entry of page.keys.map((item) => item.name).sort()) {
-    const record = await readCompiledRuleSetR2CleanupRecord(env, entry);
-    if (!record) {
-      await env.SUBPILOT_CONFIG.delete(entry);
-      continue;
-    }
-    if (record.cleanupAfter > now) break;
-    const head = await readCompiledRuleSetR2Head(env, record.outputName, { checkArtifactVisibility: false });
-    if (!head.available) break;
-    if (head.state === "active" && head.storageId === record.storageId) {
-      await env.SUBPILOT_CONFIG.delete(entry);
-      continue;
-    }
-    if (head.present && !head.state) break;
-    const hasLegacyArtifacts = record.keys.some((key) => key.startsWith(LEGACY_COMPILED_RULE_SET_R2_PREFIX));
-    if (!head.present || hasLegacyArtifacts) {
-      const currentManifests = await Promise.all(manifestScopes.map((scopeEnv) =>
-        compiledRuleSetR2VersionIsReferenced(scopeEnv, record.outputName, record.storageId)));
-      if (currentManifests.some(Boolean)) {
-        await env.SUBPILOT_CONFIG.delete(entry);
-        continue;
-      }
-    }
-    const bucket = ruleSetArtifactsBucket(env);
-    if (!bucket) break;
-    await bucket.delete(record.keys);
-    await env.SUBPILOT_CONFIG.delete(entry);
-    cleaned += record.keys.length;
-  }
-  return cleaned;
-}
-
-async function compiledRuleSetR2VersionIsReferenced(env: Env, outputName: string, storageId: string): Promise<boolean> {
-  const versioned = normalizeCompiledManifest(await readKvJson<unknown>(env, compiledRuleSetVersionMetaKey(outputName, storageId)));
-  if (versioned?.storageBackend === "r2" && versioned.storageId === storageId && versioned.outputName === outputName) return true;
-  const legacy = normalizeCompiledManifest(await readKvJson<unknown>(env, compiledRuleSetMetaKey(outputName)));
-  return legacy?.storageBackend === "r2" && legacy.storageId === storageId && legacy.outputName === outputName;
-}
-
-function compiledRuleSetArtifactContentType(target: RuleSetOutputTarget): string {
-  if (target === "sing-box") return "application/json; charset=utf-8";
-  if (target === "surge") return "text/plain; charset=utf-8";
-  if (target === "clash") return "text/yaml; charset=utf-8";
-  return "text/plain; charset=utf-8";
+  await env.SUBPILOT_CONFIG.put(key, encrypted);
 }
 
 async function pruneOldCompiledRuleSetVersions(
@@ -1041,13 +593,6 @@ async function pruneOldCompiledRuleSetVersions(
 
 async function deleteCompiledRuleSetVersion(env: Env, outputName: string, metaKey: string): Promise<void> {
   const storageId = metaKey.slice(compiledRuleSetVersionMetaPrefix(outputName).length);
-  const manifest = normalizeCompiledManifest(await readKvJson<unknown>(env, metaKey));
-  if (manifest?.storageBackend === "r2" && manifest.storageId === storageId) {
-    const head = await readCompiledRuleSetR2Head(env, outputName, { checkArtifactVisibility: false });
-    if (!head.available) throw new Error("R2 规则产物存储暂不可用，无法清理旧版本。");
-    if (head.state === "active" && head.storageId === storageId) return;
-    await deleteCompiledRuleSetR2Artifacts(env, manifest);
-  }
   const contentPrefix = `${compiledRuleSetContentOutputPrefix(outputName)}${storageId}:`;
   await deleteKvKeys(env, await listKvKeys(env, contentPrefix));
   // Delete the publication marker only after every content page is removed.
@@ -1077,22 +622,8 @@ async function pruneOrphanCompiledRuleSetContents(
   }
 }
 
-async function compiledManifestContentIsVisible(
-  env: Env,
-  manifest: CompiledRuleSetManifest,
-  expectedCompilationMode?: "worker" | "wasm"
-): Promise<boolean> {
+async function compiledManifestContentIsVisible(env: Env, manifest: CompiledRuleSetManifest): Promise<boolean> {
   if (!manifest.storageId) return true;
-  if (await compiledRuleSetVersionIsUnavailable(env, manifest.outputName, manifest.storageId)) return false;
-  if (manifest.storageBackend === "r2") {
-    if (!compiledRuleSetR2ArtifactsAreComplete(manifest, expectedCompilationMode)) return false;
-    const bucket = ruleSetArtifactsBucket(env);
-    if (!bucket) return false;
-    for (const artifact of manifest.r2Artifacts ?? []) {
-      if (!await bucket.head(artifact.key)) return false;
-    }
-    return true;
-  }
   const keys = compiledManifestContentKeys(manifest);
   for (const key of keys) {
     const stream = await env.SUBPILOT_CONFIG.get(key, "stream");
@@ -1100,100 +631,6 @@ async function compiledManifestContentIsVisible(
     await stream.cancel();
   }
   return true;
-}
-
-/** Require every artifact slot implied by the manifest before trusting its R2 head. */
-function compiledRuleSetR2ArtifactsAreComplete(
-  manifest: CompiledRuleSetManifest,
-  expectedCompilationMode?: "worker" | "wasm"
-): boolean {
-  if (expectedCompilationMode && manifest.compilationMode && expectedCompilationMode !== manifest.compilationMode) return false;
-  const expected = new Set<string>();
-  const slot = (bucket: RuleSetDownloadBucket, target: RuleSetOutputTarget, format: "text" | "srs") =>
-    JSON.stringify([bucket, target, format]);
-
-  for (const bucket of manifest.buckets) {
-    for (const target of RULE_SET_TARGETS) {
-      if (bucket.targets.includes(target)) expected.add(slot(bucket.bucket, target, "text"));
-    }
-  }
-  for (const target of RULE_SET_TARGETS) {
-    if (planRuleSetArtifacts(manifest.buckets, target, manifest.provider?.behavior, manifest.surgeType)
-      .some((artifact) => artifact.bucket === "combined")) {
-      expected.add(slot("combined", target, "text"));
-    }
-  }
-  if ((manifest.dnsRuleCount ?? 0) > 0) expected.add(slot("dns", "sing-box", "text"));
-
-  const artifacts = manifest.r2Artifacts ?? [];
-  const hasSrsArtifacts = expectedCompilationMode === "wasm"
-    || manifest.compilationMode === "wasm"
-    || Boolean(manifest.srsBuckets?.length)
-    || artifacts.some((artifact) => artifact.format === "srs");
-  if (hasSrsArtifacts) {
-    for (const bucket of compiledRuleSetExpectedSrsBuckets(manifest)) {
-      expected.add(slot(bucket, "sing-box", "srs"));
-    }
-  }
-
-  if (artifacts.length !== expected.size) return false;
-  const actual = new Set(artifacts.map((artifact) => slot(artifact.bucket, artifact.target, artifact.format)));
-  if (actual.size !== artifacts.length || actual.size !== expected.size) return false;
-  for (const expectedSlot of expected) if (!actual.has(expectedSlot)) return false;
-
-  if (hasSrsArtifacts) {
-    const expectedBuckets = new Set(compiledRuleSetExpectedSrsBuckets(manifest));
-    const declaredBuckets = new Set(manifest.srsBuckets ?? []);
-    if (declaredBuckets.size !== expectedBuckets.size
-      || [...expectedBuckets].some((bucket) => !declaredBuckets.has(bucket))) return false;
-  } else if (manifest.srsBuckets?.length) {
-    return false;
-  }
-  return true;
-}
-
-function compiledRuleSetExpectedSrsBuckets(manifest: CompiledRuleSetManifest): Set<"domain" | "ipcidr" | "combined" | "dns"> {
-  const buckets = new Set<"domain" | "ipcidr" | "combined" | "dns">(
-    planRuleSetArtifacts(manifest.buckets, "sing-box", manifest.provider?.behavior, manifest.surgeType)
-      .map((artifact) => artifact.bucket)
-  );
-  if ((manifest.dnsRuleCount ?? 0) > 0) buckets.add("dns");
-  return buckets;
-}
-
-function compiledRuleSetManifestExpectsSrsBucket(
-  manifest: CompiledRuleSetManifest,
-  bucket: "domain" | "ipcidr" | "combined" | "dns"
-): boolean {
-  const hasSrsArtifacts = manifest.compilationMode === "wasm"
-    || Boolean(manifest.srsBuckets?.length)
-    || manifest.r2Artifacts?.some((artifact) => artifact.format === "srs") === true;
-  return hasSrsArtifacts && compiledRuleSetExpectedSrsBuckets(manifest).has(bucket);
-}
-
-/** A failed body read invalidates only this immutable version, not later publications. */
-async function markCompiledRuleSetVersionUnavailable(env: Env, outputName: string, storageId: string): Promise<void> {
-  try {
-    await env.SUBPILOT_CONFIG.put(compiledRuleSetUnavailableMarkerKey(outputName, storageId), "1", {
-      expirationTtl: COMPILED_RULE_SET_UNAVAILABLE_TTL_SECONDS
-    });
-  } catch {
-    // A marker is best-effort; the artifact read still returns unavailable.
-  }
-}
-
-async function compiledRuleSetVersionIsUnavailable(env: Env, outputName: string, storageId: string): Promise<boolean> {
-  try {
-    return await env.SUBPILOT_CONFIG.get(compiledRuleSetUnavailableMarkerKey(outputName, storageId)) !== null;
-  } catch {
-    return false;
-  }
-}
-
-function compiledRuleSetUnavailableMarkerKey(outputName: string, storageId: string): string {
-  // This prefix is rewritten by ruleSetEnv/workerFallbackEnv, keeping markers
-  // isolated alongside the matching target and fallback artifact namespace.
-  return `${compiledRuleSetContentOutputPrefix(outputName)}unavailable:${storageId}`;
 }
 
 function compiledManifestContentKeys(manifest: CompiledRuleSetManifest): string[] {
@@ -1543,24 +980,8 @@ function normalizeCompiledManifest(value: unknown): CompiledRuleSetManifest | nu
     warnings: Array.isArray(record.warnings) ? record.warnings.filter((item): item is string => typeof item === "string") : [],
     ...(typeof record.storageId === "string" && /^[A-Za-z0-9_-]+$/.test(record.storageId)
       ? { storageId: record.storageId }
-      : {}),
-    ...(record.storageBackend === "r2" || record.storageBackend === "kv" ? { storageBackend: record.storageBackend } : {}),
-    ...(record.compilationMode === "worker" || record.compilationMode === "wasm" ? { compilationMode: record.compilationMode } : {}),
-    ...(Array.isArray(record.r2Artifacts) ? { r2Artifacts: record.r2Artifacts.flatMap(normalizeCompiledRuleSetArtifactReference) } : {}),
-    ...(Array.isArray(record.srsBuckets) ? { srsBuckets: [...new Set(record.srsBuckets.filter((bucket): bucket is "domain" | "ipcidr" | "combined" | "dns" =>
-      bucket === "domain" || bucket === "ipcidr" || bucket === "combined" || bucket === "dns"))] } : {})
+      : {})
   };
-}
-
-function normalizeCompiledRuleSetArtifactReference(value: unknown): CompiledRuleSetArtifactReference[] {
-  if (!value || typeof value !== "object") return [];
-  const record = value as Partial<CompiledRuleSetArtifactReference>;
-  if (typeof record.key !== "string"
-    || !record.key.startsWith(COMPILED_RULE_SET_R2_PREFIX) && !record.key.startsWith(LEGACY_COMPILED_RULE_SET_R2_PREFIX)
-    || !record.bucket || ![...RULE_SET_BUCKETS, "combined", "dns"].includes(record.bucket)
-    || !record.target || ![...RULE_SET_TARGETS, "stash"].includes(record.target)
-    || (record.format !== "text" && record.format !== "srs")) return [];
-  return [{ bucket: record.bucket, target: record.target, format: record.format, key: record.key }];
 }
 
 function normalizeBucketMeta(value: unknown): CompiledRuleSetBucketMeta[] {

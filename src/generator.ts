@@ -21,15 +21,13 @@ import { applyTransforms, buildChainNodes, buildConfiguredProxyNodes, ensureUniq
 import { dedupeHostEntries } from "./output-render";
 import { parseSubscription } from "./parsers";
 import { buildCompiledRuleSetReferencePlan, type CompiledRuleSetReferencePlan } from "./rule-set-compiler";
-import { prepareRuntimeRuleSetCache, scheduleRuntimeRuleSetRebuild } from "./rule-set-preparation";
+import { prepareRuleSetCache, scheduleRuleSetRebuild } from "./rule-set-preparation";
 import type { RuleSetOutputTarget } from "./rule-set-types";
 import { fetchCachedSource, sourceUserAgent } from "./source-cache";
 import { buildSurge } from "./surge-renderer";
 import { collectSurgeRuleCoverageWarnings } from "./surge-rules";
 import type { RenderConfig, GenerationResult, HostEntry, ProxyNode, Target } from "./types";
 import { mapWithConcurrency } from "./util";
-import { ruleCompilationMode } from "./rule-compilation-mode";
-import type { CompiledRuleSetManifest } from "./rule-set-cache";
 
 (globalThis as typeof globalThis & { Buffer?: typeof Buffer }).Buffer ??= Buffer;
 
@@ -92,35 +90,26 @@ export async function generateConfig(
   const diagnostics: ConfigDiagnostic[] = [];
   if (usesActionsCompilation(config) && options.context) {
     options.context.waitUntil(ensureActionsCompilation(env, config, { deadline: Date.now() + 25_000 })
-      .catch(() => console.warn(JSON.stringify({ level: "warn", message: "Actions dispatch deferred; publication remains pending." }))));
+      .catch(() => console.warn(JSON.stringify({ level: "warn", message: "Actions dispatch deferred; Worker fallback remains enabled." }))));
   }
-  const preferredConfig = config;
-  const preferredEnv = env;
-  const runtime = target === "sing-box" || ruleCompilationMode(config) !== "worker"
-    ? await prepareRuntimeRuleSetCache(env, config) : undefined;
-  const ruleSetCache = runtime?.cache;
-  if (runtime) {
-    config = runtime.config;
-    env = runtime.env;
-    if (options.context) scheduleRuntimeRuleSetRebuild(preferredEnv, preferredConfig, runtime, options.context);
-    if (runtime.fallback) diagnostics.push({ target, severity: "warning", code: "rule-compiler-fallback", path: "settings.ruleCompilationMode",
-      message: "首选编译模式的产物暂不可用，正在使用普通 Worker；首选产物就绪后将在下次更新订阅配置时自动恢复。" });
-  }
+  // Actions readiness is optional: use complete Worker rules while publication is pending.
+  const ruleSetCache = target === "sing-box" || usesActionsCompilation(config) ? await prepareRuleSetCache(env, config) : undefined;
   if (ruleSetCache?.unavailable.length) {
+    if (options.context) scheduleRuleSetRebuild(env, config, ruleSetCache.pending, options.context);
     return {
       target, content: "", contentType: "application/json; charset=utf-8",
       proxyCount: 0, fetchedSources: 0, warnings: [], canDownload: false,
       ...(ruleSetCache.errors.length ? {} : { retryAfterSeconds: ruleSetCache.retryAfterSeconds }),
-      diagnostics: [...diagnostics, ...(ruleSetCache.errors.length
-        ? ruleSetCache.errors.map((message): ConfigDiagnostic => ({ target, severity: "error", code: "rule-conversion", path: "ruleSets", message }))
-        : [{ target, severity: "error" as const, code: "rule-cache-pending", path: "ruleSets",
+      diagnostics: ruleSetCache.errors.length
+        ? ruleSetCache.errors.map((message) => ({ target, severity: "error", code: "rule-conversion", path: "ruleSets", message }))
+        : [{ target, severity: "error", code: "rule-cache-pending", path: "ruleSets",
         message: ruleSetCache.failed
           ? "规则集缓存暂不可用，后台生成失败；请检查规则来源或稍后重试。"
-          : "普通 Worker 规则缓存正在后台生成，请稍后重试更新配置。" }])]
+          : usesActionsCompilation(config) ? "Worker 正在准备可用规则，Actions 也会继续编译；请稍后重试。" : "JSON 规则缓存正在后台生成，请稍后重试更新配置。" }]
     };
   }
   let prepared: PreparedOutput;
-  try { prepared = await prepareOutput(env, config, target, requestUrl, ruleSetCache?.manifests); }
+  try { prepared = await prepareOutput(env, config, target, requestUrl); }
   catch { return { target, content: "", contentType: "text/plain; charset=utf-8", proxyCount: 0, fetchedSources: 0, warnings: [], canDownload: false,
     diagnostics: [...diagnostics, { target, severity: "error", code: "preparation-failed", path: "ruleSets", message: "生成准备失败，请检查规则来源和配置引用。" }] }; }
   if (options.includeRuleDiagnostics && config.ruleSets.mode !== "compiled") {
@@ -163,6 +152,7 @@ export async function generateConfig(
   if (content.length > MAX_RENDERED_CONFIG_CHARACTERS) {
     throw new Error(`Generated configuration exceeds ${MAX_RENDERED_CONFIG_CHARACTERS} character limit`);
   }
+  if (ruleSetCache && options.context) scheduleRuleSetRebuild(env, config, ruleSetCache.pending, options.context);
   return {
     target,
     content: canDownload ? content : "",
@@ -188,7 +178,7 @@ function buildTargetContent(
   return buildClash(config, nodes, hostEntries, ruleSetPlan);
 }
 
-async function prepareOutput(env: Env, config: RenderConfig, target: Target, requestUrl: string, manifests?: ReadonlyMap<string, CompiledRuleSetManifest>): Promise<PreparedOutput> {
+async function prepareOutput(env: Env, config: RenderConfig, target: Target, requestUrl: string): Promise<PreparedOutput> {
   const warnings: string[] = [];
   const fetched = await fetchAllSources(env, config, target, warnings);
   const configuredNodes = buildConfiguredProxyNodes(config);
@@ -201,7 +191,7 @@ async function prepareOutput(env: Env, config: RenderConfig, target: Target, req
     throw new Error(`Generated configuration contains ${nodes.length} proxy nodes; maximum is ${MAX_TOTAL_OUTPUT_NODES}`);
   }
   const ruleSetPlan = target !== "sing-box" && config.ruleSets.mode === "compiled"
-    ? await buildCompiledRuleSetReferencePlan(env, config, target, requestUrl, manifests)
+    ? await buildCompiledRuleSetReferencePlan(env, config, target, requestUrl)
     : undefined;
   if (ruleSetPlan) warnings.push(...ruleSetPlan.warnings);
   return {

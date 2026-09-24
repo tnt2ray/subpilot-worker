@@ -10,7 +10,7 @@
     "setup": "node scripts/setup-cloudflare.mjs",
     "update": "node scripts/update-cloudflare.mjs",
     "migrate": "node scripts/migrate-kv.mjs",
-    "package:release": "npm run build:worker && node scripts/package-release.mjs",
+    "package:release": "node scripts/package-release.mjs",
     "types": "node scripts/generate-worker-types.mjs",
     "typecheck": "tsc --noEmit",
     "typecheck:worker": "npm run types && npm run typecheck",
@@ -20,19 +20,15 @@
     "public:scan": "node scripts/check-public-safety.mjs",
     "dry-run": "wrangler deploy --dry-run --outdir dist",
     "build:actions": "node scripts/build-actions-compiler.mjs",
-    "build:singbox-srs": "node scripts/build-singbox-srs-wasm.mjs",
-    "build:singbox-srs:rebuild": "node scripts/build-singbox-srs-wasm.mjs --rebuild",
-    "build:worker": "npm run build:actions && npm run build:singbox-srs",
     "prepare": "npm run build:actions"
   },
   "dependencies": {
     "@cfworker/json-schema": "4.1.1",
-    "@cloudflare/workers-wasi": "0.0.5",
     "blakejs": "1.2.1",
-    "esbuild": "^0.28.1",
     "mmdb-lib": "^3.0.2",
     "tweetnacl": "1.0.3",
-    "yaml": "^2.8.1"
+    "yaml": "^2.8.1",
+    "esbuild": "^0.28.1"
   },
   "devDependencies": {
     "@codemirror/commands": "^6.10.4",
