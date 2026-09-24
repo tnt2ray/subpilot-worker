@@ -1,7 +1,7 @@
 # sing-box configuration schema
 
-`schema-1.15.0-alpha.6.json` is an unmodified copy of the upstream v1.15.0-alpha.6 schema:
-https://github.com/SagerNet/sing-box/blob/v1.15.0-alpha.6/docs/schema.json
+`schema-1.15.0-alpha.7.json` is an unmodified copy of the upstream v1.15.0-alpha.7 schema:
+https://github.com/SagerNet/sing-box/blob/v1.15.0-alpha.7/docs/schema.json
 
 Copyright © 2022 nekohasekai. The upstream GPL-3.0-or-later license and additional
 terms are retained in `LICENSE`. This schema powers the native configuration forms and validates compatible
@@ -15,8 +15,9 @@ selection conflicts, Tailcat user keys, and referenced inbound types. The upstre
 Update this file only together with the supported core version, adapters,
 migration behavior, and native `sing-box check` verification.
 
-Pinned schema SHA-256: `af4579d1005d9667b54eb557adb2738b57f39fba67cea965c5a5796b15758340`.
+This is a 1.15 preview baseline. Existing 1.14.0, 1.14.1 and 1.15.0-alpha.6
+document markers migrate to 1.15.0-alpha.7 without resetting native settings.
+For older documents, HTTP outbounds without an explicit version retain the
+previous HTTP/1.1 default. Optional new fields remain omitted until configured.
 
-This is a 1.15 preview baseline. Existing 1.14.0/1.14.1 document markers migrate
-to 1.15.0-alpha.6 without resetting native settings. Optional new fields remain
-omitted until configured.
+Pinned schema SHA-256: `904ae70b41888b8eadbb3a7843c9e7a29763bbbb3b357f705be90e373ec31e38`.

@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import type { RenderConfig, ActionsCompilationSettings, Target } from "./types";
 
 export type ActionsBucket = "domain" | "ipcidr" | "combined" | "dns";
-export const ACTIONS_COMPILER_PROTOCOL = "1";
+export const ACTIONS_COMPILER_PROTOCOL = "2";
 export const ACTIONS_OUTPUT_BRANCH = "rules";
 export const ACTIONS_WORKFLOW_FILENAME = "compile-rule-sets.yml";
 export const ACTIONS_CLIENT_DIRECTORIES: Record<Target, string> = { surge: "Surge", clash: "Clash", "sing-box": "Sing-Box" };

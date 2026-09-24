@@ -172,7 +172,7 @@ export function createSingboxForm(root, schema, section, original, { t, esc, ref
     const protocol = type.const ?? type.enum?.[0];
     if (!protocol) return true;
     if (section === "inbounds") return ["tun", "mixed", "http", "socks", "tailcat"].includes(protocol);
-    if (section === "endpoints") return endpointType ? protocol === endpointType : ["wireguard", "tailscale", "openconnect", "openvpn-client"].includes(protocol);
+    if (section === "endpoints") return endpointType ? protocol === endpointType : ["wireguard", "tailscale", "openconnect", "openvpn-client", "masque-client", "masque-server"].includes(protocol);
     return true;
   }
   function branchName(node) {

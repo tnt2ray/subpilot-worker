@@ -12,7 +12,7 @@ Subscription sources, manual nodes, and chain exits are shared. Policy groups, d
 
 | Capability | Surge | clash | sing-box |
 | --- | --- | --- | --- |
-| Output | `.conf` | Clash-compatible `.yaml` | Native JSON for **1.15.0-alpha.6 (preview)** |
+| Output | `.conf` | Clash-compatible `.yaml` | Native JSON for **1.15.0-alpha.7 (preview)** |
 | Nodes and groups | Supported protocols and group types | Supported protocols and group types | Native outbounds, `selector` / `urltest`, endpoint references |
 | Native routing | Surge rule text | `rules` + `rule-providers` | JSON `route` |
 | Compiled rule sources | `.list` | `.yaml` | JSON source `.json`, or optional Actions processing to `.srs` |
@@ -207,23 +207,26 @@ Surge supports types including `select` and `smart`, with `url-test` converted t
 | DNS | Resolvers, DNS rules and caching; includes sing-box's default resolver for connection hostnames |
 | Routing rules | Rule-set URLs, individual matches, outbound policies and matching order |
 | Tailscale | Configure connections independently in Surge and sing-box; no cross-client copying |
-| WireGuard / OpenConnect / OpenVPN | Separate sing-box client connection tabs |
+| WireGuard / OpenConnect / OpenVPN / MASQUE | Separate sing-box endpoint configuration tabs |
 | Advanced | Surge URL Rewrite, Map Local and scripts; sing-box logging and HTTP clients; no Clash tab |
 | MITM certificates | Surge only: generate, import or export a CA and configure MITM hostnames |
 
-The sing-box baseline is **1.15.0-alpha.6 (preview)**. Add optional settings through forms; removing an optional field restores core behavior. Device permissions, Always On and application selection must be configured in the actual client.
+The sing-box baseline is **1.15.0-alpha.7 (preview)**. Add optional settings through forms; removing an optional field restores core behavior. Device permissions, Always On and application selection must be configured in the actual client.
 
 SubPilot no longer exposes or generates the sing-box TUN `stack` option. Loading or importing existing configurations removes this field, allowing the client to use its own default stack. Version 1.15 uses sing-tun's own TCP/IP stack. Existing 1.14.0 / 1.14.1 documents automatically migrate their version marker while retaining native settings. Configurations using new fields require a compatible 1.15 client.
 
 New 1.15 controls:
 
 - **VPN connections**: WireGuard, Tailscale, OpenVPN and OpenConnect expose `on_demand`, allowing the client to disconnect endpoints when needed; this is not an idle timeout.
+- **VPN connections → MASQUE**: configure MASQUE client or server endpoints, with CONNECT-IP, HTTP/1.1, HTTP/2, HTTP/3 and route advertisement handled by the client.
+- **Client native outbounds → HTTP**: configure the HTTP version and whether to disable version fallback. HTTP/2 is preferred with automatic fallback; `path` or a `Host` header defaults to HTTP/1.1.
+- **TLS**: pin complete server and client certificates by SHA-256.
 - **Advanced → Cache, API & debugging**: `cache_file.buffer_size` controls write buffering (default `1MB`); `flush_interval` controls periodic flushing (e.g. `30s`, disabled by default).
 - **Inbound connections → TUN**: supports `multi_queue` (Linux only, with the new stack) and `auto_redirect_tproxy_mark`. Full Android `auto_redirect` requires a root service or root shell.
 - **Inbound connections / Advanced → Client native outbounds**: supports Tailcat. Shared nodes can also import native Tailcat JSON, preserving keys and DERP options for sing-box only; Tailcat has no conventional server/port pair. Generate keys with `sing-box generate tailcat-keypair`. Inbounds require a private key; outbounds require server public and discovery keys. Custom `derp_servers` cannot be combined with `derp_map_url` or `derp_region`.
 - **Advanced → Services → DERP**: supports `verify_client_inbound` and `verify_client_key`. Inbound references must identify existing Tailcat inbounds. Verified clients need fixed private keys.
 
-New optional settings remain omitted until configured. See the [1.15 changelog](https://sing-box.sagernet.org/changelog/) and [Tailcat documentation](https://sing-box.sagernet.org/configuration/outbound/tailcat/).
+New optional settings remain omitted until configured. Older saved native HTTP outbounds without an explicit version retain HTTP/1.1 when upgraded; new configuration uses the 1.15 protocol negotiation default. See the [alpha.7 release notes](https://github.com/SagerNet/sing-box/releases/tag/v1.15.0-alpha.7), [HTTP outbound documentation](https://sing-box.sagernet.org/configuration/outbound/http/) and [Tailcat documentation](https://sing-box.sagernet.org/configuration/outbound/tailcat/).
 
 ### Tailscale
 
@@ -285,7 +288,7 @@ Generated files use `.list`, `.yaml` and `.json` for Surge, Clash and sing-box r
 
 ### Optional Actions rule compilation
 
-Disabled by default. With the option off, the Worker continues to fetch, merge, deduplicate, convert and rebucket rule sources, producing Surge `.list`, Clash `.yaml` and sing-box `.json` files. When enabled, GitHub Actions performs this work for all three clients: it downloads original sources, uses the same compilation core as the Worker, and compiles sing-box results into SRS with **1.15.0-alpha.6**. The Worker prefers confirmed Actions artifacts. While they are pending, it reuses local caches matching the current configuration, or fetches, merges, deduplicates and buckets rules itself to keep subscriptions available.
+Disabled by default. With the option off, the Worker continues to fetch, merge, deduplicate, convert and rebucket rule sources, producing Surge `.list`, Clash `.yaml` and sing-box `.json` files. When enabled, GitHub Actions performs this work for all three clients: it downloads original sources, uses the same compilation core as the Worker, and compiles sing-box results into SRS with **1.15.0-alpha.7**. The Worker prefers confirmed Actions artifacts. While they are pending, it reuses local caches matching the current configuration, or fetches, merges, deduplicates and buckets rules itself to keep subscriptions available.
 
 The output branch is fixed to **`rules`** and is not editable. Each client has its own directory, so identical rule-set names remain independent:
 

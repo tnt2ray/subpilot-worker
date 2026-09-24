@@ -1,5 +1,5 @@
 import { Validator, type Schema } from "@cfworker/json-schema";
-import upstreamSchema from "./vendor/singbox/schema-1.15.0-alpha.6.json";
+import upstreamSchema from "./vendor/singbox/schema-1.15.0-alpha.7.json";
 import type { ConfigDiagnostic } from "./types";
 
 // Keep the upstream schema intact while hiding and rejecting the retired TUN option.
@@ -116,7 +116,7 @@ export function validateSingboxOutput(value: unknown): ConfigDiagnostic[] {
     if (locations.has(path) || locations.size >= 12) return [];
     locations.add(path);
     return [{ target: "sing-box", severity: "error", code: "singbox-schema", path,
-      message: `sing-box 1.15.0-alpha.6 字段校验失败（${error.keyword}），请检查此处的原生配置。` }];
+      message: `sing-box 1.15.0-alpha.7 字段校验失败（${error.keyword}），请检查此处的原生配置。` }];
   });
 }
 

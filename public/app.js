@@ -190,7 +190,7 @@ function render() {
   const page = NAV.find((item) => item[0] === state.page) || NAV[0];
   clearHeadingTip($("#page-title"));
   $("#page-title").textContent = state.lang === "zh" ? page[1] : page[2];
-  $("#header-actions").innerHTML = state.page === "clients" && state.client === "singbox" ? `<span class="muted small">sing-box 1.15.0-alpha.6</span>` : state.page === "clients" && state.client === "clash" ? `<span class="muted small">Mihomo v1.19.31</span>` : "";
+  $("#header-actions").innerHTML = state.page === "clients" && state.client === "singbox" ? `<span class="muted small">sing-box 1.15.0-alpha.7</span>` : state.page === "clients" && state.client === "clash" ? `<span class="muted small">Mihomo v1.19.31</span>` : "";
   $("#language").textContent = state.lang === "zh" ? "中文 / EN" : "EN / 中文";
   $("#logout").textContent = t("退出登录", "Sign out");
   renderSidebarVersion();
@@ -335,13 +335,13 @@ function renderClient() {
   if (state.client === "clash" && state.section === "advanced") state.section = "network";
   const client = state.config.clients[state.client];
   const fields = CLIENT_SECTIONS[state.client][state.section] || [];
-  const tabs = [["network", "网络与 TUN", "Network & TUN"], ["dns", "DNS", "DNS"], ["rules", "分流规则", "Routing rules"], ...state.client !== "clash" ? [["tailscale", "Tailscale", "Tailscale"]] : [], ...state.client === "singbox" ? [["wireguard", "WireGuard", "WireGuard"], ["openconnect", "OpenConnect", "OpenConnect"], ["openvpn-client", "OpenVPN", "OpenVPN"]] : [], ...state.client !== "clash" ? [["advanced", "高级设置", "Advanced"]] : [], ...state.client === "surge" ? [["mitm", "MITM 证书", "MITM certificates"]] : []];
+  const tabs = [["network", "网络与 TUN", "Network & TUN"], ["dns", "DNS", "DNS"], ["rules", "分流规则", "Routing rules"], ...state.client !== "clash" ? [["tailscale", "Tailscale", "Tailscale"]] : [], ...state.client === "singbox" ? [["wireguard", "WireGuard", "WireGuard"], ["openconnect", "OpenConnect", "OpenConnect"], ["openvpn-client", "OpenVPN", "OpenVPN"], ["masque-client", "MASQUE 客户端", "MASQUE Client"], ["masque-server", "MASQUE 服务端", "MASQUE Server"]] : [], ...state.client !== "clash" ? [["advanced", "高级设置", "Advanced"]] : [], ...state.client === "surge" ? [["mitm", "MITM 证书", "MITM certificates"]] : []];
   let content = "";
   if (state.client === "surge" && state.section === "mitm") content = renderMitm();
   else if (state.section === "tailscale") content = renderTailscale();
   else if (state.section === "rules") content = renderRules();
   else if (state.client === "singbox" && state.section === "dns") content = renderSingboxDns() + renderSingboxConnectionSettings("dns");
-  else if (state.client === "singbox" && ["wireguard", "openconnect", "openvpn-client"].includes(state.section)) content = renderSingboxVpn(state.section);
+  else if (state.client === "singbox" && ["wireguard", "openconnect", "openvpn-client", "masque-client", "masque-server"].includes(state.section)) content = renderSingboxVpn(state.section);
   else if (state.client === "singbox" && state.section === "network") content = renderSingboxNetwork() + renderSingboxConnectionSettings("network");
   else if (state.client === "singbox") content = renderSingboxSections(singboxSections[state.section] || []);
   else {
@@ -417,15 +417,19 @@ function renderSingboxConnectionSettings(group) {
   return section(title, (summary || `<p class="help">${t("使用默认设置", "Using defaults")}</p>`) + (group === "dns" ? `<p class="help" data-help>${singboxConnectionDnsHelp()}</p>` : ""), btn(t("配置", "Configure"), "edit-singbox-section", `data-key="route" data-route-group="${group}"`));
 }
 function renderSingboxVpn(type) {
-  const title = { wireguard: "WireGuard", openconnect: "OpenConnect", "openvpn-client": "OpenVPN" }[type];
+  const title = { wireguard: "WireGuard", openconnect: "OpenConnect", "openvpn-client": "OpenVPN", "masque-client": "MASQUE 客户端", "masque-server": "MASQUE 服务端" }[type];
   const items = (currentClient().endpoints || []).filter((item) => item.type === type);
-  return section(title, `<p class="help" data-help>${t("连接 VPN 服务器，可在策略组和分流规则中选择此连接。", "Connect to a VPN server and use the connection in policy groups and routing rules.")}</p><div class="table-wrap"><table><thead><tr><th>${t("名称", "Name")}</th><th>${t("服务器 / 地址", "Server / Address")}</th></tr></thead><tbody>${items.map((item) => `<tr><td>${esc(item.tag || "—")}</td><td>${esc(item.server || (item.address || []).join(", ") || "—")}</td></tr>`).join("") || `<tr><td colspan="2" class="empty">${t("尚未配置连接", "No connections configured")}</td></tr>`}</tbody></table></div>`, btn(t("配置连接", "Configure connections"), "edit-singbox-section", `data-key="endpoints" data-endpoint-type="${type}"`));
+  const locationLabel = type === "masque-server" ? t("监听地址", "Listen address") : t("服务器 / 地址", "Server / Address");
+  const help = type === "masque-client" ? t("通过 MASQUE 连接远端代理，可在策略组和分流规则中选择。", "Connect to a remote proxy with MASQUE and use it in policy groups and routing rules.")
+    : type === "masque-server" ? t("配置 MASQUE 服务端 endpoint；监听与证书选项由客户端内核管理。", "Configure a MASQUE server endpoint; the client core manages its listen and certificate options.")
+      : t("连接 VPN 服务器，可在策略组和分流规则中选择此连接。", "Connect to a VPN server and use the connection in policy groups and routing rules.");
+  return section(title, `<p class="help" data-help>${help}</p><div class="table-wrap"><table><thead><tr><th>${t("名称", "Name")}</th><th>${locationLabel}</th></tr></thead><tbody>${items.map((item) => `<tr><td>${esc(item.tag || "—")}</td><td>${esc(item.server || item.listen || (item.address || []).join(", ") || "—")}</td></tr>`).join("") || `<tr><td colspan="2" class="empty">${t("尚未配置连接", "No connections configured")}</td></tr>`}</tbody></table></div>`, btn(t("配置连接", "Configure connections"), "edit-singbox-section", `data-key="endpoints" data-endpoint-type="${type}"`));
 }
 function renderSingboxSections(keys) {
   const client = currentClient();
   const notes = {
     inbounds: t("Android / Apple 的 TUN 由系统 VPN 接口管理；接口名、进程匹配等能力受平台权限限制。应用选择、Always On 等客户端自身设置需在客户端中操作。", "Android / Apple TUN uses the system VPN interface. Interface names and process matching depend on platform permissions. App selection overrides and Always On are configured in the client itself."),
-    endpoints: t("配置 WireGuard、Tailscale、OpenConnect 和 OpenVPN 客户端连接。", "Configure WireGuard, Tailscale, OpenConnect and OpenVPN client connections."),
+    endpoints: t("配置 WireGuard、Tailscale、OpenConnect、OpenVPN 和 MASQUE 端点。", "Configure WireGuard, Tailscale, OpenConnect, OpenVPN and MASQUE endpoints."),
     route: client.ruleSets.mode === "compiled" ? t("来源编排模式下，原生规则先匹配，再匹配编排规则；原生规则集与生成规则集合并，标签不可重复。", "In compiled mode, native rules match before compiled rules. Native and generated rule sets are merged; tags must be unique.") : "",
     outbounds: t("可添加 Tailcat 等本端原生出站，再在策略组和规则中引用。Tailcat 使用公钥和 DERP，不填写服务器地址与端口。", "Add client-native outbounds such as Tailcat, then reference them in groups and rules. Tailcat uses keys and DERP rather than a server address and port."),
     experimental: t("cache_file 中可设置写缓冲大小和定时刷新间隔，留空使用客户端默认值。", "Configure write buffering and periodic flushing under cache_file, or omit them to use client defaults."),
