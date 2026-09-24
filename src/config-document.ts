@@ -99,7 +99,7 @@ export function normalizeConfigDocument(stored: StoredConfigDocument): AppConfig
     return { groups: normalized.groups, disabledGroups: normalized.disabledGroups, ruleSets: { ...normalized.ruleSets, aggregateByPolicy: allowPolicyAggregation && normalized.ruleSets.aggregateByPolicy } };
   };
   const singbox = input.clients.singbox;
-  if (!["1.14.0", "1.14.1", "1.15.0-alpha.6", "1.15.0-alpha.7"].includes(singbox.coreVersion) || !Array.isArray(singbox.inbounds)) throw new Error("无效的 sing-box 配置版本或入站配置。");
+  if (!["1.14.0", "1.14.1", "1.15.0-alpha.6", "1.15.0-alpha.7", "1.15.0-alpha.8"].includes(singbox.coreVersion) || !Array.isArray(singbox.inbounds)) throw new Error("无效的 sing-box 配置版本或入站配置。");
   for (const key of ["log", "dns", "route", "experimental"] as const) {
     if (!singbox[key] || typeof singbox[key] !== "object" || Array.isArray(singbox[key])) throw new Error(`sing-box ${key} 必须是对象。`);
   }
@@ -118,7 +118,7 @@ export function normalizeConfigDocument(stored: StoredConfigDocument): AppConfig
   // Retired cross-client conversion reports are no longer part of the document.
   Reflect.deleteProperty(normalizedSingbox, "migrationIssues");
   // Keep explicit HTTP versions; omitted versions use the upgraded core's defaults.
-  normalizedSingbox.coreVersion = "1.15.0-alpha.7";
+  normalizedSingbox.coreVersion = "1.15.0-alpha.8";
   // TUN stack is deprecated in 1.15 and removed in 1.17; use the core default.
   for (const inbound of normalizedSingbox.inbounds) if (inbound.type === "tun") delete inbound.stack;
   return {

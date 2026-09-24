@@ -13,7 +13,7 @@ SubPilot Worker 是运行在 Cloudflare Workers 上的订阅配置生成器，�
 - 支持手动节点、链式出口、策略组筛选、原生规则及本端来源编排。
 - 提供订阅检查、通用订阅地址、加密缓存、Telegram 通知和 GeoIP MMDB 上传。
 - 可选启用 GitHub Actions，统一处理 Surge、Clash、sing-box 规则集的合并、去重和分桶，并按客户端发布产物。
-- sing-box 适配基线为 **1.15.0-alpha.7（预览版）**，提供原生出站、端点和高级设置表单。
+- sing-box 适配基线为 **1.15.0-alpha.8（预览版）**，提供原生出站、端点和高级设置表单。
 
 概览页可查看最近 50 条订阅请求、节点总数和订阅缓存状态。点击“强制刷新”重新获取已保存且启用的订阅源；刷新失败时可查看原因及旧缓存是否可用。
 
@@ -196,9 +196,11 @@ Surge 支持 `select`、`smart` 等类型，`url-test` 会转换为 `smart`；Cl
 | 高级设置 | Surge 的 URL Rewrite、Map Local 和脚本；sing-box 的日志与 HTTP 客户端；Clash 无此页 |
 | MITM 证书 | 仅 Surge：生成、导入或导出 CA，设置 MITM 主机名 |
 
-sing-box 适配基线为 **1.15.0-alpha.7（预览版）**。可选参数通过表单添加，移除可选字段恢复内核默认行为。订阅无法代替客户端设置系统权限、Always On 或应用选择；请在实际设备完成这些操作。
+sing-box 适配基线为 **1.15.0-alpha.8（预览版）**。可选参数通过表单添加，移除可选字段恢复内核默认行为。订阅无法代替客户端设置系统权限、Always On 或应用选择；请在实际设备完成这些操作。
 
 sing-box 的 TUN 使用内核默认协议栈，旧配置中的 `stack` 字段在加载或导入时自动移除。
+
+原生路由和高级 DNS 规则可添加 `dns_server_address`（网络 DNS 地址匹配）和 `dns_search_domain`（网络 DNS 搜索域匹配），包括逻辑规则的子规则。先选择已有的 local、dhcp、resolved、tailscale、openvpn 或 openconnect DNS 服务器，再填写 IP/CIDR 或搜索域，用于按系统、DHCP 或 VPN 提供的 DNS 环境选择路由和解析策略。它们匹配当前网络的 DNS 配置，不是目标 IP 或查询域名。规则引用的 DNS 服务器需存在且类型受支持；删除前须移除引用。旧配置升级保留原设置，默认不添加这些可选条件。
 
 在“高级设置 → 本端原生出站”中可配置 HTTP、Tailcat 等连接，再通过当前端的策略组和规则引用。HTTP 出站未指定版本时默认优先 HTTP/2 并允许回退；设置 `path` 或 `Host` 请求头时默认使用 HTTP/1.1。明确指定的版本和回退设置会保留，清空版本字段即可恢复默认选择。
 
@@ -264,7 +266,7 @@ sing-box 的 `.srs` 地址在自动识别模式下直接输出为独立的 `remo
 
 ### Actions 规则编译（选配）
 
-默认关闭。关闭时，Worker 保留现有的来源获取、规则合并、去重、格式转换与重新分桶能力，生成 Surge `.list`、Clash `.yaml` 和 sing-box `.json`。启用后，三个客户端需要合并或转换的规则集统一交给 GitHub Actions：Actions 直接下载原始规则来源，使用与 Worker 共用的编译核心完成处理，再将 sing-box 规则编译成 SRS（sing-box **1.15.0-alpha.7**）。Worker 优先使用已确认的 Actions 产物；产物未就绪时，复用匹配当前配置的本地缓存，缺失时自行获取来源、合并、去重并分桶，保持订阅可用。
+默认关闭。关闭时，Worker 保留现有的来源获取、规则合并、去重、格式转换与重新分桶能力，生成 Surge `.list`、Clash `.yaml` 和 sing-box `.json`。启用后，三个客户端需要合并或转换的规则集统一交给 GitHub Actions：Actions 直接下载原始规则来源，使用与 Worker 共用的编译核心完成处理，再将 sing-box 规则编译成 SRS（sing-box **1.15.0-alpha.8**）。Worker 优先使用已确认的 Actions 产物；产物未就绪时，复用匹配当前配置的本地缓存，缺失时自行获取来源、合并、去重并分桶，保持订阅可用。
 
 产物分支固定为 **`rules`**，没有可编辑的产物分支设置。三个客户端分目录存放，同名规则集相互独立：
 

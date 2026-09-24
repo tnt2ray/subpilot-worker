@@ -339,7 +339,7 @@ export interface ConfigDiagnostic {
 }
 
 export interface SingboxConfig {
-  coreVersion: "1.15.0-alpha.7";
+  coreVersion: "1.15.0-alpha.8";
   log: Record<string, ProxyParamValue>;
   dns: Record<string, ProxyParamValue>;
   inbounds: Record<string, ProxyParamValue>[];

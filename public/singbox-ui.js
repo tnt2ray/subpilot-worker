@@ -14,6 +14,7 @@ const TITLES = {
   network_namespaces: ["网络命名空间（Linux）", "Network namespaces (Linux)"], $schema: ["配置 Schema 地址", "Configuration schema URL"]
 };
 const LABELS = {
+  dns_server_address: "网络 DNS 地址匹配", dns_search_domain: "网络 DNS 搜索域匹配",
   on_demand: "允许按需断开", buffer_size: "写缓冲大小", flush_interval: "自动刷新间隔",
   multi_queue: "多队列（仅 Linux）", auto_redirect_tproxy_mark: "IPv6 TCP TPROXY 标记",
   server_public_key: "服务端公钥", server_disco_key: "服务端发现公钥", pre_shared_key: "预共享密钥",
@@ -106,7 +107,7 @@ export function createSingboxGroupForm(root, spec, choices, { t, esc }) {
   } };
 }
 
-export function createSingboxForm(root, schema, section, original, { t, esc, references = {}, singleItem = false, endpointType }) {
+export function createSingboxForm(root, schema, section, original, { t, esc, references = {}, referenceTypes = {}, singleItem = false, endpointType }) {
   let draft = structuredClone(original);
   const variantsCache = new WeakMap();
   const selections = new Map();
@@ -200,14 +201,20 @@ export function createSingboxForm(root, schema, section, original, { t, esc, ref
         const body = complex && !expanded.has(pathKey) ? `<div data-sb-lazy="${register({ path: childPath, raw: child, name: title(key) })}"></div>` : renderValue(child, value[key], childPath, title(key));
         const required = node.required?.includes(key);
         const fieldHtml = `<div class="sb-field">${complex ? `<details data-sb-path="${esc(pathKey)}" ${expanded.has(pathKey) ? "open" : ""}><summary>${esc(title(key))} <code>${esc(key)}</code></summary>${body}</details>` : `<label class="sb-label">${esc(title(key))} <code>${esc(key)}</code></label><div class="sb-control">${body}</div>`}<div class="sb-remove">${button(t("移除", "Remove"), "remove", childId, required)}</div></div>`;
-        if (basicKeys.has(key) || required) basicHtml += fieldHtml;
+        if (basicKeys.has(key) || required || node.propertyNames?.["x-tag-reference"]) basicHtml += fieldHtml;
         else advancedHtml += fieldHtml;
       }
       html += `<div class="sb-basic-fields">${basicHtml}</div>`;
       if (advancedHtml) html += `<details class="sb-advanced-fields"><summary>${t("高级设置（已配置）", "Advanced settings (configured)")}</summary>${advancedHtml}</details>`;
       const missing = Object.keys(props).filter((key) => !Object.hasOwn(value, key));
       if (missing.length) html += `<details class="sb-more-options"><summary>${t("添加可选设置", "Add optional settings")}</summary><div class="sb-add"><select data-sb-property="${id}" aria-label="${esc(t("选择配置字段", "Choose a field"))}">${missing.map((key) => `<option value="${esc(key)}">${esc(title(key))} · ${esc(key)}${node.required?.includes(key) ? " *" : ""}</option>`).join("")}</select>${button(t("添加", "Add"), "property", id)}</div></details>`;
-      if (node.additionalProperties !== false && (node.additionalProperties || !Object.keys(props).length)) html += `<div class="sb-add"><input data-sb-key="${id}" placeholder="${esc(t("键名，例如域名或请求头", "Key, e.g. domain or header"))}" aria-label="${esc(t("新键名", "New key"))}">${button(t("添加条目", "Add entry"), "entry", id)}</div>`;
+      if (node.additionalProperties !== false && (node.additionalProperties || !Object.keys(props).length)) {
+        const keySchema = deref(node.propertyNames), reference = keySchema["x-tag-reference"];
+        if (reference) {
+          const choices = (references[reference] || []).filter((tag) => tag && !Object.hasOwn(value, tag) && (!keySchema["x-tag-types"] || keySchema["x-tag-types"].includes(referenceTypes[reference]?.[tag])));
+          html += `<div class="sb-add"><select data-sb-key="${id}" aria-label="${esc(t("选择 DNS 服务器", "Choose DNS server"))}" ${choices.length ? "" : "disabled"}>${choices.length ? choices.map((tag) => `<option value="${esc(tag)}">${esc(tag)}</option>`).join("") : `<option value="">${t("没有可添加的 DNS 服务器", "No DNS servers available to add")}</option>`}</select>${button(t("添加条目", "Add entry"), "entry", id, !choices.length)}</div>`;
+        } else html += `<div class="sb-add"><input data-sb-key="${id}" placeholder="${esc(t("键名，例如域名或请求头", "Key, e.g. domain or header"))}" aria-label="${esc(t("新键名", "New key"))}">${button(t("添加条目", "Add entry"), "entry", id)}</div>`;
+      }
     } else if (type === "array" && Array.isArray(value)) {
       html += `<div class="sb-list">${value.map((item, index) => {
         const childPath = [...path, index], key = JSON.stringify(childPath);
@@ -231,6 +238,8 @@ export function createSingboxForm(root, schema, section, original, { t, esc, ref
       if (ref.length) html += `<datalist id="sb-refs-${id}">${ref.map((tag) => `<option value="${esc(tag)}"></option>`).join("")}</datalist>`;
     }
     const help = {
+      dns_server_address: ["选择 DNS 服务器，填写要匹配的 IP 或 CIDR；匹配它从系统、DHCP 或 VPN 获得的 DNS 地址。支持 local、dhcp、resolved、tailscale、openvpn、openconnect。", "Choose a DNS server and enter IP addresses or CIDRs to match the DNS addresses it obtains from the system, DHCP or VPN. Supports local, dhcp, resolved, tailscale, openvpn and openconnect."],
+      dns_search_domain: ["选择 DNS 服务器，填写要匹配的搜索域；匹配当前网络的 DNS 搜索域，不是查询域名。支持 local、dhcp、resolved、tailscale、openvpn、openconnect。", "Choose a DNS server and enter search domains to match its current network DNS search domains. Supports local, dhcp, resolved, tailscale, openvpn and openconnect."],
       on_demand: ["允许客户端在需要时断开此端点；留空沿用内核默认行为。", "Allows the client to disconnect this endpoint when needed; omit to use the core default."],
       buffer_size: ["缓存文件写缓冲大小，例如 1MB；默认 1MB。", "Cache-file write buffer size, for example 1MB; defaults to 1MB."],
       flush_interval: ["自动写入磁盘的间隔，例如 30s；默认不定时刷新。", "Automatic disk flush interval, for example 30s; periodic flushing is disabled by default."],
@@ -240,7 +249,9 @@ export function createSingboxForm(root, schema, section, original, { t, esc, ref
       derp_servers: ["不能与 derp_map_url 或 derp_region 同时设置。", "Cannot be combined with derp_map_url or derp_region."]
     }[String(path.at(-1))];
     if (help) html += `<p class="help">${esc(t(...help))}</p>`;
-    if (node.pattern) html += `<p class="help">${t("格式", "Format")}: <code>${esc(node.pattern)}</code></p>`;
+    if (node.pattern) html += path.includes("dns_server_address")
+      ? `<p class="help">${t("填写 IPv4、IPv6 或 CIDR，例如 192.0.2.1、2001:db8::/32。", "Enter IPv4, IPv6 or CIDR, for example 192.0.2.1 or 2001:db8::/32.")}</p>`
+      : `<p class="help">${t("格式", "Format")}: <code>${esc(node.pattern)}</code></p>`;
     return html;
   }
   function render() {

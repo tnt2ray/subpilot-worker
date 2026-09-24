@@ -190,7 +190,7 @@ function render() {
   const page = NAV.find((item) => item[0] === state.page) || NAV[0];
   clearHeadingTip($("#page-title"));
   $("#page-title").textContent = state.lang === "zh" ? page[1] : page[2];
-  $("#header-actions").innerHTML = state.page === "clients" && state.client === "singbox" ? `<span class="muted small">sing-box 1.15.0-alpha.7</span>` : state.page === "clients" && state.client === "clash" ? `<span class="muted small">Mihomo v1.19.31</span>` : "";
+  $("#header-actions").innerHTML = state.page === "clients" && state.client === "singbox" ? `<span class="muted small">sing-box 1.15.0-alpha.8</span>` : state.page === "clients" && state.client === "clash" ? `<span class="muted small">Mihomo v1.19.31</span>` : "";
   $("#language").textContent = state.lang === "zh" ? "中文 / EN" : "EN / 中文";
   $("#logout").textContent = t("退出登录", "Sign out");
   renderSidebarVersion();
@@ -393,7 +393,7 @@ async function editSingboxDns(kind, index) {
     if (!result.valid) { form.error(result.errors.join("; ")); return; }
     currentClient().dns = next; closeModal(); changed(); render();
   });
-  form = createSingboxForm($("#singbox-form"), { ...singboxSchema, properties: { ...singboxSchema.properties, dns: property } }, "dns", original, { t, esc, references: { dns_server: (dns.servers || []).map((server) => server.tag), outbound: policyChoices(), endpoint: (currentClient().endpoints || []).map((endpoint) => endpoint.tag) } });
+  form = createSingboxForm($("#singbox-form"), { ...singboxSchema, properties: { ...singboxSchema.properties, dns: property } }, "dns", original, { t, esc, references: { dns_server: (dns.servers || []).map((server) => server.tag), outbound: policyChoices(), endpoint: (currentClient().endpoints || []).map((endpoint) => endpoint.tag) }, referenceTypes: { dns_server: Object.fromEntries((dns.servers || []).map((server) => [server.tag, server.type])) } });
 }
 function renderSingboxNetwork() {
   const inbounds = currentClient().inbounds || [];
@@ -505,7 +505,7 @@ async function editSingboxSection(key, inboundIndex, endpointType, routeGroup) {
     } finally { root.inert = false; saveButton.disabled = false; }
   });
   const original = routeKeys ? Object.fromEntries(routeKeys.filter((name) => client.route[name] !== undefined).map((name) => [name, client.route[name]])) : endpointType ? (client.endpoints || []).filter((item) => item.type === endpointType) : inboundIndex === undefined ? client[key] : [inboundIndex === null ? { type: "mixed", tag: "mixed-in", listen: "127.0.0.1", listen_port: 7890 } : client.inbounds[inboundIndex]];
-  form = createSingboxForm($("#singbox-form"), viewSchema, key, original, { t, esc, references, endpointType, singleItem: inboundIndex !== undefined });
+  form = createSingboxForm($("#singbox-form"), viewSchema, key, original, { t, esc, references, referenceTypes: { dns_server: Object.fromEntries((client.dns.servers || []).map((server) => [server.tag, server.type])) }, endpointType, singleItem: inboundIndex !== undefined });
 }
 function tailscaleCollection() {
   return state.client === "surge" ? currentClient().tailscaleNodes : currentClient().endpoints || [];
@@ -1599,8 +1599,9 @@ async function action(button) {
     const { kind, index } = button.dataset, dns = currentClient().dns;
     if (kind === "servers") {
       const tag = dns.servers[Number(index)]?.tag;
+      const environmentReferenced = (rules) => Array.isArray(rules) && rules.some((rule) => rule && typeof rule === "object" && (["dns_server_address", "dns_search_domain"].some((key) => rule[key] && typeof rule[key] === "object" && Object.hasOwn(rule[key], tag)) || environmentReferenced(rule.rules)));
       const referenced = (value) => value && typeof value === "object" && Object.entries(value).some(([key, item]) => (["server", "final", "domain_resolver", "default_domain_resolver"].includes(key) && item === tag) || (key === "preferred_by" && (item === tag || Array.isArray(item) && item.includes(tag))) || referenced(item));
-      if (tag && referenced({ ...currentClient(), dns: { ...dns, servers: dns.servers.filter((_, i) => i !== Number(index)) } })) throw Error(t("此 DNS 服务器仍被引用，请先修改默认解析或关联设置。", "This DNS server is referenced. Update the default resolver or related settings first."));
+      if (tag && (environmentReferenced(dns.rules) || environmentReferenced(currentClient().route.rules) || referenced({ ...currentClient(), dns: { ...dns, servers: dns.servers.filter((_, i) => i !== Number(index)) } }))) throw Error(t("此 DNS 服务器仍被引用，请先修改默认解析或关联设置。", "This DNS server is referenced. Update the default resolver or related settings first."));
     }
     confirmDelete(t("删除此 DNS 配置？", "Delete this DNS entry?"), () => dns[kind].splice(Number(index), 1)); return;
   }

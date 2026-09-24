@@ -12,7 +12,7 @@ Subscription sources, manual nodes, and chain exits are shared. Policy groups, d
 
 | Capability | Surge | clash | sing-box |
 | --- | --- | --- | --- |
-| Output | `.conf` | Clash-compatible `.yaml` | Native JSON for **1.15.0-alpha.7 (preview)** |
+| Output | `.conf` | Clash-compatible `.yaml` | Native JSON for **1.15.0-alpha.8 (preview)** |
 | Nodes and groups | Supported protocols and group types | Supported protocols and group types | Native outbounds, `selector` / `urltest`, endpoint references |
 | Native routing | Surge rule text | `rules` + `rule-providers` | JSON `route` |
 | Compiled rule sources | `.list` | `.yaml` | JSON source `.json`, or optional Actions processing to `.srs` |
@@ -211,9 +211,11 @@ Surge supports types including `select` and `smart`, with `url-test` converted t
 | Advanced | Surge URL Rewrite, Map Local and scripts; sing-box logging and HTTP clients; no Clash tab |
 | MITM certificates | Surge only: generate, import or export a CA and configure MITM hostnames |
 
-The sing-box baseline is **1.15.0-alpha.7 (preview)**. Add optional settings through forms; removing an optional field restores core behavior. Device permissions, Always On and application selection must be configured in the actual client.
+The sing-box baseline is **1.15.0-alpha.8 (preview)**. Add optional settings through forms; removing an optional field restores core behavior. Device permissions, Always On and application selection must be configured in the actual client.
 
 sing-box TUN uses the core's default stack. The retired `stack` field is removed when older configurations are loaded or imported.
+
+Native routing and advanced DNS rules support `dns_server_address` and `dns_search_domain`, including nested logical rules. Select an existing local, dhcp, resolved, tailscale, openvpn or openconnect DNS server, then enter IP addresses/CIDRs or search domains to choose routing and DNS policies based on the system, DHCP or VPN DNS environment. These conditions match the current network's DNS configuration, not destination IPs or queried domains. Referenced DNS servers must exist and use a supported type; remove references before deleting a server. Upgrades preserve existing settings and leave these optional conditions unset.
 
 Use **Advanced → Client native outbounds** to configure HTTP, Tailcat and other connections, then reference them in the current client's groups and rules. HTTP outbounds without an explicit version prefer HTTP/2 with fallback, or HTTP/1.1 when `path` or a `Host` header is set. Explicit version and fallback settings are preserved; clear the version field to restore the default selection.
 
@@ -279,7 +281,7 @@ Generated files use `.list`, `.yaml` and `.json` for Surge, Clash and sing-box r
 
 ### Optional Actions rule compilation
 
-Disabled by default. With the option off, the Worker continues to fetch, merge, deduplicate, convert and rebucket rule sources, producing Surge `.list`, Clash `.yaml` and sing-box `.json` files. When enabled, GitHub Actions performs this work for all three clients: it downloads original sources, uses the same compilation core as the Worker, and compiles sing-box results into SRS with **1.15.0-alpha.7**. The Worker prefers confirmed Actions artifacts. While they are pending, it reuses local caches matching the current configuration, or fetches, merges, deduplicates and buckets rules itself to keep subscriptions available.
+Disabled by default. With the option off, the Worker continues to fetch, merge, deduplicate, convert and rebucket rule sources, producing Surge `.list`, Clash `.yaml` and sing-box `.json` files. When enabled, GitHub Actions performs this work for all three clients: it downloads original sources, uses the same compilation core as the Worker, and compiles sing-box results into SRS with **1.15.0-alpha.8**. The Worker prefers confirmed Actions artifacts. While they are pending, it reuses local caches matching the current configuration, or fetches, merges, deduplicates and buckets rules itself to keep subscriptions available.
 
 The output branch is fixed to **`rules`** and is not editable. Each client has its own directory, so identical rule-set names remain independent:
 

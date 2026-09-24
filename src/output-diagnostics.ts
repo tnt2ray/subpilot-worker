@@ -46,6 +46,7 @@ export function collectOutputDiagnostics(config: RenderConfig, target: Target, c
     else if (!hasTerminalRule(data.route?.rules)) add("clients.singbox.route.final", "missing-final", "请显式设置默认出站，或在最后添加无条件的路由/拒绝规则。");
     const ruleSets = new Set<string>((data.route?.rule_set ?? []).flatMap((item: { tag: string | string[] }) => item.tag));
     const dnsTags = new Set<string>((data.dns?.servers ?? []).map((item: { tag: string }) => item.tag));
+    const dnsTypes = new Map<string, string>((data.dns?.servers ?? []).map((item: { tag: string; type: string }) => [item.tag, item.type]));
     const httpTags = new Set<string>((data.http_clients ?? []).map((item: { tag: string }) => item.tag));
     const inboundTags = new Set<string>((data.inbounds ?? []).map((item: { tag: string }) => item.tag));
     const inboundTypes = new Map<string, string>((data.inbounds ?? []).map((item: { tag: string; type: string }) => [item.tag, item.type]));
@@ -76,6 +77,7 @@ export function collectOutputDiagnostics(config: RenderConfig, target: Target, c
       // netns also accepts OS namespace names and paths on the client device.
       // A value absent from network_namespaces is not necessarily a missing tag.
       else if (tagSets[reference.kind] && !tagSets[reference.kind]!.has(reference.tag)) add(reference.path, "missing-reference", `${reference.kind} 引用 ${reference.tag} 不存在。`);
+      else if (reference.kind === "dns_server" && reference.types && !reference.types.includes(dnsTypes.get(reference.tag) ?? "")) add(reference.path, "dns-server-type", `DNS ${reference.tag} 不支持此网络环境匹配条件；请使用 ${reference.types.join("、")} 类型的 DNS 服务器。`);
     }
     // These semantic references are not annotated in the upstream schema.
     const preferred = (rules: unknown, dns: boolean): void => {

@@ -1,5 +1,5 @@
 import { Validator, type Schema } from "@cfworker/json-schema";
-import upstreamSchema from "./vendor/singbox/schema-1.15.0-alpha.7.json";
+import upstreamSchema from "./vendor/singbox/schema-1.15.0-alpha.8.json";
 import type { ConfigDiagnostic } from "./types";
 
 // Keep the upstream schema intact while hiding and rejecting the retired TUN option.
@@ -26,6 +26,20 @@ for (const branch of schema.$defs.Service.oneOf) {
   ] };
 }
 
+// These maps reference DNS server tags in their keys, not their values.
+for (const definition of ["Rule", "DNSRule", "NestedRule", "NestedDNSRule"] as const) {
+  const branch = schema.$defs[definition].oneOf[0]!;
+  const properties = ("allOf" in branch ? branch.allOf[0]!.properties : branch.properties) as Record<string, unknown>;
+  for (const field of ["dns_server_address", "dns_search_domain"]) {
+    Object.assign(properties[field]!, {
+      propertyNames: {
+        type: "string", minLength: 1, "x-tag-reference": "dns_server",
+        "x-tag-types": ["local", "dhcp", "resolved", "tailscale", "openvpn", "openconnect"]
+      }
+    });
+  }
+}
+
 // The library annotates schema objects with absolute URIs. All validators sharing
 // definitions must use the same base ID so nested references resolve consistently.
 const validator = new Validator(schema as Schema, "2020-12", true);
@@ -34,13 +48,13 @@ const outboundValidator = new Validator({ $id: schema.$id, $defs: schema.$defs, 
 
 export { schema as singboxSchema };
 
-type FormSchema = { $ref?: string; type?: string; const?: unknown; enum?: unknown[]; required?: string[]; properties?: Record<string, FormSchema>; items?: FormSchema; additionalProperties?: boolean | FormSchema; oneOf?: FormSchema[]; anyOf?: FormSchema[]; allOf?: FormSchema[]; "x-tag-reference"?: string };
+type FormSchema = { $ref?: string; type?: string; const?: unknown; enum?: unknown[]; required?: string[]; properties?: Record<string, FormSchema>; propertyNames?: FormSchema; items?: FormSchema; additionalProperties?: boolean | FormSchema; oneOf?: FormSchema[]; anyOf?: FormSchema[]; allOf?: FormSchema[]; "x-tag-reference"?: string; "x-tag-types"?: string[] };
 const definitions = schema.$defs as Record<string, FormSchema>;
 const resolve = (node: FormSchema): FormSchema => node.$ref ? { ...definitions[node.$ref.split("/").at(-1)!], ...node, $ref: "" } : node;
 
 /** Follow schema annotations, not arbitrary keys inside headers or user maps. */
-export function singboxReferences(value: unknown): { kind: string; tag: string; path: string }[] {
-  const references = new Map<string, { kind: string; tag: string; path: string }>();
+export function singboxReferences(value: unknown): { kind: string; tag: string; path: string; types?: string[] }[] {
+  const references = new Map<string, { kind: string; tag: string; path: string; types?: string[] }>();
   const accepts = (raw: FormSchema, value: unknown): boolean => {
     const node = resolve(raw);
     if (Object.hasOwn(node, "const") && node.const !== value || node.enum && !node.enum.includes(value)) return false;
@@ -58,12 +72,13 @@ export function singboxReferences(value: unknown): { kind: string; tag: string; 
     const node = resolve(raw);
     if (node["x-tag-reference"] && typeof value === "string" && value) {
       const kind = node["x-tag-reference"];
-      references.set(`${path}:${kind}:${value}`, { kind, tag: value, path });
+      references.set(`${path}:${kind}:${value}`, { kind, tag: value, path, ...(node["x-tag-types"] ? { types: node["x-tag-types"] } : {}) });
     }
     for (const part of node.oneOf ?? node.anyOf ?? []) if (accepts(part, value)) walk(part, value, path);
     for (const part of node.allOf ?? []) walk(part, value, path);
     if (Array.isArray(value) && node.items) value.forEach((item, index) => walk(node.items!, item, `${path}.${index}`));
     else if (value && typeof value === "object") for (const [key, item] of Object.entries(value)) {
+      if (node.propertyNames) walk(node.propertyNames, key, `${path}.${key}`);
       const child = node.properties?.[key] ?? (typeof node.additionalProperties === "object" ? node.additionalProperties : undefined);
       if (child) walk(child, item, `${path}.${key}`);
     }
@@ -116,7 +131,7 @@ export function validateSingboxOutput(value: unknown): ConfigDiagnostic[] {
     if (locations.has(path) || locations.size >= 12) return [];
     locations.add(path);
     return [{ target: "sing-box", severity: "error", code: "singbox-schema", path,
-      message: `sing-box 1.15.0-alpha.7 字段校验失败（${error.keyword}），请检查此处的原生配置。` }];
+      message: `sing-box 1.15.0-alpha.8 字段校验失败（${error.keyword}），请检查此处的原生配置。` }];
   });
 }
 

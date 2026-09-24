@@ -8,7 +8,7 @@ type JsonObject = Record<string, ProxyParamValue>;
 /** Native defaults owned by sing-box, independent of every other client. */
 export function defaultSingboxConfig(): AppConfig["clients"]["singbox"] {
   return {
-    coreVersion: "1.15.0-alpha.7",
+    coreVersion: "1.15.0-alpha.8",
     log: { level: "info", timestamp: true },
     dns: { servers: [{ type: "udp", tag: "dns-direct", server: "1.1.1.1" }], final: "dns-direct" },
     inbounds: [{ type: "tun", tag: "tun-in", address: ["172.19.0.1/30", "fdfe:dcba:9876::1/126"], auto_route: true }],
