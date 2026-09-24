@@ -1,11 +1,15 @@
 import { readCompiledRuleSetManifest, type CompiledRuleSetManifest } from "./rule-set-cache";
-import { compileRuleSetOutput, RuleSetCompileError, ruleSetOutputFingerprint } from "./rule-set-compiler";
+import { compileRuleSetOutput, manifestMatchesCompiler, RuleSetCompileError, ruleSetOutputFingerprint } from "./rule-set-compiler";
 import { effectiveRuleSetOutputs, ruleSetOutputNeedsCompilation } from "./rule-set-outputs";
 import type { RuleSetOutput } from "./rule-set-types";
 import { createSingboxAsnResolver } from "./singbox-asn";
 import type { RenderConfig } from "./types";
 import { mapWithConcurrency } from "./util";
-import { readActionsManifest, usesActionsCompilation } from "./actions-compiler";
+import { createActionsManifestReader, usesActionsCompilation } from "./actions-compiler";
+import { ruleCompilationMode, workerFallbackConfig } from "./rule-compilation-mode";
+import { workerFallbackEnv } from "./rule-set-scope";
+import { createRuleSetPublicationGuard } from "./rule-set-publication";
+import { readWasmCompilationFailure, wasmCompilationFailureUnresolved } from "./rule-set-wasm-failure";
 
 const PREPARATION_CONCURRENCY = 3;
 const REBUILD_DEADLINE_MS = 25_000;
@@ -37,7 +41,44 @@ interface RebuildFailure {
   code?: "configuration" | "format";
 }
 
-/** Prefer confirmed Actions artifacts, then Worker caches and bounded fallback compilation. */
+export interface RuntimeRuleSetCache {
+  config: RenderConfig;
+  env: Env;
+  cache: PreparedRuleSetCache;
+  preferred: PreparedRuleSetCache;
+  fallback: boolean;
+}
+
+/** Keep the saved preference intact; select a separate Worker cache while it is unavailable. */
+export async function prepareRuntimeRuleSetCache(
+  env: Env,
+  config: RenderConfig,
+  outputs?: RuleSetOutput[]
+): Promise<RuntimeRuleSetCache> {
+  const preferred = await prepareRuleSetCache(env, config, outputs);
+  if (ruleCompilationMode(config) === "worker" || (!preferred.unavailable.length && !preferred.failed)) {
+    return { env, config, cache: preferred, preferred, fallback: false };
+  }
+  const fallbackConfig = workerFallbackConfig(config);
+  const fallbackEnv = workerFallbackEnv(env, config.renderTarget ?? "surge");
+  return {
+    env: fallbackEnv, config: fallbackConfig, preferred, fallback: true,
+    cache: await prepareRuleSetCache(fallbackEnv, fallbackConfig, outputs, { sourceOnly: true })
+  };
+}
+
+export function scheduleRuntimeRuleSetRebuild(
+  env: Env,
+  config: RenderConfig,
+  runtime: RuntimeRuleSetCache,
+  ctx: Pick<ExecutionContext, "waitUntil">
+): void {
+  // Start the cheaper recovery path first. Preferred compilation remains enabled.
+  if (runtime.fallback) scheduleRuleSetRebuild(runtime.env, runtime.config, runtime.cache.pending, ctx, { workerFallback: true });
+  scheduleRuleSetRebuild(env, config, runtime.preferred.pending, ctx);
+}
+
+/** Read only artifacts produced by the selected compiler. */
 export async function prepareRuleSetCache(
   env: Env,
   config: RenderConfig,
@@ -52,44 +93,33 @@ export async function prepareRuleSetCache(
   const states: PreparedOutput[] = selected.map((output) => ({
     output, manifest: null, pending: true, retryAfter: 0, failed: false
   }));
+  const actions = usesActionsCompilation(config);
+  const wasm = ruleCompilationMode(config) === "wasm";
+  const readActions = actions ? await createActionsManifestReader(env, config) : null;
   await mapWithConcurrency(states, PREPARATION_CONCURRENCY, async (state) => {
     try {
       const fingerprint = await ruleSetOutputFingerprint(config, state.output);
-      const published = !options.force && !options.sourceOnly && usesActionsCompilation(config)
-        ? await readActionsManifest(env, config, state.output) : null;
-      const cached = published ?? (options.force ? null : await readCompiledRuleSetManifest(env, state.output.name, { allowLegacy: false }));
-      if (cached?.outputFingerprint === fingerprint) {
+      const cached = readActions ? await readActions(state.output)
+        : options.force ? null : await readCompiledRuleSetManifest(env, state.output.name, { allowLegacy: false, compilationMode: wasm ? "wasm" : "worker" });
+      const wasmFailed = wasm && wasmCompilationFailureUnresolved(
+        await readWasmCompilationFailure(env, config.renderTarget ?? "surge", fingerprint),
+        cached?.outputFingerprint === fingerprint ? cached : null
+      );
+      state.failed = wasmFailed;
+      if (!wasmFailed && cached?.outputFingerprint === fingerprint && manifestMatchesCompiler(config, cached)) {
         state.manifest = cached;
-        state.pending = !manifestIsFresh(cached, fingerprint) || Boolean(options.sourceOnly && usesActionsCompilation(config) && workerSourceExpired(cached));
+        state.pending = !manifestIsFresh(config, cached, fingerprint, options.sourceOnly === true);
       }
-      if (state.pending) {
+      if (state.pending && !actions) {
         const failure = await readRebuildFailure(env, config, fingerprint);
         state.retryAfter = failure.retryAfter;
-        state.failed = state.retryAfter > Date.now();
+        state.failed ||= state.retryAfter > Date.now();
         if (!state.manifest && failure.code) state.error = new RuleSetCompileError(failure.code).message;
       }
     } catch {
       state.failed = true;
     }
   });
-  // Actions never blocks a subscription when the Worker can prepare its rules.
-  // Keep a shared deadline; unfinished outputs continue through background jobs.
-  if (usesActionsCompilation(config) && !options.force) {
-    const deadline = Date.now() + REBUILD_DEADLINE_MS;
-    for (const state of states) {
-      if (state.manifest || state.failed || deadline - Date.now() < MIN_REBUILD_REMAINING_MS) continue;
-      try {
-        const compiled = await compileRuleSetOutput(env, config, state.output, {
-          workerOnly: Boolean(options.sourceOnly), allowStaleFallback: true, deadline
-        });
-        state.manifest = compiled.manifest;
-        state.pending = compiled.stale || !manifestIsFresh(compiled.manifest, await ruleSetOutputFingerprint(config, state.output));
-      } catch (error) {
-        state.failed = true;
-        if (error instanceof RuleSetCompileError) state.error = error.message;
-      }
-    }
-  }
   for (const state of states) {
     if (state.manifest) result.manifests.set(state.output.name, state.manifest);
     else result.unavailable.push(state.output.name);
@@ -111,8 +141,9 @@ export function scheduleRuleSetRebuild(
   config: RenderConfig,
   outputs: RuleSetOutput[],
   ctx: Pick<ExecutionContext, "waitUntil">,
-  options: { force?: boolean; sourceOnly?: boolean } = {}
+  options: { force?: boolean; sourceOnly?: boolean; workerFallback?: boolean } = {}
 ): void {
+  if (ruleCompilationMode(config) === "actions") return;
   const selected = compilationOutputs(config, outputs);
   if (!selected.length) return;
   ctx.waitUntil((async () => {
@@ -121,18 +152,23 @@ export function scheduleRuleSetRebuild(
       if (deadline - Date.now() < MIN_REBUILD_REMAINING_MS) break;
       let fingerprint: string | undefined;
       try {
-        if (!options.sourceOnly && usesActionsCompilation(config) && await readActionsManifest(env, config, output)) continue;
         fingerprint = await ruleSetOutputFingerprint(config, output);
-        const cached = await readCompiledRuleSetManifest(env, output.name, { allowLegacy: false });
-        if (!options.force && cached && manifestIsFresh(cached, fingerprint)
-          && !(options.sourceOnly && usesActionsCompilation(config) && workerSourceExpired(cached))) {
+        const cached = await readCompiledRuleSetManifest(env, output.name, {
+          allowLegacy: false, compilationMode: ruleCompilationMode(config) === "wasm" ? "wasm" : "worker"
+        });
+        const wasmFailed = ruleCompilationMode(config) === "wasm" && wasmCompilationFailureUnresolved(
+          await readWasmCompilationFailure(env, config.renderTarget ?? "surge", fingerprint),
+          cached?.outputFingerprint === fingerprint ? cached : null
+        );
+        if (!options.force && !wasmFailed && cached && manifestIsFresh(config, cached, fingerprint, Boolean(options.sourceOnly || options.workerFallback))) {
           continue;
         }
         if ((await readRebuildFailure(env, config, fingerprint)).retryAfter > Date.now()) continue;
         if (deadline - Date.now() < MIN_REBUILD_REMAINING_MS) break;
         const resolveAsn = createSingboxAsnResolver(env, deadline);
         const compiled = await compileRuleSetOutput(env, config, output, {
-          workerOnly: Boolean(options.sourceOnly), forceSourceRefresh: Boolean(options.sourceOnly), allowStaleFallback: true, deadline,
+          workerOnly: Boolean(options.sourceOnly), forceSourceRefresh: Boolean(options.sourceOnly || options.workerFallback), allowStaleFallback: true, deadline,
+          canPublish: () => createRuleSetPublicationGuard(env, config, { workerFallback: options.workerFallback === true })(output),
           asnResolver: async (value) => {
             const result = await resolveAsn(value);
             // Never publish a partial output when an ASN has no usable fallback.
@@ -140,7 +176,7 @@ export function scheduleRuleSetRebuild(
             return result;
           }
         });
-        if (!manifestIsFresh(compiled.manifest, fingerprint)
+        if (compiled.stale || !manifestIsFresh(config, compiled.manifest, fingerprint, Boolean(options.sourceOnly || options.workerFallback))
           || (options.force && cached && compiled.manifest.storageId === cached.storageId)) {
           await recordRebuildFailure(env, config, fingerprint);
         }
@@ -163,13 +199,10 @@ function compilationOutputs(config: RenderConfig, outputs?: RuleSetOutput[]): Ru
   });
 }
 
-function workerSourceExpired(manifest: CompiledRuleSetManifest): boolean {
-  return Date.now() - Date.parse(manifest.updatedAt) >= 24 * 60 * 60_000;
-}
-
-function manifestIsFresh(manifest: CompiledRuleSetManifest, fingerprint: string): boolean {
-  return Boolean(manifest.storageId || manifest.publication) && manifest.outputFingerprint === fingerprint
-    && (manifest.asnExpiresAt === undefined || manifest.asnExpiresAt > Date.now());
+function manifestIsFresh(config: RenderConfig, manifest: CompiledRuleSetManifest, fingerprint: string, checkAge = false): boolean {
+  return Boolean(manifest.storageId || manifest.publication) && manifest.outputFingerprint === fingerprint && manifestMatchesCompiler(config, manifest)
+    && (manifest.asnExpiresAt === undefined || manifest.asnExpiresAt > Date.now())
+    && (!checkAge || Date.now() - Date.parse(manifest.updatedAt) < 24 * 60 * 60_000);
 }
 
 function retryKey(config: RenderConfig, fingerprint: string): string {

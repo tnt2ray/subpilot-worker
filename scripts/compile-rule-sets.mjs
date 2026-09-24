@@ -2,19 +2,15 @@
 
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { chmod, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { setTimeout as sleep } from "node:timers/promises";
 
-import { compileActionRuleSet, createActionAsnResolver, actionsArtifactDirectory, actionsArtifactPath, actionsOutputKey, ACTIONS_COMPILER_PROTOCOL, ACTIONS_OUTPUT_BRANCH, ACTIONS_CLIENT_DIRECTORIES } from "./actions-compiler-runtime.mjs";
+import { compileActionRuleSet, createActionAsnResolver, createRuleSetAggregator, actionsArtifactDirectory, actionsArtifactPath, actionsOutputKey, ACTIONS_COMPILER_PROTOCOL, ACTIONS_OUTPUT_BRANCH, ACTIONS_CLIENT_DIRECTORIES, RULE_KERNEL_SHA256, RULE_KERNEL_MAX_BYTES } from "./actions-compiler-runtime.mjs";
 
-// Keep this version aligned with src/vendor/singbox. The checksum is the official
-// release asset's SHA-256 digest, recorded from GitHub's SagerNet/sing-box API.
-const SING_BOX_VERSION = "1.15.0-alpha.7";
-const SING_BOX_SHA256 = "0878b243c590a5df15f0de0638756e43f56a5aadb4184652631d2806c8af0273";
-const ARCHIVE_NAME = `sing-box-${SING_BOX_VERSION}-linux-amd64.tar.gz`;
-const ARCHIVE_URL = `https://github.com/SagerNet/sing-box/releases/download/v${SING_BOX_VERSION}/${ARCHIVE_NAME}`;
+const KERNEL_LIMIT = 25 * 1024 * 1024;
 const SOURCE_LIMIT = 16 * 1024 * 1024;
 const SRS_LIMIT = 24 * 1024 * 1024;
 const RESPONSE_LIMIT = 64 * 1024;
@@ -26,9 +22,9 @@ const FILE_DESCRIPTIONS = {
 };
 const DIRECTORY_README = `# SubPilot 规则集 / Rule sets
 
-由 GitHub Actions 获取来源、合并、去重并分桶。产物分支固定为 rules。
+由 GitHub Actions 获取来源，使用与 Worker WASM 相同的内核合并、去重、分桶及编译 SRS。产物分支固定为 rules。
 
-GitHub Actions fetches sources, merges and deduplicates rules, and splits them into client-specific buckets on the fixed rules branch.
+GitHub Actions fetches sources and runs the same kernel as Worker WASM to merge, deduplicate, bucket rules and compile SRS. Artifacts use the fixed rules branch.
 
 - Surge/: Surge 文本规则 / text rule sets
 - Clash/: Clash YAML 规则 / YAML rule providers
@@ -75,7 +71,7 @@ async function readLimited(response, limit) {
   return Buffer.concat(chunks, length);
 }
 
-async function request(url, options, limit, label, attempts = 8) {
+async function request(url, options, limit, label, attempts = 8, expectedKernelHash) {
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     let retryDelay = Math.min(2 ** (attempt + 1), 30) * 1000;
     try {
@@ -83,7 +79,13 @@ async function request(url, options, limit, label, attempts = 8) {
         ...options,
         signal: AbortSignal.timeout(remainingTime(45_000))
       });
-      if (response.ok) return await readLimited(response, limit);
+      if (response.ok) {
+        if (expectedKernelHash && response.headers.get("x-subpilot-kernel-sha256") !== expectedKernelHash) {
+          await response.body?.cancel();
+          throw new SafeError("The deployed rule kernel changed; reinstall the Actions workflow through the setup wizard.");
+        }
+        return await readLimited(response, limit);
+      }
       const status = response.status;
       const retryAfter = Number(response.headers.get("retry-after"));
       if (Number.isFinite(retryAfter) && retryAfter > 0) {
@@ -170,45 +172,40 @@ function readManifest(bytes, settings) {
   return manifest;
 }
 
-function runCommand(command, args, label, captureOutput = false) {
-  // The compiler and tar need no Worker credentials. Never forward their stderr:
-  // parse failures can contain private domains and other rule contents.
-  const result = spawnSync(command, args, {
-    env: { PATH: process.env.PATH, LANG: "C", LC_ALL: "C" },
-    stdio: captureOutput ? ["ignore", "pipe", "ignore"] : "ignore",
-    encoding: captureOutput ? "utf8" : undefined,
-    maxBuffer: RESPONSE_LIMIT,
-    timeout: remainingTime(120_000),
-    killSignal: "SIGKILL"
+async function runKernelChild(path) {
+  const bytes = await readFile(path);
+  if (bytes.length > KERNEL_LIMIT || createHash("sha256").update(bytes).digest("hex") !== RULE_KERNEL_SHA256) {
+    throw new SafeError("Rule kernel checksum mismatch.");
+  }
+  const { WASI } = await import("node:wasi");
+  const wasi = new WASI({ version: "preview1", args: ["rule-kernel"], env: {}, preopens: {}, stdin: 0, stdout: 1, stderr: 2, returnOnExit: true });
+  const module = await WebAssembly.compile(bytes);
+  const instance = await WebAssembly.instantiate(module, wasi.getImportObject());
+  const exitCode = wasi.start(instance);
+  if (exitCode !== 0) throw new SafeError("Rule kernel compilation failed.");
+}
+
+function runKernel(path, input) {
+  // The child receives no credentials. Its stdout is protocol data only;
+  // stderr can contain source details, so never forward it to Actions logs.
+  const result = spawnSync(process.execPath, [fileURLToPath(import.meta.url), "--kernel", path], {
+    input, env: { LANG: "C", LC_ALL: "C" }, stdio: ["pipe", "pipe", "pipe"],
+    maxBuffer: Math.max(RULE_KERNEL_MAX_BYTES, SRS_LIMIT), timeout: remainingTime(120_000), killSignal: "SIGKILL"
   });
-  if (result.error || result.status !== 0) throw new SafeError(`${label} failed.`);
+  if (result.error || result.status !== 0 || !result.stdout?.length) throw new SafeError("Rule kernel compilation failed.");
   return result.stdout;
 }
 
-async function installCompiler(directory) {
-  if (process.platform !== "linux" || process.arch !== "x64") {
-    throw new SafeError("This compiler script requires a Linux x64 runner.");
+async function installKernel(directory, settings) {
+  const bytes = await request(`${settings.origin}/api/internal/actions-compiler/kernel`, {
+    method: "GET", redirect: "error", headers: { Authorization: `Bearer ${settings.secret}` }
+  }, KERNEL_LIMIT, "Rule kernel download", 5, RULE_KERNEL_SHA256);
+  if (createHash("sha256").update(bytes).digest("hex") !== RULE_KERNEL_SHA256) {
+    throw new SafeError("The downloaded rule kernel checksum did not match; compilation stopped.");
   }
-  const archive = await request(ARCHIVE_URL, { redirect: "follow" }, 64 * 1024 * 1024, "Compiler download", 5);
-  if (createHash("sha256").update(archive).digest("hex") !== SING_BOX_SHA256) {
-    throw new SafeError("The sing-box release checksum did not match; installation stopped.");
-  }
-  const archivePath = join(directory, ARCHIVE_NAME);
-  await writeFile(archivePath, archive, { mode: 0o600 });
-  runCommand("tar", [
-    "-xzf", archivePath,
-    "--directory", directory,
-    "--strip-components=1",
-    `sing-box-${SING_BOX_VERSION}-linux-amd64/sing-box`
-  ], "Compiler extraction");
-  const compiler = join(directory, "sing-box");
-  await chmod(compiler, 0o700);
-  const version = runCommand(compiler, ["version"], "Compiler version check", true);
-  if (version.split(/\r?\n/, 1)[0] !== `sing-box version ${SING_BOX_VERSION}`) {
-    throw new SafeError("The downloaded compiler reported an unexpected version.");
-  }
-  await rm(archivePath);
-  return compiler;
+  const path = join(directory, "rule-kernel.wasm");
+  await writeFile(path, bytes, { mode: 0o600 });
+  return path;
 }
 
 async function githubApi(settings, path, method = "GET", body, allowedStatuses = []) {
@@ -320,7 +317,7 @@ async function publishArtifacts(settings, manifest, artifacts, workerRequest) {
   throw new SafeError("Publication could not advance the output branch; check branch protection or retry.");
 }
 
-async function compileOutput(settings, directory, getCompiler, sourceCache) {
+async function compileOutput(settings, directory, getKernel, sourceCache) {
   const jobUrl = `${settings.origin}/api/internal/actions-compiler/jobs/${settings.jobId}`;
   const workerRequest = (suffix, method, limit, label, body) => request(`${jobUrl}${suffix}`, {
     method, redirect: "error", headers: { Authorization: `Bearer ${settings.secret}`, ...(body ? { "Content-Type": "application/json" } : {}) }, body
@@ -373,22 +370,20 @@ async function compileOutput(settings, directory, getCompiler, sourceCache) {
     const stored = sourceCache.get(key);
     if (!stored) throw new SafeError("A required source is unavailable.");
     return { content: await readFile(stored.path, "utf8"), contentHash: stored.contentHash, usedCachedContent: false };
-  }, createActionAsnResolver());
+  }, createActionAsnResolver(), createRuleSetAggregator(async (input) => {
+    const kernel = await getKernel();
+    return runKernel(kernel, input);
+  }));
   manifest.compiledMetadata = compiled.manifest;
   manifest.artifacts = compiled.artifacts.map(({ bucket }) => ({ bucket }));
   const artifacts = [];
   for (const { bucket, content } of compiled.artifacts) {
     let binary = Buffer.from(content);
     if (manifest.target === "sing-box") {
-      const compiler = await getCompiler();
-      const sourcePath = join(directory, `${bucket}.json`), outputPath = join(directory, `${bucket}.srs`);
-      await writeFile(sourcePath, content, { mode: 0o600 });
-      runCommand(compiler, ["rule-set", "compile", "--output", outputPath, sourcePath], "SRS compilation");
-      const info = await stat(outputPath);
-      if (!info.isFile() || info.size < 8 || info.size > SRS_LIMIT) throw new SafeError("Invalid SRS artifact size.");
-      binary = await readFile(outputPath);
+      const kernel = await getKernel();
+      binary = runKernel(kernel, content);
+      if (binary.length < 8 || binary.length > SRS_LIMIT) throw new SafeError("Invalid SRS artifact size.");
       if (binary.subarray(0, 3).toString("ascii") !== "SRS" || binary[3] < 1 || binary[3] > 5) throw new SafeError("Invalid SRS output.");
-      await Promise.all([rm(sourcePath), rm(outputPath)]);
     }
     if (binary.length > SRS_LIMIT) throw new SafeError("A rule artifact exceeds the publication size limit.");
     artifacts.push({ bucket, binary });
@@ -403,13 +398,13 @@ async function compileOutput(settings, directory, getCompiler, sourceCache) {
 async function main() {
   const settings = readConfiguration();
   const directory = await mkdtemp(join(tmpdir(), "subpilot-actions-"));
-  let compiler;
-  const getCompiler = async () => {
-    if (!compiler) {
-      process.stdout.write("Stage: downloading and verifying sing-box compiler.\n");
-      compiler = await installCompiler(directory);
+  let kernel;
+  const getKernel = async () => {
+    if (!kernel) {
+      process.stdout.write("Stage: downloading and verifying the shared rule kernel.\n");
+      kernel = await installKernel(directory, settings);
     }
-    return compiler;
+    return kernel;
   };
   try {
     const sourceCache = new Map();
@@ -423,7 +418,7 @@ async function main() {
       for (const job of batch.jobs) {
         if (!/^[a-f0-9]{64}$/.test(job.jobId) || !/^[a-f0-9]{64}$/.test(job.outputKey) || !Object.hasOwn(ACTIONS_CLIENT_DIRECTORIES, job.target)) throw new SafeError("Invalid batch job.");
         try {
-          const result = await compileOutput({ ...settings, jobId: job.jobId, outputKey: job.outputKey, target: job.target }, directory, getCompiler, sourceCache);
+          const result = await compileOutput({ ...settings, jobId: job.jobId, outputKey: job.outputKey, target: job.target }, directory, getKernel, sourceCache);
           if (result === "unchanged") skipped++; else completed++;
         } catch (error) {
           failed++;
@@ -438,7 +433,10 @@ async function main() {
 }
 
 try {
-  await main();
+  if (process.argv[2] === "--kernel") {
+    if (process.argv.length !== 4) throw new SafeError("Invalid rule kernel invocation.");
+    await runKernelChild(process.argv[3]);
+  } else await main();
 } catch (error) {
   // Do not log raw fetch, filesystem or compiler errors: they may disclose URLs,
   // credentials or rule contents even when GitHub's secret masking is enabled.

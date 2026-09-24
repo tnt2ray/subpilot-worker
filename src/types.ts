@@ -193,6 +193,8 @@ export interface StaticProxyNodeConfig {
   includeInGroups: boolean;
 }
 
+export type RuleCompilationMode = "worker" | "wasm" | "actions";
+
 export interface ActionsCompilationSettings {
   enabled: boolean;
   repository: string;
@@ -217,6 +219,7 @@ export interface RenderConfig {
     featureTagRules: string[];
     updateCheckEnabled: boolean;
     displayTimeZone: string;
+    ruleCompilationMode?: RuleCompilationMode;
     actionsCompilation?: ActionsCompilationSettings;
     notificationChannel: NotificationChannel;
     notificationTelegramChatId: string;

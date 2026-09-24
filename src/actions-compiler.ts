@@ -3,7 +3,6 @@ import { loadConfig } from "./config-store";
 import { decryptJson, encryptJson } from "./crypto-store";
 import { planRuleSetArtifacts } from "./rule-set-artifacts";
 import { readCompiledRuleSetManifest, type CompiledRuleSetManifest } from "./rule-set-cache";
-import { ruleSetEnv } from "./rule-set-scope";
 import { ruleSetOutputFingerprint, type RuleCompilationConfig } from "./rule-set-compiler-core";
 import { effectiveRuleSetOutputs, planRuleSetOutputs, ruleSetOutputNeedsCompilation } from "./rule-set-outputs";
 import type { RuleSetOutput } from "./rule-set-types";
@@ -12,6 +11,9 @@ import { readActionsCredentials } from "./actions-compiler-credentials";
 import { githubActionsManifestUrl, ACTIONS_COMPILER_PROTOCOL, ACTIONS_WORKFLOW_FILENAME, actionsCompilerProtocolKey, actionsArtifactDirectory, actionsArtifactPath, actionsOutputKey, type ActionsBucket } from "./actions-compiler-artifacts";
 import type { RenderConfig, Target } from "./types";
 import { jsonResponse, notFound, readRequestJsonWithLimit, readResponseTextWithLimit, sha256Hex, timingSafeEqualString, unauthorized } from "./util";
+import { ruleCompilationMode, workerFallbackConfig } from "./rule-compilation-mode";
+import { ruleSetEnv, workerFallbackEnv } from "./rule-set-scope";
+import kernelChecksum from "./vendor/singbox/srs-compiler.wasm.sha256" with { type: "text" };
 
 interface CompilationJob {
   id: string;
@@ -34,10 +36,10 @@ const RETRY_MS = 60 * 60_000;
 const NO_STORE = { "cache-control": "no-store, private" };
 
 export function usesActionsCompilation(config: RenderConfig): boolean {
-  return config.ruleSets.mode === "compiled" && config.settings.actionsCompilation?.enabled === true;
+  return config.ruleSets.mode === "compiled" && ruleCompilationMode(config) === "actions";
 }
-export async function validateActionsCompilationCredentials(env: Env, config: { settings: Pick<RenderConfig["settings"], "actionsCompilation"> }): Promise<string | null> {
-  if (!config.settings.actionsCompilation?.enabled) return null;
+export async function validateActionsCompilationCredentials(env: Env, config: { settings: Pick<RenderConfig["settings"], "actionsCompilation" | "ruleCompilationMode"> }): Promise<string | null> {
+  if (ruleCompilationMode(config) !== "actions") return null;
   const credentials = await readActionsCredentials(env);
   if (!credentials.token || !credentials.sharedSecret) return "请先通过 Actions 规则编译配置向导保存 GitHub Token 并安装工作流。 / Save a GitHub token and install the workflow through the Actions rule compilation setup wizard.";
   return null;
@@ -45,7 +47,7 @@ export async function validateActionsCompilationCredentials(env: Env, config: { 
 async function integrationFingerprint(config: RenderConfig): Promise<string> {
   const settings = config.settings.actionsCompilation;
   return sha256Hex(JSON.stringify([ACTIONS_COMPILER_PROTOCOL, settings && {
-    enabled: settings.enabled, repository: settings.repository, ref: settings.ref, workflow: ACTIONS_WORKFLOW_FILENAME
+    enabled: ruleCompilationMode(config) === "actions", repository: settings.repository, ref: settings.ref, workflow: ACTIONS_WORKFLOW_FILENAME
   }]));
 }
 async function jobForOutput(config: RenderConfig, output: RuleSetOutput): Promise<CompilationJob> {
@@ -56,7 +58,7 @@ async function jobForOutput(config: RenderConfig, output: RuleSetOutput): Promis
   const members = planRuleSetOutputs(config.ruleSets).find((item) => item.output.name === output.name)?.includedOutputNames ?? [output.name];
   const sources = new Set(output.sourceIds);
   return { id, integration, fingerprint, target, createdAt: Date.now(), output,
-    config: { renderTarget: target, ruleSets: { ...config.ruleSets, directRules: [],
+    config: { renderTarget: target, settings: { ruleCompilationMode: "actions" }, ruleSets: { ...config.ruleSets, directRules: [],
       sources: config.ruleSets.sources.filter((source) => sources.has(source.id)),
       outputs: config.ruleSets.outputs.filter((member) => members.includes(member.name)) } } };
 }
@@ -80,17 +82,36 @@ async function publishedManifest(env: Env, job: CompilationJob): Promise<Compile
     && manifest.outputFingerprint === job.fingerprint ? manifest : null;
 }
 export async function readActionsManifest(env: Env, config: RenderConfig, output: RuleSetOutput): Promise<CompiledRuleSetManifest | null> {
-  if (!usesActionsCompilation(config)) return null;
-  try { return await publishedManifest(env, await jobForOutput(config, output)); }
-  catch {
-    console.warn(JSON.stringify({ level: "warn", message: "Actions metadata is unavailable; Worker fallback remains enabled." }));
-    return null;
+  return (await createActionsManifestReader(env, config))(output);
+}
+/** Reuse one request-local batch snapshot across all outputs of a client. */
+export async function createActionsManifestReader(env: Env, config: RenderConfig): Promise<(output: RuleSetOutput) => Promise<CompiledRuleSetManifest | null>> {
+  const unavailable = async () => null;
+  if (!usesActionsCompilation(config)) return unavailable;
+  try {
+    const batch = await batchForConfig(config);
+    const last = await env.SUBPILOT_CONFIG.get<number>(`${DISPATCH_PREFIX}${batch.id}`, "json");
+    const jobs = new Map(batch.jobs.filter((job) => job.target === (config.renderTarget ?? "surge")).map((job) => [job.output.name, job]));
+    return async (output) => {
+      try {
+        const job = jobs.get(output.name);
+        const manifest = job ? await publishedManifest(env, job) : null;
+        return manifest && (!last || manifest.publication!.confirmedAt >= last)
+          && (!manifest.asnExpiresAt || manifest.asnExpiresAt > Date.now()) ? manifest : null;
+      } catch {
+        console.warn(JSON.stringify({ level: "warn", message: "Actions metadata is unavailable; publication remains pending." }));
+        return null;
+      }
+    };
+  } catch {
+    console.warn(JSON.stringify({ level: "warn", message: "Actions metadata is unavailable; publication remains pending." }));
+    return unavailable;
   }
 }
 
 /** Persist only rule-plan snapshots; all source fetching and compilation run in Actions. */
 export async function ensureActionsCompilation(env: Env, config: RenderConfig, options: { force?: boolean; refresh?: boolean; deadline?: number } = {}): Promise<void> {
-  if (!config.settings.actionsCompilation?.enabled) return;
+  if (ruleCompilationMode(config) !== "actions") return;
   const batch = await batchForConfig(config);
   if (!batch.jobs.length) return;
   const last = await env.SUBPILOT_CONFIG.get<number>(`${DISPATCH_PREFIX}${batch.id}`, "json");
@@ -99,6 +120,7 @@ export async function ensureActionsCompilation(env: Env, config: RenderConfig, o
     if (ready.every((manifest) => manifest && (!last || manifest.publication!.confirmedAt >= last) && (!manifest.asnExpiresAt || manifest.asnExpiresAt > Date.now()))) return;
   }
   const settings = config.settings.actionsCompilation;
+  if (!settings) throw new Error("Configure Actions compilation settings first");
   if (await env.SUBPILOT_CONFIG.get(actionsCompilerProtocolKey(settings)) !== ACTIONS_COMPILER_PROTOCOL) throw new Error("请通过配置向导安装当前 Actions 规则编译工作流。 / Install the current Actions rule compilation workflow through the setup wizard.");
   if (!options.force && last && Date.now() - last < RETRY_MS) return;
   if (options.deadline && options.deadline - Date.now() < 2_000) return;
@@ -140,7 +162,7 @@ export async function handleActionsCompilationStatus(env: Env): Promise<Response
   try {
     const config = await loadConfig(env);
     const batch = await batchForConfig(config);
-    const enabled = config.settings.actionsCompilation?.enabled === true;
+    const enabled = ruleCompilationMode(config) === "actions";
     const workflowReady = enabled && await env.SUBPILOT_CONFIG.get(actionsCompilerProtocolKey(config.settings.actionsCompilation!)) === ACTIONS_COMPILER_PROTOCOL;
     const attempt = await env.SUBPILOT_CONFIG.get<number>(`${DISPATCH_PREFIX}${batch.id}`, "json");
     const lastAttemptAt = typeof attempt === "number" && Number.isFinite(attempt) && attempt > 0 ? attempt : undefined;
@@ -148,11 +170,13 @@ export async function handleActionsCompilationStatus(env: Env): Promise<Response
     const current = result?.attemptedAt === lastAttemptAt ? result : null;
     const outputs = await Promise.all(batch.jobs.map(async (job) => {
       const manifest = await publishedManifest(env, job);
-      const worker = !manifest ? await readCompiledRuleSetManifest(ruleSetEnv(env, job.target), job.output.name, { allowLegacy: false }).catch(() => null) : null;
       const state = manifest && (!lastAttemptAt || manifest.publication!.confirmedAt >= lastAttemptAt) && (!manifest.asnExpiresAt || manifest.asnExpiresAt > Date.now()) ? "complete" : !workflowReady ? "workflow_update_required" : current ? current.accepted ? "accepted" : "dispatch_failed"
         : !lastAttemptAt ? "pending" : Date.now() - lastAttemptAt >= RETRY_MS ? "retrying" : "awaiting";
+      const fallbackConfig = workerFallbackConfig(renderConfig(configDocument(config), job.target));
+      const fallback = state !== "complete" ? await readCompiledRuleSetManifest(workerFallbackEnv(ruleSetEnv(env, job.target), job.target), job.output.name, { allowLegacy: false }).catch(() => null) : null;
+      const workerFallbackReady = Boolean(fallback && fallback.outputFingerprint === await ruleSetOutputFingerprint(fallbackConfig, job.output));
       return { name: job.output.name, target: job.target, state,
-        workerFallbackReady: worker?.outputFingerprint === job.fingerprint,
+        workerFallbackReady,
         hasPublishedVersion: Boolean(manifest), ...(manifest ? { publishedAt: manifest.updatedAt } : {}),
         ...(lastAttemptAt ? { lastAttemptAt } : {}), ...(current?.httpStatus ? { httpStatus: current.httpStatus } : {}) };
     }));
@@ -188,6 +212,20 @@ export async function handleActionsCompilationJobApi(request: Request, env: Env)
   const { sharedSecret } = await readActionsCredentials(env);
   if (!sharedSecret || !await timingSafeEqualString(bearer, `Bearer ${sharedSecret}`)) return unauthorized();
   const url = new URL(request.url), key = requireSecret(env, "CONFIG_ENCRYPTION_KEY");
+  if (url.pathname === "/api/internal/actions-compiler/kernel" && request.method === "GET") {
+    const checksum = kernelChecksum.trim().split(/\s+/, 1)[0] ?? "";
+    if (!/^[a-f0-9]{64}$/.test(checksum)) return preparingResponse("kernel_unavailable");
+    const asset = await env.ASSETS.fetch(new Request(new URL("/vendor/rule-kernel.wasm", url.origin)));
+    if (!asset.ok || !["application/wasm", "application/octet-stream"].includes((asset.headers.get("content-type") ?? "").split(";", 1)[0]!)) {
+      await asset.body?.cancel();
+      return preparingResponse("kernel_unavailable");
+    }
+    const headers = new Headers(asset.headers);
+    headers.set("content-type", "application/wasm");
+    headers.set("cache-control", "no-store, private");
+    headers.set("x-subpilot-kernel-sha256", checksum);
+    return new Response(asset.body, { headers });
+  }
   if (url.pathname === "/api/internal/actions-compiler/batch" && request.method === "GET") {
     const id = url.searchParams.get("batch") ?? "";
     if (!/^[a-f0-9]{64}$/.test(id)) return notFound();
@@ -195,7 +233,7 @@ export async function handleActionsCompilationJobApi(request: Request, env: Env)
     if (!stored) return notFound();
     const batch = await decryptJson<{ integration: string; jobs: { jobId: string; target: Target; outputKey: string }[] }>(key, stored);
     const config = await loadConfig(env);
-    if (!config.settings.actionsCompilation?.enabled || await integrationFingerprint(config) !== batch.integration) return jsonResponse({ error: "Batch configuration changed" }, { status: 409, headers: NO_STORE });
+    if (ruleCompilationMode(config) !== "actions" || await integrationFingerprint(config) !== batch.integration) return jsonResponse({ error: "Batch configuration changed" }, { status: 409, headers: NO_STORE });
     const offset = Number(url.searchParams.get("offset") || 0);
     if (!Number.isSafeInteger(offset) || offset < 0) return jsonResponse({ error: "Invalid offset" }, { status: 400 });
     return jsonResponse({ jobs: batch.jobs.slice(offset, offset + 5), nextOffset: offset + 5 < batch.jobs.length ? offset + 5 : null }, { headers: NO_STORE });

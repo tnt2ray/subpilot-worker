@@ -1,0 +1,5 @@
+// SPDX-License-Identifier: MIT
+// The upstream file only supplies Buffer.Iovec, a Unix networking helper that
+// does not exist on WASI and is not used by the SRS writer. This build overlay
+// excludes that helper without changing the upstream compiler or global cache.
+package buf

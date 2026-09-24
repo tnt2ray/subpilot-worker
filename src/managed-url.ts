@@ -9,6 +9,7 @@ export type SyncPath = { token: string } & (
 export interface RuleSetSyncPath {
   artifactName: string;
   target: RuleSetOutputTarget;
+  binarySrs?: boolean;
 }
 
 export function normalizeManagedBasePath(pathname: string): string {
@@ -35,7 +36,7 @@ export function parseSyncPath(pathname: string, managedBasePath: string): SyncPa
   const tokenPattern = "([A-Za-z0-9_-]+)";
   const mainMatch = pathname.match(new RegExp(`^${base}/${tokenPattern}/?$`));
   if (mainMatch) return { token: mainMatch[1]! };
-  const namedRuleSetMatch = pathname.match(new RegExp(`^${base}/${tokenPattern}/r/([^/]+?)\\.(list|json|yaml)$`));
+  const namedRuleSetMatch = pathname.match(new RegExp(`^${base}/${tokenPattern}/r/([^/]+?)\\.(list|json|yaml|srs)$`));
   if (namedRuleSetMatch) {
     const artifactName = safeDecodePathSegment(namedRuleSetMatch[2]!);
     if (!artifactName) return null;
@@ -43,7 +44,8 @@ export function parseSyncPath(pathname: string, managedBasePath: string): SyncPa
       token: namedRuleSetMatch[1]!,
       ruleSet: {
         artifactName,
-        target: ruleSetTargetForExtension(namedRuleSetMatch[3]!)
+        target: ruleSetTargetForExtension(namedRuleSetMatch[3]!),
+        ...(namedRuleSetMatch[3] === "srs" ? { binarySrs: true } : {})
       }
     };
   }
@@ -74,12 +76,13 @@ export function managedRuleSetUrlForRequest(
   requestUrl: string,
   outputName: string,
   bucket: RuleSetDownloadBucket,
-  target: RuleSetOutputTarget
+  target: RuleSetOutputTarget,
+  format: "text" | "srs" = "text"
 ): string {
   const request = new URL(requestUrl);
   const managed = managedBaseUrl(config, requestUrl);
   const token = extractSubscriptionToken(request.pathname, normalizeManagedBasePath(managed.pathname)) ?? "";
-  return managedRuleSetUrl(config, requestUrl, token, outputName, bucket, target);
+  return managedRuleSetUrl(config, requestUrl, token, outputName, bucket, target, format);
 }
 
 export function managedRuleSetUrl(
@@ -88,13 +91,14 @@ export function managedRuleSetUrl(
   token: string,
   outputName: string,
   bucket: RuleSetDownloadBucket,
-  target: RuleSetOutputTarget
+  target: RuleSetOutputTarget,
+  format: "text" | "srs" = "text"
 ): string {
   const managed = managedBaseUrl(config, requestUrl);
   const artifactName = ruleSetArtifactName(outputName, bucket);
   managed.pathname = joinManagedRelativePath(
     managed.pathname,
-    `${token}/r/${encodeURIComponent(artifactName)}.${ruleSetExtension(target)}`
+    `${token}/r/${encodeURIComponent(artifactName)}.${ruleSetExtension(target, format)}`
   );
   managed.search = "";
   managed.hash = "";
@@ -134,7 +138,8 @@ function safeDecodePathSegment(value: string): string | null {
   }
 }
 
-function ruleSetExtension(target: RuleSetOutputTarget): string {
+function ruleSetExtension(target: RuleSetOutputTarget, format: "text" | "srs"): string {
+  if (target === "sing-box" && format === "srs") return "srs";
   if (target === "surge") return "list";
   if (target === "sing-box") return "json";
   return "yaml";
@@ -142,6 +147,6 @@ function ruleSetExtension(target: RuleSetOutputTarget): string {
 
 function ruleSetTargetForExtension(extension: string): RuleSetOutputTarget {
   if (extension === "list") return "surge";
-  if (extension === "json") return "sing-box";
+  if (extension === "json" || extension === "srs") return "sing-box";
   return "clash";
 }

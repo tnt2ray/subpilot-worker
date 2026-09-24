@@ -1,8 +1,9 @@
 import { configDocument, defaultConfigDocument, migrateConfigDocument, normalizeConfigDocument, renderConfig, OUTPUT_TARGETS } from "./config-document";
 import { retryActionsCompilationJobs } from "./actions-compiler";
 import { ACTIONS_WORKFLOW_FILENAME } from "./actions-compiler-artifacts";
-import { ruleSetEnv } from "./rule-set-scope";
+import { ruleSetEnv, workerFallbackEnv } from "./rule-set-scope";
 import { queueChangedRuleSetUpdates, runRuleSetUpdateJobs } from "./rule-set-jobs";
+import { ruleCompilationMode, workerFallbackConfig } from "./rule-compilation-mode";
 import type { AppConfig, StoredConfigDocument } from "./types";
 import { DEFAULT_CONFIG } from "./default-config";
 import { CONFIG_SCHEMA_VERSION_KEY, CURRENT_KV_SCHEMA_VERSION } from "./config-schema";
@@ -249,10 +250,10 @@ export async function commitPreparedConfigSave(env: Env, prepared: PreparedConfi
   const verified = await env.SUBPILOT_CONFIG.get(prepared.snapshotKey);
   if (!verified || !(await tryDecryptConfigSnapshot(env, verified))) throw new Error("新配置写入校验失败，请重试。");
   await markDocumentCommitted(env);
-  if (context && (jobs.length || prepared.config.settings.actionsCompilation?.enabled)) {
+  if (context && ruleCompilationMode(prepared.config) === "actions") {
+    context.waitUntil(retryActionsCompilationJobs(env, prepared.config, Date.now() + 25_000));
+  } else if (context && jobs.length) {
     const deadline = Date.now() + 25_000;
-    // Dispatch failure must not consume the Worker's fallback preparation budget.
-    context.waitUntil(retryActionsCompilationJobs(env, prepared.config, deadline));
     context.waitUntil(runRuleSetUpdateJobs(env, prepared.config, {
       jobs, deadline, loadCurrentConfig: () => loadConfig(env)
     }).catch(() => {
@@ -284,6 +285,7 @@ async function finishCommittedConfigSave(env: Env, prepared: PreparedConfigSave)
     pruneSourceCache(env, prepared.config),
     pruneRuleSetCaches(env, prepared.config),
     ...OUTPUT_TARGETS.map((target) => pruneCompiledRuleSetCaches(ruleSetEnv(env, target), renderConfig(document, target))),
+    ...OUTPUT_TARGETS.map((target) => pruneCompiledRuleSetCaches(workerFallbackEnv(env, target), workerFallbackConfig(renderConfig(document, target)))),
     pruneConfigSnapshotVersions(env, {
       key: prepared.snapshotKey,
       logicalTime: prepared.logicalTime

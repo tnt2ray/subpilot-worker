@@ -1,9 +1,9 @@
-import { ensureActionsCompilation, readActionsManifest, usesActionsCompilation } from "./actions-compiler";
+import { ensureActionsCompilation, usesActionsCompilation } from "./actions-compiler";
 import { githubActionsArtifactUrl } from "./actions-compiler-artifacts";
 import { getOrCreateReadToken } from "./auth";
 import { notifyRuleSetRefreshFailures } from "./notifications";
 import { compileRuleSetOutput, ensureCompiledRuleSet, readRuleSetStatus, refreshRuleSetCaches } from "./rule-set-compiler";
-import { readCompiledRuleSetBucket, readCompiledRuleSetManifest } from "./rule-set-cache";
+import { readCompiledRuleSetBucket, readCompiledRuleSetManifest, readCompiledRuleSetSrs } from "./rule-set-cache";
 import {
   cacheCompiledRuleSetResponse,
   compiledCacheVersion,
@@ -15,10 +15,13 @@ import {
 import { ruleSetPathName, type RuleSetSyncPath } from "./managed-url";
 import { planRuleSetArtifacts } from "./rule-set-artifacts";
 import { effectiveRuleSetOutputs, ruleSetOutputNeedsCompilation } from "./rule-set-outputs";
-import { prepareRuleSetCache, scheduleRuleSetRebuild } from "./rule-set-preparation";
+import { prepareRuleSetCache, prepareRuntimeRuleSetCache, scheduleRuleSetRebuild, scheduleRuntimeRuleSetRebuild } from "./rule-set-preparation";
 import type { RuleSetOutput, RuleSetOutputTarget } from "./rule-set-types";
 import type { RenderConfig } from "./types";
 import { badRequest, jsonResponse, notFound } from "./util";
+import { ruleCompilationMode, workerFallbackConfig } from "./rule-compilation-mode";
+import { createRuleSetPublicationGuard } from "./rule-set-publication";
+import { workerFallbackEnv } from "./rule-set-scope";
 
 const WAIT_UNTIL_CACHE_WARM_DEADLINE_MS = 20_000;
 const MANUAL_RULE_SET_REFRESH_DEADLINE_MS = 20_000;
@@ -33,7 +36,8 @@ export async function handleRuleSetApi(request: Request, env: Env, ctx: Executio
   }
   if (url.pathname === "/api/rule-sets/refresh" && request.method === "POST") {
     const result = await refreshRuleSetCaches(env, config, undefined, {
-      deadline: Date.now() + MANUAL_RULE_SET_REFRESH_DEADLINE_MS
+      deadline: Date.now() + MANUAL_RULE_SET_REFRESH_DEADLINE_MS,
+      canPublish: createRuleSetPublicationGuard(env, config)
     });
     scheduleRuleSetWorkerCacheWarm(env, ctx, config, request.url);
     return jsonResponse({
@@ -47,7 +51,8 @@ export async function handleRuleSetApi(request: Request, env: Env, ctx: Executio
     if (!outputName) return badRequest("Invalid rule set output name");
     try {
       const result = await refreshRuleSetCaches(env, config, outputName, {
-        deadline: Date.now() + MANUAL_RULE_SET_REFRESH_DEADLINE_MS
+        deadline: Date.now() + MANUAL_RULE_SET_REFRESH_DEADLINE_MS,
+        canPublish: createRuleSetPublicationGuard(env, config)
       });
       scheduleRuleSetWorkerCacheWarm(env, ctx, config, request.url, [outputName]);
       return jsonResponse({
@@ -65,10 +70,10 @@ export async function handleRuleSetApi(request: Request, env: Env, ctx: Executio
     if (config.ruleSets.mode !== "compiled" || !effectiveRuleSetOutputs(config.ruleSets).some((output) =>
       output.name === outputName && ruleSetOutputNeedsCompilation(config.ruleSets, output, config.renderTarget ?? "surge"))) return notFound();
     const output = effectiveRuleSetOutputs(config.ruleSets).find((item) => item.name === outputName)!;
-    const published = usesActionsCompilation(config) ? await readActionsManifest(env, config, output) : null;
-    const manifest = published ?? await readCompiledRuleSetManifest(env, outputName);
+    const runtime = await prepareRuntimeRuleSetCache(env, config, [output]);
+    const manifest = runtime.cache.manifests.get(outputName);
     if (!manifest) return notFound();
-    return jsonResponse({ manifest });
+    return jsonResponse({ manifest, compilationMode: ruleCompilationMode(runtime.config), preferredCompilationMode: ruleCompilationMode(config) });
   }
   return null;
 }
@@ -87,27 +92,38 @@ export async function handleRuleSetDownload(
   if (usesActionsCompilation(config)) {
     ctx.waitUntil(ensureActionsCompilation(env, config, { deadline: Date.now() + 25_000 }).catch(logRuleSetWorkerCacheError));
   }
-  // A subscription already using a source JSON URL must never receive SRS here.
-  if (target === "sing-box") return handlePreparedSingboxRuleSetDownload(request, env, ctx, config, output, bucket);
+  let fallback = false;
+  if (ruleCompilationMode(config) !== "worker") {
+    const runtime = await prepareRuntimeRuleSetCache(env, config);
+    scheduleRuntimeRuleSetRebuild(env, config, runtime, ctx);
+    // A previously issued JSON address always stays JSON, including after recovery.
+    if (target === "sing-box" && !path.binarySrs) {
+      config = workerFallbackConfig(config);
+      env = workerFallbackEnv(env, target);
+      fallback = true;
+    } else if (runtime.fallback) {
+      if (path.binarySrs) return ruleSetModeChangedResponse();
+      config = runtime.config;
+      env = runtime.env;
+      fallback = true;
+    } else if (usesActionsCompilation(config)) {
+      const published = runtime.cache.manifests.get(output.name);
+      if (!published || !manifestSupportsDownload(published, bucket, target)) return ruleSetModeChangedResponse();
+      return Response.redirect(githubActionsArtifactUrl(config, output.name, bucket), 302);
+    }
+  }
+  if (path.binarySrs && ruleCompilationMode(config) !== "wasm") return ruleSetModeChangedResponse();
+  if (target === "sing-box") return handlePreparedSingboxRuleSetDownload(request, env, ctx, config, output, bucket, path.binarySrs === true, fallback);
 
+  const publicationGuard = createRuleSetPublicationGuard(env, config, { workerFallback: fallback });
+  const canPublish = () => publicationGuard(output);
   let manifest;
   try {
-    manifest = await ensureCompiledRuleSet(env, config, output);
+    manifest = await ensureCompiledRuleSet(env, config, output, { canPublish });
   } catch (error) {
     return badRequest(error instanceof Error ? error.message : String(error));
   }
   if (!manifest) return notFound();
-  if (manifest.publication && manifestSupportsDownload(manifest, bucket, target)) {
-    return Response.redirect(githubActionsArtifactUrl(config, output.name, bucket), 302);
-  }
-  if (manifest.publication) {
-    // Existing subscriptions may still reference a bucket absent from the new
-    // publication. Retain a matching local version for those managed URLs.
-    const previous = await readCompiledRuleSetManifest(env, output.name);
-    manifest = previous?.outputFingerprint === manifest.outputFingerprint && manifestSupportsDownload(previous, bucket, target)
-      ? previous
-      : await compileRuleSetOutput(env, config, output, { workerOnly: true, allowStaleFallback: true }).then((result) => result.manifest);
-  }
   if (!manifestSupportsDownload(manifest, bucket, target)) return notFound();
 
   const cachedResponse = await matchCompiledRuleSetWorkerCache(request, compiledCacheVersion(manifest));
@@ -116,7 +132,7 @@ export async function handleRuleSetDownload(
   let content = await readCompiledRuleSetBucket(env, output.name, bucket, target, manifest);
   if (content === null) {
     try {
-      manifest = await compileRuleSetOutput(env, config, output, { workerOnly: true, allowStaleFallback: true }).then((result) => result.manifest);
+      manifest = await compileRuleSetOutput(env, config, output, { workerOnly: true, allowStaleFallback: true, canPublish }).then((result) => result.manifest);
       if (!manifest) return notFound();
       if (!manifestSupportsDownload(manifest, bucket, target)) return notFound();
       content = await readCompiledRuleSetBucket(env, output.name, bucket, target, manifest);
@@ -136,16 +152,42 @@ async function handlePreparedSingboxRuleSetDownload(
   ctx: ExecutionContext,
   config: RenderConfig,
   output: RuleSetOutput,
-  bucket: "domain" | "ipcidr" | "combined" | "dns"
+  bucket: "domain" | "ipcidr" | "combined" | "dns",
+  binarySrs: boolean,
+  workerFallback = false
 ): Promise<Response> {
   const prepared = await prepareRuleSetCache(env, config, [output], { sourceOnly: true });
   const manifest = prepared.manifests.get(output.name);
   if (!manifest) {
-    scheduleRuleSetRebuild(env, config, prepared.pending, ctx, { sourceOnly: true });
+    scheduleRuleSetRebuild(env, config, prepared.pending, ctx, { sourceOnly: true, workerFallback });
     if (prepared.errors.length) return jsonResponse({ error: prepared.errors.join(" ") }, { status: 422, headers: { "cache-control": "no-store" } });
     return ruleSetPreparingResponse(prepared.retryAfterSeconds, prepared.failed);
   }
   if (!manifestSupportsDownload(manifest, bucket, "sing-box")) return notFound();
+
+  if (binarySrs) {
+    if (!manifest.srsBuckets?.includes(bucket)) {
+      const repair = await prepareRuleSetCache(env, config, [output], { force: true, sourceOnly: true });
+      scheduleRuleSetRebuild(env, config, repair.pending, ctx, { force: true, sourceOnly: true, workerFallback });
+      if (repair.errors.length) return jsonResponse({ error: repair.errors.join(" ") }, { status: 422, headers: { "cache-control": "no-store" } });
+      return ruleSetPreparingResponse(repair.retryAfterSeconds, repair.failed);
+    }
+    let response = await matchCompiledRuleSetWorkerCache(request, compiledCacheVersion(manifest));
+    if (!response) {
+      const content = await readCompiledRuleSetSrs(env, output.name, bucket, manifest);
+      if (content === null) {
+        const repair = await prepareRuleSetCache(env, config, [output], { force: true, sourceOnly: true });
+        scheduleRuleSetRebuild(env, config, repair.pending, ctx, { force: true, sourceOnly: true, workerFallback });
+        if (repair.errors.length) return jsonResponse({ error: repair.errors.join(" ") }, { status: 422, headers: { "cache-control": "no-store" } });
+        return ruleSetPreparingResponse(repair.retryAfterSeconds, repair.failed);
+      }
+      const file = await compiledRuleSetFileResponse(content, "sing-box", true);
+      ctx.waitUntil(cacheCompiledRuleSetResponse(request.url, compiledCacheVersion(manifest), file.clone()).catch(logRuleSetWorkerCacheError));
+      response = clientRuleSetResponse(request, file);
+    }
+    scheduleRuleSetRebuild(env, config, prepared.pending, ctx, { sourceOnly: true, workerFallback });
+    return response;
+  }
 
   let response = await matchCompiledRuleSetWorkerCache(request, compiledCacheVersion(manifest));
   if (!response) {
@@ -154,7 +196,7 @@ async function handlePreparedSingboxRuleSetDownload(
       // A stream can exist but contain unreadable ciphertext. Rebuild it after
       // returning, just as for a missing artifact; never compile on this path.
       const repair = await prepareRuleSetCache(env, config, [output], { force: true, sourceOnly: true });
-      scheduleRuleSetRebuild(env, config, repair.pending, ctx, { force: true, sourceOnly: true });
+      scheduleRuleSetRebuild(env, config, repair.pending, ctx, { force: true, sourceOnly: true, workerFallback });
       if (repair.errors.length) return jsonResponse({ error: repair.errors.join(" ") }, { status: 422, headers: { "cache-control": "no-store" } });
       return ruleSetPreparingResponse(repair.retryAfterSeconds, repair.failed);
     }
@@ -162,7 +204,7 @@ async function handlePreparedSingboxRuleSetDownload(
     ctx.waitUntil(cacheCompiledRuleSetResponse(request.url, compiledCacheVersion(manifest), file.clone()).catch(logRuleSetWorkerCacheError));
     response = clientRuleSetResponse(request, file);
   }
-  scheduleRuleSetRebuild(env, config, prepared.pending, ctx, { sourceOnly: true });
+  scheduleRuleSetRebuild(env, config, prepared.pending, ctx, { sourceOnly: true, workerFallback });
   return response;
 }
 
@@ -172,6 +214,12 @@ function ruleSetPreparingResponse(retryAfterSeconds: number, failed = false): Re
       ? "规则集缓存暂不可用，后台生成失败；请检查规则来源或稍后重试。"
       : "规则集缓存正在后台生成，请稍后重试下载。"
   }, { status: 503, headers: { "retry-after": String(retryAfterSeconds), "cache-control": "no-store" } });
+}
+
+function ruleSetModeChangedResponse(): Response {
+  return jsonResponse({ error: "当前 SRS 产物暂不可用或规则格式已变更，请重新更新订阅配置以使用普通 Worker 规则；首选产物就绪后自动恢复。" }, {
+    status: 409, headers: { "cache-control": "no-store" }
+  });
 }
 
 function manifestSupportsDownload(
@@ -219,16 +267,18 @@ function scheduleRuleSetWorkerCacheWarm(
   requestUrl: string,
   outputNames?: string[]
 ): void {
-  if (usesActionsCompilation(config)) return;
   const deadline = Date.now() + WAIT_UNTIL_CACHE_WARM_DEADLINE_MS;
   ctx.waitUntil((async () => {
     const effectiveOutputs = effectiveRuleSetOutputs(config.ruleSets);
     const outputs = outputNames
       ? effectiveOutputs.filter((output) => outputNames.includes(output.name))
       : effectiveOutputs;
+    const runtime = await prepareRuntimeRuleSetCache(env, config, outputs);
+    scheduleRuntimeRuleSetRebuild(env, config, runtime, ctx);
+    if (usesActionsCompilation(runtime.config)) return;
     await warmCompiledRuleSetWorkerCache(
-      env,
-      config,
+      runtime.env,
+      runtime.config,
       requestUrl,
       await getOrCreateReadToken(env),
       outputs,

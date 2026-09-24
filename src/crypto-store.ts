@@ -20,6 +20,31 @@ async function deriveKey(secret: string): Promise<CryptoKey> {
   return crypto.subtle.importKey("raw", digest, "AES-GCM", false, ["encrypt", "decrypt"]);
 }
 
+const ENCRYPTED_BYTES_VERSION = 1;
+const ENCRYPTED_BYTES_HEADER_LENGTH = 1 + 12;
+const AES_GCM_TAG_LENGTH = 16;
+
+export async function encryptBytes(secret: string, value: Uint8Array): Promise<Uint8Array> {
+  const key = await deriveKey(secret);
+  const iv = new Uint8Array(12);
+  crypto.getRandomValues(iv);
+  const ciphertext = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, value));
+  const result = new Uint8Array(ENCRYPTED_BYTES_HEADER_LENGTH + ciphertext.length);
+  result[0] = ENCRYPTED_BYTES_VERSION;
+  result.set(iv, 1);
+  result.set(ciphertext, ENCRYPTED_BYTES_HEADER_LENGTH);
+  return result;
+}
+
+export async function decryptBytes(secret: string, value: Uint8Array): Promise<Uint8Array> {
+  if (value.length < ENCRYPTED_BYTES_HEADER_LENGTH + AES_GCM_TAG_LENGTH || value[0] !== ENCRYPTED_BYTES_VERSION) {
+    throw new Error("Unsupported encrypted binary value");
+  }
+  const key = await deriveKey(secret);
+  const iv = value.subarray(1, ENCRYPTED_BYTES_HEADER_LENGTH);
+  return new Uint8Array(await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, value.subarray(ENCRYPTED_BYTES_HEADER_LENGTH)));
+}
+
 export async function encryptText(secret: string, value: string): Promise<string> {
   const key = await deriveKey(secret);
   const iv = new Uint8Array(12);

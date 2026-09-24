@@ -7,8 +7,12 @@ import { createSingboxAsnResolver } from "./singbox-asn";
 import type { RuleSetOutput, RuleSetSource } from "./rule-set-types";
 import type { RuleSetSourceFetchResult } from "./rule-set-cache";
 import type { Target } from "./types";
+import type { RuleSetAggregator } from "./rule-set-kernel";
 export { actionsArtifactDirectory, actionsArtifactPath, actionsOutputKey, ACTIONS_CLIENT_DIRECTORIES, ACTIONS_OUTPUT_BRANCH, ACTIONS_COMPILER_PROTOCOL } from "./actions-compiler-artifacts";
 export { ruleSetOutputFingerprint } from "./rule-set-compiler-core";
+export { createRuleSetAggregator, RULE_KERNEL_MAX_BYTES } from "./rule-set-kernel";
+declare const __RULE_KERNEL_SHA256__: string;
+export const RULE_KERNEL_SHA256 = __RULE_KERNEL_SHA256__;
 
 /** Runner-local cache for public ASN responses; no Worker bindings or credentials. */
 export function createActionAsnResolver() {
@@ -25,21 +29,22 @@ export async function compileActionRuleSet(
   output: RuleSetOutput,
   fingerprint: string,
   loadSource: (source: RuleSetSource) => Promise<RuleSetSourceFetchResult>,
-  asnResolver: ReturnType<typeof createSingboxAsnResolver>
+  asnResolver: ReturnType<typeof createSingboxAsnResolver>,
+  aggregateRules: RuleSetAggregator
 ) {
   if (await ruleSetOutputFingerprint(config, output) !== fingerprint) throw new Error("Compiler inputs do not match the job fingerprint");
-  const { manifest, buckets, stale } = await compileRuleSetContent(config, output, { loadSource, asnResolver });
+  const { manifest, buckets, stale } = await compileRuleSetContent(config, output, { loadSource, asnResolver, aggregateRules });
   if (stale) throw new Error("Compilation requires complete current source data");
   const target = config.renderTarget as Target;
   if (manifest.buckets.some((bucket) => bucket.targetCounts?.[target] !== bucket.count)) throw new Error("Rules cannot be represented by the target client");
   const artifacts = planRuleSetArtifacts(manifest.buckets, target, manifest.provider?.behavior, manifest.surgeType).map((artifact) => ({
     bucket: artifact.bucket as "combined" | "domain" | "ipcidr" | "dns",
-    content: artifact.bucket === "combined" ? renderCombinedRuleSet(buckets, target, artifact) : renderCompiledRuleSetBucket(buckets[artifact.bucket], artifact.bucket, target)
+    content: artifact.bucket === "combined" ? renderCombinedRuleSet(buckets, target, artifact, false) : renderCompiledRuleSetBucket(buckets[artifact.bucket], artifact.bucket, target, false)
   }));
   if (manifest.dnsRuleCount !== undefined) {
     const rules = [...buckets.domain, ...buckets.classical].filter((rule) => ["DOMAIN", "DOMAIN-SUFFIX", "DOMAIN-KEYWORD", "DOMAIN-REGEX", "DOMAIN-WILDCARD"].includes(rule.type) && renderRuleSetRuleForTarget(rule.raw, "sing-box") !== null);
     manifest.dnsRuleCount = rules.length;
-    if (rules.length) artifacts.push({ bucket: "dns", content: renderSingboxRules(rules) });
+    if (rules.length) artifacts.push({ bucket: "dns", content: renderSingboxRules(rules, false) });
   }
   const hashes = manifest.sourceContentHashes ?? {};
   const sourceContentFingerprint = await sha256Hex(JSON.stringify(Object.keys(hashes).sort().map((key) => [key, hashes[key]])));

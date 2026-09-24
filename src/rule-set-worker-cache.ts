@@ -2,6 +2,7 @@ import { managedRuleSetUrl } from "./managed-url";
 import {
   readCompiledRuleSetBucket,
   readCompiledRuleSetManifest,
+  readCompiledRuleSetSrs,
   type CompiledRuleSetManifest
 } from "./rule-set-cache";
 import { RULE_SET_TARGETS, type RuleSetOutput, type RuleSetOutputTarget } from "./rule-set-types";
@@ -20,12 +21,12 @@ export interface RuleSetWorkerCacheWarmOptions {
   deadline?: number;
 }
 
-export async function compiledRuleSetFileResponse(content: string, target: RuleSetOutputTarget): Promise<Response> {
+export async function compiledRuleSetFileResponse(content: string | Uint8Array, target: RuleSetOutputTarget, binarySrs = false): Promise<Response> {
   return new Response(content, {
     headers: {
-      "content-type": ruleSetContentType(target),
+      "content-type": binarySrs ? "application/octet-stream" : ruleSetContentType(target),
       "cache-control": "no-cache",
-      "etag": `"${await sha256Hex(content)}"`
+      "etag": `"${typeof content === "string" ? await sha256Hex(content) : await sha256BytesHex(content)}"`
     }
   });
 }
@@ -117,6 +118,18 @@ async function warmCompiledRuleSetCacheForOutput(
       await cacheCompiledRuleSetResponse(url, compiledCacheVersion(manifest), response);
       cached += 1;
     }
+    if (target === "sing-box") {
+      for (const bucket of manifest.srsBuckets ?? []) {
+        if (workerCacheWarmDeadlineExceeded(deadline)) return cached;
+        const content = await readCompiledRuleSetSrs(env, manifest.outputName, bucket, manifest);
+        if (!content) continue;
+        const url = managedRuleSetUrl(config, requestUrl, token, manifest.outputName, bucket, target, "srs");
+        const response = await compiledRuleSetFileResponse(content, target, true);
+        if (workerCacheWarmDeadlineExceeded(deadline)) return cached;
+        await cacheCompiledRuleSetResponse(url, compiledCacheVersion(manifest), response);
+        cached += 1;
+      }
+    }
   }
   return cached;
 }
@@ -127,6 +140,11 @@ function workerCacheWarmDeadlineExceeded(deadline: number | undefined): boolean 
 
 function ruleSetContentType(target: RuleSetOutputTarget): string {
   return target === "sing-box" ? "application/json; charset=utf-8" : target === "surge" ? "text/plain; charset=utf-8" : "text/yaml; charset=utf-8";
+}
+
+async function sha256BytesHex(value: Uint8Array): Promise<string> {
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", value));
+  return [...digest].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 function workerCacheAvailable(): boolean {

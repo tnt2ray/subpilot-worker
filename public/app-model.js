@@ -9,6 +9,7 @@ const LABELS = {
   featureTagRules: "节点特征标签",
   updateCheckEnabled: "检查版本更新",
   displayTimeZone: "显示时区",
+  ruleCompilationMode: "规则编译模式",
   actionsCompilation: "Actions 规则编译",
   repository: "GitHub 仓库（owner/repo）",
   ref: "GitHub 分支或标签",
@@ -147,6 +148,10 @@ const LEGACY_RULE_FIELDS = ["DOMAIN", "DOMAIN-SUFFIX", "DOMAIN-KEYWORD", "DOMAIN
 function getPath(object, path) {
   return path.split(".").reduce((value, key) => value?.[key], object);
 }
+function getRuleCompilationMode(settings) {
+  if (["worker", "wasm", "actions"].includes(settings?.ruleCompilationMode)) return settings.ruleCompilationMode;
+  return settings?.ruleCompilationMode === undefined && settings?.actionsCompilation?.enabled === true ? "actions" : "worker";
+}
 function setPath(object, path, value) {
   const parts = path.split(".");
   if (parts.some((key) => ["__proto__", "prototype", "constructor"].includes(key))) throw Error("Invalid field path");
@@ -180,6 +185,7 @@ export {
   NAV,
   RULE_FIELDS,
   getPath,
+  getRuleCompilationMode,
   setPath,
   splitRule
 };

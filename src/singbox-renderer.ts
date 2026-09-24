@@ -11,9 +11,11 @@ import { githubActionsArtifactUrl } from "./actions-compiler-artifacts";
 import { compiledFinalRuleOptions, splitRuleLine } from "./rule-line";
 import { convertRule, policyAction, issue, mergeSingboxHosts } from "./singbox-config";
 import type { ConfigDiagnostic, HostEntry, ProxyNode, ProxyParamValue, RenderConfig } from "./types";
+import { ruleCompilationMode } from "./rule-compilation-mode";
 
 type JsonObject = Record<string, ProxyParamValue>;
 export function buildSingbox(config: RenderConfig, nodes: ProxyNode[], hosts: HostEntry[], requestUrl: string, diagnostics: ConfigDiagnostic[], manifests: ReadonlyMap<string, CompiledRuleSetManifest>): string {
+  const compilationMode = ruleCompilationMode(config);
   const client = config.document!.clients.singbox;
   let outbounds: JsonObject[] = [{ type: "direct", tag: "DIRECT" }];
   for (const node of nodes) {
@@ -116,7 +118,7 @@ export function buildSingbox(config: RenderConfig, nodes: ProxyNode[], hosts: Ho
           if (!ruleSetOutputNeedsCompilation(config.ruleSets, item.output, "sing-box")) continue;
           const manifest = manifests.get(item.output.name);
           if (!manifest) throw new Error("规则集缓存尚未就绪，请稍后重试更新配置。");
-          const binaryRuleSets = Boolean(manifest.publication);
+          if (compilationMode === "actions" && !manifest.publication) throw new Error("Actions 规则产物尚未就绪，请稍后重试。");
           diagnostics.push(...manifest.warnings.filter((message) => !/^AS\d+ 已展开为 \d+ 条 IPv4\/IPv6 CIDR（RIPE RIS 快照）。$/.test(message)).map((message) => issue("clients.singbox.ruleSets", "rule-cache", "warning", message)));
           const compatible = manifest.buckets.reduce((sum, bucket) => sum + (bucket.targetCounts?.["sing-box"] ?? 0), 0);
           if (compatible !== manifest.ruleCount) throw new Error("规则集中存在 sing-box 无法等价表达的规则");
@@ -124,13 +126,23 @@ export function buildSingbox(config: RenderConfig, nodes: ProxyNode[], hosts: Ho
             if (!manifest.dnsRuleCount) diagnostics.push(issue("clients.singbox.ruleSets", "rule-dns-empty", "warning", `${item.output.name} 没有可用于 DNS 匹配的独立域名规则，未生成 DNS 绑定。`));
             else {
               const tag = `${item.output.name}-dns`;
-              ruleSets.push({ type: "remote", tag, format: binaryRuleSets ? "binary" : "source", url: binaryRuleSets ? githubActionsArtifactUrl(config, item.output.name, "dns") : managedRuleSetUrlForRequest(config, requestUrl, item.output.name, "dns", "sing-box"), http_client: { engine: "go", detour: "Proxy" }, update_interval: "1d" });
+              const binary = compilationMode !== "worker";
+              if (compilationMode === "wasm" && !manifest.srsBuckets?.includes("dns")) throw new Error("WASM DNS 规则产物尚未就绪，请稍后重试。");
+              ruleSets.push({ type: "remote", tag, format: binary ? "binary" : "source", url: compilationMode === "actions"
+                ? githubActionsArtifactUrl(config, item.output.name, "dns")
+                : managedRuleSetUrlForRequest(config, requestUrl, item.output.name, "dns", "sing-box", binary ? "srs" : "text"),
+                http_client: { engine: "go", detour: "Proxy" }, update_interval: "1d" });
               dnsRules.push({ rule_set: [tag], action: "route", server: item.output.dnsServer });
             }
           }
           for (const artifact of planRuleSetArtifacts(manifest.buckets, "sing-box")) {
             const tag = `${item.output.name}-${artifact.bucket}`;
-            ruleSets.push({ type: "remote", tag, format: binaryRuleSets ? "binary" : "source", url: binaryRuleSets ? githubActionsArtifactUrl(config, item.output.name, artifact.bucket) : managedRuleSetUrlForRequest(config, requestUrl, item.output.name, artifact.bucket, "sing-box"), http_client: { engine: "go", detour: "Proxy" }, update_interval: "1d" });
+            const binary = compilationMode !== "worker";
+            if (compilationMode === "wasm" && !manifest.srsBuckets?.includes(artifact.bucket)) throw new Error("WASM 规则产物尚未就绪，请稍后重试。");
+            ruleSets.push({ type: "remote", tag, format: binary ? "binary" : "source", url: compilationMode === "actions"
+              ? githubActionsArtifactUrl(config, item.output.name, artifact.bucket)
+              : managedRuleSetUrlForRequest(config, requestUrl, item.output.name, artifact.bucket, "sing-box", binary ? "srs" : "text"),
+              http_client: { engine: "go", detour: "Proxy" }, update_interval: "1d" });
             rules.push({ rule_set: [tag], ...policyAction(item.output.policy) });
           }
         }

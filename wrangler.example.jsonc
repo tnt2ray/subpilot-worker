@@ -2,7 +2,7 @@
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "subpilot-worker",
   "main": "src/index.ts",
-  "build": { "command": "npm run build:actions" },
+  "build": { "command": "npm run build:worker" },
   "compatibility_date": "2026-07-09",
   "compatibility_flags": ["nodejs_compat"],
   "secrets": {
