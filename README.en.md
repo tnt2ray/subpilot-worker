@@ -20,7 +20,7 @@ Subscription sources, manual nodes, and chain exits are shared. Policy groups, d
 | Rewrite / Map Local / MITM / scripts | Retained | Omitted | Omitted |
 | Tailscale | Dedicated native form | Omitted | Native endpoint with a dedicated form |
 
-The admin UI provides subscription checks, a universal subscription link, token rotation, cache refresh, GeoIP renaming, and Telegram notifications. Version 2 retires Stash and Shadowrocket output.
+The admin UI provides subscription checks, a universal subscription link, token rotation, cache refresh, GeoIP renaming, and Telegram notifications.
 
 The overview shows the latest 50 subscription requests, node counts, and subscription cache status. **Force refresh** fetches saved, enabled sources again. Refresh failures show the reason and whether cached content remains available.
 
@@ -213,20 +213,11 @@ Surge supports types including `select` and `smart`, with `url-test` converted t
 
 The sing-box baseline is **1.15.0-alpha.7 (preview)**. Add optional settings through forms; removing an optional field restores core behavior. Device permissions, Always On and application selection must be configured in the actual client.
 
-SubPilot no longer exposes or generates the sing-box TUN `stack` option. Loading or importing existing configurations removes this field, allowing the client to use its own default stack. Version 1.15 uses sing-tun's own TCP/IP stack. Existing 1.14.0 / 1.14.1 documents automatically migrate their version marker while retaining native settings. Configurations using new fields require a compatible 1.15 client.
+sing-box TUN uses the core's default stack. The retired `stack` field is removed when older configurations are loaded or imported.
 
-New 1.15 controls:
+Use **Advanced → Client native outbounds** to configure HTTP, Tailcat and other connections, then reference them in the current client's groups and rules. HTTP outbounds without an explicit version prefer HTTP/2 with fallback, or HTTP/1.1 when `path` or a `Host` header is set. Explicit version and fallback settings are preserved; clear the version field to restore the default selection.
 
-- **VPN connections**: WireGuard, Tailscale, OpenVPN and OpenConnect expose `on_demand`, allowing the client to disconnect endpoints when needed; this is not an idle timeout.
-- **VPN connections → MASQUE**: configure MASQUE client or server endpoints, with CONNECT-IP, HTTP/1.1, HTTP/2, HTTP/3 and route advertisement handled by the client.
-- **Client native outbounds → HTTP**: configure the HTTP version and whether to disable version fallback. HTTP/2 is preferred with automatic fallback; `path` or a `Host` header defaults to HTTP/1.1.
-- **TLS**: pin complete server and client certificates by SHA-256.
-- **Advanced → Cache, API & debugging**: `cache_file.buffer_size` controls write buffering (default `1MB`); `flush_interval` controls periodic flushing (e.g. `30s`, disabled by default).
-- **Inbound connections → TUN**: supports `multi_queue` (Linux only, with the new stack) and `auto_redirect_tproxy_mark`. Full Android `auto_redirect` requires a root service or root shell.
-- **Inbound connections / Advanced → Client native outbounds**: supports Tailcat. Shared nodes can also import native Tailcat JSON, preserving keys and DERP options for sing-box only; Tailcat has no conventional server/port pair. Generate keys with `sing-box generate tailcat-keypair`. Inbounds require a private key; outbounds require server public and discovery keys. Custom `derp_servers` cannot be combined with `derp_map_url` or `derp_region`.
-- **Advanced → Services → DERP**: supports `verify_client_inbound` and `verify_client_key`. Inbound references must identify existing Tailcat inbounds. Verified clients need fixed private keys.
-
-New optional settings remain omitted until configured. Older saved native HTTP outbounds without an explicit version retain HTTP/1.1 when upgraded; new configuration uses the 1.15 protocol negotiation default. See the [alpha.7 release notes](https://github.com/SagerNet/sing-box/releases/tag/v1.15.0-alpha.7), [HTTP outbound documentation](https://sing-box.sagernet.org/configuration/outbound/http/) and [Tailcat documentation](https://sing-box.sagernet.org/configuration/outbound/tailcat/).
+For protocol fields and requirements, see the [sing-box configuration documentation](https://sing-box.sagernet.org/configuration/), [HTTP outbound](https://sing-box.sagernet.org/configuration/outbound/http/) and [Tailcat outbound](https://sing-box.sagernet.org/configuration/outbound/tailcat/).
 
 ### Tailscale
 

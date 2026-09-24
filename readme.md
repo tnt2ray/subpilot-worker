@@ -2,7 +2,7 @@
 
 语言：中文 | [English](./README.en.md)
 
-SubPilot Worker 是运行在 Cloudflare Workers 上的订阅配置生成器，使用 Workers KV 保存加密配置。2.0 共享订阅源和代理节点，三端分别维护策略组和规则来源，为 **Surge、clash 和 sing-box** 分别生成配置。
+SubPilot Worker 是运行在 Cloudflare Workers 上的订阅配置生成器，使用 Workers KV 保存加密配置。订阅源和代理节点共享，策略组和规则来源按客户端独立维护，为 **Surge、clash 和 sing-box** 分别生成配置。
 
 [功能概览](#功能概览) · [部署](#部署) · [首次配置](#首次配置) · [订阅地址](#订阅地址) · [配置模型](#配置模型) · [更新与迁移](#更新与迁移) · [缓存与运行边界](#缓存与运行边界) · [Telegram 与 GeoIP](#telegram-与-geoip) · [安全与数据](#安全与数据) · [本地开发](#本地开发) · [许可证](#许可证)
 
@@ -13,7 +13,7 @@ SubPilot Worker 是运行在 Cloudflare Workers 上的订阅配置生成器，�
 - 支持手动节点、链式出口、策略组筛选、原生规则及本端来源编排。
 - 提供订阅检查、通用订阅地址、加密缓存、Telegram 通知和 GeoIP MMDB 上传。
 - 可选启用 GitHub Actions，统一处理 Surge、Clash、sing-box 规则集的合并、去重和分桶，并按客户端发布产物。
-- sing-box 适配基线为 **1.15.0-alpha.7（预览版）**；旧配置可迁移到配置文档版本 3。Stash 和 Shadowrocket 已退出输出目标。
+- sing-box 适配基线为 **1.15.0-alpha.7（预览版）**，提供原生出站、端点和高级设置表单。
 
 概览页可查看最近 50 条订阅请求、节点总数和订阅缓存状态。点击“强制刷新”重新获取已保存且启用的订阅源；刷新失败时可查看原因及旧缓存是否可用。
 
@@ -198,20 +198,11 @@ Surge 支持 `select`、`smart` 等类型，`url-test` 会转换为 `smart`；Cl
 
 sing-box 适配基线为 **1.15.0-alpha.7（预览版）**。可选参数通过表单添加，移除可选字段恢复内核默认行为。订阅无法代替客户端设置系统权限、Always On 或应用选择；请在实际设备完成这些操作。
 
-SubPilot 不再提供或生成 sing-box TUN 的 `stack` 选项；加载或导入已有配置时会自动清理该字段，由客户端采用自身默认栈。1.15 使用 sing-tun 自有协议栈；旧 1.14.0 / 1.14.1 配置加载时自动升级版本标记，保留原生设置。启用 1.15 新字段的配置需要相应版本的客户端。
+sing-box 的 TUN 使用内核默认协议栈，旧配置中的 `stack` 字段在加载或导入时自动移除。
 
-1.15 新功能入口：
+在“高级设置 → 本端原生出站”中可配置 HTTP、Tailcat 等连接，再通过当前端的策略组和规则引用。HTTP 出站未指定版本时默认优先 HTTP/2 并允许回退；设置 `path` 或 `Host` 请求头时默认使用 HTTP/1.1。明确指定的版本和回退设置会保留，清空版本字段即可恢复默认选择。
 
-- **VPN 连接**：WireGuard、Tailscale、OpenVPN 和 OpenConnect 提供 `on_demand`，允许客户端在需要时断开端点，不等同于空闲超时。
-- **VPN 连接 → MASQUE**：配置 MASQUE 客户端或服务端 endpoint，客户端支持 CONNECT-IP、HTTP/1.1、HTTP/2、HTTP/3 与路由通告。
-- **本端原生出站 → HTTP**：可设置 HTTP 版本和是否禁用版本回退；默认优先 HTTP/2 并自动尝试较低版本。设置 `path` 或 `Host` 请求头时默认使用 HTTP/1.1。
-- **TLS**：支持服务端证书及客户端证书的 SHA-256 完整证书固定校验。
-- **高级 → 缓存、API 与调试**：`cache_file.buffer_size` 设置写缓冲大小（默认 `1MB`）；`flush_interval` 设置定时刷新间隔（例如 `30s`，默认不启用定时刷新）。
-- **入站管理 → TUN**：支持 `multi_queue`（仅 Linux、新协议栈）和 `auto_redirect_tproxy_mark`。Android 的完整 `auto_redirect` 需要 root 服务或 root shell。
-- **入站管理 / 高级 → 本端原生出站**：支持 Tailcat。共享节点也可导入原生 Tailcat JSON，保留密钥及 DERP 参数，仅输出到 sing-box；Tailcat 不使用常规服务器和端口。通过 `sing-box generate tailcat-keypair` 生成密钥；入站需私钥，出站需服务端公钥和发现公钥。自定义 `derp_servers` 不可与 `derp_map_url` / `derp_region` 混用。
-- **高级 → 服务 → DERP**：支持 `verify_client_inbound` 和 `verify_client_key`，入站引用必须指向已存在的 Tailcat 入站；启用验证的客户端需固定私钥。
-
-新增可选设置不会自动启用。旧配置迁移时，未指定版本的原生 HTTP 出站会固定为 HTTP/1.1，保留此前行为；新配置使用 1.15 默认协议协商。参考 [1.15 更新日志](https://github.com/SagerNet/sing-box/releases/tag/v1.15.0-alpha.7)、[HTTP 出站文档](https://sing-box.sagernet.org/configuration/outbound/http/)和 [Tailcat 文档](https://sing-box.sagernet.org/configuration/outbound/tailcat/)。
+各协议的字段含义与使用条件见 [sing-box 配置文档](https://sing-box.sagernet.org/configuration/)、[HTTP 出站](https://sing-box.sagernet.org/configuration/outbound/http/)和 [Tailcat 出站](https://sing-box.sagernet.org/configuration/outbound/tailcat/)。
 
 ### Tailscale
 

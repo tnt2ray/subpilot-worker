@@ -117,12 +117,7 @@ export function normalizeConfigDocument(stored: StoredConfigDocument): AppConfig
   const normalizedSingbox = structuredClone(singbox);
   // Retired cross-client conversion reports are no longer part of the document.
   Reflect.deleteProperty(normalizedSingbox, "migrationIssues");
-  // Preserve the HTTP/1.1 default when loading documents from before alpha.7.
-  if (singbox.coreVersion !== "1.15.0-alpha.7") {
-    for (const outbound of normalizedSingbox.outbounds ?? []) {
-      if (outbound.type === "http" && outbound.version === undefined) outbound.version = 1;
-    }
-  }
+  // Keep explicit HTTP versions; omitted versions use the upgraded core's defaults.
   normalizedSingbox.coreVersion = "1.15.0-alpha.7";
   // TUN stack is deprecated in 1.15 and removed in 1.17; use the core default.
   for (const inbound of normalizedSingbox.inbounds) if (inbound.type === "tun") delete inbound.stack;
