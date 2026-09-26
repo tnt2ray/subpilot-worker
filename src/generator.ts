@@ -1,7 +1,7 @@
 import { ensureActionsCompilation, usesActionsCompilation } from "./actions-compiler";
 import { validateSingboxOutput } from "./singbox-validation";
 import { validateSurgeRules } from "./surge-rules";
-import { validateClashLikeRules } from "./clash-rules";
+import { validateClashRules } from "./clash-rules";
 import { validateTailscalePolicies } from "./config-validation";
 import { validateSurgeHosts } from "./surge-hosts";
 import { validateSurgeMapLocal } from "./surge-map-local";
@@ -14,7 +14,7 @@ import { collectOutputDiagnostics } from "./output-diagnostics";
 import type { ConfigDiagnostic } from "./types";
 import { Buffer } from "node:buffer";
 import { collectClashRuleCoverageWarnings } from "./clash-rules";
-import { buildClash } from "./clash-like-renderer";
+import { buildClash } from "./clash-renderer";
 import { loadConfig } from "./config-store";
 import { parseHostEntries } from "./host-entries";
 import { applyTransforms, buildChainNodes, buildConfiguredProxyNodes, ensureUniqueProxyPolicyNames, nodeTagsForMatching, parseFeatureTagRules, resolveProxyNodeReferences } from "./node-transforms";
@@ -22,7 +22,6 @@ import { dedupeHostEntries } from "./output-render";
 import { parseSubscription } from "./parsers";
 import { buildCompiledRuleSetReferencePlan, type CompiledRuleSetReferencePlan } from "./rule-set-compiler";
 import { prepareRuleSetCache, scheduleRuleSetRebuild } from "./rule-set-preparation";
-import type { RuleSetOutputTarget } from "./rule-set-types";
 import { fetchCachedSource, sourceUserAgent } from "./source-cache";
 import { buildSurge } from "./surge-renderer";
 import { collectSurgeRuleCoverageWarnings } from "./surge-rules";
@@ -116,7 +115,7 @@ export async function generateConfig(
     if (renderTarget === "surge") {
       prepared.warnings.push(...await collectSurgeRuleCoverageWarnings(config));
     } else if (renderTarget === "clash") {
-      prepared.warnings.push(...await collectClashRuleCoverageWarnings(config, renderTarget));
+      prepared.warnings.push(...await collectClashRuleCoverageWarnings(config));
     }
   }
   diagnostics.push(...(prepared.ruleSetPlan?.errors ?? []).map((message): ConfigDiagnostic => ({ target, severity: "error", code: "rule-set-incompatible", path: "ruleSets", message })));
@@ -138,7 +137,7 @@ export async function generateConfig(
     }
     else if (config.ruleSets.mode !== "compiled") {
       const nodePolicies = prepared.nodes.map((node) => node.name);
-      const message = target === "surge" ? validateSurgeRules(config, nodePolicies) : validateClashLikeRules(config, "clash", nodePolicies);
+      const message = target === "surge" ? validateSurgeRules(config, nodePolicies) : validateClashRules(config, nodePolicies);
       if (message) diagnostics.push({ target, severity: "error", code: "rule-validation", path: "rules", message });
     }
     if (target === "surge") {
@@ -180,7 +179,7 @@ function buildTargetContent(
 
 async function prepareOutput(env: Env, config: RenderConfig, target: Target, requestUrl: string): Promise<PreparedOutput> {
   const warnings: string[] = [];
-  const fetched = await fetchAllSources(env, config, target, warnings);
+  const fetched = await fetchAllSources(env, config, warnings);
   const configuredNodes = buildConfiguredProxyNodes(config);
   const transformed = await applyTransforms(env, [...fetched.nodes, ...configuredNodes], config, target, warnings);
   const supported = resolveProxyNodeReferences(ensureUniqueProxyPolicyNames(transformed, config, warnings));
@@ -203,7 +202,7 @@ async function prepareOutput(env: Env, config: RenderConfig, target: Target, req
   };
 }
 
-async function fetchAllSources(env: Env, config: RenderConfig, target: Target, warnings: string[]): Promise<FetchedSources> {
+async function fetchAllSources(env: Env, config: RenderConfig, warnings: string[]): Promise<FetchedSources> {
   const enabled = config.sources.filter((source) => source.enabled && source.url);
   const featureTagRules = parseFeatureTagRules(config.settings.featureTagRules);
   const batches: FetchedSourceBatch[] = Array.from({ length: enabled.length }, () => ({ nodes: [], hostEntries: [] }));

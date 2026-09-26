@@ -127,57 +127,6 @@ export interface ClashTunConfig {
   skipProxy: string[];
 }
 
-export interface StashConfig {
-  port: number;
-  socksPort: number;
-  mixedPort: number;
-  allowLan: boolean;
-  mode: string;
-  logLevel: string;
-  ipv6: boolean;
-  unifiedDelay: boolean;
-  tcpConcurrent: boolean;
-  externalController: string;
-  tun: StashTunConfig;
-  dns: StashDnsConfig;
-  ruleProviders: string;
-  rules: string[];
-  hosts: string[];
-  urlRewrite: string[];
-  scripts: string[];
-  mitm: StashMitmConfig;
-}
-
-export interface StashTunConfig {
-  enable: boolean;
-  stack: string;
-  autoRoute: boolean;
-  autoDetectInterface: boolean;
-  skipProxy: string[];
-}
-
-export interface StashDnsConfig {
-  enable: boolean;
-  listen: string;
-  ipv6: boolean;
-  enhancedMode: string;
-  fakeIpRange: string;
-  defaultNameservers: string[];
-  nameservers: string[];
-  fallbackNameservers: string[];
-  fallbackFilterGeoip: boolean;
-  fallbackFilterIpcidr: string[];
-  fakeIpFilter: string[];
-}
-
-export interface StashMitmConfig {
-  hostname: string[];
-}
-
-export interface ChainConfig {
-  filter: string[];
-}
-
 export interface StaticProxyNodeConfig {
   id: string;
   config: string;
@@ -205,7 +154,6 @@ export interface RenderConfig {
   renderTarget?: Target;
   migrationRequired?: boolean;
   ruleNamesPendingSave?: boolean;
-  groupTargets?: Record<string, Target[]>;
   settings: {
     managedBaseUrl: string;
     userAgentSurge: string;
@@ -227,11 +175,9 @@ export interface RenderConfig {
   disabledGroups: string[];
   sources: SourceConfig[];
   proxyNodes: StaticProxyNodeConfig[];
-  chain: ChainConfig;
   ruleSets: RuleSetConfig;
   surge: SurgeConfig;
   clash: ClashConfig;
-  stash: StashConfig;
   updatedAt?: string | undefined;
 }
 
@@ -299,7 +245,6 @@ export interface AppConfig {
   settings: Omit<RenderConfig["settings"], "userAgentStash" | "userAgentShadowrocket">;
   sources: SourceConfig[];
   proxyNodes: StaticProxyNodeConfig[];
-  chain: ChainConfig;
   clients: {
     surge: SurgeConfig & ClientRuleSettings;
     clash: ClashConfig & ClientRuleSettings;

@@ -24,7 +24,6 @@ export function migrateConfigDocument(input: RenderConfig): AppConfig {
     settings: currentSettings(legacy.settings),
     sources: legacy.sources.map((source) => ({ ...source, fetchUserAgent: resolveLegacyUserAgent(legacy, source.fetchUserAgent) })),
     proxyNodes: legacy.proxyNodes,
-    chain: legacy.chain,
     clients: {
       surge: { ...legacy.surge, ...resources("surge") },
       clash: { ...legacy.clash, ...resources("clash") },
@@ -39,7 +38,7 @@ export function defaultConfigDocument(): AppConfig {
   const doc: AppConfig = {
     version: 3,
     settings: currentSettings(defaults.settings),
-    sources: [], proxyNodes: [], chain: defaults.chain,
+    sources: [], proxyNodes: [],
     clients: {
       surge: { ...defaults.surge, groups: legacyClientGroups(defaults.groups, "surge"), disabledGroups: [], ruleSets: structuredClone(defaults.ruleSets) },
       clash: { ...defaults.clash, groups: structuredClone(defaults.groups), disabledGroups: [], ruleSets: structuredClone(defaults.ruleSets) },
@@ -85,7 +84,7 @@ export function normalizeConfigDocument(stored: StoredConfigDocument): AppConfig
   const input = stored.version === 2 ? splitSharedConfigDocument(stored) : stored;
   if (input.version !== 3 || !input.clients?.surge || !input.clients?.clash || !input.clients?.singbox) throw new Error("需要版本 3 配置，旧配置请使用迁移入口。");
   for (const key of ["sources", "proxyNodes"] as const) if (!Array.isArray(input[key])) throw new Error(`${key} 必须是数组。`);
-  for (const key of ["settings", "chain"] as const) if (!input[key] || typeof input[key] !== "object" || Array.isArray(input[key])) throw new Error(`${key} 必须是对象。`);
+  if (!input.settings || typeof input.settings !== "object" || Array.isArray(input.settings)) throw new Error("settings 必须是对象。");
   for (const client of Object.values(input.clients)) {
     if (!client.groups || typeof client.groups !== "object" || Array.isArray(client.groups) || !Array.isArray(client.disabledGroups)) throw new Error("客户端策略组格式无效。");
     if (client.disabledGroups.includes("Proxy")) throw new Error("Proxy 策略组不能禁用。");
@@ -125,7 +124,7 @@ export function normalizeConfigDocument(stored: StoredConfigDocument): AppConfig
     version: 3,
     settings: currentSettings(view.settings),
     sources: view.sources.map((source) => ({ ...source, fetchUserAgent: resolveLegacyUserAgent(view, source.fetchUserAgent) })),
-    proxyNodes: view.proxyNodes, chain: view.chain,
+    proxyNodes: view.proxyNodes,
     clients: {
       surge: { ...normalizeSurge(input.clients.surge), ...resources(input.clients.surge) },
       clash: { ...normalizeClash(input.clients.clash), ...resources(input.clients.clash, false) },
@@ -143,7 +142,7 @@ export function renderConfig(document: AppConfig, target: Target = "surge"): Ren
     ...DEFAULT_CONFIG,
     version: 1,
     settings: withDefaultConfigSettings(document.settings), groups: client.groups, disabledGroups: client.disabledGroups,
-    sources: document.sources, proxyNodes: document.proxyNodes, chain: document.chain,
+    sources: document.sources, proxyNodes: document.proxyNodes,
     surge: document.clients.surge, clash: document.clients.clash,
     ruleSets: target === "surge" ? client.ruleSets : { ...client.ruleSets, aggregateByPolicy: false },
     document, renderTarget: target, updatedAt: document.updatedAt
@@ -156,7 +155,7 @@ export function configDocument(config: RenderConfig): AppConfig {
   return normalizeConfigDocument({
     ...document, settings: config.settings,
     clients: { ...document.clients, [id]: { ...document.clients[id], groups: config.groups, disabledGroups: config.disabledGroups, ruleSets: config.ruleSets } },
-    sources: config.sources, proxyNodes: config.proxyNodes, chain: config.chain, updatedAt: config.updatedAt
+    sources: config.sources, proxyNodes: config.proxyNodes, updatedAt: config.updatedAt
   });
 }
 

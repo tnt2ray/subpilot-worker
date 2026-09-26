@@ -14,13 +14,6 @@ import { CHAIN_EXIT_PROTOCOLS, type RenderConfig, type ChainExitProtocol, type N
 import { normalizeDisplayTimeZone } from "./util";
 
 const SURGE_IPV6_VIF_MODES = ["off", "auto", "always"] as const satisfies readonly SurgeIpv6VifMode[];
-type ClashLikeBaseConfig = Pick<
-  RenderConfig["clash"],
-  "port" | "socksPort" | "mixedPort" | "allowLan" | "mode" | "logLevel" | "ipv6" | "unifiedDelay" | "tcpConcurrent" | "externalController"
->;
-type ClashLikeTunConfig = RenderConfig["clash"]["tun"];
-type ClashLikeDnsConfig = RenderConfig["stash"]["dns"];
-type LoosePartial<T> = { [Key in keyof T]?: T[Key] | undefined };
 
 function notificationChannelFromTelegramToken(token: string): NotificationChannel {
   return token.trim() ? "telegram" : "off";
@@ -34,7 +27,6 @@ export function normalizeTarget(value: string | null | undefined): Target | null
 }
 
 export function normalizeConfig(input: RenderConfig): RenderConfig {
-  const chain = normalizeChain(input.chain);
   const groups = normalizeGroups(typeof input.groups === "object" && input.groups ? input.groups : DEFAULT_CONFIG.groups);
   const notificationTelegramBotToken = stringValue(input.settings?.notificationTelegramBotToken, "");
   return {
@@ -42,7 +34,6 @@ export function normalizeConfig(input: RenderConfig): RenderConfig {
     ...(input.document ? { document: input.document } : {}),
     ...(input.renderTarget ? { renderTarget: input.renderTarget } : {}),
     ...(input.migrationRequired ? { migrationRequired: true } : {}),
-    ...(input.groupTargets ? { groupTargets: input.groupTargets } : {}),
     settings: {
       managedBaseUrl: stringValue(input.settings?.managedBaseUrl, DEFAULT_CONFIG.settings.managedBaseUrl),
       userAgentSurge: input.settings?.userAgentSurge || DEFAULT_CONFIG.settings.userAgentSurge,
@@ -64,11 +55,9 @@ export function normalizeConfig(input: RenderConfig): RenderConfig {
     disabledGroups: normalizeDisabledGroups(input.disabledGroups, groups),
     sources: Array.isArray(input.sources) ? input.sources.map(normalizeSource) : [],
     proxyNodes: Array.isArray(input.proxyNodes) ? normalizeProxyNodes(input.proxyNodes) : DEFAULT_CONFIG.proxyNodes,
-    chain,
     ruleSets: normalizeRuleSets(input.ruleSets),
     surge: normalizeSurge(input.surge),
     clash: normalizeClash(input.clash),
-    stash: normalizeStash(input.stash),
     updatedAt: input.updatedAt
   };
 }
@@ -433,112 +422,41 @@ function normalizeSurgeMitm(input: Partial<RenderConfig["surge"]["mitm"]> | unde
 
 export function normalizeClash(input: Partial<RenderConfig["clash"]> | undefined): RenderConfig["clash"] {
   const clash = input ?? {};
-  const base = normalizeClashLikeBase(clash, DEFAULT_CONFIG.clash);
-  const dns = normalizeClashLikeDns({
-    enable: clash.dnsEnabled,
-    listen: clash.dnsListen,
-    ipv6: clash.dnsIpv6,
-    enhancedMode: clash.dnsEnhancedMode,
-    fakeIpRange: clash.dnsFakeIpRange,
-    defaultNameservers: clash.defaultNameservers,
-    nameservers: clash.nameservers,
-    fallbackNameservers: clash.fallbackNameservers,
-    fallbackFilterGeoip: clash.fallbackFilterGeoip,
-    fallbackFilterIpcidr: clash.fallbackFilterIpcidr,
-    fakeIpFilter: clash.fakeIpFilter
-  }, {
-    enable: DEFAULT_CONFIG.clash.dnsEnabled,
-    listen: DEFAULT_CONFIG.clash.dnsListen,
-    ipv6: DEFAULT_CONFIG.clash.dnsIpv6,
-    enhancedMode: DEFAULT_CONFIG.clash.dnsEnhancedMode,
-    fakeIpRange: DEFAULT_CONFIG.clash.dnsFakeIpRange,
-    defaultNameservers: DEFAULT_CONFIG.clash.defaultNameservers,
-    nameservers: DEFAULT_CONFIG.clash.nameservers,
-    fallbackNameservers: DEFAULT_CONFIG.clash.fallbackNameservers,
-    fallbackFilterGeoip: DEFAULT_CONFIG.clash.fallbackFilterGeoip,
-    fallbackFilterIpcidr: DEFAULT_CONFIG.clash.fallbackFilterIpcidr,
-    fakeIpFilter: DEFAULT_CONFIG.clash.fakeIpFilter
-  });
+  const tun: Partial<RenderConfig["clash"]["tun"]> = clash.tun ?? {};
+  const defaults = DEFAULT_CONFIG.clash;
   return {
-    ...base,
-    tun: normalizeClashLikeTun(clash.tun, DEFAULT_CONFIG.clash.tun),
-    dnsEnabled: dns.enable,
-    dnsListen: dns.listen,
-    dnsListenRoutingMark: typeof clash.dnsListenRoutingMark === "number" ? clash.dnsListenRoutingMark : DEFAULT_CONFIG.clash.dnsListenRoutingMark,
+    port: clampNumber(clash.port, 1, 65535, defaults.port),
+    socksPort: clampNumber(clash.socksPort, 1, 65535, defaults.socksPort),
+    mixedPort: clampNumber(clash.mixedPort, 1, 65535, defaults.mixedPort),
+    allowLan: clash.allowLan === true,
+    mode: stringValue(clash.mode, defaults.mode),
+    logLevel: stringValue(clash.logLevel, defaults.logLevel),
+    ipv6: clash.ipv6 !== false,
+    unifiedDelay: clash.unifiedDelay !== false,
+    tcpConcurrent: clash.tcpConcurrent !== false,
+    externalController: stringValue(clash.externalController, defaults.externalController),
+    tun: {
+      enable: tun.enable !== false,
+      stack: stringValue(tun.stack, defaults.tun.stack),
+      autoRoute: tun.autoRoute !== false,
+      autoDetectInterface: tun.autoDetectInterface !== false,
+      skipProxy: stringArray(tun.skipProxy, defaults.tun.skipProxy)
+    },
+    dnsEnabled: clash.dnsEnabled !== false,
+    dnsListen: stringValue(clash.dnsListen, defaults.dnsListen),
+    dnsListenRoutingMark: typeof clash.dnsListenRoutingMark === "number" ? clash.dnsListenRoutingMark : defaults.dnsListenRoutingMark,
     dnsFallbackLazyQuery: clash.dnsFallbackLazyQuery === true,
-    dnsIpv6: dns.ipv6,
-    dnsEnhancedMode: dns.enhancedMode,
-    dnsFakeIpRange: dns.fakeIpRange,
-    defaultNameservers: dns.defaultNameservers,
-    nameservers: dns.nameservers,
-    fallbackNameservers: dns.fallbackNameservers,
-    fallbackFilterGeoip: dns.fallbackFilterGeoip,
-    fallbackFilterIpcidr: dns.fallbackFilterIpcidr,
-    fakeIpFilter: dns.fakeIpFilter,
-    ruleProviders: normalizeRuleProviders(clash.ruleProviders, DEFAULT_CONFIG.clash.ruleProviders),
-    rules: stringArray(clash.rules, DEFAULT_CONFIG.clash.rules)
-  };
-}
-
-export function normalizeStash(input: Partial<RenderConfig["stash"]> | undefined): RenderConfig["stash"] {
-  const stash = input ?? {};
-  return {
-    ...normalizeClashLikeBase(stash, DEFAULT_CONFIG.stash),
-    tun: normalizeClashLikeTun(stash.tun, DEFAULT_CONFIG.stash.tun),
-    dns: normalizeStashDns(stash.dns),
-    ruleProviders: normalizeRuleProviders(stash.ruleProviders, DEFAULT_CONFIG.stash.ruleProviders),
-    rules: stringArray(stash.rules, DEFAULT_CONFIG.stash.rules),
-    hosts: stringArray(stash.hosts, DEFAULT_CONFIG.stash.hosts),
-    urlRewrite: stringArray(stash.urlRewrite, DEFAULT_CONFIG.stash.urlRewrite),
-    scripts: stringArray(stash.scripts, DEFAULT_CONFIG.stash.scripts),
-    mitm: normalizeStashMitm(stash.mitm)
-  };
-}
-
-function normalizeStashDns(input: Partial<RenderConfig["stash"]["dns"]> | undefined): RenderConfig["stash"]["dns"] {
-  return normalizeClashLikeDns(input ?? {}, DEFAULT_CONFIG.stash.dns);
-}
-
-function normalizeClashLikeBase(input: LoosePartial<ClashLikeBaseConfig>, defaults: ClashLikeBaseConfig): ClashLikeBaseConfig {
-  return {
-    port: clampNumber(input.port, 1, 65535, defaults.port),
-    socksPort: clampNumber(input.socksPort, 1, 65535, defaults.socksPort),
-    mixedPort: clampNumber(input.mixedPort, 1, 65535, defaults.mixedPort),
-    allowLan: input.allowLan === true,
-    mode: stringValue(input.mode, defaults.mode),
-    logLevel: stringValue(input.logLevel, defaults.logLevel),
-    ipv6: input.ipv6 !== false,
-    unifiedDelay: input.unifiedDelay !== false,
-    tcpConcurrent: input.tcpConcurrent !== false,
-    externalController: stringValue(input.externalController, defaults.externalController)
-  };
-}
-
-function normalizeClashLikeTun(input: LoosePartial<ClashLikeTunConfig> | undefined, defaults: ClashLikeTunConfig): ClashLikeTunConfig {
-  const tun = input ?? {};
-  return {
-    enable: tun.enable !== false,
-    stack: stringValue(tun.stack, defaults.stack),
-    autoRoute: tun.autoRoute !== false,
-    autoDetectInterface: tun.autoDetectInterface !== false,
-    skipProxy: stringArray(tun.skipProxy, defaults.skipProxy)
-  };
-}
-
-function normalizeClashLikeDns(input: LoosePartial<ClashLikeDnsConfig>, defaults: ClashLikeDnsConfig): ClashLikeDnsConfig {
-  const dns = input ?? {};
-  return {
-    enable: dns.enable !== false,
-    listen: stringValue(dns.listen, defaults.listen),
-    ipv6: dns.ipv6 !== false,
-    enhancedMode: normalizeDnsEnhancedMode(dns.enhancedMode, defaults.enhancedMode),
-    fakeIpRange: stringValue(dns.fakeIpRange, defaults.fakeIpRange),
-    defaultNameservers: stringArray(dns.defaultNameservers, defaults.defaultNameservers),
-    nameservers: stringArray(dns.nameservers, defaults.nameservers),
-    fallbackNameservers: stringArray(dns.fallbackNameservers, defaults.fallbackNameservers),
-    fallbackFilterGeoip: dns.fallbackFilterGeoip !== false,
-    fallbackFilterIpcidr: stringArray(dns.fallbackFilterIpcidr, defaults.fallbackFilterIpcidr),
-    fakeIpFilter: stringArray(dns.fakeIpFilter, defaults.fakeIpFilter)
+    dnsIpv6: clash.dnsIpv6 !== false,
+    dnsEnhancedMode: normalizeDnsEnhancedMode(clash.dnsEnhancedMode, defaults.dnsEnhancedMode),
+    dnsFakeIpRange: stringValue(clash.dnsFakeIpRange, defaults.dnsFakeIpRange),
+    defaultNameservers: stringArray(clash.defaultNameservers, defaults.defaultNameservers),
+    nameservers: stringArray(clash.nameservers, defaults.nameservers),
+    fallbackNameservers: stringArray(clash.fallbackNameservers, defaults.fallbackNameservers),
+    fallbackFilterGeoip: clash.fallbackFilterGeoip !== false,
+    fallbackFilterIpcidr: stringArray(clash.fallbackFilterIpcidr, defaults.fallbackFilterIpcidr),
+    fakeIpFilter: stringArray(clash.fakeIpFilter, defaults.fakeIpFilter),
+    ruleProviders: normalizeRuleProviders(clash.ruleProviders, defaults.ruleProviders),
+    rules: stringArray(clash.rules, defaults.rules)
   };
 }
 
@@ -549,19 +467,6 @@ function normalizeDnsEnhancedMode(value: unknown, fallback: string): string {
 function normalizeRuleProviders(input: unknown, fallback: string): string {
   if (input === undefined || input === null) return fallback;
   return typeof input === "string" ? input.trimEnd() : fallback;
-}
-
-function normalizeStashMitm(input: Partial<RenderConfig["stash"]["mitm"]> | undefined): RenderConfig["stash"]["mitm"] {
-  const mitm = input ?? {};
-  return {
-    hostname: stringArray(mitm.hostname, DEFAULT_CONFIG.stash.mitm.hostname)
-  };
-}
-
-export function normalizeChain(_input: { filter?: unknown } | undefined): RenderConfig["chain"] {
-  return {
-    filter: []
-  };
 }
 
 function chainExitProtocol(value: unknown, fallback: ChainExitProtocol): ChainExitProtocol {

@@ -7,11 +7,11 @@ import { exportConfigBeforeMigration, loadConfigMigration, completeDocumentMigra
 import { ruleSetEnv } from "./rule-set-scope";
 import { validateManagedBaseUrl, validateConfigEntityLimits, validateProxyPolicyNameConflicts, validateRuleSetOutputNames } from "./config-validation";
 import { assertSafeConfigText } from "./config-text-safety";
-import type { AppConfig, RenderConfig } from "./types";
+import type { AppConfig } from "./types";
 import { clearSessionCookie, createSession, getOrCreateReadToken, isAdminRequest, rotateReadToken, sessionCookie, validateAdminToken, validateReadToken } from "./auth";
-import { loadConfig, normalizeTarget, saveConfig, withInferredManagedBaseUrl } from "./config-store";
+import { loadConfig, normalizeTarget, withInferredManagedBaseUrl } from "./config-store";
 import { readConfigFetchStats, recordConfigFetch } from "./fetch-stats";
-import { generateConfig, generateForRequest, inferTarget } from "./generator";
+import { generateForRequest, inferTarget } from "./generator";
 import { handleGeoIpMmdbUpload, readGeoIpMmdbStatus } from "./geoip-admin";
 import { LOGIN_PAGE_HTML } from "./login-page";
 import { extractSubscriptionToken, isUnderManagedBasePath, managedBasePathFromConfig, parseSyncPath } from "./managed-url";
@@ -101,7 +101,7 @@ export default {
         if (pending.length) {
           await queueRuleSetUpdates(env, selected, pending);
         }
-        await notifyRuleSetRefreshFailures(env, selected, result, "scheduled");
+        await notifyRuleSetRefreshFailures(selected, result, "scheduled");
         await warmScheduledRuleSetWorkerCache(scoped, selected);
       }
       return;
@@ -110,7 +110,7 @@ export default {
     const result = await refreshSourceCache(env, config, {
       deadline: Date.now() + SCHEDULED_REFRESH_DEADLINE_MS
     });
-    await notifySourceRefreshFailures(env, config, result, "scheduled");
+    await notifySourceRefreshFailures(config, result, "scheduled");
     await notifyVersionUpdateAvailable(env, config);
   }
 } satisfies ExportedHandler<Env>;
@@ -283,7 +283,7 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
     });
     return jsonResponse({
       ...result,
-      notification: await notifySourceRefreshFailures(env, config, result, "manual")
+      notification: await notifySourceRefreshFailures(config, result, "manual")
     });
   }
   if (url.pathname === "/api/geoip/mmdb" && request.method === "GET") {
@@ -392,7 +392,6 @@ async function handleSync(request: Request, env: Env, ctx: ExecutionContext, man
   if (!syncPath) return forbidden("Invalid subscription path");
   if (url.search) return forbidden("Invalid subscription path");
   if (syncPath.ruleSet) {
-    if (syncPath.ruleSet.target === "stash") return notFound();
     const target = syncPath.ruleSet.target;
     return handleRuleSetDownload(request, ruleSetEnv(env, target), ctx, renderConfig(configDocument(await loadConfig(env)), target), syncPath.ruleSet);
   }
@@ -436,7 +435,7 @@ function scheduleChangedSourceRefresh(
   const deadline = Date.now() + WAIT_UNTIL_REFRESH_DEADLINE_MS;
   ctx.waitUntil((async () => {
     const sourceResult = await refreshChangedSourceCache(env, previousConfig, config, { deadline });
-    if (sourceResult) await notifySourceRefreshFailures(env, config, sourceResult, "config");
+    if (sourceResult) await notifySourceRefreshFailures(config, sourceResult, "config");
   })().catch(() => console.error(JSON.stringify({ level: "error", message: "Background cache refresh failed" }))));
 }
 

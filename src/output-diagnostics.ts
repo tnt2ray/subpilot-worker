@@ -153,9 +153,9 @@ export function collectOutputDiagnostics(config: RenderConfig, target: Target, c
   }
   for (const [name] of groups) roots.add(name);
   for (const [name, spec] of Object.entries(config.groups)) {
-    if (config.disabledGroups.includes(name) || config.groupTargets?.[name] && !config.groupTargets[name]!.includes(target)) continue;
+    if (config.disabledGroups.includes(name)) continue;
     const type = splitGroupSpec(spec)[0]!;
-    if (target !== "surge" && splitGroupSpec(spec).some((part) => parseGroupOption(part)?.key.toLowerCase() === "underlying-proxy")) add(`groups.${name}`, "group-chain-unsupported", `${name} 的组级链式出口仅适用于 Surge，请将此组的适用端限制为 Surge，或配置共享链式节点。`);
+    if (target !== "surge" && splitGroupSpec(spec).some((part) => parseGroupOption(part)?.key.toLowerCase() === "underlying-proxy")) add(`groups.${name}`, "group-chain-unsupported", `${name} 的组级链式出口仅适用于 Surge，请在 Surge 中配置此组，或配置共享链式节点。`);
     const supported = target === "sing-box" ? ["select", "url-test"] : target === "clash" ? ["select", "url-test", "fallback", "load-balance"] : ["select", "url-test", "fallback", "load-balance", "subnet", "smart"];
     if (!supported.includes(type)) diagnostics.push({ target, severity: "warning", path: `groups.${name}`, code: "group-type", message: `${name} 的 ${type} 类型不适用于当前输出端，已跳过。` });
     if (target === "surge" && type === "url-test" && surgeGroupTypes.get(name) === "smart") diagnostics.push({ target, severity: "info", path: `groups.${name}`, code: "group-type-adapted", message: `${name} 的 url-test 已自动转换为 Surge smart；smart 使用自身测速周期，interval 不生效。` });

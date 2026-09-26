@@ -14,7 +14,6 @@ export interface NotificationDeliveryResult {
 }
 
 export async function notifySourceRefreshFailures(
-  env: Env,
   config: RenderConfig,
   result: SourceCacheRefreshResult,
   trigger: RefreshTrigger
@@ -34,14 +33,13 @@ export async function notifySourceRefreshFailures(
   }));
 
   if (config.settings.notificationChannel === "telegram") {
-    delivery.telegram = await sendTelegramNotification(env, config, message, delivery.warnings);
+    delivery.telegram = await sendTelegramNotification(config, message, delivery.warnings);
   }
 
   return delivery;
 }
 
 export async function notifyRuleSetRefreshFailures(
-  env: Env,
   config: RenderConfig,
   result: RuleSetRefreshResult,
   trigger: RefreshTrigger
@@ -62,7 +60,7 @@ export async function notifyRuleSetRefreshFailures(
   }));
 
   if (config.settings.notificationChannel === "telegram") {
-    delivery.telegram = await sendTelegramNotification(env, config, message, delivery.warnings);
+    delivery.telegram = await sendTelegramNotification(config, message, delivery.warnings);
   }
 
   return delivery;
@@ -86,7 +84,7 @@ export async function notifyVersionUpdateAvailable(env: Env, config: RenderConfi
   ].filter(Boolean).join("\n");
 
   if (config.settings.notificationChannel === "telegram") {
-    delivery.telegram = await sendTelegramNotification(env, config, message, delivery.warnings);
+    delivery.telegram = await sendTelegramNotification(config, message, delivery.warnings);
     if (delivery.telegram === "sent") await storeNotifiedUpdateVersion(env, status.latestVersion);
   }
 
@@ -154,7 +152,6 @@ function formatSourceFailures(result: SourceCacheRefreshResult): string[] {
 }
 
 async function sendTelegramNotification(
-  env: Env,
   config: RenderConfig,
   message: string,
   warnings: string[]

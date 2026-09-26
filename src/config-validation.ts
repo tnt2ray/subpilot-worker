@@ -10,22 +10,15 @@ import { compiledRuleProviderName } from "./rule-provider-name";
 import { splitRuleLine } from "./rule-line";
 import {
   CLASH_BUILT_IN_RULE_POLICIES,
-  isRulePolicyCompatibleWithTarget,
-  STASH_BUILT_IN_RULE_POLICIES,
   SURGE_BUILT_IN_RULE_POLICIES
 } from "./rule-targets";
-import { RULE_SET_TARGETS, type RuleSetDownloadBucket } from "./rule-set-types";
+import type { RuleSetDownloadBucket } from "./rule-set-types";
 import type { RenderConfig } from "./types";
 
 const RESERVED_MANAGED_BASE_PATHS = new Set([
   "/api",
-  "/app-constants.js",
-  "/app-i18n.js",
   "/app-policy-group-spec.js",
-  "/app-preview-warnings.js",
   "/app-validation.js",
-  "/app-proxy-node-drafts.js",
-  "/app-yaml.js",
   "/app.js",
   "/app-model.js",
   "/singbox-ui.js",
@@ -38,8 +31,7 @@ const RESERVED_MANAGED_BASE_PATHS = new Set([
 
 const ALL_BUILT_IN_POLICIES = new Set([
   ...SURGE_BUILT_IN_RULE_POLICIES,
-  ...CLASH_BUILT_IN_RULE_POLICIES,
-  ...STASH_BUILT_IN_RULE_POLICIES
+  ...CLASH_BUILT_IN_RULE_POLICIES
 ]);
 const MAX_COUNTS = {
   sources: 20,
@@ -110,7 +102,6 @@ export function validateConfigEntityLimits(config: RenderConfig, options: { allo
   if (!Array.isArray(config.disabledGroups)) return "禁用策略组配置格式无效";
   if (!Array.isArray(config.sources)) return "订阅源配置格式无效";
   if (!Array.isArray(config.proxyNodes)) return "静态节点配置格式无效";
-  if (!config.chain || typeof config.chain !== "object") return "链式代理配置格式无效";
   if (!config.ruleSets || typeof config.ruleSets !== "object") return "规则集配置格式无效";
   if (!Array.isArray(config.ruleSets.sources) || !Array.isArray(config.ruleSets.outputs) || !Array.isArray(config.ruleSets.directRules)) {
     return "规则集实体配置格式无效";
@@ -118,7 +109,6 @@ export function validateConfigEntityLimits(config: RenderConfig, options: { allo
   if (!config.surge || !Array.isArray(config.surge.rules) || !Array.isArray(config.surge.tailscaleNodes)) return "Surge 配置格式无效";
   if (!config.surge.mitm || typeof config.surge.mitm !== "object") return "Surge MITM 配置格式无效";
   if (!config.clash || !Array.isArray(config.clash.rules) || !config.clash.tun || typeof config.clash.tun !== "object") return "Clash 配置格式无效";
-  if (!config.stash || !Array.isArray(config.stash.rules) || !config.stash.tun || !config.stash.dns || !config.stash.mitm) return "Stash 配置格式无效";
   if (typeof config.groups.Proxy !== "string") return "内置 Proxy 策略组必须保留";
   if (config.disabledGroups.includes("Proxy")) return "内置 Proxy 策略组不能禁用";
 
@@ -130,8 +120,7 @@ export function validateConfigEntityLimits(config: RenderConfig, options: { allo
     ["规则输出", config.ruleSets.outputs.length, MAX_COUNTS.ruleSetOutputs],
     ["主配置单条规则", config.ruleSets.directRules.length, MAX_COUNTS.directRules],
     ["Surge 规则", config.surge.rules.length, MAX_COUNTS.targetRules],
-    ["Clash 规则", config.clash.rules.length, MAX_COUNTS.targetRules],
-    ["Stash 规则", config.stash.rules.length, MAX_COUNTS.targetRules]
+    ["Clash 规则", config.clash.rules.length, MAX_COUNTS.targetRules]
   ]);
   if (countError) return countError;
 
@@ -241,15 +230,12 @@ export function validateConfigEntityLimits(config: RenderConfig, options: { allo
     const policyError = validatePolicyName(rule?.policy, `主配置单条规则 ${rule.id} 策略`);
     if (policyError) return policyError;
   }
-  for (const [label, rules] of [["Surge", config.surge.rules], ["Clash", config.clash.rules], ["Stash", config.stash.rules]] as const) {
+  for (const [label, rules] of [["Surge", config.surge.rules], ["Clash", config.clash.rules]] as const) {
     const ruleError = validateRuleLines(rules, `${label} 规则`);
     if (ruleError) return ruleError;
   }
   if (typeof config.clash.ruleProviders !== "string" || config.clash.ruleProviders.length > MAX_RULE_PROVIDERS_LENGTH) {
     return "Clash rule-providers 配置过长或格式无效";
-  }
-  if (typeof config.stash.ruleProviders !== "string" || config.stash.ruleProviders.length > MAX_RULE_PROVIDERS_LENGTH) {
-    return "Stash rule-providers 配置过长或格式无效";
   }
   return validateImportantSettings(config);
 }
@@ -492,50 +478,6 @@ export function validateRuleSetOutputNames(config: Partial<Pick<RenderConfig, "r
   return effectiveError || validateRuleProviderNameCollisions(effectiveOutputs) || validateCompiledFallback(ruleSets);
 }
 
-export function validateCompiledFallbackTargets(config: RenderConfig): string | null {
-  if (config.ruleSets.mode !== "compiled") return null;
-  const fallback = config.ruleSets.directRules.find((rule) => {
-    if (!rule.enabled) return false;
-    const type = (splitRuleLine(rule.rule)[0] || "").trim().toUpperCase();
-    return type === "FINAL" || type === "MATCH";
-  });
-  if (!fallback) return null;
-  const policy = fallback.policy.trim();
-  if (config.surge.tailscaleNodes.some((node) => node.name === policy)) {
-    return `编译规则兜底策略 ${policy} 仅适用于 Surge，不能用于跨目标输出`;
-  }
-  return RULE_SET_TARGETS.some((target) => !isRulePolicyCompatibleWithTarget(policy, target))
-    ? `编译规则兜底策略 ${policy} 不受所有输出目标支持`
-    : null;
-}
-
-export function validateCompiledRulePolicies(config: RenderConfig): string | null {
-  if (config.ruleSets.mode !== "compiled") return null;
-  const disabledGroups = new Set(config.disabledGroups);
-  const configuredPolicies = new Set([
-    ...Object.keys(config.groups).filter((name) => !disabledGroups.has(name)),
-    ...SURGE_BUILT_IN_RULE_POLICIES,
-    ...CLASH_BUILT_IN_RULE_POLICIES,
-    ...STASH_BUILT_IN_RULE_POLICIES,
-    ...config.surge.tailscaleNodes
-      .filter(tailscaleNodeIsActive)
-      .map((node) => node.name)
-  ]);
-  for (const output of config.ruleSets.outputs.filter((item) => item.enabled)) {
-    const policy = output.policy.trim();
-    if (/^DEVICE:/i.test(policy) || !configuredPolicies.has(policy)) {
-      return `规则输出 ${output.name} 的策略 ${policy} 不存在或不可用`;
-    }
-  }
-  for (const rule of config.ruleSets.directRules.filter((item) => item.enabled)) {
-    const policy = rule.policy.trim();
-    if (/^DEVICE:/i.test(policy) || !configuredPolicies.has(policy)) {
-      return `主配置单条规则 ${rule.id} 的策略 ${policy} 不存在或不可用`;
-    }
-  }
-  return null;
-}
-
 function validatePolicyGroupSpec(name: string, spec: string, config: RenderConfig, allowUnresolvedPolicies = false): string | null {
   if (/[\r\n\u0000-\u001f\u007f]/.test(spec)) return `策略组 ${name} 配置不能包含换行或控制字符`;
   const [rawType = "", ...items] = splitGroupSpec(spec);
@@ -546,7 +488,6 @@ function validatePolicyGroupSpec(name: string, spec: string, config: RenderConfi
     ...Object.keys(config.groups),
     ...SURGE_BUILT_IN_RULE_POLICIES,
     ...CLASH_BUILT_IN_RULE_POLICIES,
-    ...STASH_BUILT_IN_RULE_POLICIES,
     ...config.proxyNodes.flatMap((node) => {
       try {
         const parsed = node && typeof node === "object" ? parseConfiguredProxyNode(node) : null;
@@ -778,7 +719,6 @@ function validateConfigLists(config: RenderConfig): string | null {
     [config.disabledGroups, "禁用策略组", MAX_COUNTS.groups, MAX_NAME_LENGTH],
     [config.settings.excludeKeywords, "排除关键词", MAX_GENERAL_LIST_ITEMS, MAX_NAME_LENGTH],
     [config.settings.featureTagRules, "特征标签规则", MAX_GENERAL_LIST_ITEMS, MAX_RULE_LENGTH],
-    [config.chain.filter, "链式代理筛选", MAX_REFERENCE_LIST_ITEMS, MAX_NAME_LENGTH],
     [config.surge.skipProxy, "Surge skip-proxy", MAX_GENERAL_LIST_ITEMS, MAX_URL_LENGTH],
     [config.surge.dnsServer, "Surge dns-server", MAX_GENERAL_LIST_ITEMS, MAX_URL_LENGTH],
     [config.surge.alwaysRealIp, "Surge always-real-ip", MAX_GENERAL_LIST_ITEMS, MAX_URL_LENGTH],
@@ -794,17 +734,7 @@ function validateConfigLists(config: RenderConfig): string | null {
     [config.clash.nameservers, "Clash nameserver", MAX_GENERAL_LIST_ITEMS, MAX_URL_LENGTH],
     [config.clash.fallbackNameservers, "Clash fallback", MAX_GENERAL_LIST_ITEMS, MAX_URL_LENGTH],
     [config.clash.fallbackFilterIpcidr, "Clash fallback-filter ipcidr", MAX_GENERAL_LIST_ITEMS, MAX_URL_LENGTH],
-    [config.clash.fakeIpFilter, "Clash fake-ip-filter", MAX_GENERAL_LIST_ITEMS, MAX_URL_LENGTH],
-    [config.stash.tun.skipProxy, "Stash TUN skip-proxy", MAX_GENERAL_LIST_ITEMS, MAX_URL_LENGTH],
-    [config.stash.dns.defaultNameservers, "Stash default-nameserver", MAX_GENERAL_LIST_ITEMS, MAX_URL_LENGTH],
-    [config.stash.dns.nameservers, "Stash nameserver", MAX_GENERAL_LIST_ITEMS, MAX_URL_LENGTH],
-    [config.stash.dns.fallbackNameservers, "Stash fallback", MAX_GENERAL_LIST_ITEMS, MAX_URL_LENGTH],
-    [config.stash.dns.fallbackFilterIpcidr, "Stash fallback-filter ipcidr", MAX_GENERAL_LIST_ITEMS, MAX_URL_LENGTH],
-    [config.stash.dns.fakeIpFilter, "Stash fake-ip-filter", MAX_GENERAL_LIST_ITEMS, MAX_URL_LENGTH],
-    [config.stash.hosts, "Stash Host", MAX_GENERAL_LIST_ITEMS, MAX_RULE_LENGTH],
-    [config.stash.urlRewrite, "Stash URL Rewrite", MAX_GENERAL_LIST_ITEMS, MAX_RULE_LENGTH],
-    [config.stash.scripts, "Stash Script", MAX_GENERAL_LIST_ITEMS, MAX_RULE_LENGTH],
-    [config.stash.mitm.hostname, "Stash MITM hostname", MAX_GENERAL_LIST_ITEMS, MAX_URL_LENGTH]
+    [config.clash.fakeIpFilter, "Clash fake-ip-filter", MAX_GENERAL_LIST_ITEMS, MAX_URL_LENGTH]
   ];
   for (const [value, label, itemLimit, stringLimit] of lists) {
     const error = validateStringList(value, label, itemLimit, stringLimit);
@@ -877,9 +807,7 @@ function validateImportantSettings(config: RenderConfig): string | null {
   const fields: Array<[unknown, number, string, boolean?]> = [
     [config.settings?.managedBaseUrl, MAX_URL_LENGTH, "Managed base URL", true],
     [config.settings?.userAgentSurge, 512, "Surge User-Agent"],
-    [config.settings?.userAgentClash, 512, "Clash User-Agent"],
-    [config.settings?.userAgentStash, 512, "Stash User-Agent"],
-    [config.settings?.userAgentShadowrocket, 512, "Shadowrocket User-Agent"]
+    [config.settings?.userAgentClash, 512, "Clash User-Agent"]
   ];
   for (const [value, limit, label, allowEmpty] of fields) {
     const error = validateSizedString(value, limit, label, allowEmpty);

@@ -6,7 +6,7 @@ import { queueChangedRuleSetUpdates, runRuleSetUpdateJobs } from "./rule-set-job
 import type { AppConfig, StoredConfigDocument } from "./types";
 import { DEFAULT_CONFIG } from "./default-config";
 import { CONFIG_SCHEMA_VERSION_KEY, CURRENT_KV_SCHEMA_VERSION } from "./config-schema";
-import { normalizeChain, normalizeClash, normalizeConfig, normalizeRuleSets, normalizeStash, normalizeSurge, withDefaultConfigSettings } from "./config-normalize";
+import { normalizeClash, normalizeConfig, normalizeRuleSets, normalizeSurge, withDefaultConfigSettings } from "./config-normalize";
 import { decryptJson, decryptText, encryptJson, unsealSources } from "./crypto-store";
 import { listKvKeys } from "./kv-helpers";
 import { pruneRuleSetCaches, pruneCompiledRuleSetCaches } from "./rule-set-cache";
@@ -68,7 +68,6 @@ const RULE_SET_DIRECT_RULE_INDEX_KEY = "config:ruleSetDirectRules:index";
 const RULE_SET_DIRECT_RULE_PREFIX = "config:ruleSetDirectRules:";
 const SURGE_PREFIX = "config:surge:";
 const CLASH_PREFIX = "config:clash:";
-const STASH_PREFIX = "config:stash:";
 
 interface ConfigSnapshot {
   version: typeof CONFIG_SNAPSHOT_VERSION;
@@ -174,27 +173,6 @@ const CLASH_KEYS = [
   "rules"
 ] as const satisfies readonly (keyof RenderConfig["clash"])[];
 
-const STASH_KEYS = [
-  "port",
-  "socksPort",
-  "mixedPort",
-  "allowLan",
-  "mode",
-  "logLevel",
-  "ipv6",
-  "unifiedDelay",
-  "tcpConcurrent",
-  "externalController",
-  "tun",
-  "dns",
-  "ruleProviders",
-  "rules",
-  "hosts",
-  "urlRewrite",
-  "scripts",
-  "mitm"
-] as const satisfies readonly (keyof RenderConfig["stash"])[];
-
 export async function loadConfig(env: Env): Promise<RenderConfig> {
   return loadConfigUnlocked(env);
 }
@@ -229,7 +207,7 @@ export async function saveConfig(env: Env, config: RenderConfig): Promise<Render
 }
 
 export async function prepareConfigSave(env: Env, config: RenderConfig): Promise<PreparedConfigSave> {
-  if (config.migrationRequired) throw new Error("请先导出旧配置并完成迁移。");
+  if (config.migrationRequired) throw new Error("请先完成旧配置迁移。");
   // Fail before callers perform any related external side effect.
   requireSecret(env, "CONFIG_ENCRYPTION_KEY");
   const revision = nextConfigSnapshotRevision();
@@ -302,12 +280,6 @@ export async function readStoredReadTokenHash(env: Env): Promise<string | null> 
 
 export async function readStoredReadToken(env: Env): Promise<string | null> {
   return (await readTokenState(env)).record?.token ?? null;
-}
-
-export async function storeReadToken(env: Env, token: string): Promise<void> {
-  const record = await createReadTokenRecord(token);
-  await writeReadTokenRecord(env, record);
-  await maintainReadTokenCleanup(env, false).catch(logConfigHousekeepingFailure);
 }
 
 export async function storeInitialReadToken(env: Env, token: string): Promise<string> {
@@ -888,17 +860,15 @@ function normalizeReadTokenHash(value: unknown): string | null {
 }
 
 async function loadLegacyStoredConfig(env: Env): Promise<RenderConfig> {
-  const [settings, groups, disabledGroups, sources, proxyNodes, chain, ruleSets, surge, clash, stash, updatedAt] = await Promise.all([
+  const [settings, groups, disabledGroups, sources, proxyNodes, ruleSets, surge, clash, updatedAt] = await Promise.all([
     loadSettings(env),
     loadGroups(env),
     loadDisabledGroups(env),
     loadSources(env),
     loadProxyNodes(env),
-    loadChain(env),
     loadRuleSets(env),
     loadSurge(env),
     loadClash(env),
-    loadStash(env),
     getJson<string>(env, CONFIG_UPDATED_AT_KEY)
   ]);
 
@@ -909,11 +879,9 @@ async function loadLegacyStoredConfig(env: Env): Promise<RenderConfig> {
     disabledGroups,
     sources,
     proxyNodes,
-    chain,
     ruleSets,
     surge,
     clash,
-    stash,
     updatedAt
   });
 }
@@ -968,10 +936,6 @@ async function loadProxyNodes(env: Env): Promise<StaticProxyNodeConfig[]> {
   return nodes.filter((node): node is StaticProxyNodeConfig => Boolean(node));
 }
 
-async function loadChain(_env: Env): Promise<RenderConfig["chain"]> {
-  return normalizeChain(undefined);
-}
-
 async function loadRuleSets(env: Env): Promise<RuleSetConfig> {
   const [mode, aggregateByPolicy, sources, outputs, directRules] = await Promise.all([
     getJson<unknown>(env, RULE_SET_MODE_KEY),
@@ -1020,12 +984,6 @@ async function loadSurge(env: Env): Promise<RenderConfig["surge"]> {
 async function loadClash(env: Env): Promise<RenderConfig["clash"]> {
   return loadConfigSection(env, CLASH_PREFIX, CLASH_KEYS, DEFAULT_CONFIG.clash, normalizeClash);
 }
-
-
-async function loadStash(env: Env): Promise<RenderConfig["stash"]> {
-  return loadConfigSection(env, STASH_PREFIX, STASH_KEYS, DEFAULT_CONFIG.stash, normalizeStash);
-}
-
 
 async function loadConfigSection<T extends object, K extends keyof T>(
   env: Env,

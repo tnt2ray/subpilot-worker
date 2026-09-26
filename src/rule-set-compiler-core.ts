@@ -1,10 +1,10 @@
 import { YAMLParseError } from "yaml";
-import { clashRuleWithNoResolve, renderRuleSetRuleForTarget, ruleUsesExtendedMatching } from "./rule-targets";
+import { renderRuleSetRuleForTarget, ruleUsesExtendedMatching } from "./rule-targets";
 import { parseInlineRuleSetLines, parseRuleSetContent, type ParsedRuleSetRule, type CompiledRuleSetRule } from "./rule-set-parser";
 import type { CompiledRuleSetManifest, RuleSetSourceFetchResult } from "./rule-set-cache";
 import { RULE_SET_BUCKETS, RULE_SET_TARGETS, type RuleSetBucket, type RuleSetOutput, type RuleSetOutputTarget, type RuleSetSource } from "./rule-set-types";
 import { splitRuleLine } from "./rule-line";
-import { isSingboxBinarySource, planRuleSetOutputs } from "./rule-set-outputs";
+import { isSingboxBinarySource } from "./rule-set-outputs";
 import type { RenderConfig } from "./types";
 import { sha256Hex } from "./util";
 import type { AsnResolution } from "./singbox-asn";
@@ -93,20 +93,7 @@ export async function compileRuleSetContent(
       ...(rule.clashDomainPattern ? { clashDomainPattern: rule.clashDomainPattern } : {}) });
   };
   let usedCachedSource = false;
-  const nativeAggregation = config.renderTarget === "clash" && config.ruleSets.aggregateByPolicy && !output.provider;
-  const memberNames = nativeAggregation
-    ? planRuleSetOutputs(config.ruleSets).find((plan) => plan.output.name === output.name)?.includedOutputNames
-    : undefined;
-  const members = memberNames ? memberNames.map((name) => config.ruleSets.outputs.find((item) => item.name === name)!) : [output];
-  const visitorFor = (member: RuleSetOutput) => !nativeAggregation || !member.surgeOptions.includes("no-resolve") ? acceptRule : (rule: ParsedRuleSetRule): void => {
-    if (isPlainDomainRule(rule)) { acceptRule(rule); return; }
-    const raw = clashRuleWithNoResolve(rule.raw);
-    if (raw === rule.raw) { acceptRule(rule); return; }
-    const parsed = parseInlineRuleSetLines([raw], rule.label, acceptRule, true);
-    for (const warning of parsed.warnings) sourceErrors.push(warning);
-  };
-
-  for (const { sourceId, member } of members.flatMap((member) => member.sourceIds.map((sourceId) => ({ sourceId, member })))) {
+  for (const sourceId of output.sourceIds) {
     if (options.deadline !== undefined && Date.now() >= options.deadline) {
       sourceErrors.push("规则集刷新已超过截止时间");
       break;
@@ -135,7 +122,7 @@ export async function compileRuleSetContent(
       }
       const { content } = result;
       const format = config.renderTarget === "surge" && output.surgeType ? output.surgeType === "DOMAIN-SET" ? "surge-domain-set" : "surge-rule-set" : source.format;
-      const parsed = parseRuleSetContent(content, format, source.name, visitorFor(member), config.renderTarget === "clash", singbox);
+      const parsed = parseRuleSetContent(content, format, source.name, acceptRule, config.renderTarget === "clash", singbox);
       if (singbox && parsed.fatal) compileErrorCode ??= "format";
       for (const warning of parsed.warnings) (singbox && !parsed.fatal ? warnings : sourceErrors).push(warning);
     } catch (error) {
@@ -144,10 +131,8 @@ export async function compileRuleSetContent(
     }
   }
 
-  for (const member of members) {
-    const inline = parseInlineRuleSetLines(member.inlineRules, `${member.name} 内联规则`, visitorFor(member), config.renderTarget === "clash");
-    for (const warning of inline.warnings) (singbox ? warnings : sourceErrors).push(warning);
-  }
+  const inline = parseInlineRuleSetLines(output.inlineRules, `${output.name} 内联规则`, acceptRule, config.renderTarget === "clash");
+  for (const warning of inline.warnings) (singbox ? warnings : sourceErrors).push(warning);
 
   const reused = !sourceErrors.length ? options.reuseManifest?.(sourceContentHashes) : null;
   if (reused) return { manifest: reused, buckets, stale: usedCachedSource, unchanged: true };
@@ -220,7 +205,6 @@ export async function ruleSetOutputFingerprint(config: RuleCompilationConfig, ou
       const source = sources.get(id);
       return source ? { id, url: source.url, enabled: source.enabled, format: source.format } : { id, missing: true };
     }),
-    nativeMembers: nativeOutputMembers(config, output),
     dnsServer: output.dnsServer,
     inlineRules: output.inlineRules,
     surgeOptions: output.surgeOptions,
@@ -279,16 +263,9 @@ function canonicalRuleForComparison(rule: string, type: string): string {
 function targetName(target: RuleSetOutputTarget): string {
   if (target === "surge") return "Surge";
   if (target === "sing-box") return "sing-box";
-  return target === "stash" ? "Stash" : "Clash";
+  return "Clash";
 }
 
 function isPlainDomainRule(rule: CompiledRuleSetRule): boolean {
   return (rule.type === "DOMAIN" || rule.type === "DOMAIN-SUFFIX") && rule.raw === `${rule.type},${rule.value}`;
-}
-
-function nativeOutputMembers(config: RuleCompilationConfig, output: RuleSetOutput): unknown {
-  if (config.renderTarget !== "clash" || !config.ruleSets.aggregateByPolicy || output.provider) return undefined;
-  const names = new Set(planRuleSetOutputs(config.ruleSets).find((plan) => plan.output.name === output.name)?.includedOutputNames ?? [output.name]);
-  return config.ruleSets.outputs.filter((item) => names.has(item.name))
-    .map((item) => ({ sourceIds: item.sourceIds, inlineRules: item.inlineRules, options: item.surgeOptions, order: item.order }));
 }

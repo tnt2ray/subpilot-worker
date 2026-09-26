@@ -36,7 +36,6 @@ interface MigrationState {
   cursor?: string;
   hashes: Record<RecordKind, string | null>;
   sweepHadDeletes: boolean;
-  retire: Partial<Record<RecordKind, { hash: string; notBefore: number }>>;
   settingsComplete?: boolean;
   snapshotsComplete?: boolean;
   snapshotProgress?: { after?: string };
@@ -65,7 +64,7 @@ export async function maintainActionsIntegrationMigration(env: Env, deadline = D
   const stored = await env.SUBPILOT_CONFIG.get(ACTIONS_INTEGRATION_MIGRATION_KEY);
   const state: MigrationState = parseState(stored) ?? {
     version: 1, phase: "copy", notBefore: 0, stage: 0,
-    hashes: { credentials: null, callbackOrigin: null }, sweepHadDeletes: false, retire: {}
+    hashes: { credentials: null, callbackOrigin: null }, sweepHadDeletes: false
   };
   if (state.upgradeComplete && state.workflowComplete) return;
   const before = JSON.stringify(state);
@@ -210,7 +209,6 @@ async function completeUpgrade(env: Env, state: MigrationState, deadline: number
     await expireSupersededActionsRecord(env, kind, undefined, deadline);
     state.retiredCandidates[kind] = true;
   }
-  state.retire = {};
   state.upgradeComplete = true;
 }
 
@@ -252,8 +250,7 @@ function parseState(stored: string | null): MigrationState | null {
       || !Number.isInteger(state.stage) || state.stage < 0 || state.stage > CLEANUP_PREFIXES.length
       || (state.cursor !== undefined && typeof state.cursor !== "string")
       || typeof state.sweepHadDeletes !== "boolean"
-      || !state.hashes || typeof state.hashes !== "object" || Array.isArray(state.hashes)
-      || !state.retire || typeof state.retire !== "object" || Array.isArray(state.retire)) throw new Error();
+      || !state.hashes || typeof state.hashes !== "object" || Array.isArray(state.hashes)) throw new Error();
     for (const field of ["settingsComplete", "snapshotsComplete", "markersComplete", "upgradeComplete", "workflowComplete"] as const) {
       if (state[field] !== undefined && typeof state[field] !== "boolean") throw new Error();
     }
@@ -268,8 +265,6 @@ function parseState(stored: string | null): MigrationState | null {
     for (const kind of RECORD_KINDS) {
       if (state.retiredCandidates?.[kind] !== undefined && typeof state.retiredCandidates[kind] !== "boolean") throw new Error();
       if (state.hashes[kind] !== null && (typeof state.hashes[kind] !== "string" || !HASH.test(state.hashes[kind]))) throw new Error();
-      const retire = state.retire[kind];
-      if (retire && (typeof retire.hash !== "string" || !HASH.test(retire.hash) || !Number.isSafeInteger(retire.notBefore) || retire.notBefore < 0)) throw new Error();
     }
     return state;
   } catch {

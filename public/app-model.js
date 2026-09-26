@@ -142,8 +142,6 @@ const CLIENT_SECTIONS = {
   },
   singbox: { network: ["inbounds"], dns: ["dns"], rules: ["route"], tailscale: ["endpoints"], advanced: ["log", "experimental"] }
 };
-const RULE_FIELDS = { domain: ["域名", "Domain"], domain_suffix: ["域名后缀", "Domain suffix"], domain_keyword: ["域名关键词", "Domain keyword"], ip_cidr: ["IP 网段", "IP CIDR"], source_ip_cidr: ["来源 IP 网段", "Source IP CIDR"], process_name: ["进程名称", "Process name"], rule_set: ["规则集", "Rule set"], protocol: ["协议", "Protocol"], network: ["网络", "Network"], port: ["目标端口", "Destination port"] };
-const LEGACY_RULE_FIELDS = ["DOMAIN", "DOMAIN-SUFFIX", "DOMAIN-KEYWORD", "DOMAIN-REGEX", "IP-CIDR", "IP-CIDR6", "GEOIP", "GEOSITE", "RULE-SET", "PROCESS-NAME", "SRC-IP-CIDR", "DST-PORT", "NETWORK", "FINAL", "MATCH"];
 function getPath(object, path) {
   return path.split(".").reduce((value, key) => value?.[key], object);
 }
@@ -176,9 +174,7 @@ export {
   CLIENTS,
   CLIENT_SECTIONS,
   LABELS,
-  LEGACY_RULE_FIELDS,
   NAV,
-  RULE_FIELDS,
   getPath,
   setPath,
   splitRule

@@ -5,7 +5,7 @@ import { newTailscaleNode, tailscaleForm, updateTailscaleForm, readTailscaleForm
 import { createSingboxForm, createSingboxGroupForm, singboxSections, singboxTitle } from "./singbox-ui.js";
 import { createClashRoutingUi } from "./clash-routing-ui.js";
 import { validateActionsCompilationSettings } from "./app-validation.js";
-import { CLIENTS, NAV, LABELS, CLIENT_SECTIONS, RULE_FIELDS, LEGACY_RULE_FIELDS, getPath, setPath, splitRule } from "./app-model.js";
+import { CLIENTS, NAV, LABELS, CLIENT_SECTIONS, getPath, setPath, splitRule } from "./app-model.js";
 const $ = (selector, root = document) => root.querySelector(selector);
 const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
 const state = { config: null, saved: "", page: "status", client: "surge", section: "network", lang: localStorage.getItem("subpilot-language") || "zh", invalid: /* @__PURE__ */ new Map(), busy: false, migration: false, migrationData: null, stats: null, requestPage: 0, refreshingSources: false, system: null };
@@ -547,47 +547,27 @@ function renderMitm() {
 }
 function renderRules() {
   if (state.client === "clash") return clashRouting.render();
-  const client = state.config.clients[state.client];
-  const native = state.client === "singbox";
-  const path = native ? `${basePath()}.route.rules` : `${basePath()}.rules`;
-  const rawRules = getPath(state.config, path);
-  const rules = Array.isArray(rawRules) ? rawRules : [];
+  const client = currentClient();
   const compiled = client.ruleSets.mode === "compiled";
-  let html = "";
-  if (native) {
+  if (state.client === "singbox") {
     if (!compiled) return section("", `<p class="help">${t("启用后，已有原生规则仍优先匹配，已保存的编排规则也会启用。", "Existing native rules keep priority. Previously saved rule-plan entries will also become active.")}</p>`, btn(t("使用规则集地址配置", "Use rule-set URLs"), "enable-singbox-rule-plan", "", "primary")) + renderSingboxSections(["route"]);
     return renderSingboxSections(["route"]) + renderRulePlan(client.ruleSets);
   }
-  if (!compiled) {
-    html += section("", `<div class="toolbar">${btn(native ? "JSON" : t("文本", "Text"), "edit-json", `data-path="${path}" data-lines="${native ? "false" : "true"}"`)}</div><div class="table-wrap"><table class="rule-table"><thead><tr><th>${t("顺序", "Order")}</th><th>${t("匹配类型", "Match")}</th><th>${t("匹配值", "Value")}</th><th>${t("出站策略", "Outbound")}</th><th>${t("操作", "Actions")}</th></tr></thead><tbody>${rules.map((rule, index) => ruleRow(rule, index, path, native)).join("") || `<tr><td colspan="5" class="empty">${t("还没有规则", "No rules")}</td></tr>`}</tbody></table></div>${btn(icon("plus") + t("添加规则", "Add rule"), "add-rule", `data-path="${path}"`)}${native ? `<div class="toolbar"></div>${field(`${basePath()}.route.final`, client.route.final || "", { label: t("默认出站", "Default outbound"), options: policyChoices(client.route.final || "") })}` : ""}<div class="toolbar"><span>${t("当前端策略组：", "Client groups:")}</span>${Object.keys(currentClient().groups).slice(0, 7).map((name) => `<span class="chip">${esc(name)}</span>`).join("")}<a href="#groups">${t("管理策略组", "Manage groups")}</a></div>`);
-  }
-  if (native) html += section(t("其他路由设置", "Other route settings"), Object.entries(client.route).filter(([key]) => !["rules", "final"].includes(key)).map(([key, value]) => field(`${basePath()}.route.${key}`, value)).join(""), btn(t("完整 JSON", "Full JSON"), "edit-json", `data-path="${basePath()}.route"`));
-  if (compiled) html += renderRulePlan(client.ruleSets);
-  return html;
+  if (compiled) return renderRulePlan(client.ruleSets);
+  const path = `${basePath()}.rules`;
+  const rules = Array.isArray(client.rules) ? client.rules : [];
+  return section("", `<div class="toolbar">${btn(t("文本", "Text"), "edit-json", `data-path="${path}" data-lines="true"`)}</div><div class="table-wrap"><table class="rule-table"><thead><tr><th>${t("顺序", "Order")}</th><th>${t("匹配类型", "Match")}</th><th>${t("匹配值", "Value")}</th><th>${t("出站策略", "Outbound")}</th><th>${t("操作", "Actions")}</th></tr></thead><tbody>${rules.map((rule, index) => surgeRuleRow(rule, index, path)).join("") || `<tr><td colspan="5" class="empty">${t("还没有规则", "No rules")}</td></tr>`}</tbody></table></div>${btn(icon("plus") + t("添加规则", "Add rule"), "add-rule", `data-path="${path}"`)}<div class="toolbar"><span>${t("当前端策略组：", "Client groups:")}</span>${Object.keys(client.groups).slice(0, 7).map((name) => `<span class="chip">${esc(name)}</span>`).join("")}<a href="#groups">${t("管理策略组", "Manage groups")}</a></div>`);
 }
-function ruleRow(rule, index, path, native) {
-  let type, value, policy;
-  let simple = true;
-  if (native) {
-    const keys = isObject(rule) ? Object.keys(rule).filter((key) => Object.hasOwn(RULE_FIELDS, key)) : [];
-    if (!isObject(rule)) rule = { action: "JSON" };
-    type = keys[0] || rule.type || rule.action || "JSON";
-    value = keys.length === 1 ? Array.isArray(rule[type]) ? rule[type].join(", ") : rule[type] : t("高级规则", "Advanced rule");
-    policy = rule.outbound || rule.action || "route";
-    simple = keys.length === 1 && ["route", "reject", "hijack-dns", "sniff"].includes(rule.action || "route");
-  } else {
-    const parts = splitRule(rule);
-    type = parts[0];
-    const isFinal = type === "FINAL" || type === "MATCH";
-    value = isFinal ? parts.slice(2).join(", ") || "—" : parts[1];
-    policy = parts[isFinal ? 1 : 2] || "—";
-    simple = (state.client === "surge" ? SURGE_RULE_TYPES : LEGACY_RULE_FIELDS).includes(type);
-  }
-  const lockedFinal = !native && isFinalRule(rule);
-  const types = native ? Object.keys(RULE_FIELDS) : state.client === "surge" ? SURGE_RULE_TYPES : LEGACY_RULE_FIELDS;
-  const choices = [...new Set([...policyChoices(policy), ...(native ? ["hijack-dns", "sniff", "reject"] : [])])];
-  const select = (kind, values, current) => `<select ${lockedFinal && kind === "type" ? "disabled" : ""} data-rule-field="${kind}" data-path="${path}" data-index="${index}" aria-label="${t("规则", "Rule")} ${index + 1} ${kind}">${values.map((item) => `<option value="${esc(item)}" ${item === current ? "selected" : ""}>${esc(kind === "type" && native ? t(...RULE_FIELDS[item]) : item)}</option>`).join("")}</select>`;
-  return `<tr><td>${index + 1}</td><td>${simple && !lockedFinal ? select("type", types, type) : esc(type)}</td><td class="truncate">${esc(value)}</td><td>${simple ? select("policy", choices, policy) : esc(policy)}</td><td class="actions"><span class="order">${smallButton("up", "move-rule", `data-path="${path}" data-index="${index}" data-direction="-1" ${lockedFinal || index === 0 ? "disabled" : ""}`, t("上移", "Move up"))}${smallButton("down", "move-rule", `data-path="${path}" data-index="${index}" data-direction="1" ${lockedFinal || index === getPath(state.config, path).length - 1 || isFinalRule(getPath(state.config, path)[index + 1]) ? "disabled" : ""}`, t("下移", "Move down"))}</span>${iconButton("edit", simple ? "edit-rule" : "edit-rule-json", `data-path="${path}" data-index="${index}"`, t("编辑", "Edit"))}${smallButton("trash", "delete-rule", `data-path="${path}" data-index="${index}" ${lockedFinal ? "disabled" : ""}`, t("删除", "Delete"))}</td></tr>`;
+function surgeRuleRow(rule, index, path) {
+  const parts = splitRule(rule);
+  const type = parts[0];
+  const final = type === "FINAL" || type === "MATCH";
+  const value = final ? parts.slice(2).join(", ") || "—" : parts[1];
+  const policy = parts[final ? 1 : 2] || "—";
+  const simple = SURGE_RULE_TYPES.includes(type);
+  const lockedFinal = isFinalRule(rule);
+  const select = (kind, values, current) => `<select ${lockedFinal && kind === "type" ? "disabled" : ""} data-rule-field="${kind}" data-path="${path}" data-index="${index}" aria-label="${t("规则", "Rule")} ${index + 1} ${kind}">${values.map((item) => `<option value="${esc(item)}" ${item === current ? "selected" : ""}>${esc(item)}</option>`).join("")}</select>`;
+  return `<tr><td>${index + 1}</td><td>${simple && !lockedFinal ? select("type", SURGE_RULE_TYPES, type) : esc(type)}</td><td class="truncate">${esc(value)}</td><td>${simple ? select("policy", policyChoices(policy), policy) : esc(policy)}</td><td class="actions"><span class="order">${smallButton("up", "move-rule", `data-path="${path}" data-index="${index}" data-direction="-1" ${lockedFinal || index === 0 ? "disabled" : ""}`, t("上移", "Move up"))}${smallButton("down", "move-rule", `data-path="${path}" data-index="${index}" data-direction="1" ${lockedFinal || index === getPath(state.config, path).length - 1 || isFinalRule(getPath(state.config, path)[index + 1]) ? "disabled" : ""}`, t("下移", "Move down"))}</span>${iconButton("edit", simple ? "edit-rule" : "edit-rule-text", `data-path="${path}" data-index="${index}"`, t("编辑", "Edit"))}${smallButton("trash", "delete-rule", `data-path="${path}" data-index="${index}" ${lockedFinal ? "disabled" : ""}`, t("删除", "Delete"))}</td></tr>`;
 }
 function orderedPlan(plan) {
   return [...plan.outputs.map((item, index) => ({ kind: "output", item, index })), ...plan.directRules.map((item, index) => ({ kind: "direct", item, index }))].sort((a, b) => Number(isFinalEntry(a)) - Number(isFinalEntry(b)) || a.item.order - b.item.order);
@@ -687,16 +667,8 @@ function renderRulePlan(plan) {
   return section("", `${state.client === "surge" ? `${field(`${basePath()}.ruleSets.aggregateByPolicy`, plan.aggregateByPolicy)}<p class="help">${t("按策略聚合会在该策略首次出现的位置合并规则集，可能改变跨策略的匹配顺序。", "Same-policy aggregation merges rule sets at the policy's first occurrence and may change precedence across policies.")}</p>` : ""}<div class="toolbar">${btn(t("添加规则集", "Add rule set"), "add-output")}${btn(t("添加单条规则", "Add direct rule"), "add-direct")}</div><div class="table-wrap"><table class="routing-table surge-routing-table"><thead><tr><th>${t("匹配顺序", "Match order")}</th><th>${t("规则集地址 / 单条规则", "Rule-set URL / Direct rule")}</th><th>${t("出口策略", "Outbound policy")}</th><th>${t("状态", "Status")}</th><th class="actions">${t("操作", "Actions")}</th></tr></thead><tbody>${rows || `<tr><td colspan="5" class="empty">${t("还没有规则", "No rules")}</td></tr>`}</tbody></table></div>`);
 }
 function editDirect(index) {
-  if (state.client === "surge") { editSurgeRule(null, index, true); return; }
-  if (state.client === "singbox") { editSingboxDirect(index); return; }
-  const rules = state.config.clients[state.client].ruleSets.directRules;
-  const original = index === null ? { id: crypto.randomUUID(), rule: "DOMAIN-SUFFIX,example.com", policy: "Proxy", order: nextPlanOrder(currentClient().ruleSets), enabled: true } : rules[index];
-  modal(t("编辑单条规则", "Edit direct rule"), Object.entries(original).filter(([key]) => !["id", "order", "name"].includes(key)).map(([key, value]) => localField(key, value, key === "policy" ? { options: policyChoices(value) } : {})).join(""), () => {
-    const value = readLocal(original);
-    if (!value.rule.trim()) throw Error(t("请填写规则", "Enter a rule"));
-    if (index === null) appendPlanItem(currentClient().ruleSets, "direct", value); else rules[index] = value;
-    closeModal(); changed(); render();
-  });
+  if (state.client === "surge") editSurgeRule(null, index, true);
+  else if (state.client === "singbox") editSingboxDirect(index);
 }
 function editSingboxDirect(index) {
   const plan = currentClient().ruleSets, original = index === null ? null : plan.directRules[index];
@@ -1127,12 +1099,7 @@ function modal(title, body, onSave, saveLabel = t("应用更改", "Apply changes
   $("#modal-actions").innerHTML = btn(t("取消", "Cancel"), "close-modal") + (onSave ? btn(saveLabel, "modal-save", "", "primary") : "");
   modal.save = onSave;
   $("#modal").showModal();
-  modal.editors = [...$("#modal-body").querySelectorAll("textarea.code-editor")].map((textarea) => {
-    const editor = window.SubPilotCodeMirror.fromTextArea(textarea, { mode: "proxy-config", lineWrapping: true, indentUnit: 2, policyTokens: policyChoices });
-    editor.on("change", () => editor.save());
-    editor.view.contentDOM.setAttribute("aria-label", title);
-    return editor;
-  });
+  modal.editors = [...$("#modal-body").querySelectorAll("textarea.code-editor")].map((textarea) => window.createConfigCodeEditor(textarea, { policyTokens: policyChoices, label: title }));
 }
 function closeModal() {
   if (modal.generatingCa || modal.installingActions || modal.retryingActions || modal.skippingActionsUpgrade) return;
@@ -1340,73 +1307,15 @@ function editSurgeRule(path, index, compiled = false, selectedType) {
   $('#modal-body [data-local="value"]').disabled = form.type === "FINAL";
   if (final) $('#modal-body [data-local="type"]').disabled = true;
 }
-function editRule(path, index, forceJson = false, selectedType) {
-  if (state.client === "surge" && !forceJson) { editSurgeRule(path, index, false, selectedType); return; }
+function editSurgeRuleText(path, index) {
   const rules = getPath(state.config, path);
-  const native = state.client === "singbox";
-  const original = index === null ? native ? { domain_suffix: [""], action: "route", outbound: "Proxy" } : "DOMAIN-SUFFIX,,Proxy" : rules[index];
-  if (forceJson) {
-    modal(t("编辑原生规则", "Edit native rule"), `<textarea id="rule-native" class="code code-editor" rows="12">${esc(native ? JSON.stringify(original, null, 2) : original)}</textarea>`, () => {
-      const text = $("#rule-native").value;
-      const value2 = native ? JSON.parse(text) : text;
-      if (isFinalRule(original) && !isFinalRule(value2)) throw Error(t("不能修改兜底规则类型", "Cannot change the final rule type"));
-      if (native && (!value2 || typeof value2 !== "object" || Array.isArray(value2))) throw Error(t("规则必须是对象", "A rule must be an object"));
-      if (state.client === "surge") validateSurgeFinal(rules.map((rule, i) => i === index ? value2 : rule));
-      if (index === null) rules.push(value2);
-      else rules[index] = value2;
-      closeModal();
-      changed();
-      render();
-    });
-    return;
-  }
-  let type, value, policy;
-  if (native) {
-    type = Object.keys(original).find((key) => Object.hasOwn(RULE_FIELDS, key)) || "domain_suffix";
-    value = Array.isArray(original[type]) ? original[type].join("\n") : String(original[type] || "");
-    policy = original.outbound || original.action || "Proxy";
-  } else {
-    const parts = splitRule(original);
-    type = parts[0];
-    value = ["FINAL", "MATCH"].includes(type) ? "" : parts[1];
-    policy = parts[["FINAL", "MATCH"].includes(type) ? 1 : 2] || "Proxy";
-  }
-  const originalForm = { type: selectedType || type, value, policy };
-  const types = native ? Object.keys(RULE_FIELDS) : state.client === "surge" ? SURGE_RULE_TYPES : LEGACY_RULE_FIELDS;
-  const choices = [...policyChoices(policy), ...native ? ["hijack-dns", "sniff", "reject"] : []];
-  modal(t("编辑分流规则", "Edit routing rule"), localField("type", selectedType || type, { label: t("匹配类型", "Match type"), options: isFinalRule(original) ? [type] : types }) + localField("value", value, { label: t("匹配值（每行一项）", "Match values (one per line)"), multiline: true }) + localField("policy", policy, { options: [.../* @__PURE__ */ new Set([...choices, policy])] }) + `<p class="help">${t("高级匹配请使用原生文本编辑，原有附加字段会保留。", "Use native editing for advanced matching. Existing additional fields are preserved.")}</p>`, () => {
-    const form = readLocal(originalForm);
-    if (isFinalRule(original) && form.type !== type) throw Error(t("不能修改兜底规则类型", "Cannot change the final rule type"));
-    let next;
-    if (native) {
-      next = { ...original };
-      delete next[type];
-      const values = form.value.split("\n").map((item) => item.trim()).filter(Boolean);
-      if (!values.length) throw Error(t("请填写匹配值", "Enter a match value"));
-      next[form.type] = form.type === "port" ? values.map(Number) : values;
-      if (["hijack-dns", "sniff", "reject"].includes(form.policy)) {
-        next.action = form.policy;
-        delete next.outbound;
-      } else if (form.policy.startsWith("REJECT")) {
-        next.action = "reject";
-        delete next.outbound;
-        if (form.policy === "REJECT-DROP") next.method = "drop";
-      } else {
-        next.action = "route";
-        next.outbound = form.policy;
-        delete next.method;
-      }
-    } else {
-      const parts = splitRule(original);
-      const final = ["FINAL", "MATCH"].includes(form.type);
-      if (!final && !form.value.trim()) throw Error(t("请填写匹配值", "Enter a match value"));
-      next = [form.type, ...final ? [] : [form.value.trim()], form.policy, ...parts.slice(["FINAL", "MATCH"].includes(parts[0]) ? 2 : 3)].join(",");
-    }
-    if (index === null) { const finalIndex = rules.findIndex(isFinalRule); rules.splice(!native && !isFinalRule(next) && finalIndex >= 0 ? finalIndex : rules.length, 0, next); }
-    else rules[index] = next;
-    closeModal();
-    changed();
-    render();
+  const original = rules[index];
+  modal(t("编辑原生规则", "Edit native rule"), `<textarea id="rule-native" class="code code-editor" rows="12">${esc(original)}</textarea>`, () => {
+    const value = $("#rule-native").value;
+    if (isFinalRule(original) && !isFinalRule(value)) throw Error(t("不能修改兜底规则类型", "Cannot change the final rule type"));
+    validateSurgeFinal(rules.map((rule, i) => i === index ? value : rule));
+    rules[index] = value;
+    closeModal(); changed(); render();
   });
 }
 function ruleSetDownloadName(plan, urls) {
@@ -1768,8 +1677,9 @@ async function action(button) {
     editJson(path, button.dataset.lines === "true");
     return;
   }
-  if (name === "add-rule" || name === "edit-rule" || name === "edit-rule-json") {
-    editRule(path, index, name === "edit-rule-json");
+  if (name === "add-rule" || name === "edit-rule" || name === "edit-rule-text") {
+    if (name === "edit-rule-text") editSurgeRuleText(path, index);
+    else editSurgeRule(path, index);
     return;
   }
   if (name === "delete-rule") {
@@ -2009,20 +1919,10 @@ document.addEventListener("change", (event) => {
   }
   if (inline.dataset.ruleField) {
     const { path, index, ruleField } = inline.dataset;
-    if (ruleField === "type") { const selected = inline.value; render(); editRule(path, Number(index), false, selected); return; }
+    if (ruleField === "type") { const selected = inline.value; render(); editSurgeRule(path, Number(index), false, selected); return; }
     const rules = getPath(state.config, path);
     const policy = inline.value;
-    if (state.client === "singbox") {
-      const next = { ...rules[index] };
-      delete next.method;
-      if (["hijack-dns", "sniff", "reject", "REJECT", "REJECT-DROP"].includes(policy)) {
-        next.action = policy.startsWith("REJECT") ? "reject" : policy; delete next.outbound;
-        if (policy === "REJECT-DROP") next.method = "drop";
-      } else { next.action = "route"; next.outbound = policy; }
-      rules[index] = next;
-    } else {
-      const parts = splitRule(rules[index]); parts[["FINAL", "MATCH"].includes(parts[0]) ? 1 : 2] = policy; rules[index] = parts.join(",");
-    }
+    const parts = splitRule(rules[index]); parts[["FINAL", "MATCH"].includes(parts[0]) ? 1 : 2] = policy; rules[index] = parts.join(",");
     changed(); render(); return;
   }
   if (event.target.id === "mmdb-upload") {

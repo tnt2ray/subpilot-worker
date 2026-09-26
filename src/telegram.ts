@@ -369,7 +369,6 @@ function formatTelegramRecentFetchesMessage(stats: Awaited<ReturnType<typeof rea
 function formatTelegramFetchTargetLabel(target: string): string {
   if (target === "surge") return "Surge 配置";
   if (target === "clash") return "Clash 配置";
-  if (target === "stash") return "Stash 配置";
   if (target === "shadowrocket") return "Shadowrocket Clash YAML";
   return target;
 }

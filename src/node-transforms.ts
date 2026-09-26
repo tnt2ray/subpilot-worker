@@ -3,7 +3,6 @@ import { lookupIpRegions, type RegionInfo } from "./geoip";
 import { parseConfiguredProxyNode } from "./parsers";
 import {
   CLASH_BUILT_IN_RULE_POLICIES,
-  STASH_BUILT_IN_RULE_POLICIES,
   SURGE_BUILT_IN_RULE_POLICIES
 } from "./rule-targets";
 import { CHAIN_EXIT_PROXY_NAME, type RenderConfig, type ProxyNode, type Target } from "./types";
@@ -227,8 +226,7 @@ export function ensureUniqueProxyPolicyNames(
   ]);
   const reservedBuiltIns = new Set([
     ...SURGE_BUILT_IN_RULE_POLICIES,
-    ...CLASH_BUILT_IN_RULE_POLICIES,
-    ...STASH_BUILT_IN_RULE_POLICIES
+    ...CLASH_BUILT_IN_RULE_POLICIES
   ]);
   const used = new Set(reserved);
   const output = [...nodes];
@@ -272,8 +270,7 @@ export function resolveProxyNodeReferences(nodes: ProxyNode[]): ProxyNode[] {
   }
   const reserved = new Set([
     ...SURGE_BUILT_IN_RULE_POLICIES,
-    ...CLASH_BUILT_IN_RULE_POLICIES,
-    ...STASH_BUILT_IN_RULE_POLICIES
+    ...CLASH_BUILT_IN_RULE_POLICIES
   ]);
   return nodes.map((node) => {
     let output = node;

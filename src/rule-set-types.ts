@@ -15,7 +15,7 @@ export const RULE_SET_SOURCE_FORMATS = [
 
 export type RuleSetBucket = typeof RULE_SET_BUCKETS[number];
 export type RuleSetDownloadBucket = RuleSetBucket | "combined" | "dns";
-export type RuleSetOutputTarget = Target | "stash";
+export type RuleSetOutputTarget = Target;
 export type RuleSetMode = "manual" | "compiled";
 export type RuleSetSourceFormat = typeof RULE_SET_SOURCE_FORMATS[number];
 

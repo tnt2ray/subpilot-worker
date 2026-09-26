@@ -1,6 +1,6 @@
 import { convertRule } from "./singbox-config";
 import { isValidSingboxHeadlessRule } from "./singbox-validation";
-import type { RenderConfig, ProxyNode } from "./types";
+import type { RenderConfig } from "./types";
 import { compiledFinalRuleOptions, splitRuleLine } from "./rule-line";
 import { RULE_SET_TARGETS, type RuleSetDirectRule, type RuleSetOutputTarget } from "./rule-set-types";
 
@@ -25,12 +25,10 @@ export const CLASH_BUILT_IN_RULE_POLICIES = new Set([
   "COMPATIBLE",
   "GLOBAL"
 ]);
-export const STASH_BUILT_IN_RULE_POLICIES = new Set(["DIRECT", "REJECT", "REJECT-DROP", "PASS", "GLOBAL"]);
 
 const ALL_BUILT_IN_RULE_POLICIES = new Set([
   ...SURGE_BUILT_IN_RULE_POLICIES,
-  ...CLASH_BUILT_IN_RULE_POLICIES,
-  ...STASH_BUILT_IN_RULE_POLICIES
+  ...CLASH_BUILT_IN_RULE_POLICIES
 ]);
 
 const AUTO_SHARED_RULE_TYPES = new Set([
@@ -74,79 +72,15 @@ const CLASH_ONLY_RULE_TYPES = new Set([
   "SRC-IP-CIDR",
   "SRC-IP-ASN"
 ]);
-const STASH_ONLY_RULE_TYPES = new Set([
-  ...CLASH_ONLY_RULE_TYPES,
-  "USER-AGENT",
-  "URL-REGEX"
-]);
 const FINAL_RULE_TYPES = new Set(["FINAL", "MATCH"]);
 const LOGICAL_RULE_TYPES = new Set(["AND", "OR", "NOT"]);
 const TARGET_IP_RULE_TYPES = new Set(["IP-CIDR", "IP-CIDR6", "GEOIP", "IP-ASN"]);
 const SURGE_EXTENDED_MATCHING_RULE_TYPES = new Set(["DOMAIN", "DOMAIN-SUFFIX", "DOMAIN-KEYWORD", "URL-REGEX"]);
 
-export function rewriteUnavailableGroupRuleTargets(
-  config: RenderConfig,
-  rules: string[],
-  nodes: ProxyNode[],
-  groupNames: Set<string>,
-  outputTarget: RuleSetOutputTarget,
-  extraPolicies: Set<string> = new Set()
-): string[] {
-  const disabledGroups = new Set(config.disabledGroups);
-  const proxyNames = new Set(nodes.map((node) => node.name));
-  return rules.map((rule) => {
-    const parts = splitRuleLine(rule);
-    const targetIndex = ruleTargetIndex(parts);
-    if (targetIndex === null) return rule;
-    const target = parts[targetIndex]?.trim() ?? "";
-    if (!target || extraPolicies.has(target) || isAvailableRuleTarget(target, groupNames, disabledGroups, proxyNames, outputTarget)) return rule;
-    // Keep the original reference; generation diagnostics decide whether output is usable.
-    return parts.join(",");
-  });
-}
-
 export function configuredTailscalePolicyNames(config: RenderConfig): Set<string> {
   return new Set(config.surge.tailscaleNodes
     .map((node) => node.name.trim())
     .filter(Boolean));
-}
-
-export function omitRulesTargetingPolicies(rules: string[], omittedPolicies: Set<string>): string[] {
-  if (omittedPolicies.size === 0) return rules;
-  return rules.filter((rule) => {
-    const parts = splitRuleLine(rule);
-    const targetIndex = ruleTargetIndex(parts);
-    if (targetIndex === null) return true;
-    return !omittedPolicies.has(parts[targetIndex]?.trim() ?? "");
-  });
-}
-
-export function filterClashRules(rules: string[]): string[] {
-  return rules.filter((rule) => !usesSurgeSubnetRule(rule));
-}
-
-export function addMissingClashRuleProviderRules(rules: string[], providerNames: string[]): string[] {
-  if (providerNames.length === 0) return rules;
-  const usedProviders = new Set(rules.flatMap((rule) => {
-    const parts = splitRuleLine(rule);
-    return parts[0]?.trim().toUpperCase() === "RULE-SET" && parts[1]?.trim()
-      ? [parts[1].trim()]
-      : [];
-  }));
-  const missingRules = providerNames
-    .filter((name) => !usedProviders.has(name))
-    .map((name) => `RULE-SET,${name},Proxy`);
-  if (missingRules.length === 0) return rules;
-  const matchIndex = rules.findIndex((rule) => {
-    const type = splitRuleLine(rule)[0]?.trim().toUpperCase();
-    return type === "MATCH" || type === "FINAL";
-  });
-  if (matchIndex < 0) return [...rules, ...missingRules];
-  return [
-    ...rules.slice(0, matchIndex),
-    ...missingRules,
-    ...rules.slice(matchIndex)
-  ];
 }
 
 export function inferDirectRuleTargets(rule: RuleSetDirectRule): RuleSetOutputTarget[] {
@@ -183,30 +117,6 @@ export function renderDirectRuleForTarget(rule: RuleSetDirectRule, target: RuleS
   const value = (translatedParts[1] || "").trim();
   if (!value) return null;
   return [translatedType, value, rule.policy, ...filterDirectRuleOptions(translatedType, directRuleOptions(translatedParts), target)].join(",");
-}
-
-/** Preserve a provider-level no-resolve option when merging native Clash sources. */
-export function clashRuleWithNoResolve(rule: string): string {
-  const parts = splitRuleLine(rule);
-  const type = parts[0]?.trim().toUpperCase() ?? "";
-  if (TARGET_IP_RULE_TYPES.has(type)) {
-    return parts.slice(2).some((part) => part.toLowerCase() === "no-resolve") ? rule : `${rule},no-resolve`;
-  }
-  if (!LOGICAL_RULE_TYPES.has(type)) return rule;
-  const rewriteExpression = (value: string): string => {
-    let result = "";
-    for (let index = 0; index < value.length; index += 1) {
-      if (value[index] !== "(") { result += value[index]; continue; }
-      const end = findClosingParenthesis(value, index);
-      if (end < 0) return value;
-      const inner = value.slice(index + 1, end);
-      result += `(${logicalRuleParts(inner) ? clashRuleWithNoResolve(inner) : rewriteExpression(inner)})`;
-      index = end;
-    }
-    return result;
-  };
-  parts[1] = rewriteExpression(parts[1] ?? "");
-  return parts.join(",");
 }
 
 /** Main rules may retain a legacy policy; the plan's separate policy wins. */
@@ -277,7 +187,6 @@ export function isRulePolicyCompatibleWithTarget(policy: string, target: RuleSet
 export function builtInPoliciesForTarget(target: RuleSetOutputTarget): ReadonlySet<string> {
   if (target === "sing-box") return new Set(["DIRECT", "REJECT", "REJECT-DROP"]);
   if (target === "surge") return SURGE_BUILT_IN_RULE_POLICIES;
-  if (target === "stash") return STASH_BUILT_IN_RULE_POLICIES;
   return CLASH_BUILT_IN_RULE_POLICIES;
 }
 
@@ -431,8 +340,7 @@ function translateRuleType(type: string, target: RuleSetOutputTarget): string | 
     : type === "SRC-IP"
       ? "SRC-IP-CIDR"
       : type;
-  const targetSpecificTypes = target === "stash" ? STASH_ONLY_RULE_TYPES : CLASH_ONLY_RULE_TYPES;
-  return AUTO_SHARED_RULE_TYPES.has(mapped) || targetSpecificTypes.has(mapped) ? mapped : null;
+  return AUTO_SHARED_RULE_TYPES.has(mapped) || CLASH_ONLY_RULE_TYPES.has(mapped) ? mapped : null;
 }
 
 function filterDirectRuleOptions(type: string, options: string[], target: RuleSetOutputTarget): string[] {
@@ -507,17 +415,4 @@ export function ruleTargetIndex(parts: string[]): number | null {
   if ((type === "FINAL" || type === "MATCH") && parts.length >= 2) return 1;
   if (parts.length >= 3) return 2;
   return null;
-}
-
-function isAvailableRuleTarget(
-  target: string,
-  activeGroups: Set<string>,
-  disabledGroups: Set<string>,
-  proxyNames: Set<string>,
-  outputTarget: RuleSetOutputTarget
-): boolean {
-  if (disabledGroups.has(target) || /^DEVICE:/i.test(target)) return false;
-  return activeGroups.has(target)
-    || proxyNames.has(target)
-    || builtInPoliciesForTarget(outputTarget).has(target.toUpperCase());
 }

@@ -4,7 +4,7 @@
 
 运行配置保存为版本 3 文档。订阅源、手动节点和链式节点共享；`clients.surge`、`clients.clash`、`clients.singbox` 分别拥有 `groups`、`disabledGroups`、`ruleSets.sources`、网络、DNS、路由、规则编排和高级设置。组与来源的名称、ID 和引用均在本端解析。版本 2 按 `groupTargets` 拆分组，来源全量复制并保留引用；Surge 组的 url-test 迁移为 smart。旧共享 hidden 仅保留于 Surge，避免迁移后意外隐藏 clash 分组。读取转换不改写原快照，保存后写入版本 3。
 
-界面、客户端字段与内部 `Target` 统一使用 `clash`；读取旧文档时兼容 `clients.mihomo`，UA 识别继续接受 `mihomo` 别名。所有客户端共享通用订阅地址。Stash 类型只用于读取历史配置，当前目标集合不包含它或 Shadowrocket。
+界面、客户端字段与内部 `Target` 统一使用 `clash`；读取旧文档时兼容 `clients.mihomo`，UA 识别继续接受 `mihomo` 别名。所有客户端共享通用订阅地址。Stash 输出类型、渲染器和配置模型已移除；历史来源中的 Stash / Shadowrocket UA 预设仍在读取时展开为实际请求头。
 
 订阅配置统一通过 `/sync/<read_token>/` 获取，基础路径可配置，末尾 `/` 可省略。UA 只用于识别 Surge、clash 或 sing-box 客户端，不用于判断版本、平台或发行渠道。UA 缺失、未知、含多个目标标识或属于已移除客户端时拒绝生成；客户端独立路径、版本 Tag 和旧文件名入口不再接受。Surge 内嵌更新链接始终使用通用地址。规则文件仍通过带格式扩展名的 `/r/` 路径读取，不依赖 UA。
 
@@ -22,6 +22,8 @@ flowchart LR
 ```
 
 `config-document.ts` 管理持久化结构与兼容投影。`RenderConfig` 仅服务已有渲染器与历史读取，不能直接写入 KV。`config-store.ts` 沿用版本 2 加密快照封装，内部配置文档写入版本 3，并沿用追加版本、读回验证和延迟清理。
+
+当前文档不再包含空的全局 `chain`，实际链式筛选由节点的 `chainFilter` 保存。`groupTargets` 只存在于版本 2 迁移边界，拆分后的渲染投影不再携带或检查它。旧配置补丁 API 与无入口的 KV 逐级迁移执行器已删除，`config-schema.ts` 仅保留当前迁移流程使用的版本常量。
 
 ## 消融结果
 
@@ -55,6 +57,8 @@ Surge 在客户端投影后直接生成已配置的功能。代理协议、策�
 Surge 自动更新 URL 始终使用通用入口。订阅响应设置 `Cache-Control: no-store` 和 `Vary: User-Agent`，复用的仅是原始源与按目标隔离的规则编译缓存。本次订阅地址与 Surge 输出策略调整不改变 KV 数据结构。
 
 来源配置独立，源正文沿用按 URL 计算的共享缓存键。刷新跨端按 URL 去重，诊断按目标筛选；清理时使用所有端仍启用来源的 URL 并集，避免一个端删除其他端的缓存。编译缓存通过请求级 KV 包装映射到 `cache:v2:<target>:compiledRuleSet...`，源键不变；缓存指纹包含目标、编译器修订、来源 URL、启用状态、格式与规则内容。HTTP 缓存版本同时包含指纹与存储版本，避免同名或同时更新造成串用。
+
+Worker 与 Actions 都按 `planRuleSetArtifacts` 选择最终产物，Worker 的发布可见性检查也使用同一计划，并包含需要的 DNS 文件。内存分桶用于编译，计划之外的中间分桶不写入 KV。Clash 的跨条目聚合分支已删除，Surge 的按策略聚合继续保留。版本元数据回退仍用于处理 head 索引写入失败。
 
 读取旧配置只生成内存中的迁移草稿。旧文档指纹基于未经规范化的原始快照；确认请求检查指纹，防止提交过期草稿。配置导出与备份下载已移除，迁移不要求下载确认。新快照经过读回验证后记录提交标记与 KV schema 12，之后禁止回退旧版快照；若快照已写入但提交标记尚未完成，后续读取可补齐。清理沿用宽限期与分批机制，不触及 Secrets、订阅源数据或其他运行资源。
 

@@ -33,14 +33,16 @@ export async function queueChangedRuleSetUpdates(
   config: RenderConfig
 ): Promise<RuleSetRebuildJob[]> {
   const jobs: RuleSetRebuildJob[] = [];
+  const previousDocument = configDocument(previousConfig);
+  const document = configDocument(config);
   for (const target of OUTPUT_TARGETS) {
-    const previous = renderConfig(configDocument(previousConfig), target);
-    const selected = renderConfig(configDocument(config), target);
+    const previous = renderConfig(previousDocument, target);
+    const selected = renderConfig(document, target);
     const previousOutputs = new Map(compilationOutputs(previous).map((output) => [output.name, output]));
+    const processorChanged = JSON.stringify(previous.settings.actionsCompilation) !== JSON.stringify(selected.settings.actionsCompilation);
     for (const output of compilationOutputs(selected)) {
       const fingerprint = await ruleSetOutputFingerprint(selected, output);
       const old = previousOutputs.get(output.name);
-      const processorChanged = JSON.stringify(previous.settings.actionsCompilation) !== JSON.stringify(selected.settings.actionsCompilation);
       if (old && !processorChanged && await ruleSetOutputFingerprint(previous, old) === fingerprint) continue;
       jobs.push(await writeJob(env, target, output.name, fingerprint));
     }

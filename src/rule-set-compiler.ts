@@ -70,7 +70,6 @@ export interface CompiledRuleSetReferencePlan {
   surgeRules: string[];
   clashRuleProviders: Record<string, Record<string, unknown>>;
   clashRules: string[];
-  clashRuleComments: Record<string, string>;
   errors: string[];
   warnings: string[];
 }
@@ -257,23 +256,6 @@ export async function refreshRuleSetCaches(
   return refreshRuleSetOutputs(env, config, outputs, sourcesToRefresh, !outputName, options);
 }
 
-export async function refreshChangedRuleSetCaches(
-  env: Env,
-  previousConfig: RenderConfig,
-  config: RenderConfig,
-  options: RuleSetRefreshOptions = {}
-): Promise<RuleSetRefreshResult | null> {
-  if (config.ruleSets.mode !== "compiled") return null;
-  if (usesActionsCompilation(config)) return refreshRuleSetCaches(env, config, undefined, options);
-  const outputs = changedRuleSetOutputs(previousConfig, config);
-  if (outputs.length === 0) return null;
-  const changedSourceIds = changedRuleSetSourceIds(previousConfig, config);
-  const sourcesToRefresh = previousConfig.ruleSets.mode !== "compiled"
-    ? config.ruleSets.sources.filter((source) => source.enabled && source.url)
-    : config.ruleSets.sources.filter((source) => source.enabled && source.url && changedSourceIds.has(source.id));
-  return refreshRuleSetOutputs(env, config, outputs, sourcesToRefresh, false, options);
-}
-
 async function refreshRuleSetOutputs(
   env: Env,
   config: RenderConfig,
@@ -408,7 +390,6 @@ export async function buildCompiledRuleSetReferencePlan(
     surgeRules: [],
     clashRuleProviders: {},
     clashRules: [],
-    clashRuleComments: {},
     errors: [],
     warnings: []
   };
@@ -478,15 +459,11 @@ export async function buildCompiledRuleSetReferencePlan(
       const compatibleCount = manifest.buckets.reduce((sum, bucket) => sum + (bucket.targetCounts?.[target] ?? 0), 0);
       if (compatibleCount !== manifest.ruleCount) throw new Error("规则集中存在当前输出端无法等价表达的规则。");
       const surgeStart = plan.surgeRules.length;
-      const clashStart = plan.clashRules.length;
       appendCompiledOutputReferences(plan, config, output, manifest, target, requestUrl);
-      if (config.ruleSets.aggregateByPolicy && !output.provider && !output.surgeType && !output.dnsServer) {
+      if (target === "surge" && config.ruleSets.aggregateByPolicy && !output.provider && !output.surgeType && !output.dnsServer
+        && plan.surgeRules.length > surgeStart) {
         const comment = ruleSetAggregationComment(output.policy, includedOutputNames);
-        if (target === "surge" && plan.surgeRules.length > surgeStart) {
-          plan.surgeRules.splice(surgeStart, 0, `# ${comment}`);
-        } else if (target !== "surge" && plan.clashRules.length > clashStart) {
-          plan.clashRuleComments[plan.clashRules[clashStart]!] = comment;
-        }
+        plan.surgeRules.splice(surgeStart, 0, `# ${comment}`);
       }
       for (const warning of manifest.warnings) plan.warnings.push(warning);
     } catch (error) {
@@ -533,7 +510,7 @@ function appendCompiledOutputReferences(
       interval: output.provider?.interval ?? RULE_SET_UPDATE_INTERVAL_SECONDS
     };
     if (output.dnsServer && artifact.behavior !== "ipcidr") plan.clashDnsPolicy![`rule-set:${providerName}`] = output.dnsServer;
-    plan.clashRules.push(`RULE-SET,${providerName},${output.policy}${output.surgeOptions.includes("no-resolve") && !(target === "clash" && config.ruleSets.aggregateByPolicy && !output.provider) ? ",no-resolve" : ""}`);
+    plan.clashRules.push(`RULE-SET,${providerName},${output.policy}${output.surgeOptions.includes("no-resolve") ? ",no-resolve" : ""}`);
   }
 }
 
@@ -564,7 +541,7 @@ function surgeRuleSetOptions(output: RuleSetOutput): string[] {
 function targetName(target: RuleSetOutputTarget): string {
   if (target === "surge") return "Surge";
   if (target === "sing-box") return "sing-box";
-  return target === "stash" ? "Stash" : "Clash";
+  return "Clash";
 }
 
 function ruleSetSourcesForOutputs(config: RenderConfig, outputs: RuleSetOutput[], outputSpecific: boolean): RenderConfig["ruleSets"]["sources"] {
@@ -573,60 +550,4 @@ function ruleSetSourcesForOutputs(config: RenderConfig, outputs: RuleSetOutput[]
   }
   const sourceIds = new Set(outputs.flatMap((output) => output.sourceIds));
   return config.ruleSets.sources.filter((source) => source.enabled && source.url && sourceIds.has(source.id));
-}
-
-function changedRuleSetOutputs(previousConfig: RenderConfig, config: RenderConfig): RuleSetOutput[] {
-  const outputs = effectiveRuleSetOutputs(config.ruleSets);
-  if (previousConfig.ruleSets.mode !== "compiled") return outputs;
-  if (config.renderTarget === "clash" && previousConfig.ruleSets.aggregateByPolicy !== config.ruleSets.aggregateByPolicy) return outputs;
-  const changedSourceIds = changedRuleSetSourceIds(previousConfig, config);
-  const previousByName = new Map(effectiveRuleSetOutputs(previousConfig.ruleSets).map((output) => [output.name, output]));
-  return outputs.filter((output) => {
-    const previous = previousByName.get(output.name);
-    if (!previous || !previous.enabled) return true;
-    if (output.sourceIds.some((sourceId) => changedSourceIds.has(sourceId))) return true;
-    return JSON.stringify(nativeOutputMembers(previousConfig, previous)) !== JSON.stringify(nativeOutputMembers(config, output))
-      || previous.policy !== output.policy
-      || previous.enabled !== output.enabled
-      || JSON.stringify(previous.provider) !== JSON.stringify(output.provider)
-      || previous.dnsServer !== output.dnsServer
-      || previous.surgeType !== output.surgeType
-      || !sameStringList(previous.sourceIds, output.sourceIds)
-      || !sameStringList(previous.inlineRules, output.inlineRules)
-      || !sameStringList(previous.surgeOptions, output.surgeOptions);
-  });
-}
-
-function changedRuleSetSourceIds(previousConfig: RenderConfig, config: RenderConfig): Set<string> {
-  const previousById = new Map(previousConfig.ruleSets.sources.map((source) => [source.id, source]));
-  const nextById = new Map(config.ruleSets.sources.map((source) => [source.id, source]));
-  const ids = new Set([...previousById.keys(), ...nextById.keys()]);
-  const changed = new Set<string>();
-  for (const id of ids) {
-    const previous = previousById.get(id);
-    const next = nextById.get(id);
-    if (!previous || !next) {
-      changed.add(id);
-      continue;
-    }
-    if (previous.name !== next.name
-      || previous.url !== next.url
-      || previous.enabled !== next.enabled
-      || previous.format !== next.format) {
-      changed.add(id);
-    }
-  }
-  return changed;
-}
-
-function sameStringList(left: string[], right: string[]): boolean {
-  if (left.length !== right.length) return false;
-  return left.every((item, index) => item === right[index]);
-}
-
-function nativeOutputMembers(config: RenderConfig, output: RuleSetOutput): unknown {
-  if (config.renderTarget !== "clash" || !config.ruleSets.aggregateByPolicy || output.provider) return undefined;
-  const names = new Set(planRuleSetOutputs(config.ruleSets).find((plan) => plan.output.name === output.name)?.includedOutputNames ?? [output.name]);
-  return config.ruleSets.outputs.filter((item) => names.has(item.name))
-    .map((item) => ({ sourceIds: item.sourceIds, inlineRules: item.inlineRules, options: item.surgeOptions, order: item.order }));
 }

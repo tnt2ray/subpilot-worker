@@ -101,7 +101,7 @@ export async function fetchCachedSource(env: Env, source: SourceConfig, userAgen
     fetchedAt: new Date().toISOString(),
     sourceId: source.id,
     sourceName: source.name
-  }, { updateIndex: false }).catch((error) => logSourceCacheWriteFailure(source.id, error));
+  }).catch((error) => logSourceCacheWriteFailure(source.id, error));
   return content;
 }
 
@@ -191,7 +191,7 @@ async function refreshSourceCacheForSources(
         fetchedAt: now,
         sourceId: source.id,
         sourceName: source.name
-      }, { updateIndex: false });
+      });
       nextEntries.set(key, entry);
       refreshed += 1;
     } catch (error) {
@@ -356,8 +356,7 @@ function sourceCacheMetaKey(key: string): string {
 
 async function writeSourceCacheEntry(
   env: Env,
-  entry: Omit<SourceCacheEntry, "contentAvailable" | "nodeCount" | "protocolCounts"> & { content: string },
-  options: { updateIndex?: boolean } = {}
+  entry: Omit<SourceCacheEntry, "contentAvailable" | "nodeCount" | "protocolCounts"> & { content: string }
 ): Promise<SourceCacheEntry> {
   const { content, ...baseMeta } = entry;
   const meta: SourceCacheEntry = {
@@ -366,19 +365,10 @@ async function writeSourceCacheEntry(
     ...sourceCacheContentStats(content, entry.sourceId)
   };
   const encryptedContent = await encryptSourceCacheContent(env, content);
-  const updateIndex = options.updateIndex !== false;
-  const writes: Promise<unknown>[] = [
+  await Promise.all([
     env.SUBPILOT_CONFIG.put(entry.key, encryptedContent),
     env.SUBPILOT_CONFIG.put(sourceCacheMetaKey(entry.key), JSON.stringify(meta))
-  ];
-  if (updateIndex) {
-    const entries = [
-      meta,
-      ...await readSourceCacheEntries(env).then((existing) => existing.filter((item) => item.key !== entry.key))
-    ];
-    writes.push(writeSourceCacheIndex(env, entries));
-  }
-  await Promise.all(writes);
+  ]);
   return meta;
 }
 

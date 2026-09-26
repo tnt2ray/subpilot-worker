@@ -2,7 +2,6 @@ import { nodeMatchesFilter } from "./node-transforms";
 import { parseConfiguredProxyNode } from "./parsers";
 import { parseAllPolicySelector, parseGroupOption, splitGroupSpec } from "./policy-group-spec";
 import { isRulePolicyCompatibleWithTarget } from "./rule-targets";
-import type { RuleSetOutputTarget } from "./rule-set-types";
 import { CHAIN_EXIT_PROXY_NAME, type RenderConfig, type ProxyNode } from "./types";
 
 export interface SurgeGroupOutput {
@@ -73,8 +72,7 @@ function filterUnavailableTailscalePolicies(
 
 export function buildClashGroups(
   config: RenderConfig,
-  nodes: ProxyNode[],
-  target: Extract<RuleSetOutputTarget, "clash" | "stash"> = "clash"
+  nodes: ProxyNode[]
 ): Record<string, unknown>[] {
   const disabledGroups = new Set(config.disabledGroups);
   const unavailableConfiguredPolicies = configuredProxyNamesUnavailableIn(nodes, config);
@@ -86,7 +84,7 @@ export function buildClashGroups(
       !item.includes("=")
       && isAllowedGroupItem(item)
       && !disabledGroups.has(item)
-      && isRulePolicyCompatibleWithTarget(item, target)
+      && isRulePolicyCompatibleWithTarget(item, "clash")
       && !unavailableConfiguredPolicies.has(item)
     ));
     const options = Object.fromEntries(items
@@ -97,10 +95,7 @@ export function buildClashGroups(
   const emittedNames = emittedPolicyGroupNames(config, groups);
   return groups.flatMap(({ name, type, items, options, hidden }) => {
     if (!emittedNames.has(name)) return [];
-    const proxies = ensureUsableRootProxyItems(
-      name,
-      pruneUnavailableGroupReferences(config, type, items, emittedNames)
-    );
+    const proxies = pruneUnavailableGroupReferences(config, type, items, emittedNames);
     return [{
       name,
       type: mapClashGroupType(type),
@@ -169,14 +164,10 @@ function pruneUnavailableGroupReferences(
   });
 }
 
-function ensureUsableRootProxyItems(name: string, items: string[]): string[] {
-  return items;
-}
-
 function activeGroupEntries(config: RenderConfig, target: "surge" | "clash"): [string, string][] {
   const disabledGroups = new Set(config.disabledGroups);
   return Object.entries(config.groups).filter(([name, spec]) => {
-    if (disabledGroups.has(name) || config.groupTargets?.[name] && !config.groupTargets[name]!.includes(target)) return false;
+    if (disabledGroups.has(name)) return false;
     return target === "surge" || !isSurgeOnlyGroupSpec(spec) && splitGroupSpec(spec)[0] !== "smart";
   });
 }

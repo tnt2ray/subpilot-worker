@@ -10,9 +10,9 @@ import {
   type CoverageEntry,
   type CoverageRule
 } from "./rule-coverage-core";
-import type { RenderConfig, Target } from "./types";
+import type { RenderConfig } from "./types";
 import { mapWithConcurrency, readResponseTextWithLimit } from "./util";
-import { CLASH_BUILT_IN_RULE_POLICIES, STASH_BUILT_IN_RULE_POLICIES } from "./rule-targets";
+import { CLASH_BUILT_IN_RULE_POLICIES } from "./rule-targets";
 import { validateRuleMatchValue } from "./rule-value-validation";
 import { fetchWithTimeout } from "./upstream-fetch";
 
@@ -53,7 +53,6 @@ const PROVIDER_VALUE_RULE_TYPES = new Set([
 const NO_RESOLVE_RULE_TYPES = new Set(["RULE-SET", "GEOIP", "IP-CIDR", "IP-CIDR6", "IP-ASN"]);
 
 type Fetcher = typeof fetch;
-type ClashDiagnosticsTarget = "clash" | "stash";
 
 export interface ClashRuleCoverageOptions {
   fetcher?: Fetcher;
@@ -75,9 +74,9 @@ interface RuleSetReference {
   label: string;
 }
 
-export function validateClashLikeRules(config: RenderConfig, target: ClashDiagnosticsTarget, nodePolicies: Iterable<string> = []): string | null {
-  const targetName = target === "stash" ? "Stash" : "Clash";
-  const targetConfig = target === "stash" ? config.stash : config.clash;
+export function validateClashRules(config: RenderConfig, nodePolicies: Iterable<string> = []): string | null {
+  const targetName = "Clash";
+  const targetConfig = config.clash;
   const providerError = validateClashRuleProvidersYaml(targetConfig.ruleProviders, targetName);
   if (providerError) return providerError;
   const providers = new Set(Object.keys(parseClashRuleProvidersYaml(targetConfig.ruleProviders)));
@@ -85,7 +84,7 @@ export function validateClashLikeRules(config: RenderConfig, target: ClashDiagno
   const policies = new Set([
     ...nodePolicies,
     ...Object.keys(config.groups).filter((name) => !disabledGroups.has(name)),
-    ...(target === "stash" ? STASH_BUILT_IN_RULE_POLICIES : CLASH_BUILT_IN_RULE_POLICIES)
+    ...CLASH_BUILT_IN_RULE_POLICIES
   ]);
   const effective: Array<{ type: string; lineNumber: number }> = [];
 
@@ -164,22 +163,21 @@ function validateClashLogicalLeaf(parts: string[], providers: Set<string>): stri
 }
 
 export async function collectClashRuleCoverageWarnings(
-  config: Pick<RenderConfig, "settings" | "clash" | "stash">,
-  target: ClashDiagnosticsTarget,
+  config: Pick<RenderConfig, "settings" | "clash">,
   options: ClashRuleCoverageOptions = {}
 ): Promise<string[]> {
-  const targetConfig = target === "stash" ? config.stash : config.clash;
+  const targetConfig = config.clash;
   const providerMap = parseClashRuleProvidersYaml(targetConfig.ruleProviders);
   const providers = new Map(Object.entries(providerMap).map(([name, provider]) => [name, normalizeProvider(name, provider)]));
   const ruleLines = addMissingRuleProviderRules(targetConfig.rules, [...providers.keys()]);
   const maxWarnings = Math.max(1, options.maxWarnings ?? DEFAULT_MAX_COVERAGE_WARNINGS);
-  const collection = new CoverageWarningCollection(maxWarnings, diagnosticsName(target));
-  const entries = await flattenRulesForCoverage(ruleLines, providers, config, target, options, collection);
+  const collection = new CoverageWarningCollection(maxWarnings, "Clash");
+  const entries = await flattenRulesForCoverage(ruleLines, providers, config, options, collection);
   if (entries.length > MAX_COVERAGE_RULES) {
-    collection.push(`${diagnosticsName(target)} Rule 覆盖诊断仅检查前 ${MAX_COVERAGE_RULES} 条规则。`);
+    collection.push(`Clash Rule 覆盖诊断仅检查前 ${MAX_COVERAGE_RULES} 条规则。`);
   }
   collectCoverageWarnings(entries.slice(0, MAX_COVERAGE_RULES), collection, {
-    targetName: diagnosticsName(target),
+    targetName: "Clash",
     valuelessRuleTypes: VALUELESS_RULE_TYPES,
     exactMatchRuleTypes: EXACT_MATCH_RULE_TYPES,
     normalizeDomainValue
@@ -192,13 +190,12 @@ async function flattenRulesForCoverage(
   lines: string[],
   providers: Map<string, RuleProviderInfo>,
   config: Pick<RenderConfig, "settings">,
-  target: ClashDiagnosticsTarget,
   options: ClashRuleCoverageOptions,
   warnings: CoverageWarningCollection
 ): Promise<CoverageRule[]> {
   const parsed = lines.flatMap((line, index) => parseTopLevelRule(line, index + 1));
   const references = parsed.filter((entry): entry is RuleSetReference => entry.kind === "rule-set");
-  const resolvedProviders = await resolveProviderReferences(references, providers, config, target, options, warnings);
+  const resolvedProviders = await resolveProviderReferences(references, providers, config, options, warnings);
   return flattenResolvedCoverageEntries(parsed, resolvedProviders, providerReferenceKey);
 }
 
@@ -236,7 +233,6 @@ async function resolveProviderReferences(
   references: RuleSetReference[],
   providers: Map<string, RuleProviderInfo>,
   config: Pick<RenderConfig, "settings">,
-  target: ClashDiagnosticsTarget,
   options: ClashRuleCoverageOptions,
   warnings: CoverageWarningCollection
 ): Promise<Map<string, CoverageRule[]>> {
@@ -244,14 +240,14 @@ async function resolveProviderReferences(
   const unique = dedupeCoverageReferences(references, providerReferenceKey);
   const toFetch = unique.slice(0, MAX_EXTERNAL_PROVIDER_FETCHES);
   const skipped = unique.slice(MAX_EXTERNAL_PROVIDER_FETCHES);
-  const targetName = diagnosticsName(target);
+  const targetName = "Clash";
   if (skipped.length > 0) {
     warnings.push(`${targetName} Rule 覆盖诊断跳过 ${skipped.length} 个额外外部规则集；最多检查 ${MAX_EXTERNAL_PROVIDER_FETCHES} 个。`);
     for (const reference of skipped) resolved.set(providerReferenceKey(reference), []);
   }
 
   const fetcher = options.fetcher ?? globalThis.fetch.bind(globalThis);
-  const userAgent = options.userAgent ?? (target === "stash" ? config.settings.userAgentStash : config.settings.userAgentClash);
+  const userAgent = options.userAgent ?? config.settings.userAgentClash;
   let retainedCharacters = 0;
   let retainedRules = 0;
   await mapWithConcurrency(toFetch, PROVIDER_FETCH_CONCURRENCY, async (reference) => {
@@ -430,10 +426,6 @@ function providerReferenceKey(reference: RuleSetReference): string {
 
 function normalizeDomainValue(value: string): string {
   return value.trim().toLowerCase().replace(/^\+\./, "").replace(/^\*\./, "").replace(/\.$/, "");
-}
-
-function diagnosticsName(target: ClashDiagnosticsTarget): string {
-  return target === "stash" ? "Stash" : "Clash";
 }
 
 function isCommentLine(line: string): boolean {

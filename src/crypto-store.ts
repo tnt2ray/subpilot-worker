@@ -48,16 +48,6 @@ export async function decryptJson<T>(secret: string, value: string): Promise<T> 
   return JSON.parse(await decryptText(secret, value)) as T;
 }
 
-export async function sealSources(sources: SourceConfig[], secret?: string): Promise<SourceConfig[]> {
-  if (!secret) throw new Error("CONFIG_ENCRYPTION_KEY secret is required");
-  return Promise.all(
-    sources.map(async (source) => {
-      const encrypted = source.url ? await encryptText(secret, source.url) : source.urlEncrypted;
-      return { ...source, url: "", urlEncrypted: encrypted };
-    })
-  );
-}
-
 export async function unsealSources(sources: SourceConfig[], secret?: string): Promise<SourceConfig[]> {
   if (!secret && sources.some((source) => source.url || source.urlEncrypted)) {
     throw new Error("CONFIG_ENCRYPTION_KEY secret is required");

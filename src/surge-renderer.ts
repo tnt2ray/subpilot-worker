@@ -3,7 +3,7 @@ import { isIPv4, isIPv6 } from "./node-transforms";
 import { beijingTimestamp, renderHostEntryLine, renderSection } from "./output-render";
 import { toSurgeLine } from "./parsers";
 import { buildSurgeGroups, type SurgeGroupOutput } from "./policy-groups";
-import { rewriteUnavailableGroupRuleTargets, SURGE_BUILT_IN_RULE_POLICIES } from "./rule-targets";
+import { SURGE_BUILT_IN_RULE_POLICIES } from "./rule-targets";
 import { parseHostEntries } from "./host-entries";
 import type { CompiledRuleSetReferencePlan } from "./rule-set-compiler";
 import type { RenderConfig, HostEntry, ProxyNode } from "./types";
@@ -16,16 +16,6 @@ export function buildSurge(
   sourceHostEntries: HostEntry[],
   requestUrl: string,
   ruleSetPlan?: CompiledRuleSetReferencePlan
-): string {
-  return buildSurgeInline(config, nodes, sourceHostEntries, requestUrl, ruleSetPlan);
-}
-
-function buildSurgeInline(
-  config: RenderConfig,
-  nodes: ProxyNode[],
-  sourceHostEntries: HostEntry[],
-  requestUrl: string,
-  ruleSetPlan: CompiledRuleSetReferencePlan | undefined
 ): string {
   const proxyLines = nodes.map(toSurgeLine);
   const resolvedPolicies = resolveRuntimeTailscalePolicies(config, nodes);
@@ -66,7 +56,8 @@ function renderSurgeInlineProfile(
   sections.push(...tailscaleNodes.map(renderTailscaleSection));
   sections.push(renderSection("Proxy Group", groupOutputs.map((group) => group.line)));
   appendSurgeTailSections(sections, config);
-  appendSurgeRuleSection(sections, config, nodes, groupOutputs, new Set(tailscaleNodes.map((node) => node.name)), ruleSetPlan);
+  const rules = config.ruleSets.mode === "compiled" && ruleSetPlan ? ruleSetPlan.surgeRules : config.surge.rules;
+  sections.push(renderSection("Rule", rules));
   return `${sections.join("\n\n")}\n`;
 }
 
@@ -142,25 +133,6 @@ function appendSurgeTailSections(sections: string[], config: RenderConfig): void
     `ca-passphrase = ${config.surge.mitm.caPassphrase}`,
     `ca-p12 = ${config.surge.mitm.caP12}`
   ]));
-}
-
-function appendSurgeRuleSection(
-  sections: string[],
-  config: RenderConfig,
-  nodes: ProxyNode[],
-  groupOutputs: SurgeGroupOutput[],
-  tailscalePolicies: Set<string>,
-  ruleSetPlan?: CompiledRuleSetReferencePlan
-): void {
-  const rules = config.ruleSets.mode === "compiled" && ruleSetPlan ? ruleSetPlan.surgeRules : config.surge.rules;
-  sections.push(renderSection("Rule", rewriteUnavailableGroupRuleTargets(
-    config,
-    rules,
-    nodes,
-    new Set(groupOutputs.map((group) => group.name)),
-    "surge",
-    tailscalePolicies
-  )));
 }
 
 function resolveRuntimeTailscalePolicies(

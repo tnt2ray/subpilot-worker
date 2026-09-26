@@ -169,7 +169,7 @@ export async function fetchCachedRuleSetSource(
         fetchedAt: new Date().toISOString(),
         sourceId: source.id,
         sourceName: source.name
-      }, { updateIndex: false });
+      });
     } catch (error) {
       warning = `${source.name}: 规则来源缓存写入失败：${error instanceof Error ? error.message : String(error)}`;
       console.warn(JSON.stringify({ level: "warn", message: warning }));
@@ -265,7 +265,7 @@ export async function refreshRuleSetSourceCaches(
         fetchedAt: new Date().toISOString(),
         sourceId: source.id,
         sourceName: source.name
-      }, { updateIndex: false });
+      });
       nextEntries.set(key, entry);
       sourcesByKey.set(key, { contentHash: entry.contentHash, usedCachedContent: false });
       refreshed += 1;
@@ -435,23 +435,14 @@ export async function writeCompiledRuleSet(
     await writeEncryptedCompiledContent(env, key, content);
   };
   try {
-    for (const bucket of RULE_SET_BUCKETS) {
-      const rules = buckets[bucket];
-      if (rules.length === 0) continue;
-      const bucketMeta = manifest.buckets.find((item) => item.bucket === bucket);
-      for (const target of RULE_SET_TARGETS) {
-        if (bucketMeta && !bucketMeta.targets.includes(target)) continue;
-        const key = compiledRuleSetContentKey(manifest.outputName, bucket, target, storageId);
-        const content = renderCompiledRuleSetBucket(rules, bucket, target);
+    for (const target of RULE_SET_TARGETS) {
+      for (const artifact of planRuleSetArtifacts(manifest.buckets, target, manifest.provider?.behavior, manifest.surgeType)) {
+        const key = compiledRuleSetContentKey(manifest.outputName, artifact.bucket, target, storageId);
+        const content = artifact.bucket === "combined"
+          ? renderCombinedRuleSet(buckets, target, artifact)
+          : renderCompiledRuleSetBucket(buckets[artifact.bucket], artifact.bucket, target);
         await writeContent(key, content);
       }
-    }
-    for (const target of RULE_SET_TARGETS) {
-      const combined = planRuleSetArtifacts(manifest.buckets, target, manifest.provider?.behavior, manifest.surgeType).find((artifact) => artifact.bucket === "combined");
-      if (!combined) continue;
-      const key = compiledRuleSetContentKey(manifest.outputName, "combined", target, storageId);
-      const content = renderCombinedRuleSet(buckets, target, combined);
-      await writeContent(key, content);
     }
     if (manifest.dnsRuleCount !== undefined) {
       const dnsRules = [...buckets.domain, ...buckets.classical].filter((rule) =>
@@ -636,14 +627,9 @@ async function compiledManifestContentIsVisible(env: Env, manifest: CompiledRule
 function compiledManifestContentKeys(manifest: CompiledRuleSetManifest): string[] {
   if (!manifest.storageId) return [];
   const keys = new Set<string>();
-  for (const bucket of manifest.buckets) {
-    for (const target of bucket.targets) {
-      keys.add(compiledRuleSetContentKey(manifest.outputName, bucket.bucket, target, manifest.storageId));
-    }
-  }
   for (const target of RULE_SET_TARGETS) {
-    if (planRuleSetArtifacts(manifest.buckets, target, manifest.provider?.behavior, manifest.surgeType).some((artifact) => artifact.bucket === "combined")) {
-      keys.add(compiledRuleSetContentKey(manifest.outputName, "combined", target, manifest.storageId));
+    for (const artifact of planRuleSetArtifacts(manifest.buckets, target, manifest.provider?.behavior, manifest.surgeType)) {
+      keys.add(compiledRuleSetContentKey(manifest.outputName, artifact.bucket, target, manifest.storageId));
     }
   }
   if (manifest.dnsRuleCount) keys.add(compiledRuleSetContentKey(manifest.outputName, "dns", "sing-box", manifest.storageId));
@@ -700,8 +686,7 @@ export async function readRuleSetSourceCacheMetadata(env: Env, key: string): Pro
 
 async function writeRuleSetSourceCacheEntry(
   env: Env,
-  entry: Omit<RuleSetSourceCacheEntry, "contentAvailable"> & { content: string },
-  options: { updateIndex?: boolean } = {}
+  entry: Omit<RuleSetSourceCacheEntry, "contentAvailable"> & { content: string }
 ): Promise<RuleSetSourceCacheEntry & { contentHash: string; checkedAt: string }> {
   const { content, ...baseMeta } = entry;
   const [contentHash, stored, previous] = await Promise.all([
@@ -723,7 +708,6 @@ async function writeRuleSetSourceCacheEntry(
     contentHash,
     contentAvailable: true
   };
-  const updateIndex = options.updateIndex !== false;
   // Unchanged encrypted bodies keep their original value. Historical plaintext
   // still migrates on a successful refresh, and missing/corrupt bodies rebuild.
   if (!unchanged || !stored?.startsWith(ENCRYPTED_CACHE_STORAGE_PREFIX)) {
@@ -731,13 +715,6 @@ async function writeRuleSetSourceCacheEntry(
   }
   // Publish the hash/check time only after its corresponding body was stored.
   await env.SUBPILOT_CONFIG.put(ruleSetSourceCacheMetaKey(entry.key), JSON.stringify(meta));
-  if (updateIndex) {
-    const entries = [
-      meta,
-      ...await readRuleSetSourceCacheEntries(env).then((existing) => existing.filter((item) => item.key !== entry.key))
-    ];
-    await writeRuleSetSourceCacheIndex(env, entries);
-  }
   return meta;
 }
 

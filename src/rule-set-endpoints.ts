@@ -38,7 +38,7 @@ export async function handleRuleSetApi(request: Request, env: Env, ctx: Executio
     scheduleRuleSetWorkerCacheWarm(env, ctx, config, request.url);
     return jsonResponse({
       ...result,
-      notification: await notifyRuleSetRefreshFailures(env, config, result, "manual")
+      notification: await notifyRuleSetRefreshFailures(config, result, "manual")
     });
   }
   const refreshMatch = url.pathname.match(/^\/api\/rule-sets\/refresh\/([^/]+)$/);
@@ -52,7 +52,7 @@ export async function handleRuleSetApi(request: Request, env: Env, ctx: Executio
       scheduleRuleSetWorkerCacheWarm(env, ctx, config, request.url, [outputName]);
       return jsonResponse({
         ...result,
-        notification: await notifyRuleSetRefreshFailures(env, config, result, "manual")
+        notification: await notifyRuleSetRefreshFailures(config, result, "manual")
       });
     } catch (error) {
       return badRequest(error instanceof Error ? error.message : String(error));
@@ -237,7 +237,7 @@ function scheduleRuleSetWorkerCacheWarm(
   })().catch(logRuleSetWorkerCacheError));
 }
 
-function logRuleSetWorkerCacheError(error: unknown): void {
+function logRuleSetWorkerCacheError(): void {
   console.error(JSON.stringify({
     level: "error",
     message: "Rule-set background work failed; retry remains enabled."

@@ -23,7 +23,7 @@ export function omitEmptyPolicyGroups(config: RenderConfig, target: Target, cont
   }
   const supported = target === "sing-box" ? ["select", "url-test"] : target === "clash" ? ["select", "url-test", "fallback", "load-balance"] : ["select", "url-test", "fallback", "load-balance", "smart"];
   const candidates = Object.entries(config.groups).filter(([name, spec]) => name !== "Proxy" && !config.disabledGroups.includes(name)
-    && (!config.groupTargets?.[name] || config.groupTargets[name]!.includes(target)) && supported.includes(splitGroupSpec(spec)[0]!));
+    && supported.includes(splitGroupSpec(spec)[0]!));
   const omitted = new Set<string>();
   let changed = true;
   while (changed) {

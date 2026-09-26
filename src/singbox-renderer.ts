@@ -44,7 +44,7 @@ export function buildSingbox(config: RenderConfig, nodes: ProxyNode[], hosts: Ho
     }
   }
   outbounds = outbounds.filter((outbound) => !omittedChains.has(String(outbound.tag)));
-  const activeGroups = Object.entries(config.groups).filter(([name]) => !config.disabledGroups.includes(name) && (!config.groupTargets?.[name] || config.groupTargets[name]!.includes("sing-box")));
+  const activeGroups = Object.entries(config.groups).filter(([name]) => !config.disabledGroups.includes(name));
   const groupNames = new Set(activeGroups.map(([name]) => name));
   for (const [name, spec] of activeGroups) {
     const [type, ...parts] = splitGroupSpec(spec);

@@ -1,5 +1,5 @@
 import { ADDRESS_TOKEN, DOMAIN_TOKEN } from "../public/config-address-syntax.js";
-import { EditorState, Compartment } from "@codemirror/state";
+import { EditorState } from "@codemirror/state";
 import { EditorView, Decoration, ViewPlugin, keymap } from "@codemirror/view";
 import { indentMore } from "@codemirror/commands";
 import { indentUnit } from "@codemirror/language";
@@ -198,161 +198,42 @@ function proxyConfigHighlighter(provider) {
   });
 }
 
-function readOnlyExtensions(readOnly) {
-  return [
-    EditorState.readOnly.of(Boolean(readOnly)),
-    EditorView.editable.of(!readOnly)
-  ];
-}
-
-class SubPilotCodeEditor {
-  constructor(textarea, options = {}) {
-    this.textarea = textarea;
-    this.options = { ...options };
-    this.changeHandlers = [];
-    this.subpilotSyncing = false;
-    this.readOnlyCompartment = new Compartment();
-    this.modeCompartment = new Compartment();
-    this.host = document.createElement("div");
-    textarea.style.display = "none";
-    textarea.after(this.host);
-
-    this.view = new EditorView({
-      state: EditorState.create({
-        doc: textarea.value || "",
-        extensions: [
-          basicSetup,
-          EditorState.tabSize.of(Number(options.tabSize) || 2),
-          indentUnit.of(" ".repeat(Number(options.indentUnit) || 2)),
-          options.lineWrapping === false ? [] : EditorView.lineWrapping,
-          EditorView.darkTheme.of(true),
-          EditorView.editorAttributes.of((view) => ({
-            class: [
-              "config-code-editor",
-              this.options.autoHeight ? "is-auto-height" : "",
-              view.state.readOnly ? "is-readonly" : ""
-            ].filter(Boolean).join(" ")
-          })),
-          this.readOnlyCompartment.of(readOnlyExtensions(options.readOnly)),
-          this.modeCompartment.of(this.modeExtensions(options.mode)),
-          keymap.of([
-            {
-              key: "Tab",
-              run: (view) => {
-                if (view.state.selection.ranges.some((range) => !range.empty)) return indentMore(view);
-                view.dispatch(view.state.replaceSelection(" ".repeat(Number(this.options.indentUnit) || 2)));
-                return true;
-              }
-            },
-          ]),
-          EditorView.updateListener.of((update) => {
-            if (!update.docChanged || this.subpilotSyncing) return;
-            for (const handler of this.changeHandlers) handler(this);
-          })
-        ]
-      }),
-      parent: this.host
-    });
-  }
-
-  modeExtensions(mode) {
-    if (mode !== "proxy-config") return [];
-    return [proxyConfigHighlighter(this.options.policyTokens)];
-  }
-
-  getValue() {
-    return this.view.state.doc.toString();
-  }
-
-  setValue(value) {
-    const text = String(value ?? "");
-    this.view.dispatch({
-      changes: {
-        from: 0,
-        to: this.view.state.doc.length,
-        insert: text
-      }
-    });
-  }
-
-  save() {
-    this.textarea.value = this.getValue();
-  }
-
-  getOption(name) {
-    return this.options[name];
-  }
-
-  setOption(name, value) {
-    this.options[name] = value;
-    if (name === "readOnly") {
-      this.view.dispatch({
-        effects: this.readOnlyCompartment.reconfigure(readOnlyExtensions(value))
-      });
-      return;
+window.createConfigCodeEditor = (textarea, { policyTokens, label }) => {
+  const host = document.createElement("div");
+  textarea.style.display = "none";
+  textarea.after(host);
+  const view = new EditorView({
+    state: EditorState.create({
+      doc: textarea.value || "",
+      extensions: [
+        basicSetup,
+        EditorState.tabSize.of(2),
+        indentUnit.of("  "),
+        EditorView.lineWrapping,
+        EditorView.darkTheme.of(true),
+        EditorView.editorAttributes.of({ class: "config-code-editor" }),
+        EditorView.contentAttributes.of({ "aria-label": label }),
+        proxyConfigHighlighter(policyTokens),
+        keymap.of([{
+          key: "Tab",
+          run: (editor) => {
+            if (editor.state.selection.ranges.some((range) => !range.empty)) return indentMore(editor);
+            editor.dispatch(editor.state.replaceSelection("  "));
+            return true;
+          }
+        }]),
+        EditorView.updateListener.of((update) => {
+          if (update.docChanged) textarea.value = update.state.doc.toString();
+        })
+      ]
+    }),
+    parent: host
+  });
+  return {
+    destroy() {
+      view.destroy();
+      host.remove();
+      textarea.style.display = "";
     }
-    if (name === "mode") {
-      this.view.dispatch({
-        effects: this.modeCompartment.reconfigure(this.modeExtensions(value))
-      });
-    }
-  }
-
-  getWrapperElement() {
-    return this.view.dom;
-  }
-
-  on(eventName, handler) {
-    if (eventName === "change" && typeof handler === "function") this.changeHandlers.push(handler);
-  }
-
-  refresh() {
-    if (this.options.mode === "proxy-config") {
-      this.view.dispatch({
-        effects: this.modeCompartment.reconfigure(this.modeExtensions(this.options.mode))
-      });
-    }
-    this.view.requestMeasure();
-  }
-
-  setSize(width, height) {
-    if (width != null) this.view.dom.style.width = typeof width === "number" ? `${width}px` : String(width);
-    if (height != null) this.view.dom.style.height = typeof height === "number" ? `${height}px` : String(height);
-  }
-
-  lastLine() {
-    return this.view.state.doc.lines;
-  }
-
-  heightAtLine(lineNumber) {
-    if (!Number.isFinite(lineNumber) || lineNumber > this.view.state.doc.lines) return this.view.contentHeight;
-    const line = this.view.state.doc.line(Math.max(1, lineNumber));
-    return this.view.lineBlockAt(line.to).bottom;
-  }
-
-  somethingSelected() {
-    return this.view.state.selection.ranges.some((range) => !range.empty);
-  }
-
-  replaceSelection(text) {
-    this.view.dispatch(this.view.state.replaceSelection(String(text ?? "")));
-    this.view.focus();
-  }
-
-  indentSelection() {
-    indentMore(this.view);
-  }
-
-  destroy() {
-    this.view.destroy();
-    this.host.remove();
-    this.textarea.style.display = "";
-  }
-}
-
-window.SubPilotCodeMirror = {
-  version: "6",
-  fromTextArea(textarea, options) {
-    return new SubPilotCodeEditor(textarea, options);
-  }
+  };
 };
