@@ -70,7 +70,7 @@ export async function handleTelegramBindCode(request: Request, env: Env): Promis
     code,
     command: `/bind ${code}`,
     expiresAt,
-    config: withInferredManagedBaseUrl(saved, request.url)
+    config: configDocument(withInferredManagedBaseUrl(saved, request.url))
   });
 }
 
@@ -84,7 +84,7 @@ export async function handleTelegramUnbind(request: Request, env: Env): Promise<
       notificationTelegramChatId: ""
     }
   });
-  return jsonResponse(withInferredManagedBaseUrl(saved, request.url));
+  return jsonResponse(configDocument(withInferredManagedBaseUrl(saved, request.url)));
 }
 
 export async function handleTelegramWebhook(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {

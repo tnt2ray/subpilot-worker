@@ -8,7 +8,7 @@ export type ConfigFetchTarget = Target;
 
 const TRACKED_TARGETS: ConfigFetchTarget[] = ["surge", "clash", "sing-box"];
 const MAX_STORED_FETCH_RECORDS = 500;
-const MAX_RECENT_FETCH_ROWS = MAX_STORED_FETCH_RECORDS;
+const MAX_RECENT_FETCH_ROWS = 50;
 const MAX_USER_AGENT_LENGTH = 240;
 const MAX_IP_ADDRESS_LENGTH = 80;
 
@@ -41,7 +41,7 @@ export async function readConfigFetchStats(env: Env, config?: RenderConfig): Pro
       target,
       await env.SUBPILOT_CONFIG.get(lastFetchKey(target))
     ])),
-    readRecentFetches(env),
+    readRecentConfigFetches(env),
     readSourceCacheStatus(env, config)
   ]);
   return {
@@ -71,8 +71,8 @@ function lastFetchKey(target: ConfigFetchTarget): string {
   return `${LAST_FETCH_PREFIX}${target}`;
 }
 
-async function readRecentFetches(env: Env): Promise<ConfigFetchRecord[]> {
-  const keys = await readRecentFetchRecordKeys(env);
+export async function readRecentConfigFetches(env: Env): Promise<ConfigFetchRecord[]> {
+  const keys = (await readRecentFetchRecordKeys(env)).slice(0, MAX_RECENT_FETCH_ROWS);
   const values = await Promise.all(keys.map((key) => env.SUBPILOT_CONFIG.get(key)));
   return values.flatMap(readFetchRecordFromString)
     .sort((left, right) => right.fetchedAt.localeCompare(left.fetchedAt))

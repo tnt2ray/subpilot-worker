@@ -8,7 +8,7 @@ import { handleV233Migration } from "./config-migration-api";
 import type { AppConfig } from "./types";
 import { clearSessionCookie, createSession, getOrCreateReadToken, isAdminRequest, rotateReadToken, sessionCookie, validateAdminToken, validateReadToken } from "./auth";
 import { loadConfig, normalizeTarget, withInferredManagedBaseUrl } from "./config-store";
-import { readConfigFetchStats, recordConfigFetch } from "./fetch-stats";
+import { readConfigFetchStats, readRecentConfigFetches, recordConfigFetch } from "./fetch-stats";
 import { generateForRequest, inferTarget } from "./generator";
 import { handleGeoIpMmdbUpload, readGeoIpMmdbStatus } from "./geoip-admin";
 import { LOGIN_PAGE_HTML } from "./login-page";
@@ -228,6 +228,9 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
       }));
       return jsonResponse(Object.fromEntries(names));
     } catch { return badRequest("Cannot read proxy names from this configuration"); }
+  }
+  if (url.pathname === "/api/stats/requests" && request.method === "GET") {
+    return jsonResponse({ recentUserAgents: await readRecentConfigFetches(env) });
   }
   if (url.pathname === "/api/stats" && request.method === "GET") {
     const config = await loadConfig(env);
