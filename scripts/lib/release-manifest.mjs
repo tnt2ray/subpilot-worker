@@ -43,6 +43,7 @@ export const REQUIRED_RELEASE_FILES = [
   "scripts/lib/commands.mjs",
   "scripts/lib/release-manifest.mjs",
   "src/actions-compiler-runtime.ts",
+  "src/actions-compiler-records.ts",
   "src/config-document-validation.ts",
   "src/config-migration-api.ts",
   "src/config-migration-store.ts",

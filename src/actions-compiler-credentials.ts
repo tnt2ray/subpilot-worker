@@ -1,10 +1,10 @@
 import { loadConfig } from "./config-store";
+import { ACTIONS_CREDENTIALS_KEY, readActionsIntegrationRecord } from "./actions-compiler-records";
 import { decryptJson, encryptJson } from "./crypto-store";
 import { requireSecret } from "./secrets";
 import { jsonResponse, randomToken, readRequestJsonWithLimit, RequestBodyTooLargeError } from "./util";
 
 const headers = { "cache-control": "no-store, private" };
-const ACTIONS_CREDENTIALS_KEY = "integration:actions-compiler:credentials:v1";
 const validToken = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z0-9_]{20,255}$/.test(value);
 const validSharedSecret = (value: unknown): value is string => typeof value === "string" && /^[\x21-\x7e]{32,256}$/.test(value);
 
@@ -17,8 +17,7 @@ interface ActionsCredentials {
 /** Separate from configuration snapshots, exports and compiled-cache cleanup. */
 export async function readActionsCredentials(env: Env): Promise<ActionsCredentials> {
   try {
-    const stored = await env.SUBPILOT_CONFIG.get(ACTIONS_CREDENTIALS_KEY)
-      ?? await env.SUBPILOT_CONFIG.get("integration:actions-compiler:migrated-v233-credentials:v1");
+    const stored = await readActionsIntegrationRecord(env, "credentials");
     if (stored !== null) {
       const value = await decryptJson<{ version?: unknown; token?: unknown; sharedSecret?: unknown }>(requireSecret(env, "CONFIG_ENCRYPTION_KEY"), stored);
       if (!value || value.version !== 1 || (value.token !== "" && !validToken(value.token))

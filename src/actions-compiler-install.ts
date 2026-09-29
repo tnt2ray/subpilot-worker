@@ -8,19 +8,18 @@ import { decryptJson, encryptJson } from "./crypto-store";
 import { sealGitHubSecret } from "./github-secret-seal";
 import { requireSecret } from "./secrets";
 import { readActionsCredentials, actionsCredentialStatus } from "./actions-compiler-credentials";
+import { ACTIONS_CALLBACK_ORIGIN_KEY, readActionsIntegrationRecord } from "./actions-compiler-records";
 import type { ActionsCompilationSettings } from "./types";
 import { jsonResponse, readRequestJsonWithLimit, readResponseTextWithLimit } from "./util";
 
 class InstallError extends Error {}
-const ACTIONS_CALLBACK_ORIGIN_KEY = "integration:actions-compiler:callback-origin:v1";
 const headers = { "cache-control": "no-store, private" };
 const sha = (value: unknown): value is string => typeof value === "string" && /^[a-f0-9]{40}$/.test(value);
 
 async function readCallbackOrigin(env: Env): Promise<string | null> {
-  const stored = await env.SUBPILOT_CONFIG.get(ACTIONS_CALLBACK_ORIGIN_KEY)
-    ?? await env.SUBPILOT_CONFIG.get("integration:actions-compiler:migrated-v233-callback-origin:v1");
-  if (stored === null) return null;
   try {
+    const stored = await readActionsIntegrationRecord(env, "callbackOrigin");
+    if (stored === null) return null;
     const value = await decryptJson<{ version?: unknown; origin?: unknown }>(requireSecret(env, "CONFIG_ENCRYPTION_KEY"), stored);
     if (value?.version !== 1 || typeof value.origin !== "string") throw new Error();
     const origin = new URL(value.origin);
