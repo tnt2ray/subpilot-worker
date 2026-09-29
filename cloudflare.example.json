@@ -1,0 +1,33 @@
+{
+  "worker": {
+    "name": "subpilot-worker",
+    "entrypoint": "./src/index.ts",
+    "compatibilityDate": "2026-07-09",
+    "compatibilityFlags": ["nodejs_compat"],
+    "env": {
+      "ASSETS": { "type": "assets" },
+      "SUBPILOT_CONFIG": { "type": "kv", "id": "00000000000000000000000000000000" },
+      "LOGIN_RATE_LIMITER": {
+        "type": "rate-limit",
+        "namespace": "335570497",
+        "simple": { "limit": 10, "period": 60 }
+      },
+      "ADMIN_TOKEN_HASH": { "type": "secret" },
+      "CONFIG_ENCRYPTION_KEY": { "type": "secret" }
+    },
+    "assets": {
+      "notFoundHandling": "single-page-application",
+      "runWorkerFirst": true
+    },
+    "triggers": [
+      { "type": "scheduled", "schedule": "0 */12 * * *" },
+      { "type": "scheduled", "schedule": "0 16 * * *" },
+      { "type": "scheduled", "schedule": "*/5 * * * *" }
+    ],
+    "observability": {
+      "enabled": true,
+      "headSamplingRate": 0.05,
+      "traces": { "enabled": true, "headSamplingRate": 0.05 }
+    }
+  }
+}

@@ -225,13 +225,19 @@ async function pruneConfigSnapshotVersions(env: Env, current: ConfigSnapshotRevi
   const candidates = [...new Set([current.key, ...listedKeys])].sort(compareConfigSnapshotKeys);
   const cutoff = Date.now() - CONFIG_SNAPSHOT_CLEANUP_GRACE_MS;
   const retainedValid: string[] = [];
+  const unsupported = new Set<string>();
   for (const key of candidates) {
     let valid = false;
     if (key === current.key) {
       valid = true;
     } else {
       const stored = await env.SUBPILOT_CONFIG.get(key);
-      valid = stored !== null && await tryDecryptConfigSnapshot(env, stored) !== null;
+      try {
+        valid = stored !== null && await tryDecryptConfigSnapshot(env, stored) !== null;
+      } catch (error) {
+        if (!(error instanceof UnsupportedConfigError)) throw error;
+        unsupported.add(key);
+      }
     }
     if (!valid) continue;
     if (retainedValid.length < CONFIG_SNAPSHOT_RETAINED_VALID_VERSIONS) retainedValid.push(key);
@@ -242,21 +248,31 @@ async function pruneConfigSnapshotVersions(env: Env, current: ConfigSnapshotRevi
   const retained = new Set(retainedValid);
   const staleVersionKeys = listedKeys.filter((key) => (
     !retained.has(key)
+    && !unsupported.has(key)
     && configSnapshotLogicalTimeFromKey(key) < cutoff
   ));
   const deleteKeys = staleVersionKeys.slice(0, CONFIG_SNAPSHOT_VERSION_PRUNE_BATCH_SIZE);
 
-  await mapWithConcurrency([...new Set(deleteKeys)], 10, async (key) => env.SUBPILOT_CONFIG.delete(key));
+  await mapWithConcurrency([...new Set(deleteKeys)], 10, async (key) => {
+    const stored = await env.SUBPILOT_CONFIG.get(key);
+    if (stored === null) return;
+    try { await tryDecryptConfigSnapshot(env, stored); }
+    catch (error) {
+      if (error instanceof UnsupportedConfigError) return;
+      throw error;
+    }
+    await env.SUBPILOT_CONFIG.delete(key);
+  });
 }
 
-function compareConfigSnapshotKeys(left: string, right: string): number {
-  const suffix = /(?::(?:actions|workflow)-v1)+$/;
+export function compareConfigSnapshotKeys(left: string, right: string): number {
+  const suffix = /(?::(?:actions|workflow|v233)-v1)+$/;
   const leftMigrations = left.match(suffix)?.[0] ?? "";
   const rightMigrations = right.match(suffix)?.[0] ?? "";
   const leftSource = left.slice(0, left.length - leftMigrations.length);
   const rightSource = right.slice(0, right.length - rightMigrations.length);
   if (leftSource !== rightSource) return leftSource < rightSource ? -1 : 1;
-  const priority = (migrations: string) => Number(migrations.includes(":workflow-v1")) * 2 + Number(migrations.includes(":actions-v1"));
+  const priority = (migrations: string) => Number(migrations.includes(":v233-v1")) * 4 + Number(migrations.includes(":workflow-v1")) * 2 + Number(migrations.includes(":actions-v1"));
   return priority(rightMigrations) - priority(leftMigrations) || (left === right ? 0 : left < right ? -1 : 1);
 }
 

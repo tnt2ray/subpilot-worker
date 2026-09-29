@@ -1,16 +1,14 @@
 #!/usr/bin/env node
 
 import { createHash, randomBytes } from "node:crypto";
-import { spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
-import { capture, run } from "./lib/commands.mjs";
+import { captureCf, runCf, spawnCf } from "./lib/cloudflare-cli.mjs";
+import { CONFIG_PATH, ensureConfigFile, readConfig, writeConfig } from "./lib/cloudflare-config.mjs";
 
-const CONFIG_PATH = "wrangler.jsonc";
-const TEMPLATE_PATH = "wrangler.example.jsonc";
 const PLACEHOLDER_KV_ID = "00000000000000000000000000000000";
 const DEFAULT_SOURCE_REFRESH_HOURS = 12;
 const RULE_SET_REFRESH_CRON = "0 16 * * *";
@@ -36,123 +34,19 @@ async function prompt(question, fallback = "") {
   }
 }
 
-function ensureConfigFile() {
-  if (!existsSync(CONFIG_PATH)) {
-    copyFileSync(TEMPLATE_PATH, CONFIG_PATH);
-    process.stdout.write(`Created ${CONFIG_PATH} from ${TEMPLATE_PATH}.\n`);
-    return true;
-  }
-  process.stdout.write(`Using existing local ${CONFIG_PATH}.\n`);
-  return false;
-}
-
-function readConfig() {
-  return readFileSync(CONFIG_PATH, "utf8");
-}
-
-function writeConfig(content) {
-  writeFileSync(CONFIG_PATH, content);
-}
-
-function readJsonConfig() {
-  return JSON.parse(normalizeJsonc(readConfig()));
-}
-
-function normalizeJsonc(content) {
-  let withoutComments = "";
-  let inString = false;
-  let escaped = false;
-  let lineComment = false;
-  let blockComment = false;
-
-  for (let index = 0; index < content.length; index += 1) {
-    const character = content[index];
-    const next = content[index + 1];
-    if (lineComment) {
-      if (character === "\n" || character === "\r") {
-        lineComment = false;
-        withoutComments += character;
-      } else {
-        withoutComments += " ";
-      }
-      continue;
-    }
-    if (blockComment) {
-      if (character === "*" && next === "/") {
-        withoutComments += "  ";
-        blockComment = false;
-        index += 1;
-      } else {
-        withoutComments += character === "\n" || character === "\r" ? character : " ";
-      }
-      continue;
-    }
-    if (inString) {
-      withoutComments += character;
-      if (escaped) escaped = false;
-      else if (character === "\\") escaped = true;
-      else if (character === '"') inString = false;
-      continue;
-    }
-    if (character === '"') {
-      inString = true;
-      withoutComments += character;
-    } else if (character === "/" && next === "/") {
-      lineComment = true;
-      withoutComments += "  ";
-      index += 1;
-    } else if (character === "/" && next === "*") {
-      blockComment = true;
-      withoutComments += "  ";
-      index += 1;
-    } else {
-      withoutComments += character;
-    }
-  }
-
-  let normalized = "";
-  inString = false;
-  escaped = false;
-  for (let index = 0; index < withoutComments.length; index += 1) {
-    const character = withoutComments[index];
-    if (inString) {
-      normalized += character;
-      if (escaped) escaped = false;
-      else if (character === "\\") escaped = true;
-      else if (character === '"') inString = false;
-      continue;
-    }
-    if (character === '"') {
-      inString = true;
-      normalized += character;
-      continue;
-    }
-    if (character === ",") {
-      let nextIndex = index + 1;
-      while (/\s/.test(withoutComments[nextIndex] ?? "")) nextIndex += 1;
-      if (withoutComments[nextIndex] === "}" || withoutComments[nextIndex] === "]") continue;
-    }
-    normalized += character;
-  }
-  return normalized;
-}
-
-function writeJsonConfig(config) {
-  writeConfig(`${JSON.stringify(config, null, 2)}\n`);
-}
-
 function replaceWorkerName(name) {
   const workerName = typeof name === "string" ? name.trim() : "";
   if (!workerName) return;
-  const config = readJsonConfig();
-  config.name = workerName;
-  writeJsonConfig(config);
+  const config = readConfig();
+  config.worker.name = workerName;
+  writeConfig(config);
 }
 
 function replaceKvNamespaceId(id) {
-  const content = readConfig();
-  if (!content.includes(PLACEHOLDER_KV_ID)) return;
-  writeConfig(content.replace(PLACEHOLDER_KV_ID, id));
+  const config = readConfig();
+  const binding = config.worker.env.SUBPILOT_CONFIG;
+  config.worker.env.SUBPILOT_CONFIG = { ...binding, type: "kv", id };
+  writeConfig(config);
 }
 
 function parseRefreshHours(value) {
@@ -188,40 +82,39 @@ async function configureSourceRefreshSchedule(createdConfig) {
     return;
   }
 
-  const config = readJsonConfig();
-  config.triggers = { ...(config.triggers ?? {}), crons: [refreshCronForHours(hours), RULE_SET_REFRESH_CRON, RULE_SET_REBUILD_CRON] };
-  writeJsonConfig(config);
+  const config = readConfig();
+  const otherTriggers = (config.worker.triggers ?? []).filter((trigger) => trigger.type !== "scheduled");
+  config.worker.triggers = [...otherTriggers, ...[refreshCronForHours(hours), RULE_SET_REFRESH_CRON, RULE_SET_REBUILD_CRON]
+    .map((schedule) => ({ type: "scheduled", schedule }))];
+  writeConfig(config);
   process.stdout.write(`Configured upstream auto-refresh: every ${hours} hour${hours === 1 ? "" : "s"}.\n`);
 }
 
 function ensureRuleSetRebuildSchedule() {
-  const config = readJsonConfig();
-  const crons = Array.isArray(config.triggers?.crons) ? config.triggers.crons : [];
-  if (crons.includes(RULE_SET_REBUILD_CRON)) return;
-  config.triggers = { ...(config.triggers ?? {}), crons: [...crons, RULE_SET_REBUILD_CRON] };
-  writeJsonConfig(config);
+  const config = readConfig();
+  const triggers = config.worker.triggers ?? [];
+  if (triggers.some((trigger) => trigger.type === "scheduled" && trigger.schedule === RULE_SET_REBUILD_CRON)) return;
+  config.worker.triggers = [...triggers, { type: "scheduled", schedule: RULE_SET_REBUILD_CRON }];
+  writeConfig(config);
   process.stdout.write("Configured pending rule-set rebuilds: every 5 minutes.\n");
 }
 
 function ensureLoginRateLimitBinding(createdConfig) {
-  const config = readJsonConfig();
-  const rateLimits = Array.isArray(config.ratelimits) ? config.ratelimits : [];
+  const config = readConfig();
   const namespaceId = loginRateLimitNamespaceId(config);
-  const existingIndex = rateLimits.findIndex((binding) => binding?.name === LOGIN_RATE_LIMIT_BINDING_NAME);
-  if (existingIndex >= 0) {
-    const existing = rateLimits[existingIndex];
+  const existing = config.worker.env[LOGIN_RATE_LIMIT_BINDING_NAME];
+  if (existing) {
     const explicitlyConfigured = Boolean(process.env.SUBPILOT_LOGIN_RATE_LIMIT_NAMESPACE_ID);
-    if (!createdConfig && !explicitlyConfigured && existing?.namespace_id !== "1001") return;
-    rateLimits[existingIndex] = { ...existing, namespace_id: namespaceId };
-    config.ratelimits = rateLimits;
+    if (!createdConfig && !explicitlyConfigured && existing.namespace !== "1001") return;
+    config.worker.env[LOGIN_RATE_LIMIT_BINDING_NAME] = { ...existing, namespace: namespaceId };
   } else {
-    config.ratelimits = [...rateLimits, {
-      name: LOGIN_RATE_LIMIT_BINDING_NAME,
-      namespace_id: namespaceId,
+    config.worker.env[LOGIN_RATE_LIMIT_BINDING_NAME] = {
+      type: "rate-limit",
+      namespace: namespaceId,
       simple: { limit: 10, period: 60 }
-    }];
+    };
   }
-  writeJsonConfig(config);
+  writeConfig(config);
   process.stdout.write("Configured LOGIN_RATE_LIMITER: 10 attempts per minute per Cloudflare location.\n");
 }
 
@@ -235,21 +128,14 @@ function loginRateLimitNamespaceId(config) {
     }
     return override;
   }
-  const workerName = typeof config.name === "string" && config.name.trim() ? config.name.trim() : "subpilot-worker";
+  const workerName = config.worker.name;
   const value = createHash("sha256").update(`subpilot:${workerName}:login-rate-limit`).digest().readUInt32BE(0);
   return String(value || 1);
 }
 
-function extractNamespaceId(outputText) {
-  const clean = stripAnsi(outputText);
-  return clean.match(/["']?id["']?\s*[:=]\s*["']([a-f0-9]{32})["']/i)?.[1]
-    ?? clean.match(/\bid\b[^a-f0-9]*([a-f0-9]{32})/i)?.[1]
-    ?? null;
-}
-
 async function ensureKvNamespace() {
-  const current = readConfig();
-  if (!current.includes(PLACEHOLDER_KV_ID)) return;
+  const currentId = readConfig().worker.env.SUBPILOT_CONFIG?.id;
+  if (currentId && currentId !== PLACEHOLDER_KV_ID) return;
 
   const envNamespaceId = process.env.SUBPILOT_KV_NAMESPACE_ID;
   if (/^[a-f0-9]{32}$/i.test(envNamespaceId ?? "")) {
@@ -268,15 +154,20 @@ async function ensureKvNamespace() {
     return;
   }
 
-  const outputText = capture("wrangler", ["kv", "namespace", "create", "SUBPILOT_CONFIG"], { includeStderr: true });
-  const namespaceId = extractNamespaceId(outputText);
-  if (!namespaceId) {
-    process.stderr.write("Could not parse KV namespace id from Wrangler output.\n");
-    process.stderr.write(outputText);
+  const title = `${readConfig().worker.name}-SUBPILOT_CONFIG`;
+  const outputText = captureCf(["kv", "namespaces", "create", "--title", title]);
+  let namespaceId;
+  try {
+    namespaceId = JSON.parse(outputText).id;
+  } catch {
+    // Never write an unverified namespace ID into the local configuration.
+  }
+  if (!/^[a-f0-9]{32}$/i.test(namespaceId ?? "")) {
+    process.stderr.write("Could not parse the KV namespace id from cf output.\n");
     process.exit(1);
   }
   replaceKvNamespaceId(namespaceId);
-  process.stdout.write("KV namespace id written to local wrangler.jsonc.\n");
+  process.stdout.write(`KV namespace id written to local ${CONFIG_PATH}.\n`);
 }
 
 function sha256Hex(value) {
@@ -288,17 +179,13 @@ function randomSecret() {
 }
 
 function readRemoteSecretNames() {
-  const result = spawnSync("wrangler", ["secret", "list", "--format", "json", "--config", CONFIG_PATH], {
-    encoding: "utf8"
-  });
+  const result = spawnCf(["workers", "secrets", "list", "--worker", readConfig().worker.name]);
   if (result.status !== 0) {
     const message = stripAnsi(`${result.stdout ?? ""}\n${result.stderr ?? ""}`);
-    const name = readJsonConfig().name;
     // A new Worker has no secrets yet. Other failures must not be mistaken for
     // missing secrets: doing so could replace an existing encryption key.
-    if (result.status !== null && (typeof name === "string" && message.includes(`Worker "${name}" not found.`)
-      || /\[code:\s*10007\]/.test(message))) return new Set();
-    process.stderr.write("Could not verify existing Worker Secrets. Check Wrangler authentication and the configured Worker, then retry. No Secrets were written.\n");
+    if (result.status !== null && /\[10007\]/.test(message)) return new Set();
+    process.stderr.write("Could not verify existing Worker Secrets. Check cf authentication and the configured Worker and account, then retry. No Secrets were written.\n");
     process.exit(1);
   }
   try {
@@ -306,7 +193,7 @@ function readRemoteSecretNames() {
     if (!Array.isArray(secrets) || secrets.some((secret) => !secret || typeof secret.name !== "string")) throw Error("Invalid secret list");
     return new Set(secrets.map((secret) => secret.name));
   } catch {
-    process.stderr.write("Wrangler returned an invalid Secrets list. No Secrets were written.\n");
+    process.stderr.write("cf returned an invalid Secrets list. No Secrets were written.\n");
     process.exit(1);
   }
 }
@@ -344,29 +231,28 @@ function writeTempSecrets(secrets) {
 }
 
 function deployWorker() {
-  run("wrangler", ["deploy", "--config", CONFIG_PATH]);
+  runCf(["deploy"]);
 }
 
 function runWithSecrets(command, secrets) {
-  const { directory, file } = writeTempSecrets(secrets);
+  const payload = command === "deploy" ? secrets : {
+    secrets: Object.fromEntries(Object.entries(secrets).map(([name, text]) => [name, { name, type: "secret_text", text }]))
+  };
+  const { directory, file } = writeTempSecrets(payload);
   let result;
   try {
     const commandArgs = command === "deploy"
-      ? ["deploy", "--secrets-file", file, "--config", CONFIG_PATH]
-      : ["secret", "bulk", file, "--config", CONFIG_PATH];
-    result = spawnSync("wrangler", commandArgs, { stdio: "inherit" });
+      ? ["deploy", "--secrets-file", file]
+      : ["workers", "secrets", "bulk", "--worker", readConfig().worker.name, "--file", file];
+    result = spawnCf(commandArgs, { stdio: command === "deploy" ? "inherit" : ["inherit", "ignore", "inherit"] });
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
   if (result.status !== 0) process.exit(result.status ?? 1);
 }
 
-capture("wrangler", ["--version"], { includeStderr: true });
-if (existingConfigOnly && !existsSync(CONFIG_PATH)) {
-  process.stderr.write(`${CONFIG_PATH} is required for --existing-config-only. Run npm run setup first.\n`);
-  process.exit(1);
-}
-const createdConfig = ensureConfigFile();
+captureCf(["--version"]);
+const createdConfig = ensureConfigFile({ existingConfigOnly });
 replaceWorkerName(process.env.SUBPILOT_WORKER_NAME);
 if (!existingConfigOnly) await ensureKvNamespace();
 ensureLoginRateLimitBinding(createdConfig);
@@ -395,4 +281,4 @@ if (secretNamesToWrite.includes("ADMIN_TOKEN_HASH")) {
   process.stdout.write("The admin token you entered was hashed into ADMIN_TOKEN_HASH.\n");
   process.stdout.write("Store the original admin token in your password manager. It is not written to the repository or KV in plaintext.\n");
 }
-process.stdout.write("Use the URL printed by Wrangler, or attach a custom domain in Cloudflare and update wrangler.jsonc locally.\n");
+process.stdout.write(`Use the URL printed by cf, or attach a custom domain in Cloudflare and update ${CONFIG_PATH} locally.\n`);

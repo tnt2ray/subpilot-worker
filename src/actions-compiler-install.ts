@@ -1,8 +1,8 @@
 import { ACTIONS_OUTPUT_BRANCH, ACTIONS_COMPILER_PROTOCOL, ACTIONS_WORKFLOW_FILENAME, actionsCompilerProtocolKey } from "./actions-compiler-artifacts";
 import { createHash } from "node:crypto";
-import workflow from "../scripts/compile-rule-sets.yml" with { type: "text" };
-import compiler from "../dist/actions-compiler-runtime.mjs" with { type: "text" };
-import script from "../scripts/compile-rule-sets.mjs" with { type: "text" };
+import workflow from "../scripts/compile-rule-sets.yml?raw";
+import compiler from "../.subpilot-build/actions-compiler-runtime.mjs?raw";
+import script from "../scripts/compile-rule-sets.mjs?raw";
 import { validateActionsCompilationSettings } from "./config-validation";
 import { decryptJson, encryptJson } from "./crypto-store";
 import { sealGitHubSecret } from "./github-secret-seal";
@@ -17,7 +17,8 @@ const headers = { "cache-control": "no-store, private" };
 const sha = (value: unknown): value is string => typeof value === "string" && /^[a-f0-9]{40}$/.test(value);
 
 async function readCallbackOrigin(env: Env): Promise<string | null> {
-  const stored = await env.SUBPILOT_CONFIG.get(ACTIONS_CALLBACK_ORIGIN_KEY);
+  const stored = await env.SUBPILOT_CONFIG.get(ACTIONS_CALLBACK_ORIGIN_KEY)
+    ?? await env.SUBPILOT_CONFIG.get("integration:actions-compiler:migrated-v233-callback-origin:v1");
   if (stored === null) return null;
   try {
     const value = await decryptJson<{ version?: unknown; origin?: unknown }>(requireSecret(env, "CONFIG_ENCRYPTION_KEY"), stored);

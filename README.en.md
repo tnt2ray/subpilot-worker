@@ -28,24 +28,20 @@ The overview shows the latest 50 subscription requests, node counts, and subscri
 
 ### Prerequisites
 
-You need a Cloudflare account, Git or a release archive, Node.js/npm, and a globally installed Wrangler authenticated to the intended account. Install Wrangler only if it is missing:
-
-```bash
-npm install -g wrangler
-wrangler login
-```
+You need a Cloudflare account, Git or a release archive, Node.js **22.12 or later**, and npm. Builds and deployment use the project's Cloudflare `cf` CLI and Vite dependencies, so include development dependencies when installing. A global Wrangler installation is not required. The project currently pins preview versions of `cf` and the Cloudflare Vite plugin.
 
 ### Recommended setup
 
-Obtain the source and install runtime dependencies:
+Obtain the source, install dependencies, and sign in:
 
 ```bash
 git clone https://github.com/tnt2ray/subpilot-worker.git
 cd subpilot-worker
-npm install --omit=dev
+npm install --include=dev
+npm run cf -- auth login --mode template
 ```
 
-Alternatively, extract `subpilot-worker-vX.Y.Z.tar.gz` from [GitHub Releases](https://github.com/tnt2ray/subpilot-worker/releases), enter its directory, and run `npm install --omit=dev`.
+Alternatively, extract `subpilot-worker-vX.Y.Z.tar.gz` from [GitHub Releases](https://github.com/tnt2ray/subpilot-worker/releases), enter its directory, install dependencies with `npm install --include=dev`, and sign in with `npm run cf -- auth login --mode template`.
 
 **The following command creates or configures Cloudflare resources and deploys the Worker and admin UI:**
 
@@ -53,9 +49,9 @@ Alternatively, extract `subpilot-worker-vX.Y.Z.tar.gz` from [GitHub Releases](ht
 npm run setup
 ```
 
-On a new installation, setup creates local `wrangler.jsonc`, creates or reuses the `SUBPILOT_CONFIG` KV namespace, and asks for the source refresh interval (1–24 hours, default 12). It checks remote Secrets, requests an admin token of at least 24 characters when the admin credential is missing, and uses a supplied or generated encryption key when that Secret is missing. It deploys with the missing Secrets through a temporary file that is removed afterward. Keep the admin token in a password manager.
+On a new installation, setup creates `cloudflare.local.json` from `cloudflare.example.json`, creates or reuses the `SUBPILOT_CONFIG` KV namespace, and asks for the source refresh interval (1–24 hours, default 12). It checks remote Secrets, requests an admin token of at least 24 characters when the admin credential is missing, and uses a supplied or generated encryption key when that Secret is missing. It writes the missing Worker Secrets, builds, and deploys. Keep the admin token in a password manager.
 
-If `wrangler.jsonc` already exists, setup reuses it, verifies and preserves existing Secrets, and writes only missing ones. After an invalid token or failed deployment interrupts first-time setup, correct the problem and rerun `npm run setup`; an existing configuration file does not skip unfinished Secret initialization. Setup stops without writing Secrets if their remote state cannot be verified. `npm run setup -- --force-secrets` also deploys and replaces both Secrets; use it only for an intentional reset or planned rotation. **Preserve the existing `CONFIG_ENCRYPTION_KEY` when reusing encrypted KV data.**
+Setup reuses an existing `cloudflare.local.json`. If only the old `wrangler.jsonc` exists, setup can convert the deployment fields supported by this project and preserves the original. Unsupported custom fields or build settings stop conversion; follow the message to migrate them manually before retrying. After successful conversion, subsequent runs use `cloudflare.local.json`, retaining the existing Worker, KV namespace, and Secrets, and writing only missing Secrets. After an invalid token or failed deployment interrupts first-time setup, correct the problem and rerun `npm run setup`; an existing configuration file does not skip unfinished Secret initialization. Setup stops without writing Secrets if their remote state cannot be verified. `npm run setup -- --force-secrets` also deploys and replaces both Secrets; use it only for an intentional reset or planned rotation. **Preserve the existing `CONFIG_ENCRYPTION_KEY` when reusing encrypted KV data.**
 
 <details>
 <summary>Automation environment variables</summary>
@@ -76,46 +72,31 @@ The login limit defaults to 10 attempts per minute per client IP within each Clo
 </details>
 
 <details>
-<summary>Manual deployment</summary>
+<summary>Customize deployment settings</summary>
 
-1. Install runtime dependencies and copy the example configuration:
+After installing dependencies and signing in, you may copy the public example before running setup. Skip the copy if a local configuration already exists or you need to migrate an old one:
 
-   ```bash
-   npm install --omit=dev
-   cp wrangler.example.jsonc wrangler.jsonc
-   ```
+```bash
+cp cloudflare.example.json cloudflare.local.json
+```
 
-2. Set your Worker name in `wrangler.jsonc`. The following command creates a remote KV namespace; copy its returned `id` into `kv_namespaces[0].id`:
+Set `worker.name` in `cloudflare.local.json`. To reuse KV, set `worker.env.SUBPILOT_CONFIG.id` to the existing namespace ID; retain the example structure for other bindings. Run setup to check resources, fill in missing Secrets, and deploy:
 
-   ```bash
-   wrangler kv namespace create SUBPILOT_CONFIG
-   ```
+```bash
+npm run setup
+```
 
-3. Choose an admin token of at least 24 characters and calculate its SHA-256 hex value. This Bash command prompts without echoing the token:
+After later changes to deployment settings or application code, redeploy with:
 
-   ```bash
-   read -r -s -p 'Admin token: ' SUBPILOT_SETUP_TOKEN
-   printf '\n'
-   printf '%s' "$SUBPILOT_SETUP_TOKEN" | shasum -a 256 | awk '{print $1}'
-   unset SUBPILOT_SETUP_TOKEN
-   ```
+```bash
+npm run deploy
+```
 
-4. These commands write remote Worker Secrets. Supply the hash above for `ADMIN_TOKEN_HASH` and a long random string for `CONFIG_ENCRYPTION_KEY`; retain an existing encryption key when reusing KV data:
-
-   ```bash
-   wrangler secret put ADMIN_TOKEN_HASH
-   wrangler secret put CONFIG_ENCRYPTION_KEY
-   ```
-
-5. The following command deploys to the Worker configured in `wrangler.jsonc`:
-
-   ```bash
-   wrangler deploy
-   ```
+For additional Worker Secrets, declare each name under `worker.env` as `{ "type": "secret" }` so ordinary deployments preserve it. Keep the values in Worker Secrets.
 
 </details>
 
-For a custom domain, connect it to the Worker in Cloudflare or configure `routes` in local `wrangler.jsonc`. Keep that file untracked. The example configuration includes subscription refresh, daily rule-change detection, and pending rebuilds every 5 minutes; see [Cache and operational limits](#cache-and-operational-limits).
+For a custom domain, connect it to the Worker in Cloudflare or configure `worker.domains` in local `cloudflare.local.json`. Keep that file untracked. Secret values remain in Worker Secrets and must not be entered in the local configuration. The example includes subscription refresh, daily rule-change detection, and pending rebuilds every 5 minutes; see [Cache and operational limits](#cache-and-operational-limits).
 
 ## First use
 
@@ -172,7 +153,7 @@ Managed Base URL must include a non-root path and cannot occupy `/api`, `/vendor
 
 Subscriptions, static nodes and chain nodes are shared. Policy groups, rule sources, routing, networking and DNS are independent for each client. Names may be reused across clients.
 
-Surge, Clash and sing-box no longer convert, copy or initialize settings from one another. Fresh installations use sing-box's own native DNS, TUN inbound, outbound interface detection, Proxy group and FINAL rule defaults, with DNS reverse mapping enabled. Native routing rules include general sniffing followed by DNS query handling to support domain-based matching. Tailscale connections start empty. Proxy outbounds come from shared nodes and the current client's groups. Existing settings for each client are preserved.
+Surge, Clash and sing-box no longer convert, copy or initialize settings from one another. Fresh installations use sing-box's own native DNS, TUN inbound, outbound interface detection, Proxy group and FINAL rule defaults, with DNS reverse mapping enabled. Native routing rules include general sniffing followed by DNS query handling to support domain-based matching. Tailscale connections start empty. Proxy outbounds come from shared nodes and the current client's groups. New defaults do not overwrite saved configurations that use the current format.
 
 Configuration previews and modal editors include line numbers and syntax highlighting. Apply changes in the editor, then click Save configuration.
 
@@ -211,9 +192,9 @@ Surge supports types including `select` and `smart`, with `url-test` converted t
 
 The sing-box baseline is **1.15.0-alpha.8 (preview)**. Add optional settings through forms; removing an optional field restores core behavior. Device permissions, Always On and application selection must be configured in the actual client.
 
-sing-box TUN uses the core's default stack. The retired `stack` field is removed when older configurations are loaded or imported.
+sing-box TUN uses the core's default stack. The old `stack` field is unsupported; configurations containing it are rejected. Remove it before saving or importing.
 
-Native routing and advanced DNS rules support `dns_server_address` and `dns_search_domain`, including nested logical rules. Select an existing local, dhcp, resolved, tailscale, openvpn or openconnect DNS server, then enter IP addresses/CIDRs or search domains to choose routing and DNS policies based on the system, DHCP or VPN DNS environment. These conditions match the current network's DNS configuration, not destination IPs or queried domains. Referenced DNS servers must exist and use a supported type; remove references before deleting a server. Upgrades preserve existing settings and leave these optional conditions unset.
+Native routing and advanced DNS rules support `dns_server_address` and `dns_search_domain`, including nested logical rules. Select an existing local, dhcp, resolved, tailscale, openvpn or openconnect DNS server, then enter IP addresses/CIDRs or search domains to choose routing and DNS policies based on the system, DHCP or VPN DNS environment. These conditions match the current network's DNS configuration, not destination IPs or queried domains. Referenced DNS servers must exist and use a supported type; remove references before deleting a server. These optional conditions are not added by default.
 
 Use **Advanced → Client native outbounds** to configure HTTP, Tailcat and other connections, then reference them in the current client's groups and rules. HTTP outbounds without an explicit version prefer HTTP/2 with fallback, or HTTP/1.1 when `path` or a `Host` header is set. Explicit version and fallback settings are preserved; clear the version field to restore the default selection.
 
@@ -315,7 +296,7 @@ The workflow filename is fixed to `compile-rule-sets.yml`. When Actions is enabl
 
 Encrypted rule-plan snapshots remain in KV for 24 hours for authenticated Actions downloads. Normal Actions runs download original source bodies to temporary runner storage, remove them on completion and exclude them from the repository. Worker fallback uses the existing encrypted source and compiled-rule caches. The Worker keeps Actions publication metadata without storing or proxying its artifact bodies. Rule-set names and generated rules are public; source addresses, Worker addresses and credentials are excluded from artifacts and logs. The token and shared secret are encrypted separately and excluded from configuration exports. Replacing the token preserves the shared secret; clearing and reconfiguring requires reinstalling the workflow. `ADMIN_TOKEN_HASH` and `CONFIG_ENCRYPTION_KEY` remain Worker Secrets.
 
-Deployment builds run `npm run build:actions` to bundle the shared compiler for installation by the wizard. Generated files live in ignored `dist/` and are not committed; dependency installation also builds the bundle.
+Deployment builds and `npm run build:actions` bundle the shared compiler for installation by the wizard. Generated files live in ignored `.subpilot-build/` and are not committed; dependency installation also builds the bundle.
 
 ### Subscription checks
 
@@ -327,13 +308,42 @@ Configuration validation is not a connectivity test. Check sing-box startup logs
 
 ### Update an existing deployment
 
-Read the [release notes](https://github.com/tnt2ray/subpilot-worker/releases) first. **The following command updates local program files, installs runtime dependencies, and deploys to the Worker in local `wrangler.jsonc`:**
+Read the [release notes](https://github.com/tnt2ray/subpilot-worker/releases) and [configuration format requirements](#configuration-format-requirements) first, and ensure Node.js is at least 22.12. Preserve local deployment settings and existing Secrets. Close old admin pages and do not save their drafts until migration is complete.
+
+**For the first migration from a Wrangler deployment, do not run the old `npm run update` directly.** The old updater cannot complete this toolchain migration. Obtain the complete new application first:
+
+- Git clone: ensure tracked files have no changes, then run `git pull --ff-only`.
+- Release archive: download and extract the new complete `subpilot-worker-vX.Y.Z.tar.gz`, updating program files while preserving the original `wrangler.jsonc`.
+
+Then run the following in the updated project directory. Skip sign-in if `cf` is already authenticated to the intended account. The last command deploys to the existing Worker:
+
+```bash
+npm install --include=dev
+npm run cf -- auth login --mode template
+npm run setup -- --no-deploy --no-secrets --existing-config-only
+npm run deploy
+```
+
+This setup command only converts or completes an existing local deployment configuration; it does not create cloud resources, write Secrets, or deploy, and stops if no existing configuration is found. If only `wrangler.jsonc` exists, supported settings are converted to `cloudflare.local.json` and the original file is retained. Unsupported custom fields or build settings stop conversion; follow the message to migrate them manually before continuing. Confirm the new file still refers to the existing Worker and KV namespace. Subsequent deployments read that file.
+
+After deploying the new program, explicitly migrate v2.3.3 application configuration. Preview first, then apply:
+
+```bash
+npm run migrate:v2.3.3 -- --url https://your-worker.example
+npm run migrate:v2.3.3 -- --url https://your-worker.example --apply
+```
+
+Replace the example with your Worker HTTPS origin, including only the hostname and optional port, without paths or query parameters. HTTP is allowed for localhost. The command prompts for the admin token without echo; alternatively, provide `SUBPILOT_URL` and `SUBPILOT_ADMIN_TOKEN` through the environment. Do not put the token in command arguments. The default preview does not write data; `--apply` commits the configuration revision covered by its preview. Between deployment and migration, old configuration may temporarily prevent admin-page and subscription access; CLI login and the migration endpoint remain available.
+
+Migration runs within the existing Worker, using its Secret to decrypt and re-encrypt data. You do not need to retrieve or replace the encryption key. It retains an encrypted backup and original KV records before committing, does not rotate subscription tokens, and does not replace existing client settings with new defaults. After completion, reopen the admin page and check subscriptions. If KV propagation is still pending, retry preview and checks shortly instead of immediately applying again. Already-current configurations are not migrated again.
+
+**After deployment and application configuration migration, use the following for routine updates. It updates local program files, installs dependencies including build tools, and deploys to the configured Worker:**
 
 ```bash
 npm run update
 ```
 
-For a Git clone, it requires clean tracked files and pulls the current branch with `--ff-only`. For a release-archive installation, it prefers the latest `subpilot-worker-vX.Y.Z.tar.gz`, falls back to the source archive when that attachment is absent, and replaces managed program files. Both paths preserve `wrangler.jsonc` and existing Secrets. Do not remove that file or replace `CONFIG_ENCRYPTION_KEY`: existing encrypted data depends on the same key.
+For a Git clone, it requires clean tracked files and pulls the current branch with `--ff-only`. For a release-archive installation, it prefers the latest `subpilot-worker-vX.Y.Z.tar.gz`, falls back to the source archive when that attachment is absent, and replaces managed program files. Both paths preserve local deployment settings and existing Secrets. Do not remove your local configuration or replace `CONFIG_ENCRYPTION_KEY`: existing encrypted data depends on the same key.
 
 `npm run update -- --no-deploy` skips only the final deployment. It still updates code, dependencies, and local configuration, so it is not a read-only check.
 
@@ -341,9 +351,11 @@ The setup script adds the pending-rebuild schedule while retaining your existing
 
 ### Configuration format requirements
 
-Only saved version 3 configurations are supported, with sing-box configuration pinned to `1.15.0-alpha.8`. Before updating an existing deployment, complete its configuration upgrade and save using an application version that supports the old format. Old configurations are neither converted automatically nor overwritten with defaults. This version provides no migration page or command.
+Normal reads and writes accept only version 3 documents with sing-box `1.15.0-alpha.8`. **The alpha.6 configuration saved by v2.3.3 requires the explicit migration above, even when its document is already version 3.** The one-time tool supports only alpha.6 → alpha.8 conversion in a version 2 snapshot envelope containing a version 3 application document; already-current configurations need no migration. Older or unknown storage formats are rejected. Complete and save their format upgrade using an older application version that supports them before deploying this version. Normal reads do not migrate data automatically. The `wrangler.jsonc` conversion handles deployment files only and does not change application configuration in KV.
 
-Actions credentials and callback addresses stored only by the old SRS integration are no longer read. Enter them in the setup wizard and install the workflow again. Deployments with only old-format subscription tokens must rotate the read token and update client subscription URLs.
+The tool preserves complete, decryptable legacy Actions credentials, callback addresses, and subscription tokens, including supported old SRS records. Token rotation and replacement client subscription URLs are not required. Missing, damaged, or unverifiable records block migration; follow the preview guidance.
+
+If Actions compilation is enabled, reopen the admin page after migration and confirm workflow updates complete so the compiler uses sing-box alpha.8. The page attempts updates using saved credentials. If unfinished, open **System settings → Actions rule compilation → Setup wizard** and select **Check, install and enable**; leave the masked token unchanged to reuse it.
 
 ## Cache and operational limits
 
@@ -363,17 +375,21 @@ Rule sources share one complete encrypted body per URL; subscription sources sha
 
 After deleting a rule set or source, or changing its URL and saving, background cleanup removes unreferenced source bodies, metadata and compiled artifacts. Caches still used by another active rule or client remain. Source configuration entries with no rule-entry references are also removed. Old edge copies expire according to their cache lifetime; rule-download endpoints stop using deleted entries once they read the newly saved configuration.
 
-The default schedules in local `wrangler.jsonc` are:
+The default schedules in local `cloudflare.local.json` are shown below; unrelated fields are omitted:
 
 ```json
 {
-  "triggers": {
-    "crons": ["0 */12 * * *", "0 16 * * *", "*/5 * * * *"]
+  "worker": {
+    "triggers": [
+      { "type": "scheduled", "schedule": "0 */12 * * *" },
+      { "type": "scheduled", "schedule": "0 16 * * *" },
+      { "type": "scheduled", "schedule": "*/5 * * * *" }
+    ]
   }
 }
 ```
 
-The first entry refreshes subscriptions every 12 hours; keep your chosen interval if different. `0 16 * * *` is reserved for daily rule-source change detection, and `*/5 * * * *` for pending rebuilds every 5 minutes. Other cron entries refresh subscriptions. Existing deployments must add `*/5 * * * *` to `triggers.crons` in private `wrangler.jsonc` and redeploy; `npm run setup` and `npm run update` add it if missing. Without it, background work still starts immediately, but unfinished work cannot continue through the five-minute task. No new bindings or Secrets are required. Cron uses UTC; changes require deployment and time to propagate through Cloudflare. [Cron configuration](https://developers.cloudflare.com/workers/configuration/cron-triggers/)
+The first entry refreshes subscriptions every 12 hours; keep your chosen interval if different. `0 16 * * *` is reserved for daily rule-source change detection, and `*/5 * * * *` for pending rebuilds every 5 minutes. Other cron entries refresh subscriptions. Existing deployments must add the corresponding `scheduled` entry to `worker.triggers` in private `cloudflare.local.json` and redeploy; `npm run setup` and `npm run update` add the five-minute task if missing. Without it, background work still starts immediately, but unfinished work cannot continue through the five-minute task. No new bindings or Secrets are required. Cron uses UTC; changes require deployment and time to propagate through Cloudflare. [Cron configuration](https://developers.cloudflare.com/workers/configuration/cron-triggers/)
 
 Use **Force refresh** on the overview to refresh subscriptions. Save drafts before refreshing. Admin and Telegram times use the configured display time zone in `yyyy-mm-dd hh:mm:ss`; stored timestamps remain UTC.
 
@@ -439,25 +455,28 @@ Region lookup uses existing single-IP overrides first, then the uploaded databas
 - Configuration snapshots, subscription/rule-source caches, Worker-compiled JSON/text rules, and recoverable subscription read tokens are encrypted. Telegram tokens and other private configuration values are protected within the encrypted snapshot. Preserve the encryption key across updates and migration.
 - Optional GitHub Actions artifacts use the fixed `rules` branch of a public repository, with separate client directories. The dispatch token and shared secret use a separate encrypted KV record; the shared secret is also configured in Actions Secrets.
 - Admin sessions use signed HttpOnly cookies; they do not create `session:*` KV keys. Subscription read tokens grant configuration access and should be kept private and rotated if exposed.
-- `wrangler.jsonc` is local and untracked. Keep real Worker names, namespace IDs, domains, subscription URLs, passwords, MITM CAs, tokens, and private exports out of public source, issues, logs, and release archives. Configuration data contains private information and must not be shared publicly.
+- `cloudflare.local.json` is local and untracked; keep any old `wrangler.jsonc` retained after conversion private as well. Keep real Worker names, namespace IDs, domains, subscription URLs, passwords, MITM CAs, tokens, and private exports out of public source, issues, logs, and release archives. Configuration data contains private information and must not be shared publicly.
 
 ## Local development
 
-Install all dependencies with `npm install`. Use global Wrangler for development and checks:
+Use Node.js 22.12 or later and install all dependencies with `npm install --include=dev`. The commands below use the project's `cf` CLI and Vite. Public `cloudflare.config.ts` loads private `cloudflare.local.json`. `npm run dev` always uses locally simulated bindings and does not read or write remote KV.
 
 | Command | Purpose |
 | --- | --- |
 | `npm run dev` | Start the local Worker and admin UI |
+| `npm run build` | Build the Worker and admin UI |
+| `npm run deploy` | Build and deploy to the Worker in local configuration |
 | `npm run typecheck` | TypeScript validation |
+| `npm run types` | Generate Worker types with `cf workers types` |
 | `npm run typecheck:worker` | Generate Worker types and check TypeScript |
 | `npm run verify` | Worker type checks, TypeScript, and public-content scan |
 | `npm audit` | Dependency vulnerability advisory check |
 | `npm run dry-run` | Build deployment artifacts locally without deploying |
 
-`dry-run` uses local `wrangler.jsonc`. To check the public example instead:
+`dry-run` uses local `cloudflare.local.json`. To build with public `cloudflare.example.json` instead, without deploying:
 
 ```bash
-wrangler deploy --dry-run --config wrangler.example.jsonc --outdir /tmp/subpilot-dry-run
+npm run dry-run -- --mode template
 ```
 
 Use the matching sing-box core to validate downloaded configuration and generated rule sources:

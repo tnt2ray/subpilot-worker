@@ -21,12 +21,7 @@ SubPilot Worker 是运行在 Cloudflare Workers 上的订阅配置生成器，�
 
 ### 准备环境
 
-准备 Cloudflare 账号、Node.js 和 npm，使用 Git 克隆或下载发布包。使用全局 Wrangler；尚未安装时执行安装命令，然后登录：
-
-```bash
-npm install -g wrangler
-wrangler login
-```
+准备 Cloudflare 账号、Node.js **22.12 或更新版本**和 npm，使用 Git 克隆或下载发布包。构建和部署使用项目依赖中的 Cloudflare `cf` CLI 与 Vite，安装时需包含开发依赖，无需全局安装 Wrangler。当前 `cf` 与 Cloudflare Vite 插件使用项目锁定的预览版本。
 
 ### 使用初始化脚本
 
@@ -35,20 +30,21 @@ wrangler login
 ```bash
 git clone https://github.com/tnt2ray/subpilot-worker.git
 cd subpilot-worker
-npm install --omit=dev
+npm install --include=dev
+npm run cf -- auth login --mode template
 npm run setup
 ```
 
-也可下载 [GitHub Releases](https://github.com/tnt2ray/subpilot-worker/releases) 中的 `subpilot-worker-vX.Y.Z.tar.gz`，解压并进入项目目录后运行最后两条命令。
+也可下载 [GitHub Releases](https://github.com/tnt2ray/subpilot-worker/releases) 中的 `subpilot-worker-vX.Y.Z.tar.gz`，解压并进入项目目录后运行安装依赖、登录和初始化三条命令。
 
 全新安装时，脚本会：
 
-1. 从 `wrangler.example.jsonc` 生成本地 `wrangler.jsonc`，创建或配置 `SUBPILOT_CONFIG` KV namespace。
+1. 从 `cloudflare.example.json` 生成本地 `cloudflare.local.json`，创建或配置 `SUBPILOT_CONFIG` KV namespace。
 2. 询问上游订阅刷新间隔，范围为 1～24 小时，默认 12 小时。
 3. 核实远端 Secrets；缺少管理员凭据时要求输入至少 24 个字符的 token，缺少配置加密密钥时使用指定值或生成密钥。
-4. 将缺失的 `ADMIN_TOKEN_HASH`（token 的 SHA-256 hash）和 `CONFIG_ENCRYPTION_KEY` 通过 `wrangler deploy --secrets-file` 补齐并部署；临时密钥文件会在命令结束后删除。
+4. 将缺失的 `ADMIN_TOKEN_HASH`（token 的 SHA-256 hash）和 `CONFIG_ENCRYPTION_KEY` 写入 Worker Secrets，构建并部署。
 
-请把管理员 token 保存在密码管理器中。若已有本地 `wrangler.jsonc`，脚本会复用配置，核实并保留已有 Secrets，只补齐缺失项。首次安装因 token 无效或部署失败而中断后，可修正问题并重新运行 `npm run setup`；本地配置文件的存在不会导致跳过未完成的 Secrets 初始化。无法核实远端状态时停止，不写入 Secrets。手动安装见下方独立步骤。
+请把管理员 token 保存在密码管理器中。若已有 `cloudflare.local.json`，脚本会复用配置；仅有旧 `wrangler.jsonc` 时，脚本可转换本项目支持的部署字段并保留原件。遇到不支持的自定义字段或构建设置时会停止，请按提示手动迁移后重试。转换成功后以 `cloudflare.local.json` 为准，继续使用原 Worker、KV 和已有 Secrets，只补齐缺失项。首次安装因 token 无效或部署失败而中断后，可修正问题并重新运行 `npm run setup`；本地配置文件的存在不会导致跳过未完成的 Secrets 初始化。无法核实远端状态时停止，不写入 Secrets。
 
 仅在明确要替换管理员 token 和加密密钥时使用 `npm run setup -- --force-secrets`。替换现有 `CONFIG_ENCRYPTION_KEY` 会使原密钥加密的数据无法解密。
 
@@ -71,36 +67,29 @@ npm run setup
 </details>
 
 <details>
-<summary>手动部署</summary>
+<summary>自定义部署配置</summary>
 
-以下命令使用 Bash。先安装依赖并创建本地配置：
-
-```bash
-npm install --omit=dev
-cp wrangler.example.jsonc wrangler.jsonc
-wrangler kv namespace create SUBPILOT_CONFIG
-```
-
-在 `wrangler.jsonc` 中填写自己的 Worker 名称，将创建得到的 namespace ID 写入 `kv_namespaces[0].id`。再生成管理员 token 的 SHA-256 hash：
+完成依赖安装和登录后，可先复制公开示例配置再运行初始化。已有本地配置或需要迁移旧配置时跳过复制：
 
 ```bash
-read -r -s -p 'Admin token: ' SUBPILOT_ADMIN_TOKEN
-printf '\n'
-printf '%s' "$SUBPILOT_ADMIN_TOKEN" | shasum -a 256 | awk '{print $1}'
-unset SUBPILOT_ADMIN_TOKEN
+cp cloudflare.example.json cloudflare.local.json
 ```
 
-管理员 token 至少应有 24 个字符。以下操作会写入 Worker Secrets 并部署：
+在 `cloudflare.local.json` 中填写 `worker.name`，如需复用 KV，将 namespace ID 写入 `worker.env.SUBPILOT_CONFIG.id`；其余绑定保留示例结构。然后运行初始化，由脚本检查资源、补齐 Secrets 并部署：
 
 ```bash
-wrangler secret put ADMIN_TOKEN_HASH
-wrangler secret put CONFIG_ENCRYPTION_KEY
-wrangler deploy
+npm run setup
 ```
 
-`ADMIN_TOKEN_HASH` 填上述 SHA-256 hex；`CONFIG_ENCRYPTION_KEY` 填足够长的随机字符串。更新现有部署时保留原加密密钥。
+后续修改部署配置或程序后，使用以下命令重新部署：
 
-模板包含上游订阅刷新、每日规则变化检测、每 5 分钟待办续建三个定时任务，详见[缓存与运行边界](#缓存与运行边界)。自定义域名可在 Cloudflare 中连接到 Worker，或写入本地 `wrangler.jsonc` 的 `routes`。不要提交个人部署配置。
+```bash
+npm run deploy
+```
+
+如果配置了额外的 Worker Secrets，须在 `worker.env` 下按名称声明 `{ "type": "secret" }`，普通部署才会保留；密钥值仍放在 Worker Secrets 中。
+
+模板包含上游订阅刷新、每日规则变化检测、每 5 分钟待办续建三个定时任务，详见[缓存与运行边界](#缓存与运行边界)。自定义域名可在 Cloudflare 中连接到 Worker，或配置本地 `cloudflare.local.json` 的 `worker.domains`。不要提交个人部署配置；Secrets 的值仍由 Worker Secrets 管理，不填入本地配置。
 
 </details>
 
@@ -157,7 +146,7 @@ Surge 不区分 iOS/macOS、正式版/TF 或版本号，也不使用版本 Tag�
 
 订阅源、手动节点和链式节点供三个客户端共用。策略组、规则来源、分流规则、网络和 DNS 分别维护，修改一端不会同步到其他端。同名策略组和规则集名称可在不同客户端中分别使用。
 
-Surge、Clash 和 sing-box 不再互相转换、复制或初始化客户端设置。全新安装时，sing-box 使用自有的原生 DNS、TUN 入站、出口接口检测、Proxy 策略组和 FINAL 规则默认值，并默认启用 DNS 反向映射；原生路由规则依次包含通用嗅探和 DNS 查询接管，以便按域名匹配连接。Tailscale 连接默认为空。代理出站由共享节点和当前端策略组生成，已保存的各端配置保持原样。
+Surge、Clash 和 sing-box 不再互相转换、复制或初始化客户端设置。全新安装时，sing-box 使用自有的原生 DNS、TUN 入站、出口接口检测、Proxy 策略组和 FINAL 规则默认值，并默认启用 DNS 反向映射；原生路由规则依次包含通用嗅探和 DNS 查询接管，以便按域名匹配连接。Tailscale 连接默认为空。代理出站由共享节点和当前端策略组生成，新默认值不会覆盖符合当前格式的已保存配置。
 
 配置内容带行号和语法高亮，点击编辑图标打开编辑弹窗。应用更改后仍需点击页面底部“保存配置”。
 
@@ -196,9 +185,9 @@ Surge 支持 `select`、`smart` 等类型，`url-test` 会转换为 `smart`；Cl
 
 sing-box 适配基线为 **1.15.0-alpha.8（预览版）**。可选参数通过表单添加，移除可选字段恢复内核默认行为。订阅无法代替客户端设置系统权限、Always On 或应用选择；请在实际设备完成这些操作。
 
-sing-box 的 TUN 使用内核默认协议栈，旧配置中的 `stack` 字段在加载或导入时自动移除。
+sing-box 的 TUN 使用内核默认协议栈，不支持旧 `stack` 字段；包含该字段的配置会被拒绝，需要移除后再保存或导入。
 
-原生路由和高级 DNS 规则可添加 `dns_server_address`（网络 DNS 地址匹配）和 `dns_search_domain`（网络 DNS 搜索域匹配），包括逻辑规则的子规则。先选择已有的 local、dhcp、resolved、tailscale、openvpn 或 openconnect DNS 服务器，再填写 IP/CIDR 或搜索域，用于按系统、DHCP 或 VPN 提供的 DNS 环境选择路由和解析策略。它们匹配当前网络的 DNS 配置，不是目标 IP 或查询域名。规则引用的 DNS 服务器需存在且类型受支持；删除前须移除引用。旧配置升级保留原设置，默认不添加这些可选条件。
+原生路由和高级 DNS 规则可添加 `dns_server_address`（网络 DNS 地址匹配）和 `dns_search_domain`（网络 DNS 搜索域匹配），包括逻辑规则的子规则。先选择已有的 local、dhcp、resolved、tailscale、openvpn 或 openconnect DNS 服务器，再填写 IP/CIDR 或搜索域，用于按系统、DHCP 或 VPN 提供的 DNS 环境选择路由和解析策略。它们匹配当前网络的 DNS 配置，不是目标 IP 或查询域名。规则引用的 DNS 服务器需存在且类型受支持；删除前须移除引用。这些可选条件默认不添加。
 
 在“高级设置 → 本端原生出站”中可配置 HTTP、Tailcat 等连接，再通过当前端的策略组和规则引用。HTTP 出站未指定版本时默认优先 HTTP/2 并允许回退；设置 `path` 或 `Host` 请求头时默认使用 HTTP/1.1。明确指定的版本和回退设置会保留，清空版本字段即可恢复默认选择。
 
@@ -300,7 +289,7 @@ Worker 会在有限请求预算内尝试生成缺失的规则；仅当远程产�
 
 规则计划快照在 KV 中加密保存 24 小时，供 Actions 认证下载；正常 Actions 编译的来源正文由 runner 下载至临时目录，执行结束后清理，不写入仓库；Worker 接管时按原有方式加密缓存来源和本地编译结果。Worker 保存 Actions 发布元数据，不存储或代理其产物正文。规则集名称和生成的规则内容会公开，来源地址、Worker 地址和访问凭据不写入产物或任务日志。Token 与共享密钥独立加密保存，不进入配置导出；替换 Token 保留共享密钥，清除后重新配置则须重装工作流。`ADMIN_TOKEN_HASH`、`CONFIG_ENCRYPTION_KEY` 仍由 Worker Secrets 管理。
 
-部署构建会运行 `npm run build:actions`，从共享编译核心生成供配置向导安装的独立脚本。生成文件位于被忽略的 `dist/`，不提交到源仓库；安装依赖时也会自动构建。
+部署构建和 `npm run build:actions` 会从共享编译核心生成供配置向导安装的独立脚本。生成文件位于被忽略的 `.subpilot-build/`，不提交到源仓库；安装依赖时也会自动构建。
 
 ### 订阅检查
 
@@ -312,7 +301,36 @@ Worker 会在有限请求预算内尝试生成缺失的规则；仅当远程产�
 
 ### 更新程序
 
-先阅读 [Release 说明](https://github.com/tnt2ray/subpilot-worker/releases)，保留本地 `wrangler.jsonc` 和已有 Secrets。**以下命令会更新程序并部署到配置中的 Worker：**
+先阅读 [Release 说明](https://github.com/tnt2ray/subpilot-worker/releases)和下方[配置格式要求](#配置格式要求)，确认 Node.js 至少为 22.12，保留本地部署配置和已有 Secrets。关闭旧管理页，迁移完成前不要保存旧页面中的草稿。
+
+**首次从 Wrangler 部署迁移时，不要直接运行旧版 `npm run update`。** 旧版更新脚本无法完成此次工具链迁移。先按安装方式取得完整新版程序：
+
+- Git 克隆：确认已跟踪文件无改动后，运行 `git pull --ff-only`。
+- Release 发布包：下载并解压新版完整 `subpilot-worker-vX.Y.Z.tar.gz`，更新程序文件，保留原 `wrangler.jsonc`。
+
+然后在新版项目目录执行以下命令；`cf` 已登录目标账号时可跳过登录。最后一条会部署到原 Worker：
+
+```bash
+npm install --include=dev
+npm run cf -- auth login --mode template
+npm run setup -- --no-deploy --no-secrets --existing-config-only
+npm run deploy
+```
+
+初始化命令只转换或补齐已有本地部署配置，不创建云端资源、不写入 Secrets，也不部署；找不到已有配置时会停止。仅有旧 `wrangler.jsonc` 时，支持的配置会转换为 `cloudflare.local.json` 并保留原件；遇到不支持的自定义字段或构建设置时停止，按提示手动迁移后再继续。确认新文件仍指向原 Worker 和 KV；后续部署以它为准。
+
+新版部署完成后，v2.3.3 的业务配置需要显式迁移。先预览，再确认应用：
+
+```bash
+npm run migrate:v2.3.3 -- --url https://your-worker.example
+npm run migrate:v2.3.3 -- --url https://your-worker.example --apply
+```
+
+将示例地址换成自己的 Worker HTTPS 地址，只填写域名及可选端口，不带路径或查询参数；本机 localhost 可使用 HTTP。命令会隐藏输入管理员 token，也可通过环境变量 `SUBPILOT_URL` 和 `SUBPILOT_ADMIN_TOKEN` 提供地址及凭据，不要把 token 写在命令参数中。默认只显示迁移预览，不写入数据；`--apply` 才提交预览对应的配置版本。首次新部署后、迁移完成前，旧配置可能使管理页和订阅暂不可用，CLI 登录和迁移入口仍可使用。
+
+迁移在原 Worker 内完成，使用已有 Secret 解密和重加密，无需取出或更换加密密钥。提交前保留加密备份和原 KV 记录，不轮换订阅 token，也不以新默认值覆盖已有客户端设置。完成后重新打开管理页并执行订阅检查；如提示 KV 尚未传播，稍后重新预览和检查，不要直接重复提交。已经是当前格式时再次运行不会重复迁移。
+
+**完成部署与业务配置迁移后，日常更新使用以下命令，会更新程序并部署到配置中的 Worker：**
 
 ```bash
 npm run update
@@ -323,15 +341,17 @@ npm run update
 | Git 克隆 | 要求已跟踪文件无改动，再执行 `git pull --ff-only` 更新当前分支。 |
 | Release 发布包 | 优先下载最新 Release 的 `subpilot-worker-vX.Y.Z.tar.gz`，覆盖受管理的程序文件；附件缺失时回退源码包。 |
 
-两种方式都保留本地 Wrangler 配置、安装运行依赖并部署；安装脚本会在保留已有订阅周期的同时补齐每 5 分钟待办续建任务。`npm run update -- --no-deploy` 仅跳过最后的部署，仍会更新代码、依赖和本地配置，不是只读检查。更新后请核对[定时任务](#缓存与运行边界)。
+两种方式都保留本地部署配置和已有 Secrets，安装包含构建工具的完整依赖并部署。安装脚本会在保留已有订阅周期的同时补齐每 5 分钟待办续建任务。`npm run update -- --no-deploy` 仅跳过最后的部署，仍会更新代码、依赖和本地配置，不是只读检查。更新后请核对[定时任务](#缓存与运行边界)。
 
 侧栏“退出登录”下方显示当前版本，检测到新版本时显示绿色“有更新”。版本更新检查默认关闭，可在“系统设置”启用。启用后定时任务每天最多检查一次 GitHub Releases；已绑定 Telegram 时会提醒新版本，同一版本不会重复提醒。
 
 ### 配置格式要求
 
-仅支持已保存的版本 3 配置，sing-box 配置要求 `1.15.0-alpha.8`。已有部署应先在支持旧格式的程序版本中完成升级并保存，再更新程序。旧版配置不会自动转换，也不会被默认配置覆盖；本版不提供迁移页面或迁移命令。
+正常读写只接受版本 3 配置文档及 sing-box `1.15.0-alpha.8`。**v2.3.3 保存的 alpha.6 配置需要运行上述显式迁移，即使文档已经是版本 3。** 一次性工具仅支持快照封装版本 2、业务文档版本 3 的 alpha.6 → alpha.8 转换，当前有效格式无需再次迁移。更旧或未知的存储格式会被拒绝；请先在支持该格式的旧版本中完成格式升级并保存，再部署本版。普通读取不会自动迁移。`wrangler.jsonc` 转换仅处理部署文件，不修改 KV 中的业务配置。
 
-仅保存在旧 SRS 集成中的 Actions 凭据和访问地址不再读取，需要通过配置向导重新填写并安装工作流。仅有旧格式订阅令牌的部署需要轮换读取 token，并更新客户端订阅链接。
+工具会保留完整且可解密的旧 Actions 凭据、访问地址和订阅 token，包括受支持的旧 SRS 记录；不会要求轮换 token 或更换客户端订阅链接。记录缺失、损坏或无法验证时会阻止迁移，请按预览提示处理。
+
+已启用 Actions 编译时，迁移后打开管理页并确认工作流更新完成，使编译脚本使用 sing-box alpha.8。页面会尝试使用已保存凭据更新；未完成时，在“系统设置 → Actions 规则编译 → 配置向导”点击“检查、安装并启用”，保留掩码 token 即可复用凭据。
 
 ## 缓存与运行边界
 
@@ -351,17 +371,21 @@ npm run update
 
 删除规则集、来源或修改下载地址并保存后，后台清理失去生效引用的来源缓存、元数据和编译产物；仍被其他规则或客户端引用的缓存保留。未被任何规则条目引用的来源配置同时移除。边缘节点中的旧缓存副本受缓存有效期约束，下载入口读取到已保存的新配置后，不再使用已删除规则的副本。
 
-本地 `wrangler.jsonc` 的三个定时任务示例：
+本地 `cloudflare.local.json` 的三个定时任务示例（仅展示相关字段）：
 
 ```json
 {
-  "triggers": {
-    "crons": ["0 */12 * * *", "0 16 * * *", "*/5 * * * *"]
+  "worker": {
+    "triggers": [
+      { "type": "scheduled", "schedule": "0 */12 * * *" },
+      { "type": "scheduled", "schedule": "0 16 * * *" },
+      { "type": "scheduled", "schedule": "*/5 * * * *" }
+    ]
   }
 }
 ```
 
-`0 16 * * *` 固定用于每日规则来源变化检测，`*/5 * * * *` 固定用于每 5 分钟待办续建，其余 cron 用于上游订阅。第一项可按需调整并保留原订阅周期。已有部署需在私有 `wrangler.jsonc` 的 `triggers.crons` 中加入 `*/5 * * * *` 后重新部署；`npm run setup` 和 `npm run update` 会自动补齐缺少的这一项。缺少它时，立即后台更新仍会启动，但剩余待办不能依靠每 5 分钟任务自动继续。无需新增绑定或 Secrets。Cron 使用 UTC，新增或修改后需要部署并等待 Cloudflare 传播生效。[Cron 配置说明](https://developers.cloudflare.com/workers/configuration/cron-triggers/)
+`0 16 * * *` 固定用于每日规则来源变化检测，`*/5 * * * *` 固定用于每 5 分钟待办续建，其余 cron 用于上游订阅。第一项可按需调整并保留原订阅周期。已有部署需在私有 `cloudflare.local.json` 的 `worker.triggers` 中加入对应的 `scheduled` 项后重新部署；`npm run setup` 和 `npm run update` 会自动补齐缺少的每 5 分钟任务。缺少它时，立即后台更新仍会启动，但剩余待办不能依靠每 5 分钟任务自动继续。无需新增绑定或 Secrets。Cron 使用 UTC，新增或修改后需要部署并等待 Cloudflare 传播生效。[Cron 配置说明](https://developers.cloudflare.com/workers/configuration/cron-triggers/)
 
 后台和 Telegram 按设置的显示时区展示时间，KV 系统时间使用 UTC。
 
@@ -433,7 +457,7 @@ npm run update
 
 | 数据 | 保存位置 |
 | --- | --- |
-| Worker 名称、KV namespace ID、自定义域名 | 未跟踪的本地 `wrangler.jsonc` |
+| Worker 名称、KV namespace ID、自定义域名 | 未跟踪的本地 `cloudflare.local.json`；转换后保留的旧 `wrangler.jsonc` 也应保持私有 |
 | 管理员 token 的 SHA-256 hash | Worker Secret `ADMIN_TOKEN_HASH`，不保存 token 明文 |
 | 配置加密密钥 | Worker Secret `CONFIG_ENCRYPTION_KEY` |
 | 配置快照、上游与规则缓存、Worker 编译的 JSON/文本规则、Bot Token、可恢复读取 token | 加密的 Workers KV 数据 |
@@ -445,24 +469,27 @@ npm run update
 
 ## 本地开发
 
-使用 `npm install` 安装完整依赖，按需运行以下命令；Wrangler 使用全局版本：
+使用 Node.js 22.12 或更新版本，执行 `npm install --include=dev` 安装完整依赖。下列命令调用项目内的 `cf` CLI 和 Vite；公共 `cloudflare.config.ts` 加载私有 `cloudflare.local.json`。`npm run dev` 固定使用本地模拟绑定，不读写远端 KV。
 
 | 命令 | 用途 |
 | --- | --- |
 | `npm run dev` | 启动本地 Worker 与管理页 |
+| `npm run build` | 构建 Worker 与管理页 |
+| `npm run deploy` | 构建并部署到本地配置指定的 Worker |
 | `npm run typecheck` | TypeScript 检查 |
+| `npm run types` | 使用 `cf workers types` 生成 Worker 类型 |
 | `npm run typecheck:worker` | 生成 Worker 类型并检查 TypeScript |
 | `npm run verify` | Worker 类型生成、TypeScript 检查和公开文件扫描 |
 | `npm audit` | 依赖漏洞检查 |
 | `npm run dry-run` | 本地生成部署产物，不执行部署 |
 
-`dry-run` 使用本地 `wrangler.jsonc`。也可显式使用公开示例配置检查构建，以下命令不会部署：
+`dry-run` 使用本地 `cloudflare.local.json`。也可使用公开 `cloudflare.example.json` 检查构建，以下命令不会部署：
 
 ```bash
-wrangler deploy --dry-run --config wrangler.example.jsonc --outdir /tmp/subpilot-dry-run
+npm run dry-run -- --mode template
 ```
 
-API 保存使用版本 3 文档；旧版配置读取时自动转换。订阅输出端通过通用地址请求的 User-Agent 识别。
+API 读写使用版本 3 文档。订阅输出端通过通用地址请求的 User-Agent 识别。
 
 下载 sing-box 输出后，可在已安装对应内核的环境中检查：
 

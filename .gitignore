@@ -3,9 +3,17 @@ __pycache__/main.cpython-39.pyc
 .DS_Store
 node_modules/
 .wrangler/
+.cloudflare/
+.subpilot-build/
 dist/
 worker-configuration.d.ts
 .dev.vars
+.dev.vars.*
+!.dev.vars.example
+.env
+.env.*
+!.env.example
 /wrangler.jsonc
+/cloudflare.local.json
 /AGENTS.md
 *.local

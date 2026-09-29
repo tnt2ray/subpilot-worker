@@ -1,18 +1,14 @@
 #!/usr/bin/env node
 
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { spawnSync } from "node:child_process";
+import { runCf } from "./lib/cloudflare-cli.mjs";
+import { CONFIG_PATH } from "./lib/cloudflare-config.mjs";
 
-const outputFile = "worker-configuration.d.ts";
-const configPath = existsSync("wrangler.jsonc") ? "wrangler.jsonc" : "wrangler.example.jsonc";
+const outputFile = ".cloudflare/types/index.d.ts";
 
 rmSync(outputFile, { force: true });
 
-const result = spawnSync("wrangler", ["types", outputFile, "--config", configPath], {
-  stdio: "inherit"
-});
-
-if (result.status !== 0) process.exit(result.status ?? 1);
+runCf(["workers", "types", ...(!existsSync(CONFIG_PATH) ? ["--mode", "template"] : [])]);
 
 const generatedTypes = readFileSync(outputFile, "utf8");
 writeFileSync(outputFile, generatedTypes.replace(/[ \t]+$/gm, ""));

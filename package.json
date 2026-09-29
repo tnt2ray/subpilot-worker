@@ -5,10 +5,13 @@
   "license": "AGPL-3.0-or-later",
   "type": "module",
   "scripts": {
-    "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
+    "cf": "cf",
+    "dev": "cf dev",
+    "build": "cf build",
+    "deploy": "cf deploy",
     "setup": "node scripts/setup-cloudflare.mjs",
     "update": "node scripts/update-cloudflare.mjs",
+    "migrate:v2.3.3": "node scripts/migrate-v233.mjs",
     "package:release": "node scripts/package-release.mjs",
     "types": "node scripts/generate-worker-types.mjs",
     "typecheck": "tsc --noEmit",
@@ -17,31 +20,40 @@
     "verify": "npm run typecheck:worker && npm run public:scan",
     "vendor:codemirror": "node scripts/build-codemirror-vendor.mjs",
     "public:scan": "node scripts/check-public-safety.mjs",
-    "dry-run": "wrangler deploy --dry-run --outdir dist",
+    "dry-run": "cf deploy --dry-run",
     "build:actions": "node scripts/build-actions-compiler.mjs",
     "prepare": "npm run build:actions"
+  },
+  "engines": {
+    "node": ">=22.12.0"
   },
   "dependencies": {
     "@cfworker/json-schema": "4.1.1",
     "blakejs": "1.2.1",
+    "esbuild": "^0.28.1",
     "mmdb-lib": "^3.0.2",
     "tweetnacl": "1.0.3",
-    "yaml": "^2.8.1",
-    "esbuild": "^0.28.1"
+    "yaml": "^2.8.1"
   },
   "devDependencies": {
+    "@cloudflare/vite-plugin": "2.0.0-beta.sha-ad79608dd",
     "@codemirror/commands": "^6.10.4",
     "@codemirror/language": "^6.12.4",
     "@codemirror/state": "^6.7.1",
     "@codemirror/view": "^6.43.6",
     "@playwright/test": "^1.61.0",
     "@types/node": "^25.9.3",
+    "cf": "1.0.0-beta.5",
     "codemirror": "^6.0.2",
     "pkijs": "^3.4.0",
     "typescript": "^7.0.2",
+    "vite": "8.3.1",
     "vitest": "^4.1.11"
   },
   "overrides": {
-    "esbuild": "^0.28.1"
+    "esbuild": "^0.28.1",
+    "miniflare": {
+      "undici": "7.29.1"
+    }
   }
 }

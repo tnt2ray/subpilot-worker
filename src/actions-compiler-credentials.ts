@@ -17,7 +17,8 @@ interface ActionsCredentials {
 /** Separate from configuration snapshots, exports and compiled-cache cleanup. */
 export async function readActionsCredentials(env: Env): Promise<ActionsCredentials> {
   try {
-    const stored = await env.SUBPILOT_CONFIG.get(ACTIONS_CREDENTIALS_KEY);
+    const stored = await env.SUBPILOT_CONFIG.get(ACTIONS_CREDENTIALS_KEY)
+      ?? await env.SUBPILOT_CONFIG.get("integration:actions-compiler:migrated-v233-credentials:v1");
     if (stored !== null) {
       const value = await decryptJson<{ version?: unknown; token?: unknown; sharedSecret?: unknown }>(requireSecret(env, "CONFIG_ENCRYPTION_KEY"), stored);
       if (!value || value.version !== 1 || (value.token !== "" && !validToken(value.token))
