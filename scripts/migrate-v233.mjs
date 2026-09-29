@@ -2,9 +2,11 @@
 
 import { createInterface } from "node:readline";
 import { Writable } from "node:stream";
+import { setTimeout as delay } from "node:timers/promises";
 
 const MIGRATION_PATH = "/api/maintenance/migrate-v2.3.3";
 const REQUEST_TIMEOUT_MS = 30_000;
+const APPLY_TIMEOUT_MS = 5 * 60_000;
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 
 class MigrationError extends Error {}
@@ -17,7 +19,7 @@ Use --apply to preview again and apply the current revision explicitly.
 
 Options:
   --url ORIGIN  Existing Worker HTTPS origin; HTTP is allowed only on localhost.
-  --apply       Apply a ready migration after checking its revision.
+  --apply       Apply the current revision; wait up to 5 minutes for cleanup.
   --help        Show this help without making requests.
 
 Environment:
@@ -119,7 +121,7 @@ function plainString(value, limit) {
 
 function previewMetadata(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)
-    || !["ready", "current", "empty", "blocked"].includes(value.status)) {
+    || !["ready", "current", "empty", "blocked", "pending"].includes(value.status)) {
     throw new MigrationError("The Worker returned invalid migration status metadata.");
   }
   for (const field of ["changes", "blockers"]) {
@@ -132,7 +134,29 @@ function previewMetadata(value) {
     || value.status === "ready" && (!value.revision || value.blockers.length)) {
     throw new MigrationError("The Worker returned an invalid migration revision.");
   }
+  if (value.retryAfterSeconds !== undefined && (!Number.isSafeInteger(value.retryAfterSeconds) || value.retryAfterSeconds < 0)
+    || value.status === "pending" && (value.retryAfterSeconds === undefined || value.blockers.length)) {
+    throw new MigrationError("The Worker returned invalid migration retry metadata.");
+  }
   return value;
+}
+
+function remainingApplyTime(deadline) {
+  const remaining = deadline - Date.now();
+  if (remaining <= 0) {
+    throw new MigrationError("Migration cleanup is not yet confirmed after 5 minutes. Run preview again shortly, then use --apply if cleanup is still required.");
+  }
+  return remaining;
+}
+
+async function waitForCleanup(seconds, deadline) {
+  const retryAt = Date.now() + Math.min(Math.max(seconds, 1) * 1000, APPLY_TIMEOUT_MS);
+  while (Date.now() < retryAt) {
+    const wait = Math.min(retryAt - Date.now(), remainingApplyTime(deadline));
+    process.stdout.write(`Actions cleanup is pending. Next status check in ${Math.ceil(wait / 1000)} seconds.\n`);
+    await delay(Math.min(wait, 10_000));
+  }
+  remainingApplyTime(deadline);
 }
 
 async function main() {
@@ -143,12 +167,13 @@ async function main() {
   if (!token || Buffer.byteLength(token, "utf8") > 2048 || /[\r\n]/.test(token)) {
     throw new MigrationError("The admin token is empty or has an invalid length or format.");
   }
-  let cookie = "";
+  let cookie = "", applyDeadline = 0;
   const request = async (path, method = "GET", body) => {
+    const timeout = applyDeadline ? Math.min(REQUEST_TIMEOUT_MS, remainingApplyTime(applyDeadline)) : REQUEST_TIMEOUT_MS;
     const response = await fetch(new URL(path, origin), {
       method,
       redirect: "error",
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      signal: AbortSignal.timeout(timeout),
       headers: { accept: "application/json", ...(cookie ? { cookie } : {}), ...(body === undefined ? {} : { "content-type": "application/json" }) },
       ...(body === undefined ? {} : { body: JSON.stringify(body) })
     });
@@ -173,33 +198,57 @@ async function main() {
       throw new MigrationError("Login did not return a valid admin session.");
     }
     cookie = session[0];
-    const preview = previewMetadata(await readJson(await request(MIGRATION_PATH)));
+    let preview = previewMetadata(await readJson(await request(MIGRATION_PATH)));
     const summaries = {
       ready: "Migration is ready. Existing client settings will be preserved except for the listed changes.",
       current: "Configuration already uses the current format. No migration was written.",
       empty: "No existing configuration requires migration. No migration was written.",
-      blocked: "Migration is blocked. No migration was written."
+      blocked: "Migration is blocked. No migration was written.",
+      pending: "Migration cleanup is pending. Legacy Actions records have not been fully removed."
     };
     process.stdout.write(`${summaries[preview.status]}\n`);
     for (const change of preview.changes) process.stdout.write(`Change: ${change}\n`);
     for (const blocker of preview.blockers) process.stdout.write(`Blocked: ${blocker}\n`);
     if (preview.status === "blocked") { process.exitCode = 1; return; }
-    if (preview.status !== "ready") return;
+    if (!["ready", "pending"].includes(preview.status)) return;
     if (!options.apply) {
+      if (preview.status === "pending") process.stdout.write(`Cleanup can be checked again in ${preview.retryAfterSeconds} seconds.\n`);
       process.stdout.write("Preview only: no data was written. Review the changes, then rerun with --apply.\n");
       return;
     }
-    const applied = await readJson(await request(MIGRATION_PATH, "POST", { revision: preview.revision }));
-    if (applied?.status === "current") {
-      const current = previewMetadata(applied);
-      if (current.blockers.length) throw new MigrationError("The Worker returned conflicting migration status metadata.");
-      process.stdout.write("Configuration became current before apply. No duplicate migration was written. Reopen the admin page and check subscriptions.\n");
-      return;
+    applyDeadline = Date.now() + APPLY_TIMEOUT_MS;
+    while (true) {
+      if (preview.status === "pending") {
+        await waitForCleanup(preview.retryAfterSeconds, applyDeadline);
+        preview = previewMetadata(await readJson(await request(MIGRATION_PATH)));
+        if (preview.status === "pending") continue;
+      }
+      if (preview.status === "blocked") {
+        process.stdout.write("Migration is blocked; cleanup is not confirmed.\n");
+        for (const blocker of preview.blockers) process.stdout.write(`Blocked: ${blocker}\n`);
+        process.exitCode = 1;
+        return;
+      }
+      if (preview.status === "current") {
+        if (preview.blockers.length) throw new MigrationError("The Worker returned conflicting migration status metadata.");
+        process.stdout.write("Configuration is current and no legacy Actions migration remains. No duplicate migration was written.\n");
+        break;
+      }
+      if (preview.status !== "ready") {
+        throw new MigrationError("The migration status changed unexpectedly. Run preview again before attempting another apply.");
+      }
+      const applied = await readJson(await request(MIGRATION_PATH, "POST", { revision: preview.revision }));
+      if (["current", "pending"].includes(applied?.status)) {
+        preview = previewMetadata(applied);
+        continue;
+      }
+      if (!applied || typeof applied !== "object" || applied.status !== "applied" || !plainString(applied.backupKey, 1024)) {
+        throw new MigrationError("The apply result could not be confirmed. Run preview again before attempting another apply.");
+      }
+      process.stdout.write("Migration applied. The recoverable encrypted backup, original configuration snapshots, and subscription-token records were retained. Obsolete Actions credentials and callback records were removed only after their current records were written and verified. Worker Secrets were not changed.\n");
+      break;
     }
-    if (!applied || typeof applied !== "object" || applied.status !== "applied" || !plainString(applied.backupKey, 1024)) {
-      throw new MigrationError("The apply result could not be confirmed. Run preview again before attempting another apply.");
-    }
-    process.stdout.write("Migration applied. The encrypted backup and original KV records were retained; Worker Secrets were not changed.\n");
+    applyDeadline = 0;
     try {
       const current = await request("/api/config");
       await current.body?.cancel().catch(() => {});

@@ -27,7 +27,7 @@ export async function handleV233Migration(request: Request, env: Env): Promise<R
     const status = error instanceof RequestBodyTooLargeError ? 413 : error instanceof SyntaxError ? 400 : 503;
     // KV and decrypted configuration errors can contain private data.
     return jsonResponse({ error: status === 503
-      ? "Migration could not be completed. Preview again before retrying; original records are retained."
+      ? "Migration could not be completed. Preview again before retrying; verified backups are retained."
       : "Invalid migration request." }, { status, headers });
   }
 }
