@@ -1,4 +1,4 @@
-// Native Tailscale forms. Optional sing-box fields stay omitted until edited.
+// Native Tailscale forms. Optional fields stay omitted until edited.
 const surgeFields = [
   ["identity", "name", "策略名称", "Policy name", "text"],
   ["identity", "sectionName", "配置段名称", "Section name", "text"],
@@ -74,6 +74,22 @@ const singboxFields = [
   ["dns", "domain_resolver.rewrite_ttl", "重写 DNS TTL（秒）", "Rewrite DNS TTL (seconds)", "number", [0, 4294967295]],
   ["dns", "domain_resolver.client_subnet", "EDNS 客户端子网", "EDNS client subnet", "text"]
 ];
+const clashFields = [
+  ["identity", "name", "节点名称", "Node name", "text"],
+  ["identity", "hostname", "设备主机名", "Hostname", "text"],
+  ["identity", "auth-key", "认证密钥（可留空交互登录）", "Auth key (optional for interactive login)", "password"],
+  ["identity", "control-url", "控制服务器地址", "Control server URL", "text"],
+  ["identity", "state-dir", "状态存储目录（每个实例独立）", "State directory (separate for each instance)", "text"],
+  ["identity", "ephemeral", "临时节点", "Ephemeral node", "boolean"],
+  ["routing", "accept-routes", "接受 Tailnet 子网路由", "Accept Tailnet subnet routes", "boolean"],
+  ["routing", "exit-node", "出口节点（IP 或 auto:any）", "Exit node (IP or auto:any)", "text"],
+  ["routing", "exit-node-allow-lan-access", "使用出口时允许访问本地局域网", "Allow LAN access with exit node", "boolean"],
+  ["connection", "udp", "UDP 转发（默认关闭）", "UDP forwarding (disabled by default)", "boolean"],
+  ["connection", "dialer-proxy", "控制服务与中继的前置代理", "Upstream proxy for control services and relays", "policy"],
+  ["connection", "interface-name", "连接使用的网络接口", "Outbound network interface", "text"],
+  ["connection", "routing-mark", "Linux 路由标记", "Linux routing mark", "number", [0, 4294967295]],
+  ["connection", "ip-version", "连接 IP 版本", "Outbound IP version", "select", ["dual", "ipv4", "ipv6", "ipv4-prefer", "ipv6-prefer"]]
+];
 const groups = [
   ["identity", "身份与登录", "Identity and login"], ["routing", "路由与出口", "Routing and exit node"],
   ["interface", "接口与中继", "Interfaces and relay"], ["services", "SSH 与文件接收", "SSH and file transfers"],
@@ -81,7 +97,7 @@ const groups = [
 ];
 const object = (value) => value && typeof value === "object" && !Array.isArray(value);
 const get = (node, key) => key.split(".").reduce((value, part) => value?.[part], node);
-const fields = (client) => client === "surge" ? surgeFields : singboxFields;
+const fields = (client) => client === "surge" ? surgeFields : client === "clash" ? clashFields : singboxFields;
 function displayed(node, key, type) {
   const value = get(node, key) ?? (key === "autoAddMagicDnsRule" ? true : key === "interactiveLogin" ? false : undefined);
   if (type === "ssh") return object(value) ? "custom" : value === undefined ? "" : String(value);
@@ -91,6 +107,7 @@ function displayed(node, key, type) {
   return value === undefined ? "" : String(value);
 }
 export function newTailscaleNode(client) {
+  if (client === "clash") return { name: "", type: "tailscale", "state-dir": `./tailscale/${crypto.randomUUID()}` };
   return client === "surge" ? { name: "", sectionName: "", enabled: true, interactiveLogin: false, autoAddMagicDnsRule: true, authKey: "", controlUrl: "", hostname: "", derpOnly: false, exitNode: "none", idleKeepalive: 600, preferIpv6: false, dnsServer: [], mtu: 1280, underlyingProxy: "", testUrl: "", testTimeout: 5 } : { type: "tailscale", tag: "" };
 }
 export function tailscaleForm(client, node, policies, t, esc) {
@@ -114,7 +131,7 @@ export function tailscaleForm(client, node, policies, t, esc) {
       else control = `<input ${common} type="${type === "number" ? "number" : type === "password" ? "password" : "text"}" ${type === "number" ? `min="${choices[0]}" max="${choices[1]}" step="1"` : ""} value="${esc(value)}" autocomplete="${type === "password" ? "new-password" : "off"}" spellcheck="false">`;
       return `<div class="form-row" data-ts-row="${key}"><label for="ts-${key}">${esc(t(zh, en))}</label><div class="field">${control}</div></div>`;
     }).join("");
-    return group === "identity" ? body : `<details class="ts-field-group"><summary>${esc(t(zh, en))}</summary>${body}</details>`;
+    return group === "identity" ? body : `<details class="ts-field-group" ${client === "clash" && group === "routing" ? "open" : ""}><summary>${esc(t(zh, en))}</summary>${body}</details>`;
   }).join("") + (client === "surge" ? `<p class="help">${t("交互登录需在 Surge 策略编辑器中完成，身份保存在当前设备；更改配置段名称可能需要重新登录。自动规则覆盖 MagicDNS 和对端地址，子网和出口流量仍需显式规则。", "Complete interactive sign-in in the Surge policy editor. Identity stays on that device; renaming the section may require signing in again. Automatic rules cover MagicDNS and peer addresses; subnets and exit traffic still need explicit rules.")}</p>` : "") + `<datalist id="ts-policies">${policies.map((policy) => `<option value="${esc(policy)}"></option>`).join("")}</datalist>`;
 }
 export function updateTailscaleForm(root) {
@@ -145,7 +162,7 @@ export function readTailscaleForm(client, original, root, t) {
     raw = raw.trim();
     if (type === "ssh") { set(key, raw === "custom" ? {} : raw === "" ? undefined : raw === "true"); continue; }
     if (type === "resolver") { set(key, raw === "" ? undefined : {}); continue; }
-    if (raw === "" && client === "singbox") { set(key, undefined); continue; }
+    if (raw === "" && client !== "surge") { set(key, undefined); continue; }
     let value = raw;
     if (type === "boolean") value = raw === "true";
     if (["list", "networks"].includes(type)) value = raw.split("\n").map((line) => line.trim()).filter(Boolean);
@@ -169,13 +186,17 @@ export function readTailscaleForm(client, original, root, t) {
     }
     result.type = "tailscale";
     if (!result.tag?.trim()) fail("请填写端点名称", "Enter an endpoint tag");
+  } else if (client === "clash") {
+    result.type = "tailscale";
+    if (!result.name?.trim() || /[,\r\n]/.test(result.name)) fail("请填写不含逗号或换行的节点名称", "Enter a node name without commas or line breaks");
+    if (result["dialer-proxy"] === result.name) fail("前置代理不能引用当前节点自身", "An upstream proxy cannot reference itself");
   } else {
     if (!result.name.trim() || /[=,\r\n[\]]/.test(result.name)) fail("策略名称无效", "Invalid policy name");
     if (!result.sectionName.trim() || /[\s=,\r\n[\]]/.test(result.sectionName)) fail("配置段名称无效，不能包含空格", "Invalid section name; spaces are not allowed");
     if (result.interactiveLogin) result.authKey = "";
     if (result.enabled && !result.interactiveLogin && !result.authKey.trim()) fail("启用节点需要认证密钥", "An enabled node requires an auth key");
   }
-  for (const key of client === "surge" ? ["controlUrl", "testUrl"] : ["control_url"]) {
+  for (const key of client === "surge" ? ["controlUrl", "testUrl"] : client === "clash" ? ["control-url"] : ["control_url"]) {
     if (!result[key]) continue;
     try { const url = new URL(result[key]); if (!["https:", "http:"].includes(url.protocol)) throw Error(); }
     catch { fail("控制服务器或测速地址格式无效", "Invalid control server or test URL"); }

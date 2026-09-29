@@ -76,7 +76,6 @@ export function buildClashGroups(
 ): Record<string, unknown>[] {
   const disabledGroups = new Set(config.disabledGroups);
   const unavailableConfiguredPolicies = configuredProxyNamesUnavailableIn(nodes, config);
-  for (const node of config.surge.tailscaleNodes) unavailableConfiguredPolicies.add(node.name);
   const groups = activeGroupEntries(config, "clash").map(([name, spec]) => {
     const [type, ...items] = splitGroupSpec(spec);
     const groupType = (type || "select").trim().toLowerCase();

@@ -98,7 +98,7 @@ export function toSurgeLine(node: ProxyNode): string {
   return `${node.name} = ${[type, node.server, String(node.port ?? 0), ...suffix].join(", ")}`;
 }
 
-const CLASH_NATIVE_PROTOCOLS = new Set(["easytier", "zerotier", "masque", "wireguard", "openvpn"]);
+const CLASH_NATIVE_PROTOCOLS = new Set(["easytier", "zerotier", "tailscale", "masque", "wireguard", "openvpn"]);
 
 export function toClashProxy(node: ProxyNode): Record<string, unknown> {
   if (CLASH_NATIVE_PROTOCOLS.has(node.type) && node.raw) {
@@ -185,7 +185,7 @@ function parseYamlProxies(content: string, sourceId: string): ProxyNode[] {
       const type = normalizeClashInputType(asString(record.type));
       const server = asString(record.server);
       const port = toPort(record.port);
-      const serverless = ["easytier", "zerotier"].includes(type) || type === "wireguard" && Array.isArray(record.peers) && record.peers.length > 0;
+      const serverless = ["easytier", "zerotier", "tailscale"].includes(type) || type === "wireguard" && Array.isArray(record.peers) && record.peers.length > 0;
       if (!name || !type || !serverless && (!server || port === undefined)) return [];
       const params: ProxyNode["params"] = {};
       for (const [key, value] of Object.entries(record)) {

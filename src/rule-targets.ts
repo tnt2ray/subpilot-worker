@@ -1,6 +1,5 @@
 import { convertRule } from "./singbox-config";
 import { isValidSingboxHeadlessRule } from "./singbox-validation";
-import type { RenderConfig } from "./types";
 import { compiledFinalRuleOptions, splitRuleLine } from "./rule-line";
 import { RULE_SET_TARGETS, type RuleSetDirectRule, type RuleSetOutputTarget } from "./rule-set-types";
 
@@ -76,12 +75,6 @@ const FINAL_RULE_TYPES = new Set(["FINAL", "MATCH"]);
 const LOGICAL_RULE_TYPES = new Set(["AND", "OR", "NOT"]);
 const TARGET_IP_RULE_TYPES = new Set(["IP-CIDR", "IP-CIDR6", "GEOIP", "IP-ASN"]);
 const SURGE_EXTENDED_MATCHING_RULE_TYPES = new Set(["DOMAIN", "DOMAIN-SUFFIX", "DOMAIN-KEYWORD", "URL-REGEX"]);
-
-export function configuredTailscalePolicyNames(config: RenderConfig): Set<string> {
-  return new Set(config.surge.tailscaleNodes
-    .map((node) => node.name.trim())
-    .filter(Boolean));
-}
 
 export function inferDirectRuleTargets(rule: RuleSetDirectRule): RuleSetOutputTarget[] {
   const parts = splitRuleLine(rule.rule);

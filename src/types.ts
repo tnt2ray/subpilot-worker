@@ -7,32 +7,11 @@ export type NotificationChannel = "off" | "telegram";
 export type SurgeIpv6VifMode = "off" | "auto" | "always";
 export const CHAIN_EXIT_PROXY_NAME = "Chain Exit";
 export const STATIC_EXIT_GROUP_NAME = "Static";
-export const CHAIN_EXIT_PROTOCOLS = [
-  "http",
-  "https",
-  "socks5",
-  "socks5-tls",
-  "ss",
-  "snell",
-  "trojan",
-  "vmess",
-  "hysteria2",
-  "tuic",
-  "tuic-v5",
-  "anytls",
-  "trust-tunnel",
-  "h2-connect",
-  "masque",
-  "ssh"
-] as const;
-
-export type ChainExitProtocol = typeof CHAIN_EXIT_PROTOCOLS[number];
 
 export interface SourceConfig {
   id: string;
   name: string;
   url: string;
-  urlEncrypted?: string | undefined;
   fetchUserAgent: SourceFetchUserAgent;
   enabled: boolean;
 }
@@ -115,9 +94,13 @@ export interface ClashConfig {
   fallbackFilterGeoip: boolean;
   fallbackFilterIpcidr: string[];
   fakeIpFilter: string[];
+  tailscaleNodes: ClashTailscaleNodeConfig[];
   ruleProviders: string;
   rules: string[];
 }
+
+/** Mihomo-native fields; omitted options retain the core's defaults. */
+export type ClashTailscaleNodeConfig = Record<string, ProxyParamValue> & { name: string; type: "tailscale" };
 
 export interface ClashTunConfig {
   enable: boolean;
@@ -131,12 +114,6 @@ export interface StaticProxyNodeConfig {
   id: string;
   config: string;
   chainFilter: string[];
-  name?: string | undefined;
-  protocol?: ChainExitProtocol | undefined;
-  server?: string | undefined;
-  port?: number | undefined;
-  username?: string | undefined;
-  password?: string | undefined;
   enabled: boolean;
   chainExit: boolean;
   includeInGroups: boolean;
@@ -149,17 +126,12 @@ export interface ActionsCompilationSettings {
 }
 
 export interface RenderConfig {
-  version: 1;
   document?: AppConfig;
   renderTarget?: Target;
-  migrationRequired?: boolean;
-  ruleNamesPendingSave?: boolean;
   settings: {
     managedBaseUrl: string;
     userAgentSurge: string;
     userAgentClash: string;
-    userAgentStash: string;
-    userAgentShadowrocket: string;
     excludeKeywords: string[];
     geoipRenameEnabled: boolean;
     featureTagRules: string[];
@@ -242,7 +214,7 @@ export interface GenerationResult {
 /** Persisted configuration. Format-specific fields never inherit from another client. */
 export interface AppConfig {
   version: 3;
-  settings: Omit<RenderConfig["settings"], "userAgentStash" | "userAgentShadowrocket">;
+  settings: RenderConfig["settings"];
   sources: SourceConfig[];
   proxyNodes: StaticProxyNodeConfig[];
   clients: {
@@ -258,22 +230,6 @@ export interface ClientRuleSettings {
   disabledGroups: string[];
   ruleSets: RuleSetConfig;
 }
-
-type SharedClientSettings<T> = Omit<T, keyof ClientRuleSettings> & { ruleSets: Omit<RuleSetConfig, "sources"> };
-export interface SharedConfigDocument extends Omit<AppConfig, "version" | "clients"> {
-  version: 2;
-  groups: Record<string, string>;
-  disabledGroups: string[];
-  groupTargets: Record<string, Target[]>;
-  ruleSources: RuleSetConfig["sources"];
-  clients: {
-    surge: SharedClientSettings<AppConfig["clients"]["surge"]>;
-    clash?: SharedClientSettings<AppConfig["clients"]["clash"]>;
-    mihomo?: SharedClientSettings<AppConfig["clients"]["clash"]>;
-    singbox: SharedClientSettings<AppConfig["clients"]["singbox"]>;
-  };
-}
-export type StoredConfigDocument = AppConfig | SharedConfigDocument;
 
 export interface ConfigDiagnostic {
   severity: "info" | "warning" | "error";

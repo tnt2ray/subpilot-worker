@@ -57,7 +57,7 @@ export async function prepareRuleSetCache(
       const fingerprint = await ruleSetOutputFingerprint(config, state.output);
       const published = !options.force && !options.sourceOnly && usesActionsCompilation(config)
         ? await readActionsManifest(env, config, state.output) : null;
-      const cached = published ?? (options.force ? null : await readCompiledRuleSetManifest(env, state.output.name, { allowLegacy: false }));
+      const cached = published ?? (options.force ? null : await readCompiledRuleSetManifest(env, state.output.name));
       if (cached?.outputFingerprint === fingerprint) {
         state.manifest = cached;
         state.pending = !manifestIsFresh(cached, fingerprint) || Boolean(options.sourceOnly && usesActionsCompilation(config) && workerSourceExpired(cached));
@@ -123,7 +123,7 @@ export function scheduleRuleSetRebuild(
       try {
         if (!options.sourceOnly && usesActionsCompilation(config) && await readActionsManifest(env, config, output)) continue;
         fingerprint = await ruleSetOutputFingerprint(config, output);
-        const cached = await readCompiledRuleSetManifest(env, output.name, { allowLegacy: false });
+        const cached = await readCompiledRuleSetManifest(env, output.name);
         if (!options.force && cached && manifestIsFresh(cached, fingerprint)
           && !(options.sourceOnly && usesActionsCompilation(config) && workerSourceExpired(cached))) {
           continue;

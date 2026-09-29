@@ -87,7 +87,16 @@ export function buildSingbox(config: RenderConfig, nodes: ProxyNode[], hosts: Ho
   const dns = structuredClone(client.dns);
   const dnsRules: JsonObject[] = [];
   if (config.ruleSets.mode === "compiled") {
-    const rules: JsonObject[] = [{ protocol: "dns", action: "hijack-dns" }];
+    const nativeRules = Array.isArray(route.rules) ? route.rules : [];
+    const hasDnsHijack = nativeRules.some((rule) => {
+      if (!rule || typeof rule !== "object" || Array.isArray(rule)) return false;
+      const protocol = rule.protocol;
+      return rule.action === "hijack-dns" && (rule.type === undefined || rule.type === "default" || rule.type === "")
+        && (protocol === "dns" || Array.isArray(protocol) && protocol.length === 1 && protocol[0] === "dns")
+        && Object.keys(rule).every((key) => ["type", "action", "protocol"].includes(key));
+    });
+    // Keep the fallback for older configurations without duplicating a native DNS rule.
+    const rules: JsonObject[] = hasDnsHijack ? [] : [{ protocol: "dns", action: "hijack-dns" }];
     const ruleSets: JsonObject[] = [];
     const items = [
       ...effectiveRuleSetOutputs(config.ruleSets).map((output) => ({ order: output.order, output })),
@@ -137,13 +146,12 @@ export function buildSingbox(config: RenderConfig, nodes: ProxyNode[], hosts: Ho
       } catch (error) { diagnostics.push(issue("clients.singbox.ruleSets", "rule-conversion", "error", error instanceof Error ? error.message : "规则集生成失败")); }
     }
     // Explicit native rules take priority, just as native DNS rules do for Hosts.
-    route.rules = [...(Array.isArray(route.rules) ? route.rules : []), ...rules];
+    route.rules = [...nativeRules, ...rules];
     route.rule_set = [...(Array.isArray(route.rule_set) ? route.rule_set : []), ...ruleSets];
   }
   if (dnsRules.length) dns.rules = [...dnsRules, ...(Array.isArray(dns.rules) ? dns.rules : [])];
   mergeSingboxHosts(dns, hosts, diagnostics);
   const { coreVersion: _, ruleSets: __, groups: ___, disabledGroups: ____, ...nativeSettings } = client;
-  Reflect.deleteProperty(nativeSettings, "migrationIssues");
   const result = { ...nativeSettings, dns, outbounds, route };
   return JSON.stringify(result, null, 2) + "\n";
 }

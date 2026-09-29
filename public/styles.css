@@ -201,11 +201,6 @@ nav a.active {
 #content > * {
   min-width: 0;
 }
-#migration-banner {
-  flex-shrink: 0;
-  max-height: 35dvh;
-  overflow: auto;
-}
 .page-header {
   flex-shrink: 0;
   min-height: 65px;
@@ -1037,11 +1032,13 @@ dialog.routing-order-dialog { margin: 0 0 0 auto; width: min(600px, 100vw); max-
 .sb-summary { overflow-wrap: anywhere; color: var(--muted, #64748b); }
 .sb-form { min-width: 0; }
 .sb-field { position: relative; border-bottom: 1px solid #e5e7eb; padding: 14px 0; }
-.sb-label { display: block; margin-bottom: 8px; padding-right: 66px; font-weight: 600; overflow-wrap: anywhere; }
+.sb-label { display: block; margin-bottom: 8px; padding-right: 100px; font-weight: 600; overflow-wrap: anywhere; }
 .sb-field code { display: inline-block; color: #64748b; font-size: 12px; font-weight: 400; overflow-wrap: anywhere; }
-.sb-field > details { margin-right: 66px; }
+.sb-field > details { margin-right: 100px; }
 .sb-field > details > summary { cursor: pointer; padding: 6px 0; }
-.sb-control { margin-right: 66px; }
+.sb-control { margin-right: 100px; min-width: 0; }
+.sb-field-required > .sb-control, .sb-field-required > details { margin-right: 0; }
+.sb-field-required > .sb-label { padding-right: 0; }
 .sb-remove { position: absolute; right: 0; top: 14px; }
 .sb-remove button { font-size: 12px; padding: 5px 8px; }
 .sb-variant { display: grid; gap: 6px; margin: 10px 0; color: #475569; }
@@ -1052,6 +1049,12 @@ dialog.routing-order-dialog { margin: 0 0 0 auto; width: min(600px, 100vw); max-
 .sb-item { border: 1px solid #dbe2ea; border-radius: 8px; padding: 12px; margin: 12px 0; min-width: 0; }
 .sb-item > summary { cursor: pointer; overflow-wrap: anywhere; }
 .sb-item-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.sb-rule-section { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--border); }
+.sb-rule-section h3 { margin: 0 0 8px; font-size: 14px; }
+.sb-rule-section > .help { margin: 6px 0 12px; }
+.sb-rule-section .notice { margin: 10px 0; }
+.sb-value-add { margin-top: 6px; }
+.sb-value-add button { padding: 5px 8px; font-size: 12px; }
 .sb-secret { -webkit-text-security: disc; }
 @media (max-width: 600px) {
   .sb-item { padding: 8px; }
@@ -1166,6 +1169,8 @@ dialog.routing-order-dialog { margin: 0 0 0 auto; width: min(600px, 100vw); max-
 .sb-basic-fields .sb-label { margin: 0; padding-right: 0; font-size: 13px; }
 .sb-basic-fields .sb-label code { display: block; font-size: 11px; }
 .sb-basic-fields .sb-remove { top: 9px; }
+.sb-basic-fields > .sb-field.sb-rule-list { display: block; }
+.sb-rule-list > .sb-label { font-size: 14px; }
 .sb-advanced-fields, .sb-more-options { border-top: 1px solid var(--border); margin-top: 12px; padding: 10px 0; }
 .sb-advanced-fields > summary, .sb-more-options > summary { cursor: pointer; font-weight: 600; font-size: 13px; }
 .sb-scalar-item { display: grid; grid-template-columns: 24px minmax(0, 1fr) auto; align-items: center; gap: 8px; margin: 6px 0; }

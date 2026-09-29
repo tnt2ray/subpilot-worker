@@ -1,4 +1,5 @@
 import YAML from "yaml";
+import { validateClashTailscaleNodes } from "./clash-tailscale";
 import { singboxReferences, singboxSchema } from "./singbox-validation";
 import { splitRuleLine } from "./rule-line";
 import { splitGroupSpec, parseAllPolicySelector, parseGroupOption } from "./policy-group-spec";
@@ -116,8 +117,14 @@ export function collectOutputDiagnostics(config: RenderConfig, target: Target, c
     }
   } else if (target === "clash") {
     const data = YAML.parse(content);
-    for (const node of data.proxies ?? []) { nodes.add(node.name); if (node["dialer-proxy"]) detours.set(node.name, node["dialer-proxy"]); }
+    const tailscaleError = validateClashTailscaleNodes((data.proxies ?? []).filter((node: { type: string }) => node.type === "tailscale"));
+    if (tailscaleError) add("clients.clash.tailscaleNodes", "tailscale-config", tailscaleError);
+    for (const node of data.proxies ?? []) {
+      if (nodes.has(node.name)) add("clients.clash.tailscaleNodes", "duplicate-node", "Clash 输出节点名称重复。");
+      nodes.add(node.name); if (node["dialer-proxy"]) detours.set(node.name, node["dialer-proxy"]);
+    }
     for (const group of data["proxy-groups"] ?? []) {
+      if (nodes.has(group.name)) add("clients.clash.groups", "duplicate-policy", "Clash 节点与策略组名称重复。");
       groups.set(group.name, group.proxies ?? []);
       if (group["default-selected"] && !group.proxies?.includes(group["default-selected"])) add("clients.clash.groups", "selector-default", `${group.name} 的默认成员不在输出成员列表中。`);
     }

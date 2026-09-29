@@ -83,6 +83,7 @@ export function validateClashRules(config: RenderConfig, nodePolicies: Iterable<
   const disabledGroups = new Set(config.disabledGroups);
   const policies = new Set([
     ...nodePolicies,
+    ...(config.clash.tailscaleNodes ?? []).map((node) => node.name),
     ...Object.keys(config.groups).filter((name) => !disabledGroups.has(name)),
     ...CLASH_BUILT_IN_RULE_POLICIES
   ]);

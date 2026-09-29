@@ -120,7 +120,7 @@ export async function generateConfig(
   }
   diagnostics.push(...(prepared.ruleSetPlan?.errors ?? []).map((message): ConfigDiagnostic => ({ target, severity: "error", code: "rule-set-incompatible", path: "ruleSets", message })));
   let content = "";
-  let proxyCount = prepared.nodes.length;
+  let proxyCount = prepared.nodes.length + (target === "clash" ? config.clash.tailscaleNodes?.length ?? 0 : 0);
   try {
     content = target === "sing-box"
       ? buildSingbox(config, prepared.nodes, prepared.hostEntries, requestUrl, diagnostics, ruleSetCache!.manifests)

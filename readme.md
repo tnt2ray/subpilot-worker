@@ -106,7 +106,7 @@ wrangler deploy
 
 ## 首次配置
 
-打开部署地址，用管理员 token 登录。旧版本用户应先完成[配置迁移](#更新与迁移)。
+打开部署地址，用管理员 token 登录。已有部署更新前，请先核对[配置格式要求](#配置格式要求)。
 
 1. 在“系统设置”确认订阅基础 URL（通常为 `https://<your-domain>/sync`）和显示时区。
 2. 在“订阅源”添加上游地址、名称和抓取 User-Agent；在“代理节点”维护手动节点或链式出口。编辑节点时，仅启用“作为链式出口”后显示“前置节点筛选”；关闭后隐藏，保留已填写的筛选条件。每行一个关键词，节点名称或标签包含任一关键词即选中，不区分大小写、不支持正则。仅为命中的非出口节点生成链式节点，未命中节点不参与；留空不生成。链路为“本机 → 命中节点 → 当前出口节点 → 目标网站”。
@@ -157,9 +157,7 @@ Surge 不区分 iOS/macOS、正式版/TF 或版本号，也不使用版本 Tag�
 
 订阅源、手动节点和链式节点供三个客户端共用。策略组、规则来源、分流规则、网络和 DNS 分别维护，修改一端不会同步到其他端。同名策略组和规则集名称可在不同客户端中分别使用。
 
-Surge、Clash 和 sing-box 不再互相转换、复制或初始化客户端设置。全新安装或从版本 1 配置升级时，sing-box 使用自有的原生 DNS、TUN 入站、出口接口检测、Proxy 策略组和 FINAL 规则默认值；Tailscale 连接默认为空。代理出站由共享节点和当前端策略组生成，已保存的各端配置保持原样。
-
-跨客户端迁移诊断及其处理面板已移除。读取或导入配置时会丢弃全部历史 `migrationIssues`，后续保存时写回清理结果；这些旧记录不再阻断订阅检查或下载，无需逐条处理或重新初始化。当前配置的原生字段、引用和规则检查继续生效。旧版本 1 / 2 文档升级为版本 3 的存储兼容保留，无需新增 KV 数据结构迁移。
+Surge、Clash 和 sing-box 不再互相转换、复制或初始化客户端设置。全新安装时，sing-box 使用自有的原生 DNS、TUN 入站、出口接口检测、Proxy 策略组和 FINAL 规则默认值，并默认启用 DNS 反向映射；原生路由规则依次包含通用嗅探和 DNS 查询接管，以便按域名匹配连接。Tailscale 连接默认为空。代理出站由共享节点和当前端策略组生成，已保存的各端配置保持原样。
 
 配置内容带行号和语法高亮，点击编辑图标打开编辑弹窗。应用更改后仍需点击页面底部“保存配置”。
 
@@ -169,7 +167,7 @@ Surge、Clash 和 sing-box 不再互相转换、复制或初始化客户端设�
 
 Clash 适配基线为 Mihomo **v1.19.31**：TUN 支持 `mips`；DNS 可设置 `fallback-lazy-query`（默认关闭）和 Linux `listen-routing-mark`（0 为禁用）；`select` 组可在独立字段设置 `default-selected`，默认成员必须存在于输出成员列表，客户端已保存的选择可能覆盖它。
 
-原生 Clash YAML/JSON 支持 EasyTier、ZeroTier、MASQUE、WireGuard 和 OpenVPN；EasyTier、ZeroTier 及包含 `peers` 的 WireGuard 不要求顶层 `server`/`port`。原生字段完整保留，包括 ZeroTier `identity-secret`、WireGuard AmneziaWG 参数及 `ip-stack`；AnyTLS `client-metadata` 和 Hysteria2 `handshake-timeout` 也会保留。此类节点请填写对应内核的原生配置；Surge 与 Mihomo 的 MASQUE 不互转。内核配置校验不代表远端网络已连通。
+原生 Clash YAML/JSON 支持 Tailscale、EasyTier、ZeroTier、MASQUE、WireGuard 和 OpenVPN；Tailscale、EasyTier、ZeroTier 及包含 `peers` 的 WireGuard 不要求顶层 `server`/`port`。原生字段完整保留，包括 ZeroTier `identity-secret`、WireGuard AmneziaWG 参数及 `ip-stack`；AnyTLS `client-metadata` 和 Hysteria2 `handshake-timeout` 也会保留。此类节点请填写对应内核的原生配置；Surge 与 Mihomo 的 MASQUE 不互转。内核配置校验不代表远端网络已连通。
 
 重复节点合并后保留各来源的原始名称映射，使链式引用仍指向保留的节点。订阅 URI 按其传输类型解析，无法等价转换的传输会跳过并提示；Hysteria2 链接省略端口时使用 443，并保留完整的 `username:password` 认证。
 
@@ -191,7 +189,7 @@ Surge 支持 `select`、`smart` 等类型，`url-test` 会转换为 `smart`；Cl
 | 网络与 TUN | 本地代理端口、TUN、接口与连接设置；sing-box 入站提供 TUN、HTTP、SOCKS、mixed |
 | DNS | 解析服务器、解析规则和缓存；sing-box 的连接域名解析器也在此处配置 |
 | 分流规则 | 规则集地址、单条匹配条件、出口策略与匹配顺序 |
-| Tailscale | Surge 与 sing-box 分别配置连接，不跨端复制 |
+| Tailscale | Surge、Clash / Mihomo 与 sing-box 分别配置连接，不跨端复制 |
 | WireGuard / OpenConnect / OpenVPN / MASQUE | sing-box 专用的独立端点配置页 |
 | 高级设置 | Surge 的 URL Rewrite、Map Local 和脚本；sing-box 的日志与 HTTP 客户端；Clash 无此页 |
 | MITM 证书 | 仅 Surge：生成、导入或导出 CA，设置 MITM 主机名 |
@@ -208,9 +206,11 @@ sing-box 的 TUN 使用内核默认协议栈，旧配置中的 `stack` 字段在
 
 ### Tailscale
 
-节点名称可用于当前端策略组和分流规则。Surge 启用节点可选择认证密钥或交互登录，二者互斥；交互登录需在 Surge 策略编辑器完成，身份保存在当前设备，修改配置段名称可能需要重新登录。sing-box 可留空，通过客户端日志中的登录地址授权，多个实例应使用各自的状态目录。认证密钥在编辑时以密码框显示。
+节点名称可用于当前端策略组和分流规则。Surge 启用节点可选择认证密钥或交互登录，二者互斥；交互登录需在 Surge 策略编辑器完成，身份保存在当前设备，修改配置段名称可能需要重新登录。Mihomo 和 sing-box 可留空认证密钥，通过客户端日志中的登录地址授权，多个实例应使用各自的状态目录。认证密钥在编辑时以密码框显示。
 
-SubPilot 只生成配置，不代替客户端登录 Tailscale。参见 [sing-box Tailscale 文档](https://sing-box.sagernet.org/configuration/endpoint/tailscale/)。
+Clash 用户在“客户端配置 → Clash → Tailscale”中添加连接，需要 Mihomo v1.19.25+ 且构建包含 Tailscale 支持，原版 Clash 不适用。新连接自动分配独立状态目录，可选开关默认沿用内核；UDP 转发默认关闭。专用页节点不会自动进入 `{all}`，请明确加入策略组或分流规则。首次连接命中时才启动 Tailscale，可能需要等待登录完成后重试；公网流量需可用出口节点，Tailnet 子网需接受子网路由并配置相应分流规则。保存后更新客户端订阅，已有各端连接保持不变。
+
+SubPilot 只生成配置，不代替客户端登录 Tailscale。参见 [Mihomo Tailscale 文档](https://wiki.metacubex.one/config/proxies/tailscale/)和 [sing-box Tailscale 文档](https://sing-box.sagernet.org/configuration/endpoint/tailscale/)。
 
 Surge 提供 `auto-add-magic-dns-rule` 开关，默认启用，为 MagicDNS 和可见对端地址自动添加路由；子网和出口流量仍需显式规则。已有空闲保活值保持不变。测速地址支持 HTTP 和 HTTPS，HTTPS 需要支持该功能的 Surge Beta，TLS 握手可能增加测试耗时。
 
@@ -224,7 +224,9 @@ Surge 提供 `auto-add-magic-dns-rule` 开关，默认启用，为 MagicDNS 和�
 
 sing-box DNS 页区分三种用途：“DNS 服务器列表”维护可选服务器；“DNS 查询兜底服务器”用于未命中规则集 DNS 或高级 DNS 规则的查询，留空使用列表中的第一个服务器；“建立连接时的默认 DNS”用于代理节点地址和直连时尚未解析的目标域名，连接单独指定解析器时优先使用其设置，可能绕过 DNS 查询分流规则。
 
-sing-box 的 DNS 页将原生规则放在默认折叠的“高级 DNS 规则”中，标题显示已配置数量。规则集 DNS 在“分流规则”Tab 配置；高级 DNS 规则在其后匹配，折叠不影响已有规则生效。
+sing-box 的 DNS 页可直接开关“DNS 反向映射”，用于将解析结果关联到后续 TUN 连接。原生 DNS 规则放在默认折叠的“高级 DNS 规则”中，标题显示已配置数量。规则集 DNS 在“分流规则”Tab 配置；高级 DNS 规则在其后匹配，折叠不影响已有规则生效。
+
+在“分流规则 → 路由与规则集 → 配置”中，先选择新规则动作再添加，每条规则分别编辑动作参数和匹配条件。通用域名嗅探选择 `sniff`，不添加匹配条件；DNS 查询接管单独添加 `hijack-dns`，预设匹配 DNS 协议。将嗅探置于 DNS 接管和分流规则之前。“已识别协议”是执行动作前的匹配条件，“嗅探协议”才是要使用的嗅探方式。未添加的可选参数沿用内核默认值；添加后需填写或选择，不会自动取枚举首项或端口 `0`。应用更改后保存配置，再更新客户端订阅。
 
 规则集编辑窗口可指定“DNS 解析服务器”，留空继承全局；列表显示当前设置。本文的 Clash 指 Clash Verge 使用的 Mihomo 内核。Surge / Clash 填写一个 IP、IP:端口、`system` 或加密 DNS URL；sing-box 选择 DNS 页已有服务器。修改后保存配置并更新订阅，无需 KV 数据结构迁移或额外部署步骤。
 
@@ -294,17 +296,11 @@ Worker 会在有限请求预算内尝试生成缺失的规则；仅当远程产�
 
 每个规则集的文件和清单以同一次提交原子发布，删除该目录内不再需要的旧分桶文件，保留其他目录；分支冲突会重试，不使用强制推送。Worker 仍校验具体提交中的公开清单；向 Surge、Clash 和 sing-box 输出的规则地址统一使用固定的 `rules` 分支，不包含提交号。规则内容重新编译后，客户端按规则更新周期拉取最新内容，无需更新主配置；从旧提交地址切换或规则目录、分桶发生变化时，仍需更新一次主配置。公开文件和 Git 历史不会因关闭功能或删除规则集而自动移除。
 
-配置字段统一为 `settings.actionsCompilation`，仅保存启用状态、仓库和分支；状态接口为 `GET /api/actions-compilation/status`。工作流文件名由 Worker 固定为 `compile-rule-sets.yml`，页面不再提供文件名设置，安装和触发均忽略客户端传入的旧字段。升级会一次性清理当前 KV 配置中的旧文件名及其失效协议记录，复用已有迁移状态，完成后停止扫描。旧仓库、分支、开关，以及 KV 中保存的加密 Token、共享密钥和访问地址继续沿用；新配置和新凭据记录始终优先，已清除的凭据不会被恢复。原工作流使用其他文件名的部署需通过配置向导安装固定名称的工作流，期间由 Worker 提供规则。 已启用 Actions 但尚未完成工作流更新时，首次进入管理页面会使用已保存的仓库、访问地址和 Token 自动尝试安装一次，并弹窗显示进度和结果，无需确认。失败时可在向导中修正后重试；选择跳过会保存关闭 Actions 编译并继续由 Worker 提供规则。更新成功或关闭后不再提示，无需额外 KV 提醒标记。
-
-旧数据迁移是一次性升级任务：仅在未完成时借用现有五分钟任务分批推进，持久化新设置并迁移加密凭据和访问地址。读回校验成功并经过至少五分钟传播宽限期后，清理旧 SRS 的凭据、地址、协议标记、任务缓存和发布回执。完成后只读取既有完成状态并立即跳过，不再扫描、解密或清理旧数据；中断时从已保存进度继续。仍用于 Worker 回退的规则正文和正常的三个配置回滚版本保留，无需手动操作 KV。
-
-配置旧快照及配置、订阅令牌的冗余迁移标记也只清理一次，完成状态复用现有记录；日常读取配置不再附带旧快照清理。之后更新或清空凭据、保存访问地址时，被替换的迁移记录设置十分钟过期，自动回收，无需长期轮询。五分钟任务仍负责正常的未完成规则编译。
+工作流文件名固定为 `compile-rule-sets.yml`。已启用 Actions 但工作流尚未就绪时，进入管理页面会使用已保存的仓库、访问地址和 Token 尝试安装，并显示结果。凭据或访问地址缺失时，请在配置向导中重新填写并安装；选择跳过会关闭 Actions 编译，由 Worker 提供规则。
 
 规则计划快照在 KV 中加密保存 24 小时，供 Actions 认证下载；正常 Actions 编译的来源正文由 runner 下载至临时目录，执行结束后清理，不写入仓库；Worker 接管时按原有方式加密缓存来源和本地编译结果。Worker 保存 Actions 发布元数据，不存储或代理其产物正文。规则集名称和生成的规则内容会公开，来源地址、Worker 地址和访问凭据不写入产物或任务日志。Token 与共享密钥独立加密保存，不进入配置导出；替换 Token 保留共享密钥，清除后重新配置则须重装工作流。`ADMIN_TOKEN_HASH`、`CONFIG_ENCRYPTION_KEY` 仍由 Worker Secrets 管理。
 
 部署构建会运行 `npm run build:actions`，从共享编译核心生成供配置向导安装的独立脚本。生成文件位于被忽略的 `dist/`，不提交到源仓库；安装依赖时也会自动构建。
-
-工作流模板随 `scripts/compile-rule-sets.yml` 分发，兼容旧版压缩包更新器；配置向导将其安装到目标仓库的 `.github/workflows/`。从 v2.2.2 更新无需手动补充模板，也无需手动执行 KV 迁移命令。
 
 ### 订阅检查
 
@@ -331,31 +327,11 @@ npm run update
 
 侧栏“退出登录”下方显示当前版本，检测到新版本时显示绿色“有更新”。版本更新检查默认关闭，可在“系统设置”启用。启用后定时任务每天最多检查一次 GitHub Releases；已绑定 Telegram 时会提醒新版本，同一版本不会重复提醒。
 
-### 从 1.4.0 升级到 2.0.0
+### 配置格式要求
 
-1. 保留原 `wrangler.jsonc`、KV namespace、`ADMIN_TOKEN_HASH` 和 `CONFIG_ENCRYPTION_KEY`，按上文更新程序。不要重新生成加密密钥。
-2. 刷新后台，检查迁移草稿并确认。1.4.0 的版本 1 配置迁移为版本 3 文档；KV schema 为 12。
-3. Surge、Clash 设置和共享节点保留，各端分别管理策略组与规则来源。**从版本 1 配置升级时，sing-box 使用该端自有的 DNS、TUN、出口接口检测、Proxy 策略组和 FINAL 规则默认值，Tailscale 连接留空，不读取其他端设置。**
-4. 使用 sing-box 前，核对入站、DNS、策略组和分流规则，并执行订阅检查。已经保存的 2.0 版本 3 sing-box 配置不会因程序更新被清空；历史跨端迁移诊断自动清理。
-5. 在“配置链接”复制通用订阅地址并更新客户端。基础路径和读取 token 未变化时，原 `/sync/<read_token>/` 地址可继续使用；旧分客户端路径或带 Tag 的地址需替换。Stash 和 Shadowrocket 不再提供输出。
+仅支持已保存的版本 3 配置，sing-box 配置要求 `1.15.0-alpha.8`。已有部署应先在支持旧格式的程序版本中完成升级并保存，再更新程序。旧版配置不会自动转换，也不会被默认配置覆盖；本版不提供迁移页面或迁移命令。
 
-仅查看草稿不会写入迁移结果。确认后，系统写入并读回校验新快照，再经过至少 5 分钟宽限期清理旧数据。迁移期间旧配置发生变化时，需要刷新并重新检查草稿。
-
-已有开发版版本 2 文档会自动拆分为版本 3；这条路径保留已有 sing-box 设置，不按 1.4.0 首次迁移处理。
-
-<details>
-<summary>使用命令行检查与迁移</summary>
-
-通过安全环境变量提供 `SUBPILOT_ADMIN_TOKEN`。第一条命令仅检查迁移状态；第二条命令确认并写入迁移后的配置：
-
-```bash
-npm run migrate -- --url "https://your-worker.example"
-npm run migrate -- --url "https://your-worker.example" --apply
-```
-
-将示例域名替换为实际值，也可通过 `SUBPILOT_BASE_URL` 提供 URL。脚本不导出配置文件，旧 `--backup` 参数和 `SUBPILOT_BACKUP_PATH` 环境变量已移除。迁移完成后，请检查各客户端设置并保存。
-
-</details>
+仅保存在旧 SRS 集成中的 Actions 凭据和访问地址不再读取，需要通过配置向导重新填写并安装工作流。仅有旧格式订阅令牌的部署需要轮换读取 token，并更新客户端订阅链接。
 
 ## 缓存与运行边界
 
@@ -373,7 +349,7 @@ npm run migrate -- --url "https://your-worker.example" --apply
 
 规则来源按 URL 共用一份完整加密缓存；订阅源按 URL 与实际 User-Agent 共用一份。成功获取的新内容覆盖原内容，不保存来源历史。编译产物在新版本完整写入后清理旧版本，仅保留最新成功版本；边缘缓存按固定地址覆盖，并校验版本。
 
-删除规则集、来源或修改下载地址并保存后，后台清理失去生效引用的来源缓存、元数据和编译产物；仍被其他规则或客户端引用的缓存保留。未被任何规则条目引用的来源配置同时移除。历史缓存会在保存或刷新时自动清理，无需 KV 数据结构迁移或额外部署步骤。边缘节点中的旧缓存副本受缓存有效期约束，下载入口读取到已保存的新配置后，不再使用已删除规则的副本。
+删除规则集、来源或修改下载地址并保存后，后台清理失去生效引用的来源缓存、元数据和编译产物；仍被其他规则或客户端引用的缓存保留。未被任何规则条目引用的来源配置同时移除。边缘节点中的旧缓存副本受缓存有效期约束，下载入口读取到已保存的新配置后，不再使用已删除规则的副本。
 
 本地 `wrangler.jsonc` 的三个定时任务示例：
 

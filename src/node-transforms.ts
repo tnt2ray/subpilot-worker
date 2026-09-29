@@ -9,7 +9,7 @@ import { CHAIN_EXIT_PROXY_NAME, type RenderConfig, type ProxyNode, type Target }
 
 const SHARED_PROTOCOLS = ["http", "https", "socks5", "socks5-tls", "ss", "snell", "trojan", "vmess", "hysteria2", "hy2", "tuic-v5", "anytls", "trust-tunnel", "ssh"];
 const SURGE_PROTOCOLS = new Set([...SHARED_PROTOCOLS, "tuic", "h2-connect", "masque"]);
-const CLASH_PROTOCOLS = new Set([...SHARED_PROTOCOLS, "vless", "easytier", "zerotier", "masque", "wireguard", "openvpn"]);
+const CLASH_PROTOCOLS = new Set([...SHARED_PROTOCOLS, "vless", "easytier", "zerotier", "tailscale", "masque", "wireguard", "openvpn"]);
 const UNKNOWN_REGION_NAME = "ZZ";
 const MAX_GEOIP_LOOKUPS_PER_GENERATION = 100;
 const CITY_COUNTRY_ALIASES = new Map<string, string>([
@@ -221,7 +221,7 @@ export function ensureUniqueProxyPolicyNames(
 ): ProxyNode[] {
   const groupNames = new Set(Object.keys(config.groups));
   const reserved = new Set([
-    ...config.surge.tailscaleNodes.map((node) => node.name),
+    ...(config.renderTarget === "clash" ? config.clash.tailscaleNodes ?? [] : config.surge.tailscaleNodes).map((node) => node.name),
     ...additionalReservedNames
   ]);
   const reservedBuiltIns = new Set([

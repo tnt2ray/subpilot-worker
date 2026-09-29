@@ -18,7 +18,7 @@ Subscription sources, manual nodes, and chain exits are shared. Policy groups, d
 | Compiled rule sources | `.list` | `.yaml` | JSON source `.json`, or optional Actions processing to `.srs` |
 | Network and DNS | Surge settings | clash settings | Native inbounds and DNS |
 | Rewrite / Map Local / MITM / scripts | Retained | Omitted | Omitted |
-| Tailscale | Dedicated native form | Omitted | Native endpoint with a dedicated form |
+| Tailscale | Dedicated native form | Native Mihomo proxy with a dedicated form | Native endpoint with a dedicated form |
 
 The admin UI provides subscription checks, a universal subscription link, token rotation, cache refresh, GeoIP renaming, and Telegram notifications.
 
@@ -138,7 +138,7 @@ Headings group their text with a question mark immediately after it, with action
 
 Drafts stay in the current page's memory while navigating between pages and clients. Reloading or closing the page loses unsaved edits. Subscription requests use saved configuration and check compatibility before generating output.
 
-If an older deployment shows a migration banner, follow [Updates and migration](#updates-and-migration) first.
+Before updating an existing deployment, check the [configuration format requirements](#configuration-format-requirements).
 
 ## Subscription URLs
 
@@ -172,9 +172,7 @@ Managed Base URL must include a non-root path and cannot occupy `/api`, `/vendor
 
 Subscriptions, static nodes and chain nodes are shared. Policy groups, rule sources, routing, networking and DNS are independent for each client. Names may be reused across clients.
 
-Surge, Clash and sing-box no longer convert, copy or initialize settings from one another. Fresh installations and upgrades from version 1 documents use sing-box's own native DNS, TUN inbound, outbound interface detection, Proxy group and FINAL rule defaults; Tailscale connections start empty. Proxy outbounds come from shared nodes and the current client's groups. Existing settings for each client are preserved.
-
-Cross-client migration diagnostics and their management panel have been removed. Loading or importing a configuration discards all historical `migrationIssues`, and the next save persists the cleanup. These records no longer block subscription checks or downloads, and require no manual dismissal or reinitialization. Native field, reference and rule checks still validate the current configuration. Storage compatibility for upgrading version 1 / 2 documents to version 3 remains; no additional KV schema migration is required.
+Surge, Clash and sing-box no longer convert, copy or initialize settings from one another. Fresh installations use sing-box's own native DNS, TUN inbound, outbound interface detection, Proxy group and FINAL rule defaults, with DNS reverse mapping enabled. Native routing rules include general sniffing followed by DNS query handling to support domain-based matching. Tailscale connections start empty. Proxy outbounds come from shared nodes and the current client's groups. Existing settings for each client are preserved.
 
 Configuration previews and modal editors include line numbers and syntax highlighting. Apply changes in the editor, then click Save configuration.
 
@@ -184,7 +182,7 @@ Proxy nodes accepts Surge node syntax, Clash YAML/JSON and native sing-box JSON.
 
 Clash targets Mihomo **v1.19.31**: TUN supports `mips`; DNS exposes `fallback-lazy-query` (off by default) and Linux `listen-routing-mark` (0 disables it). A dedicated field sets `default-selected` for `select` groups. The default must be an emitted member; a saved client selection may override it.
 
-Native Clash YAML/JSON supports EasyTier, ZeroTier, MASQUE, WireGuard and OpenVPN. EasyTier, ZeroTier and WireGuard with `peers` do not require top-level `server`/`port`. Native fields are preserved, including ZeroTier `identity-secret`, WireGuard AmneziaWG options and `ip-stack`; AnyTLS `client-metadata` and Hysteria2 `handshake-timeout` are also retained. Use the appropriate core's native configuration; Surge and Mihomo MASQUE formats are not converted into each other. Core configuration validation does not verify remote connectivity.
+Native Clash YAML/JSON supports Tailscale, EasyTier, ZeroTier, MASQUE, WireGuard and OpenVPN. Tailscale, EasyTier, ZeroTier and WireGuard with `peers` do not require top-level `server`/`port`. Native fields are preserved, including ZeroTier `identity-secret`, WireGuard AmneziaWG options and `ip-stack`; AnyTLS `client-metadata` and Hysteria2 `handshake-timeout` are also retained. Use the appropriate core's native configuration; Surge and Mihomo MASQUE formats are not converted into each other. Core configuration validation does not verify remote connectivity.
 
 Merged duplicate nodes retain original name mappings for each source, so chain references still resolve to the retained node. Subscription URIs preserve their transport type; unsupported conversions are omitted with a diagnostic. Hysteria2 links default to port 443 when omitted and retain complete `username:password` authentication.
 
@@ -206,7 +204,7 @@ Surge supports types including `select` and `smart`, with `url-test` converted t
 | Network & TUN | Local proxy ports, TUN, interfaces and connection settings; sing-box offers TUN, HTTP, SOCKS and mixed inbounds |
 | DNS | Resolvers, DNS rules and caching; includes sing-box's default resolver for connection hostnames |
 | Routing rules | Rule-set URLs, individual matches, outbound policies and matching order |
-| Tailscale | Configure connections independently in Surge and sing-box; no cross-client copying |
+| Tailscale | Configure connections independently in Surge, Clash / Mihomo and sing-box; no cross-client copying |
 | WireGuard / OpenConnect / OpenVPN / MASQUE | Separate sing-box endpoint configuration tabs |
 | Advanced | Surge URL Rewrite, Map Local and scripts; sing-box logging and HTTP clients; no Clash tab |
 | MITM certificates | Surge only: generate, import or export a CA and configure MITM hostnames |
@@ -223,9 +221,11 @@ For protocol fields and requirements, see the [sing-box configuration documentat
 
 ### Tailscale
 
-Connection names can be used in the current client's groups and routing rules. Enabled Surge nodes use either an auth key or interactive login, never both. Complete interactive sign-in in the Surge policy editor; identity stays on that device, and renaming the section may require signing in again. sing-box may leave it empty and authorize through the login URL in client logs; use a separate state directory for each instance. Authentication keys are masked in the editor.
+Connection names can be used in the current client's groups and routing rules. Enabled Surge nodes use either an auth key or interactive login, never both. Complete interactive sign-in in the Surge policy editor; identity stays on that device, and renaming the section may require signing in again. Mihomo and sing-box may leave the auth key empty and authorize through the login URL in client logs; use a separate state directory for each instance. Authentication keys are masked in the editor.
 
-SubPilot generates configuration and does not log into Tailscale on the client's behalf. See the [sing-box Tailscale documentation](https://sing-box.sagernet.org/configuration/endpoint/tailscale/).
+For Clash, add connections under **Client configuration → Clash → Tailscale**. This requires Mihomo v1.19.25+ built with Tailscale support; original Clash is not supported. New connections receive separate state directories, and optional switches retain core defaults; UDP forwarding defaults to off. Nodes from this page do not automatically join `{all}`: add them explicitly to groups or routing rules. Tailscale starts on the first matching connection, so wait for sign-in and retry if needed. Public internet traffic requires an available exit node; Tailnet subnets require accepting subnet routes and configuring matching rules. Save and update the client subscription. Existing connections in each client are preserved.
+
+SubPilot generates configuration and does not log into Tailscale on the client's behalf. See the [Mihomo Tailscale documentation](https://wiki.metacubex.one/en/config/proxies/tailscale/) and [sing-box Tailscale documentation](https://sing-box.sagernet.org/configuration/endpoint/tailscale/).
 
 Surge exposes `auto-add-magic-dns-rule`, enabled by default, for automatic MagicDNS and visible-peer address routing. Subnets and exit traffic still require explicit rules. Existing idle keepalive values are preserved. Test URLs accept HTTP and HTTPS; HTTPS needs a Surge Beta with support for this feature, and TLS handshakes may increase test duration.
 
@@ -239,7 +239,9 @@ Category and HTTPS testing follow the [Surge Beta announcement](https://t.me/Sur
 
 The sing-box DNS tab separates three purposes: **DNS server list** manages available servers; **Fallback DNS server for queries** handles queries that match neither rule-set DNS nor advanced DNS rules, using the first listed server when empty; **Default DNS for establishing connections** resolves proxy server addresses and unresolved direct-connection targets. A connection-specific resolver takes priority, and connection resolution may bypass DNS query routing rules.
 
-On the sing-box DNS tab, native rules appear under **Advanced DNS rules**, collapsed by default with a configured-rule count. Configure rule-set DNS on the Routing rules tab; advanced DNS rules match afterward. Collapsing the section does not disable existing rules.
+The sing-box DNS tab provides a **DNS reverse mapping** switch to associate DNS answers with subsequent TUN connections. Native DNS rules appear under **Advanced DNS rules**, collapsed by default with a configured-rule count. Configure rule-set DNS on the Routing rules tab; advanced DNS rules match afterward. Collapsing the section does not disable existing rules.
+
+Under **Routing rules → Routing & rule sets → Configure**, choose an action before adding a new rule. Each rule separates action settings from match conditions. For general domain sniffing, choose `sniff` and leave match conditions empty. Add a separate `hijack-dns` rule for DNS query handling; its preset matches the DNS protocol. Place sniffing before DNS handling and routing rules. **Detected protocol** is a condition evaluated before the action; **Sniffer** selects the sniffing methods. Omitted optional settings use the core defaults. Added settings require a value or selection instead of automatically using the first enum option or port `0`. Apply changes, save configuration, and update the client subscription.
 
 The rule-set editor includes a **DNS resolver** field; empty inherits global settings, and the list shows the current selection. Here, Clash means Clash Verge with the Mihomo core. Surge / Clash accept one IP, IP:port, `system`, or encrypted DNS URL; sing-box selects an existing server from the DNS tab. Save and update the client subscription. No KV schema migration or extra deployment steps are required.
 
@@ -309,17 +311,11 @@ Saved rule changes, manual refresh and daily refresh can trigger Actions. One ba
 
 Each output's files and receipt are published atomically in one commit. Replacing its directory removes obsolete buckets while preserving other outputs; branch conflicts are retried without force-pushing. The Worker still validates the receipt at the reported commit. Rule URLs emitted for Surge, Clash and sing-box follow the fixed `rules` branch without a commit hash. Clients fetch recompiled content on their rule update schedule without refreshing the main configuration. Refresh the main configuration once to replace old commit URLs, or when rule directories or buckets change. Disabling the feature or deleting a rule set does not erase public files or Git history.
 
-Settings use `settings.actionsCompilation` and store only enabled state, repository and branch; status is available at `GET /api/actions-compilation/status`. The Worker fixes the workflow filename to `compile-rule-sets.yml`. The page no longer exposes a filename setting, and installation and dispatch ignore the legacy client-supplied field. A one-time upgrade removes the old filename from the active KV configuration and retires its obsolete protocol records, reusing existing migration state and stopping scans after completion. Existing repository details, branch, enabled state, encrypted token, shared secret and callback address remain available. Current settings and credentials take precedence; cleared credentials are not restored. Deployments using another workflow filename must run the setup wizard to install the fixed filename; Worker rules remain available in the meantime. When Actions is enabled but the workflow has not been updated, the first admin-page visit automatically attempts installation once using the saved repository, callback address and token, showing progress and results without asking for confirmation. If it fails, users can correct the settings and retry. Skipping saves Actions compilation as disabled and keeps the Worker serving rules. Successful setup or disabling stops the prompt without extra KV reminder markers.
-
-Legacy migration is a one-time upgrade task. Only unfinished work uses the existing five-minute schedule to persist renamed settings and migrate encrypted credentials and the callback address in bounded batches. After read-back verification and a propagation grace period of at least five minutes, it removes old SRS credentials, addresses, protocol markers, job caches and publication receipts. Once complete, it reads the existing completion state and returns immediately, without scanning, decrypting or cleaning legacy data. Interrupted work resumes from saved progress. Rule contents used by Worker fallback and the usual three configuration rollback versions remain available; no manual KV operations are required.
-
-Retired configuration snapshots and redundant configuration/subscription-token migration markers are also cleaned once, reusing existing records for completion state. Normal configuration reads no longer run legacy snapshot cleanup. Later credential changes, explicit credential clearing and callback-address saves set a ten-minute expiry on superseded migration records, reclaiming them without permanent polling. The five-minute schedule still handles unfinished rule compilation.
+The workflow filename is fixed to `compile-rule-sets.yml`. When Actions is enabled but its workflow is not ready, the admin page attempts installation using the saved repository, callback address and token, then shows the result. If credentials or the callback address are missing, enter them in the setup wizard and install the workflow again. Skipping disables Actions compilation and keeps the Worker serving rules.
 
 Encrypted rule-plan snapshots remain in KV for 24 hours for authenticated Actions downloads. Normal Actions runs download original source bodies to temporary runner storage, remove them on completion and exclude them from the repository. Worker fallback uses the existing encrypted source and compiled-rule caches. The Worker keeps Actions publication metadata without storing or proxying its artifact bodies. Rule-set names and generated rules are public; source addresses, Worker addresses and credentials are excluded from artifacts and logs. The token and shared secret are encrypted separately and excluded from configuration exports. Replacing the token preserves the shared secret; clearing and reconfiguring requires reinstalling the workflow. `ADMIN_TOKEN_HASH` and `CONFIG_ENCRYPTION_KEY` remain Worker Secrets.
 
 Deployment builds run `npm run build:actions` to bundle the shared compiler for installation by the wizard. Generated files live in ignored `dist/` and are not committed; dependency installation also builds the bundle.
-
-The workflow template ships as `scripts/compile-rule-sets.yml` for compatibility with older archive updaters. The setup wizard installs it into the target repository's `.github/workflows/` directory. Updating from v2.2.2 requires neither manual template copying nor manual KV migration commands.
 
 ### Subscription checks
 
@@ -343,36 +339,11 @@ For a Git clone, it requires clean tracked files and pulls the current branch wi
 
 The setup script adds the pending-rebuild schedule while retaining your existing subscription interval. Confirm all three schedules after upgrading; see [Cache and operational limits](#cache-and-operational-limits). The current version appears below “Sign out” in the sidebar, replaced by green “Update available” text when a new version is detected. Scheduled version checks are disabled by default; when enabled, GitHub Releases is checked at most daily and a bound Telegram chat receives one notification for each newly detected version.
 
-### Upgrading from 1.4.0 to 2.0.0
+### Configuration format requirements
 
-1. Retain `wrangler.jsonc`, the KV namespace, `ADMIN_TOKEN_HASH` and `CONFIG_ENCRYPTION_KEY`. Update the application as described above; do not generate a replacement encryption key.
-2. Reload the dashboard, review the migration draft and confirm. Version 1 documents from 1.4.0 migrate to document version 3; the KV schema is 12.
-3. Surge, Clash and shared nodes are retained with independent groups and rule sources. **Upgrades from version 1 documents use sing-box's own DNS, TUN, outbound interface detection, Proxy group and FINAL rule defaults. Tailscale connections start empty, and no settings are read from other clients.**
-4. Review sing-box inbounds, DNS, groups and routing, then run a subscription check before use. Existing version 3 sing-box settings saved in 2.0 are not cleared by an application update; historical cross-client migration diagnostics are removed automatically.
-5. Copy the universal URL from Configuration links and update your clients. Existing `/sync/<read_token>/` URLs remain usable if the base path and token are unchanged. Replace old client-specific or tagged URLs. Stash and Shadowrocket output is no longer available.
+Only saved version 3 configurations are supported, with sing-box configuration pinned to `1.15.0-alpha.8`. Before updating an existing deployment, complete its configuration upgrade and save using an application version that supports the old format. Old configurations are neither converted automatically nor overwritten with defaults. This version provides no migration page or command.
 
-Reviewing a draft does not commit it. After confirmation, the Worker writes and reads back the new snapshot, then schedules legacy cleanup after a grace period of at least five minutes. If the old configuration changes during migration, reload and review the draft again.
-
-Existing development version 2 documents are automatically split into version 3 while retaining their sing-box settings; they are not treated as first-time migrations from 1.4.0.
-
-<details>
-<summary>Command-line migration</summary>
-
-Supply `SUBPILOT_ADMIN_TOKEN` through your environment. Check migration status without applying:
-
-```bash
-npm run migrate -- --url "https://your-worker.example"
-```
-
-After review, this command **writes the migrated configuration to the deployment**:
-
-```bash
-npm run migrate -- --url "https://your-worker.example" --apply
-```
-
-Replace the example domain, or use `SUBPILOT_BASE_URL` to provide the URL. The script does not export configuration files; the former `--backup` option and `SUBPILOT_BACKUP_PATH` environment variable have been removed. Review and save each client’s settings after migration.
-
-</details>
+Actions credentials and callback addresses stored only by the old SRS integration are no longer read. Enter them in the setup wizard and install the workflow again. Deployments with only old-format subscription tokens must rotate the read token and update client subscription URLs.
 
 ## Cache and operational limits
 
@@ -390,7 +361,7 @@ Failed background compilations briefly back off before retrying so other rule se
 
 Rule sources share one complete encrypted body per URL; subscription sources share one per URL and effective User-Agent. Successfully fetched new content replaces earlier content without keeping source history. A complete successful compiled version replaces earlier versions, which are then removed. Edge cache entries use stable URLs with version validation and overwrite previous responses.
 
-After deleting a rule set or source, or changing its URL and saving, background cleanup removes unreferenced source bodies, metadata and compiled artifacts. Caches still used by another active rule or client remain. Source configuration entries with no rule-entry references are also removed. Saving or refreshing automatically cleans historical caches; no KV schema migration or extra deployment steps are required. Old edge copies expire according to their cache lifetime; rule-download endpoints stop using deleted entries once they read the newly saved configuration.
+After deleting a rule set or source, or changing its URL and saving, background cleanup removes unreferenced source bodies, metadata and compiled artifacts. Caches still used by another active rule or client remain. Source configuration entries with no rule-entry references are also removed. Old edge copies expire according to their cache lifetime; rule-download endpoints stop using deleted entries once they read the newly saved configuration.
 
 The default schedules in local `wrangler.jsonc` are:
 

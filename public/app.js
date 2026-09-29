@@ -8,7 +8,7 @@ import { validateActionsCompilationSettings } from "./app-validation.js";
 import { CLIENTS, NAV, LABELS, CLIENT_SECTIONS, getPath, setPath, splitRule } from "./app-model.js";
 const $ = (selector, root = document) => root.querySelector(selector);
 const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
-const state = { config: null, saved: "", page: "status", client: "surge", section: "network", lang: localStorage.getItem("subpilot-language") || "zh", invalid: /* @__PURE__ */ new Map(), busy: false, migration: false, migrationData: null, stats: null, requestPage: 0, refreshingSources: false, system: null };
+const state = { config: null, saved: "", page: "status", client: "surge", section: "network", lang: localStorage.getItem("subpilot-language") || "zh", invalid: /* @__PURE__ */ new Map(), busy: false, stats: null, requestPage: 0, refreshingSources: false, system: null };
 const mmdb = { status: null, loading: false, statusError: false, file: null, uploading: false, progress: 0, outcome: "", error: "", request: 0 };
 let subscriptionCheck = null;
 let singboxSchema = null;
@@ -70,7 +70,7 @@ function updateStatus() {
   const invalid = state.invalid.size;
   $("#save-status").textContent = state.busy ? t("处理中…", "Working…") : invalid ? t(`${invalid} 项输入格式无效`, `${invalid} invalid fields`) : dirty() ? t("有未保存更改", "Unsaved changes") : t("所有更改已保存", "All changes saved");
   $("#save-status").classList.toggle("dirty", Boolean(dirty() || invalid));
-  $("#save").disabled = state.busy || invalid > 0 || state.migration || !dirty();
+  $("#save").disabled = state.busy || invalid > 0 || !dirty();
   $("#save").textContent = t("保存配置", "Save configuration");
   const exportCa = $('[data-action="export-ca"]');
   if (exportCa) exportCa.disabled = !state.config.clients.surge.mitm.caP12;
@@ -194,8 +194,6 @@ function render() {
   $("#language").textContent = state.lang === "zh" ? "中文 / EN" : "EN / 中文";
   $("#logout").textContent = t("退出登录", "Sign out");
   renderSidebarVersion();
-  $("#migration-banner").hidden = !state.migration;
-  $("#migration-banner").innerHTML = state.migration ? `<div class="notice warning"><h2>${t("配置升级待确认", "Configuration upgrade required")}</h2><p>${t("升级旧版配置格式，保留 Surge 与 Clash 各自的设置；sing-box 使用独立的原生默认配置。确认升级后移除 Stash 和 Shadowrocket。", "Upgrade the legacy configuration format while preserving the separate Surge and Clash settings. sing-box starts with independent native defaults. Confirm the upgrade to remove Stash and Shadowrocket.")}</p><div class="toolbar">${btn(t("查看并确认升级", "Review upgrade"), "migration")}</div></div>` : "";
   const views = { status: renderStatus, sources: () => renderEntities("sources"), nodes: () => renderEntities("nodes"), groups: renderGroups, clients: renderClient, links: renderLinks, system: renderSystem };
   $("#content").innerHTML = (views[state.page] || renderStatus)();
   mountHelpTips($("#content"), $("#page-title"));
@@ -331,11 +329,9 @@ function renderConfigLines(lines) {
   return `<div class="client-config-values" role="region" aria-label="${t("配置内容（含行号）", "Configuration with line numbers")}" tabindex="0">${lines.flatMap((line) => line.split("\n")).map((line, index) => `<div class="client-config-line"><span class="config-line-number" aria-hidden="true">${index + 1}</span><code class="client-config-value">${highlightConfigLine(line)}</code></div>`).join("")}</div>`;
 }
 function renderClient() {
-  if (state.client === "singbox" && ["services", "outbounds", "endpoints"].includes(state.section)) state.section = "network";
-  if (state.client === "clash" && state.section === "advanced") state.section = "network";
   const client = state.config.clients[state.client];
   const fields = CLIENT_SECTIONS[state.client][state.section] || [];
-  const tabs = [["network", "网络与 TUN", "Network & TUN"], ["dns", "DNS", "DNS"], ["rules", "分流规则", "Routing rules"], ...state.client !== "clash" ? [["tailscale", "Tailscale", "Tailscale"]] : [], ...state.client === "singbox" ? [["wireguard", "WireGuard", "WireGuard"], ["openconnect", "OpenConnect", "OpenConnect"], ["openvpn-client", "OpenVPN", "OpenVPN"], ["masque-client", "MASQUE 客户端", "MASQUE Client"], ["masque-server", "MASQUE 服务端", "MASQUE Server"]] : [], ...state.client !== "clash" ? [["advanced", "高级设置", "Advanced"]] : [], ...state.client === "surge" ? [["mitm", "MITM 证书", "MITM certificates"]] : []];
+  const tabs = [["network", "网络与 TUN", "Network & TUN"], ["dns", "DNS", "DNS"], ["rules", "分流规则", "Routing rules"], ["tailscale", "Tailscale", "Tailscale"], ...state.client === "singbox" ? [["wireguard", "WireGuard", "WireGuard"], ["openconnect", "OpenConnect", "OpenConnect"], ["openvpn-client", "OpenVPN", "OpenVPN"], ["masque-client", "MASQUE 客户端", "MASQUE Client"], ["masque-server", "MASQUE 服务端", "MASQUE Server"]] : [], ...state.client !== "clash" ? [["advanced", "高级设置", "Advanced"]] : [], ...state.client === "surge" ? [["mitm", "MITM 证书", "MITM certificates"]] : []];
   let content = "";
   if (state.client === "surge" && state.section === "mitm") content = renderMitm();
   else if (state.section === "tailscale") content = renderTailscale();
@@ -374,7 +370,7 @@ function renderSingboxDns() {
     return `<tr><td>${index + 1}</td><td>${Object.keys(match).length ? renderConfigLines(JSON.stringify(match, null, 2).split("\n")) : t("所有请求", "All requests")}</td><td>${esc(rule.server || rule.action || "route")}</td><td class="actions">${iconButton("up", "move-sb-dns", `data-index="${index}" data-direction="-1" ${index === 0 ? "disabled" : ""}`, t("上移", "Move up"))}${iconButton("down", "move-sb-dns", `data-index="${index}" data-direction="1" ${index === rules.length - 1 ? "disabled" : ""}`, t("下移", "Move down"))}${actions("rules", index)}</td></tr>`;
   }).join("");
   const table = (headers, rows) => `<div class="table-wrap"><table><thead><tr>${headers.map((heading) => `<th>${heading}</th>`).join("")}</tr></thead><tbody>${rows || `<tr><td colspan="${headers.length}" class="empty">${t("尚未配置", "Not configured")}</td></tr>`}</tbody></table></div>`;
-  return `<div class="sb-dns-page">${section(t("DNS 服务器列表", "DNS server list"), table([t("名称", "Name"), t("协议", "Protocol"), t("服务器地址", "Server address"), t("连接出口", "Connection outbound"), t("操作", "Actions")], serverRows), btn(t("添加服务器", "Add server"), "edit-sb-dns", 'data-kind="servers"', "primary"))}${section(t("DNS 查询兜底服务器", "Fallback DNS server for queries"), field("clients.singbox.dns.final", dns.final || "", { label: t("兜底 DNS 服务器", "Fallback DNS server"), options: [...servers.map((server) => server.tag).filter(Boolean), ""] }) + `<p class="help">${t("收到的 DNS 查询未命中规则集 DNS 或高级 DNS 规则时使用。留空使用 DNS 服务器列表中的第一个服务器。", "Used when an incoming DNS query matches neither rule-set DNS nor advanced DNS rules. Leave empty to use the first server in the DNS server list.")}</p>`)}${section("", `<details><summary>${t("高级 DNS 规则", "Advanced DNS rules")} · ${rules.length}</summary><p class="help">${t("规则集 DNS 请在“分流规则”Tab 配置。此处用于查询类型匹配、拒绝查询等高级设置，在规则集 DNS 规则之后匹配。折叠不影响已配置规则生效。", "Configure rule-set DNS on the Routing rules tab. Use this section for advanced settings such as query-type matching and query rejection. These rules match after rule-set DNS rules; collapsing this section does not disable them.")}</p>${table([t("顺序", "Order"), t("匹配条件", "Match conditions"), t("解析目标 / 动作", "DNS target / action"), t("操作", "Actions")], ruleRows)}<div class="toolbar">${btn(t("添加规则", "Add rule"), "edit-sb-dns", 'data-kind="rules"')}</div></details>`)}<div class="toolbar">${btn(t("缓存与其他设置", "Cache and other settings"), "edit-sb-dns", 'data-kind="options"')}</div></div>`;
+  return `<div class="sb-dns-page">${section(t("DNS 服务器列表", "DNS server list"), table([t("名称", "Name"), t("协议", "Protocol"), t("服务器地址", "Server address"), t("连接出口", "Connection outbound"), t("操作", "Actions")], serverRows), btn(t("添加服务器", "Add server"), "edit-sb-dns", 'data-kind="servers"', "primary"))}${section(t("DNS 查询兜底服务器", "Fallback DNS server for queries"), field("clients.singbox.dns.final", dns.final || "", { label: t("兜底 DNS 服务器", "Fallback DNS server"), options: [...servers.map((server) => server.tag).filter(Boolean), ""] }) + `<p class="help">${t("收到的 DNS 查询未命中规则集 DNS 或高级 DNS 规则时使用。留空使用 DNS 服务器列表中的第一个服务器。", "Used when an incoming DNS query matches neither rule-set DNS nor advanced DNS rules. Leave empty to use the first server in the DNS server list.")}</p>`)}${section(t("域名分流", "Domain-based routing"), field("clients.singbox.dns.reverse_mapping", dns.reverse_mapping ?? false, { label: t("DNS 反向映射", "DNS reverse mapping") }) + `<p class="help">${t("记录经由 sing-box 解析的域名与 IP 对应关系，让 TUN 连接可以按域名分流。浏览器自行使用加密 DNS 时，可能无法建立映射。", "Remember domain-to-IP mappings from sing-box DNS responses so TUN connections can match domain rules. Browser-managed encrypted DNS may bypass this mapping.")}</p>`)}${section("", `<details><summary>${t("高级 DNS 规则", "Advanced DNS rules")} · ${rules.length}</summary><p class="help">${t("规则集 DNS 请在“分流规则”Tab 配置。此处用于查询类型匹配、拒绝查询等高级设置，在规则集 DNS 规则之后匹配。折叠不影响已配置规则生效。", "Configure rule-set DNS on the Routing rules tab. Use this section for advanced settings such as query-type matching and query rejection. These rules match after rule-set DNS rules; collapsing this section does not disable them.")}</p>${table([t("顺序", "Order"), t("匹配条件", "Match conditions"), t("解析目标 / 动作", "DNS target / action"), t("操作", "Actions")], ruleRows)}<div class="toolbar">${btn(t("添加规则", "Add rule"), "edit-sb-dns", 'data-kind="rules"')}</div></details>`)}<div class="toolbar">${btn(t("缓存与其他设置", "Cache and other settings"), "edit-sb-dns", 'data-kind="options"')}</div></div>`;
 }
 async function editSingboxDns(kind, index) {
   singboxSchema ||= await api("/api/singbox/schema");
@@ -382,12 +378,13 @@ async function editSingboxDns(kind, index) {
   const dnsSchema = raw.$ref ? singboxSchema.$defs[raw.$ref.split("/").at(-1)] : raw;
   const dns = currentClient().dns;
   const options = kind === "options";
-  const original = options ? Object.fromEntries(Object.entries(dns).filter(([key]) => !["servers", "rules", "final"].includes(key))) : index === null ? (kind === "servers" ? { type: "udp", tag: "", server: "" } : { domain_suffix: [""], action: "route", server: dns.final || dns.servers?.[0]?.tag || "" }) : dns[kind][index];
-  const property = options ? { ...dnsSchema, properties: Object.fromEntries(Object.entries(dnsSchema.properties).filter(([key]) => !["servers", "rules", "final"].includes(key))), required: (dnsSchema.required || []).filter((key) => !["servers", "rules", "final"].includes(key)) } : dnsSchema.properties[kind].items;
+  const dedicated = ["servers", "rules", "final", "reverse_mapping"];
+  const original = options ? Object.fromEntries(Object.entries(dns).filter(([key]) => !dedicated.includes(key))) : index === null ? (kind === "servers" ? { type: "udp", tag: "", server: "" } : { domain_suffix: [""], action: "route", server: dns.final || dns.servers?.[0]?.tag || "" }) : dns[kind][index];
+  const property = options ? { ...dnsSchema, properties: Object.fromEntries(Object.entries(dnsSchema.properties).filter(([key]) => !dedicated.includes(key))), required: (dnsSchema.required || []).filter((key) => !dedicated.includes(key)) } : dnsSchema.properties[kind].items;
   let form;
   modal(options ? t("DNS 缓存与其他设置", "DNS cache and other settings") : kind === "servers" ? t("DNS 服务器", "DNS server") : t("DNS 分流规则", "DNS routing rule"), '<div id="singbox-form"></div>', async () => {
     const value = form.read(), next = structuredClone(dns);
-    if (options) { for (const key of Object.keys(next)) if (!["servers", "rules", "final"].includes(key)) delete next[key]; Object.assign(next, value); }
+    if (options) { for (const key of Object.keys(next)) if (!dedicated.includes(key)) delete next[key]; Object.assign(next, value); }
     else { next[kind] ||= []; if (index === null) next[kind].push(value); else next[kind][index] = value; }
     const result = await api("/api/singbox/validate", { method: "POST", body: JSON.stringify({ section: "dns", value: next }) });
     if (!result.valid) { form.error(result.errors.join("; ")); return; }
@@ -475,7 +472,7 @@ async function editSingboxSection(key, inboundIndex, endpointType, routeGroup) {
     viewSchema = { ...singboxSchema, properties: { ...singboxSchema.properties, route: { ...node, properties: Object.fromEntries(routeKeys.map((name) => [name, node.properties[name]])), required: (node.required || []).filter((name) => routeKeys.includes(name)) } } };
   }
   let form;
-  modal(endpointType ? { wireguard: "WireGuard", openconnect: "OpenConnect", "openvpn-client": "OpenVPN" }[endpointType] : routeGroup ? (routeGroup === "dns" ? t("建立连接时的默认 DNS", "Default DNS for establishing connections") : t("出口连接设置", "Outbound connection settings")) : singboxTitle(key, t), `<p class="help">${routeGroup === "dns" ? singboxConnectionDnsHelp() : t("先选择类型，再填写常用设置。更多参数在「高级设置」和「添加可选设置」中；应用后请保存配置。", "Choose a type and edit its common settings. Additional parameters are under Advanced settings and Add optional settings. Save configuration after applying.")}</p><div id="singbox-form"></div>`, async () => {
+  modal(endpointType ? { wireguard: "WireGuard", openconnect: "OpenConnect", "openvpn-client": "OpenVPN" }[endpointType] : routeGroup ? (routeGroup === "dns" ? t("建立连接时的默认 DNS", "Default DNS for establishing connections") : t("出口连接设置", "Outbound connection settings")) : singboxTitle(key, t), `<p class="help">${routeGroup === "dns" ? singboxConnectionDnsHelp() : key === "route" && !routeGroup ? t("每条规则先选择动作，再按需添加匹配条件。不设置条件时应用于所有连接；规则按列表顺序执行。应用后请保存配置。", "Choose an action for each rule, then add conditions if needed. Rules without conditions apply to all connections and run in list order. Save configuration after applying.") : t("先选择配置类型，再填写设置。其他参数可通过“添加可选设置”添加；应用后请保存配置。", "Choose a configuration type and edit its settings. Use Add optional settings for other parameters. Save configuration after applying.")}</p><div id="singbox-form"></div>`, async () => {
     const edited = form.read();
     let value = inboundIndex === undefined ? edited : [...client.inbounds];
     if (routeKeys) {
@@ -508,32 +505,35 @@ async function editSingboxSection(key, inboundIndex, endpointType, routeGroup) {
   form = createSingboxForm($("#singbox-form"), viewSchema, key, original, { t, esc, references, referenceTypes: { dns_server: Object.fromEntries((client.dns.servers || []).map((server) => [server.tag, server.type])) }, endpointType, singleItem: inboundIndex !== undefined });
 }
 function tailscaleCollection() {
-  return state.client === "surge" ? currentClient().tailscaleNodes : currentClient().endpoints || [];
+  return state.client === "singbox" ? currentClient().endpoints || [] : currentClient().tailscaleNodes || [];
 }
 function renderTailscale() {
-  const surge = state.client === "surge";
+  const surge = state.client === "surge", clash = state.client === "clash";
   const rows = tailscaleCollection().flatMap((node, index) => {
     if (!surge && node.type !== "tailscale") return [];
-    const name = surge ? node.name : node.tag;
-    const exit = surge ? node.exitNode : node.exit_node;
+    const name = surge || clash ? node.name : node.tag;
+    const exit = surge ? node.exitNode : clash ? node["exit-node"] : node.exit_node;
     return [`<tr><td>${btn(esc(name || t("未命名", "Unnamed")), "edit-tailscale", `data-index="${index}"`, "link")}</td><td>${esc(node.hostname || "—")}</td><td>${esc(exit && exit !== "none" ? exit : t("未指定", "Not selected"))}</td><td>${surge ? node.enabled ? t("启用", "Enabled") : t("停用", "Disabled") : t("已配置", "Configured")}</td><td class="actions">${smallButton("edit", "edit-tailscale", `data-index="${index}"`, t("编辑", "Edit"))}${smallButton("trash", "delete-tailscale", `data-index="${index}"`, t("删除", "Delete"))}</td></tr>`];
   }).join("");
-  return section(t("Tailscale 节点", "Tailscale nodes"), `<p class="help" data-help>${surge ? t("节点可在当前端的策略组和分流规则中使用。认证密钥仅在编辑时以密码框显示。", "Use nodes in this client's policy groups and routing rules. Auth keys are masked in the editor.") : t("使用 sing-box 1.15 原生 Tailscale endpoint。认证密钥可留空，通过客户端日志中的登录地址授权；每个实例应使用独立的状态目录。", "Uses native sing-box 1.15 Tailscale endpoints. Leave the auth key empty to sign in through the URL in client logs; use a separate state directory for each instance.")}</p><div class="table-wrap"><table class="editable-table tailscale-table"><thead><tr><th>${t("名称", "Name")}</th><th>${t("设备主机名", "Hostname")}</th><th>${t("出口节点", "Exit node")}</th><th>${t("状态", "Status")}</th><th class="actions">${t("操作", "Actions")}</th></tr></thead><tbody>${rows || `<tr><td colspan="5" class="empty">${t("尚未添加 Tailscale 节点", "No Tailscale nodes yet")}</td></tr>`}</tbody></table></div>`, btn(t("添加节点", "Add node"), "add-tailscale", "", "primary"));
+  const help = surge ? t("节点可在当前端的策略组和分流规则中使用。认证密钥仅在编辑时以密码框显示。", "Use nodes in this client's policy groups and routing rules. Auth keys are masked in the editor.") : clash ? t("需要支持 Tailscale 的 Mihomo 内核，原版 Clash 不支持。添加后请在策略组或分流规则中明确选择此节点；首次有连接命中时才开始登录和连接。认证密钥可留空，使用客户端日志中的登录地址授权。", "Requires a Mihomo core with Tailscale support; original Clash is not supported. Select the node explicitly in a policy group or routing rule. Sign-in and connection begin on the first matching connection. Leave the auth key empty to sign in using the URL in client logs.") : t("使用 sing-box 1.15 原生 Tailscale endpoint。认证密钥可留空，通过客户端日志中的登录地址授权；每个实例应使用独立的状态目录。", "Uses native sing-box 1.15 Tailscale endpoints. Leave the auth key empty to sign in through the URL in client logs; use a separate state directory for each instance.");
+  const routingHelp = clash ? `<p class="help" data-help>${t("访问公网需配置可用的出口节点。访问 Tailnet 子网需开启“接受 Tailnet 子网路由”，并把相应流量的分流规则指向此节点。每个实例应使用独立的状态目录。", "Configure an available exit node for public internet access. For Tailnet subnets, enable Accept Tailnet subnet routes and direct the matching traffic to this node with routing rules. Use a separate state directory for each instance.")}</p>` : "";
+  return section(t("Tailscale 节点", "Tailscale nodes"), `<p class="help" data-help>${help}</p>${routingHelp}<div class="table-wrap"><table class="editable-table tailscale-table"><thead><tr><th>${t("名称", "Name")}</th><th>${t("设备主机名", "Hostname")}</th><th>${t("出口节点", "Exit node")}</th><th>${t("状态", "Status")}</th><th class="actions">${t("操作", "Actions")}</th></tr></thead><tbody>${rows || `<tr><td colspan="5" class="empty">${t("尚未添加 Tailscale 节点", "No Tailscale nodes yet")}</td></tr>`}</tbody></table></div>`, btn(t("添加节点", "Add node"), "add-tailscale", "", "primary"));
 }
 function editTailscale(index) {
-  const client = state.client, surge = client === "surge";
+  const client = state.client, surge = client === "surge", clash = client === "clash";
   const nodes = tailscaleCollection();
   const original = index === null ? newTailscaleNode(client) : nodes[index];
-  const name = surge ? original.name : original.tag;
-  const candidates = policyChoices().filter((policy) => policy !== name);
+  const name = surge || clash ? original.name : original.tag;
+  const candidates = policyChoices().filter((policy) => policy !== name && (!clash || !["REJECT", "REJECT-DROP", "PASS", "PASS-RULE", "COMPATIBLE", "GLOBAL"].includes(policy)));
   modal(t("编辑 Tailscale 节点", "Edit Tailscale node"), tailscaleForm(client, original, candidates, t, esc) + `<p class="help">${t("改名或删除不会自动重写已有规则引用。应用更改后保存配置。", "Renaming or deleting does not rewrite existing rule references. Apply changes, then save the configuration.")}</p>`, () => {
     const next = readTailscaleForm(client, original, $("#modal-body"), t);
-    const name = surge ? next.name : next.tag;
-    if (nodes.some((node, i) => i !== index && (surge ? node.name : node.tag) === name) || Object.hasOwn(currentClient().groups, name) || ["DIRECT", "REJECT", "REJECT-DROP"].includes(name.toUpperCase())) throw Error(t("节点名称与已有端点或策略冲突", "Node name conflicts with an endpoint or policy"));
+    const name = surge || clash ? next.name : next.tag;
+    const reserved = clash ? ["DIRECT", "REJECT", "REJECT-DROP", "PASS", "PASS-RULE", "COMPATIBLE", "GLOBAL"] : ["DIRECT", "REJECT", "REJECT-DROP"];
+    if (nodes.some((node, i) => i !== index && (surge || clash ? node.name : node.tag) === name) || Object.hasOwn(currentClient().groups, name) || reserved.includes(name.toUpperCase()) || clash && (sharedProxyNames.names.clash || []).includes(name)) throw Error(t("节点名称与已有节点或策略冲突", "Node name conflicts with an existing node or policy"));
     if (surge && nodes.some((node, i) => i !== index && node.sectionName === next.sectionName)) throw Error(t("配置段名称不能重复", "Section names must be unique"));
-    if ((surge ? next.underlyingProxy : next.detour) === name) throw Error(t("前置代理不能引用当前节点自身", "An upstream proxy cannot reference itself"));
+    if ((surge ? next.underlyingProxy : clash ? next["dialer-proxy"] : next.detour) === name) throw Error(t("前置代理不能引用当前节点自身", "An upstream proxy cannot reference itself"));
     if (index === null) {
-      if (surge) currentClient().tailscaleNodes.push(next);
+      if (surge || clash) (currentClient().tailscaleNodes ??= []).push(next);
       else (currentClient().endpoints ??= []).push(next);
     } else nodes[index] = next;
     closeModal(); changed(); render();
@@ -617,7 +617,7 @@ function sourcesForUrls(plan, text, preferredIds = []) {
 function policyChoices(selected = "") {
   const client = currentClient();
   const builtins = state.client === "surge" ? ["DIRECT", "CELLULAR", "CELLULAR-ONLY", "HYBRID", "NO-HYBRID", "REJECT", "REJECT-DROP", "REJECT-NO-DROP", "REJECT-TINYGIF"] : state.client === "clash" ? ["DIRECT", "REJECT", "REJECT-DROP", "PASS", "PASS-RULE", "COMPATIBLE", "GLOBAL"] : ["DIRECT", "REJECT", "REJECT-DROP"];
-  return [...new Set([...Object.keys(client.groups).filter((name) => !client.disabledGroups.includes(name)), ...builtins, ...(sharedProxyNames.names[state.client] || []), ...(state.client === "surge" ? (client.tailscaleNodes || []).filter((node) => node.enabled).map((node) => node.name) : state.client === "singbox" ? [...(client.endpoints || []), ...(client.outbounds || [])].map((node) => node.tag) : []), selected].filter(Boolean))];
+  return [...new Set([...Object.keys(client.groups).filter((name) => !client.disabledGroups.includes(name)), ...builtins, ...(sharedProxyNames.names[state.client] || []), ...(state.client === "singbox" ? [...(client.endpoints || []), ...(client.outbounds || [])].map((node) => node.tag) : (client.tailscaleNodes || []).filter((node) => state.client === "clash" || node.enabled).map((node) => node.name)), selected].filter(Boolean))];
 }
 function selectOptions(choices, selected) {
   return [...new Set([...choices, selected])].map((value) => `<option value="${esc(value)}" ${value === selected ? "selected" : ""}>${esc(value || t("无", "None"))}</option>`).join("");
@@ -708,7 +708,7 @@ function renderActionsCompilationSettings() {
           <p>${t("编译结果保存在公开 GitHub 仓库，规则内容会公开。", "Compiled rules are stored in a public GitHub repository, so their contents are public.")}</p>
           <p>${t("GitHub Token 仅选择目标仓库，授予 Actions、Contents、Workflows、Secrets 读写权限。同一个 Token 用于安装与日常编译，加密保存在 KV；启用期间请勿撤销。", "Limit the GitHub token to the target repository and grant Actions, Contents, Workflows and Secrets read/write access. The same token is used for installation and ongoing compilation, stored encrypted in KV; keep it valid while Actions compilation is enabled.")}</p>
           <p>${t("按顺序完成检查、安装和启用。仓库文件公开；凭据仅保存为加密数据或 GitHub Secrets。不会保存其他页面的草稿。", "Check, install and enable in order. Repository files are public; credentials remain encrypted or in GitHub Secrets. Other page drafts are not saved.")}</p>
-          <p class="help">${t("自动填入上次成功安装时使用的地址。建议填写本部署的 workers.dev 地址，避免自定义域名的人机验证；首次升级后如果地址为空，请重新填写一次。仅检查地址格式，不检查连通性；请确认地址属于本部署。实际连接由 GitHub Action 执行。", "Uses the address from the last successful installation. Prefer this deployment's workers.dev address to avoid custom-domain bot challenges. If the field is empty after upgrading, enter it once. Only address format is checked, not connectivity; ensure it belongs to your deployment. GitHub Actions makes the actual connection.")}</p>
+          <p class="help">${t("自动填入上次成功安装时使用的地址。建议填写本部署的 workers.dev 地址，避免自定义域名的人机验证。仅检查地址格式，不检查连通性；请确认地址属于本部署。实际连接由 GitHub Action 执行。", "Uses the address from the last successful installation. Prefer this deployment's workers.dev address to avoid custom-domain bot challenges. Only address format is checked, not connectivity; ensure it belongs to your deployment. GitHub Actions makes the actual connection.")}</p>
           <p class="help">${t("向导会安装或更新通用工作流与编译器。产物固定使用 rules 分支，按三个客户端分目录保存。", "The wizard installs or updates the shared workflow and compiler. Artifacts use the fixed rules branch with a directory for each client.")}</p>
         </div>
       </details>
@@ -810,7 +810,7 @@ async function skipActionsUpgrade() {
   }
 }
 async function checkActionsUpgrade() {
-  if (state.migration || !state.config.settings.actionsCompilation?.enabled) return;
+  if (!state.config.settings.actionsCompilation?.enabled) return;
   try {
     const status = await api("/api/actions-compilation/status");
     if (!status.enabled || status.workflowReady !== false) return;
@@ -1462,21 +1462,6 @@ function download(content, name, type = "application/json") {
   a.click();
   setTimeout(() => URL.revokeObjectURL(url), 1e3);
 }
-async function reviewMigration() {
-  if (!state.migration) return;
-  if (!state.migrationData) throw Error(t("请刷新页面后重新检查升级。", "Reload the page and review the upgrade again."));
-  if (state.invalid.size) throw Error(t("请先修正格式无效的输入。", "Correct invalid inputs first."));
-  modal(t("确认配置升级", "Confirm configuration upgrade"), `<p>${t("升级旧版配置格式，保留 Surge 与 Clash 各自的设置。sing-box 使用独立的原生默认配置，DNS、策略组、分流规则和 Tailscale 均在 sing-box 中单独设置。新配置写入并验证成功后，旧版配置将进入延迟清理。", "Upgrade the legacy configuration format while preserving the separate Surge and Clash settings. sing-box starts with independent native defaults; configure its DNS, groups, routing rules and Tailscale separately. Old configuration is scheduled for cleanup after the new configuration is written and verified.")}</p>`, async () => {
-    const config = await api("/api/config/migration", { method: "POST", body: JSON.stringify({ config: state.config, fingerprint: state.migrationData.fingerprint }) });
-    state.config = config;
-    state.saved = JSON.stringify(config);
-    state.migration = false;
-    closeModal();
-    render();
-    toast(t("配置升级已完成", "Configuration upgrade completed"));
-    await checkActionsUpgrade();
-  }, t("确认升级", "Confirm upgrade"));
-}
 async function loadLinks() {
   if (state.page !== "links") return;
   const data = await api("/api/read-token");
@@ -1646,10 +1631,6 @@ async function action(button) {
   }
   if (name === "modal-save") {
     await modal.save?.();
-    return;
-  }
-  if (name === "migration") {
-    await reviewMigration();
     return;
   }
   if (name === "add-entity" || name === "edit-entity") {
@@ -1962,12 +1943,7 @@ $("#logout").addEventListener("click", () => {
   else logout().catch((error) => toast(error.message));
 });
 function navigationPage() {
-  let page = location.hash.slice(1);
-  if (page === "rule-sources") {
-    page = "clients";
-    state.section = "rules";
-    history.replaceState(null, "", "#clients");
-  }
+  const page = location.hash.slice(1);
   return NAV.some((item) => item[0] === page) ? page : "status";
 }
 window.addEventListener("hashchange", async () => {
@@ -1985,19 +1961,9 @@ window.addEventListener("beforeunload", (event) => {
   }
 });
 async function load() {
-  let config = await api("/api/config");
-  const ruleNamesPendingSave = Boolean(config.ruleNamesPendingSave);
-  delete config.ruleNamesPendingSave;
-  state.migration = Boolean(config.migrationRequired);
-  delete config.migrationRequired;
-  if (state.migration) {
-    const migration = await api("/api/config/migration");
-    state.migration = migration.required;
-    state.migrationData = { fingerprint: migration.fingerprint };
-    config = migration.config;
-  }
+  const config = await api("/api/config");
   state.config = config;
-  state.saved = ruleNamesPendingSave ? "" : JSON.stringify(config);
+  state.saved = JSON.stringify(config);
   await loadSharedProxyNames().catch((error) => toast(error.message));
   state.page = navigationPage();
   render();

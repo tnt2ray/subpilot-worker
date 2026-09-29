@@ -1,5 +1,3 @@
-import type { SourceConfig } from "./types";
-
 function bytesToBase64(bytes: Uint8Array): string {
   const chunks: string[] = [];
   for (let offset = 0; offset < bytes.length; offset += 8192) {
@@ -46,16 +44,4 @@ export async function encryptJson(secret: string, value: unknown): Promise<strin
 
 export async function decryptJson<T>(secret: string, value: string): Promise<T> {
   return JSON.parse(await decryptText(secret, value)) as T;
-}
-
-export async function unsealSources(sources: SourceConfig[], secret?: string): Promise<SourceConfig[]> {
-  if (!secret && sources.some((source) => source.url || source.urlEncrypted)) {
-    throw new Error("CONFIG_ENCRYPTION_KEY secret is required");
-  }
-  return Promise.all(
-    sources.map(async (source) => {
-      if (source.url || !source.urlEncrypted || !secret) return { ...source };
-      return { ...source, url: await decryptText(secret, source.urlEncrypted) };
-    })
-  );
 }

@@ -148,7 +148,7 @@ export async function handleActionsCompilationStatus(env: Env): Promise<Response
     const current = result?.attemptedAt === lastAttemptAt ? result : null;
     const outputs = await Promise.all(batch.jobs.map(async (job) => {
       const manifest = await publishedManifest(env, job);
-      const worker = !manifest ? await readCompiledRuleSetManifest(ruleSetEnv(env, job.target), job.output.name, { allowLegacy: false }).catch(() => null) : null;
+      const worker = !manifest ? await readCompiledRuleSetManifest(ruleSetEnv(env, job.target), job.output.name).catch(() => null) : null;
       const state = manifest && (!lastAttemptAt || manifest.publication!.confirmedAt >= lastAttemptAt) && (!manifest.asnExpiresAt || manifest.asnExpiresAt > Date.now()) ? "complete" : !workflowReady ? "workflow_update_required" : current ? current.accepted ? "accepted" : "dispatch_failed"
         : !lastAttemptAt ? "pending" : Date.now() - lastAttemptAt >= RETRY_MS ? "retrying" : "awaiting";
       return { name: job.output.name, target: job.target, state,

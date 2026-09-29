@@ -1,4 +1,5 @@
 import { parseInlineRuleSetLines } from "./rule-set-parser";
+import { validateClashTailscaleNodes } from "./clash-tailscale";
 import { isNativeClashDirectRule } from "./rule-targets";
 import { normalizeManagedBasePath, ruleSetPathName } from "./managed-url";
 import { isValidSingboxOutbound } from "./singbox-validation";
@@ -111,12 +112,17 @@ export function validateConfigEntityLimits(config: RenderConfig, options: { allo
   if (!config.clash || !Array.isArray(config.clash.rules) || !config.clash.tun || typeof config.clash.tun !== "object") return "Clash 配置格式无效";
   if (typeof config.groups.Proxy !== "string") return "内置 Proxy 策略组必须保留";
   if (config.disabledGroups.includes("Proxy")) return "内置 Proxy 策略组不能禁用";
+  if (config.renderTarget === "clash") {
+    const tailscaleError = validateClashTailscaleNodes(config.clash.tailscaleNodes ?? []);
+    if (tailscaleError) return tailscaleError;
+  }
 
   const countError = firstCountLimit([
     ["订阅源", config.sources.length, MAX_COUNTS.sources],
     ["静态节点", config.proxyNodes.length, MAX_COUNTS.proxyNodes],
     ["策略组", Object.keys(config.groups).length, MAX_COUNTS.groups],
     ["Tailscale 节点", config.surge.tailscaleNodes.length, MAX_COUNTS.tailscaleNodes],
+    ["Mihomo Tailscale 节点", config.clash.tailscaleNodes?.length ?? 0, MAX_COUNTS.tailscaleNodes],
     ["规则输出", config.ruleSets.outputs.length, MAX_COUNTS.ruleSetOutputs],
     ["主配置单条规则", config.ruleSets.directRules.length, MAX_COUNTS.directRules],
     ["Surge 规则", config.surge.rules.length, MAX_COUNTS.targetRules],
@@ -240,7 +246,7 @@ export function validateConfigEntityLimits(config: RenderConfig, options: { allo
   return validateImportantSettings(config);
 }
 
-export function validateProxyPolicyNameConflicts(config: Partial<Pick<RenderConfig, "groups" | "proxyNodes">>): string | null {
+export function validateProxyPolicyNameConflicts(config: Partial<Pick<RenderConfig, "groups" | "proxyNodes" | "clash" | "renderTarget">>): string | null {
   const groupNames = new Set(Object.keys(config.groups || {}).map((name) => name.trim()).filter(Boolean));
   const proxyNames = new Set<string>();
   for (const proxyNode of Array.isArray(config.proxyNodes) ? config.proxyNodes : []) {
@@ -251,6 +257,11 @@ export function validateProxyPolicyNameConflicts(config: Partial<Pick<RenderConf
     if (name && proxyNames.has(name)) return `代理节点名称 ${name} 不能重复`;
     if (name && ALL_BUILT_IN_POLICIES.has(name.toUpperCase())) return `代理节点名称 ${name} 与客户端内置策略冲突`;
     if (name) proxyNames.add(name);
+  }
+  if (config.renderTarget === "clash") for (const node of config.clash?.tailscaleNodes ?? []) {
+    if (groupNames.has(node.name) || proxyNames.has(node.name)) return "Mihomo Tailscale 名称不能与当前端策略组或共享节点重复";
+    if (node["dialer-proxy"] === node.name) return "Mihomo Tailscale 前置代理不能引用自身";
+    proxyNames.add(node.name);
   }
   return null;
 }
@@ -497,6 +508,7 @@ function validatePolicyGroupSpec(name: string, spec: string, config: RenderConfi
       }
     }),
     ...config.surge.tailscaleNodes.flatMap((node) => typeof node?.name === "string" && node.name.trim() ? [node.name.trim()] : []),
+    ...(config.renderTarget === "clash" ? (config.clash.tailscaleNodes ?? []).map((node) => node.name) : []),
     ...(config.renderTarget === "sing-box" ? [...config.document?.clients.singbox.outbounds ?? [], ...config.document?.clients.singbox.endpoints ?? []].flatMap((node) => typeof node.tag === "string" ? [node.tag] : []) : [])
   ]);
   let defaultCount = 0;

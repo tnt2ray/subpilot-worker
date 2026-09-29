@@ -16,10 +16,10 @@ server types, DERP selection conflicts, Tailcat user keys, and referenced inboun
 The upstream file remains unchanged.
 
 Update this file only together with the supported core version, adapters,
-migration behavior, and native `sing-box check` verification.
+and native `sing-box check` verification.
 
-This is a 1.15 preview baseline. Existing 1.14.0, 1.14.1, 1.15.0-alpha.6 and 1.15.0-alpha.7
-document markers migrate to 1.15.0-alpha.8 without resetting native settings.
+This is a 1.15 preview baseline. Configuration documents must use the
+1.15.0-alpha.8 core marker; older markers are rejected.
 Explicit HTTP versions are preserved; omitted versions use the core's negotiation
 defaults. Optional new fields remain omitted until configured.
 

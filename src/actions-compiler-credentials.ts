@@ -1,10 +1,10 @@
 import { loadConfig } from "./config-store";
-import { ACTIONS_CREDENTIALS_KEY, expireSupersededActionsRecord, readActionsIntegrationRecord } from "./actions-compiler-migration";
 import { decryptJson, encryptJson } from "./crypto-store";
 import { requireSecret } from "./secrets";
 import { jsonResponse, randomToken, readRequestJsonWithLimit, RequestBodyTooLargeError } from "./util";
 
 const headers = { "cache-control": "no-store, private" };
+const ACTIONS_CREDENTIALS_KEY = "integration:actions-compiler:credentials:v1";
 const validToken = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z0-9_]{20,255}$/.test(value);
 const validSharedSecret = (value: unknown): value is string => typeof value === "string" && /^[\x21-\x7e]{32,256}$/.test(value);
 
@@ -17,19 +17,16 @@ interface ActionsCredentials {
 /** Separate from configuration snapshots, exports and compiled-cache cleanup. */
 export async function readActionsCredentials(env: Env): Promise<ActionsCredentials> {
   try {
-    // Only an absent current record may inherit the previously saved credentials.
-    // A current empty or unreadable record must never revive an old token.
-    const stored = await readActionsIntegrationRecord(env, "credentials");
+    const stored = await env.SUBPILOT_CONFIG.get(ACTIONS_CREDENTIALS_KEY);
     if (stored !== null) {
       const value = await decryptJson<{ version?: unknown; token?: unknown; sharedSecret?: unknown }>(requireSecret(env, "CONFIG_ENCRYPTION_KEY"), stored);
       if (!value || value.version !== 1 || (value.token !== "" && !validToken(value.token))
         || (value.sharedSecret !== "" && !validSharedSecret(value.sharedSecret))) throw new Error("Invalid credentials");
-      // An empty record deliberately prevents fallback after clearing credentials.
       return { token: value.token as string, sharedSecret: value.sharedSecret as string, storage: "kv" };
     }
     return { token: "", sharedSecret: "", storage: "none" };
   } catch {
-    // Do not fall back or expose decrypted content when the record is unreadable.
+    // Do not expose decrypted content when the record is unreadable.
     throw new Error("Actions 编译凭据暂时无法读取，请检查配置加密密钥和存储后重试。 / Actions compilation credentials are unavailable; check encryption and storage.");
   }
 }
@@ -62,7 +59,6 @@ export async function handleActionsCredentials(request: Request, env: Env): Prom
     }
     const encrypted = await encryptJson(requireSecret(env, "CONFIG_ENCRYPTION_KEY"), { version: 1, token: credentials.token, sharedSecret: credentials.sharedSecret });
     await env.SUBPILOT_CONFIG.put(ACTIONS_CREDENTIALS_KEY, encrypted);
-    await expireSupersededActionsRecord(env, "credentials", encrypted);
     return jsonResponse({ ok: true, ...actionsCredentialStatus(credentials) }, { headers });
   } catch (error) {
     if (error instanceof SyntaxError) return jsonResponse({ error: "请求内容不是有效的 JSON。 / Invalid JSON request." }, { status: 400, headers });

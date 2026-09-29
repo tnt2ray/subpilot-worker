@@ -15,7 +15,6 @@ import { fetchWithTimeout, waitForRetry } from "./upstream-fetch";
 
 export const RULE_SET_SOURCE_CACHE_PREFIX = "cache:ruleSetSource:";
 export const RULE_SET_SOURCE_CACHE_META_PREFIX = "cache:ruleSetSourceMeta:";
-export const RULE_SET_SOURCE_CACHE_META_INDEX_KEY = "cache:ruleSetSourceMeta:index";
 export const COMPILED_RULE_SET_PREFIX = "cache:compiledRuleSet:";
 export const COMPILED_RULE_SET_META_PREFIX = "cache:compiledRuleSetMeta:";
 
@@ -25,7 +24,6 @@ const RULE_SET_SOURCE_FETCH_TOTAL_TIMEOUT_MS = 25_000;
 const RULE_SET_SOURCE_FETCH_RETRY_BASE_DELAY_MS = 100;
 const UNKNOWN_RULE_SET_SOURCE_FETCHED_AT = "1970-01-01T00:00:00.000Z";
 const ENCRYPTED_CACHE_STORAGE_PREFIX = "\u001fsubpilot-encrypted-cache:";
-const MAX_RULE_SET_SOURCE_CACHE_MIGRATIONS_PER_PRUNE = 100;
 // Leave room for encryption/base64 within KV's value limit and Worker memory.
 const MAX_RULE_SET_SOURCE_CONTENT_BYTES = 16 * 1024 * 1024;
 const MAX_COMPILED_RULE_SET_PLAINTEXT_CHARACTERS = 16 * 1024 * 1024;
@@ -177,7 +175,7 @@ export async function fetchCachedRuleSetSource(
     return { content, contentHash, usedCachedContent: false, ...(warning ? { warning } : {}) };
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
-    const cached = options.allowCachedFallback ? await readRuleSetSourceContent(env, key, false) : null;
+    const cached = options.allowCachedFallback ? await readRuleSetSourceContent(env, key) : null;
     if (options.allowCachedFallback && cached !== null) {
       return {
         content: cached,
@@ -190,16 +188,16 @@ export async function fetchCachedRuleSetSource(
   }
 }
 
-async function readRuleSetSourceContent(env: Env, key: string, migratePlaintext = true): Promise<string | null> {
+async function readRuleSetSourceContent(env: Env, key: string): Promise<string | null> {
   const stored = await env.SUBPILOT_CONFIG.get(key);
   if (stored === null) return null;
-  try { return await readEncryptedCacheContent(env, key, stored, { migratePlaintext }); }
+  try { return await readEncryptedCacheContent(env, stored); }
   catch { return null; }
 }
 
 /** Load one source at a time; refresh summaries never retain response bodies. */
 export async function readRefreshedRuleSetSource(env: Env, key: string, state: RuleSetSourceRefreshState): Promise<RuleSetSourceFetchResult> {
-  const content = await readRuleSetSourceContent(env, key, false);
+  const content = await readRuleSetSourceContent(env, key);
   if (content === null || await sha256Hex(content) !== state.contentHash) {
     throw new Error("规则来源缓存尚未同步或已被更新，请稍后重试。");
   }
@@ -233,12 +231,6 @@ export async function refreshRuleSetSourceCaches(
       errorsByKey: new Map(await Promise.all(sourcesToRefresh.filter((source) => source.enabled && source.url).map(async (source) => [await ruleSetSourceCacheKey(source.url), reason] as const)))
     };
   }
-  const existing = await readRuleSetSourceCacheEntries(env);
-  const existingByKey = new Map(existing.map((entry) => [entry.key, entry]));
-  const expectedKeys = await ruleSetSourceCacheKeysForEnabledSources(config);
-  const nextEntries = new Map(existing
-    .filter((entry) => expectedKeys.has(entry.key))
-    .map((entry) => [entry.key, entry]));
   const warnings: string[] = [];
   const failures: RuleSetSourceCacheFailure[] = [];
   const sourcesByKey = new Map<string, RuleSetSourceRefreshState>();
@@ -266,22 +258,13 @@ export async function refreshRuleSetSourceCaches(
         sourceId: source.id,
         sourceName: source.name
       });
-      nextEntries.set(key, entry);
       sourcesByKey.set(key, { contentHash: entry.contentHash, usedCachedContent: false });
       refreshed += 1;
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
-      const cachedContent = await readRuleSetSourceContent(env, key, false);
-      const existingEntry = existingByKey.get(key);
+      const cachedContent = await readRuleSetSourceContent(env, key);
       let usedCachedContent = false;
       if (cachedContent !== null) {
-        nextEntries.set(key, existingEntry ?? {
-          key,
-          fetchedAt: UNKNOWN_RULE_SET_SOURCE_FETCHED_AT,
-          sourceId: source.id,
-          sourceName: source.name,
-          contentAvailable: true
-        });
         sourcesByKey.set(key, {
           contentHash: await sha256Hex(cachedContent),
           usedCachedContent: true,
@@ -304,17 +287,11 @@ export async function refreshRuleSetSourceCaches(
   }
 
   const deleted = options.pruneUnexpected && !deadlineExceeded(options.deadline)
-    ? await pruneUnexpectedRuleSetSourceCacheEntries(env, existing, expectedKeys)
+    ? await pruneRuleSetSourceCaches(env, config)
     : 0;
   if (options.pruneUnexpected && deadlineExceeded(options.deadline)) {
     warnings.push("规则集刷新已到截止时间，跳过过期来源缓存清理。");
   }
-  const entries = [...nextEntries.values()].sort((a, b) => b.fetchedAt.localeCompare(a.fetchedAt));
-  if (!deadlineExceeded(options.deadline)) {
-    const warning = await writeRuleSetSourceCacheIndex(env, entries);
-    if (warning) warnings.push(warning);
-  }
-
   return {
     refreshed,
     failed: failures.length,
@@ -327,18 +304,10 @@ export async function refreshRuleSetSourceCaches(
   };
 }
 
-export async function pruneRuleSetCaches(env: Env, config: RenderConfig): Promise<number> {
+export async function pruneRuleSetSourceCaches(env: Env, config: RenderConfig): Promise<number> {
   const sourceEntries = await readRuleSetSourceCacheEntries(env);
   const expectedKeys = await ruleSetSourceCacheKeysForEnabledSources(config);
-  const sourceDeleted = await pruneUnexpectedRuleSetSourceCacheEntries(env, sourceEntries, expectedKeys);
-  await migrateRetainedRuleSetSourceCacheContents(env, expectedKeys);
-  await writeRuleSetSourceCacheIndex(env, sourceEntries.filter((entry) => expectedKeys.has(entry.key)));
-  // Version 3 documents publish target-scoped artifacts only. Remove all
-  // unscoped legacy artifacts, including names still used by a current client.
-  const compiledDeleted = config.document
-    ? await pruneUnexpectedCompiledRuleSets(env, new Set())
-    : await pruneCompiledRuleSetCaches(env, config);
-  return sourceDeleted + compiledDeleted;
+  return pruneUnexpectedRuleSetSourceCacheEntries(env, sourceEntries, expectedKeys);
 }
 
 export async function pruneCompiledRuleSetCaches(env: Env, config: RenderConfig): Promise<number> {
@@ -352,7 +321,7 @@ export async function pruneCompiledRuleSetCaches(env: Env, config: RenderConfig)
   return deleted;
 }
 
-export async function readCompiledRuleSetManifest(env: Env, outputName: string, options: { allowLegacy?: boolean } = {}): Promise<CompiledRuleSetManifest | null> {
+export async function readCompiledRuleSetManifest(env: Env, outputName: string): Promise<CompiledRuleSetManifest | null> {
   const headPage = await listKvKeyPage(
     env,
     compiledRuleSetVersionHeadPrefix(outputName),
@@ -373,16 +342,16 @@ export async function readCompiledRuleSetManifest(env: Env, outputName: string, 
     ) return versioned;
   }
 
-  // Compatibility for versioned caches written before the newest-first head
-  // index existed. Only inspect a complete bounded page: returning an entry
-  // from a truncated oldest-first page could select a stale version.
-  const legacyPage = await listKvKeyPage(
+  // A publication remains usable if its head index write failed. Inspect only
+  // a complete bounded metadata page so an oldest-first listing cannot select
+  // a stale version while newer metadata is outside the page.
+  const metadataPage = await listKvKeyPage(
     env,
     compiledRuleSetVersionMetaPrefix(outputName),
     MAX_COMPILED_MANIFEST_CANDIDATES
   );
-  if (legacyPage.complete) {
-    for (const versionKey of legacyPage.keys.sort().reverse()) {
+  if (metadataPage.complete) {
+    for (const versionKey of metadataPage.keys.sort().reverse()) {
       const versioned = normalizeCompiledManifest(await readKvJson<unknown>(env, versionKey));
       const storageId = versionKey.slice(compiledRuleSetVersionMetaPrefix(outputName).length);
       if (
@@ -393,10 +362,7 @@ export async function readCompiledRuleSetManifest(env: Env, outputName: string, 
       ) return versioned;
     }
   }
-  // The legacy mutable manifest has no corresponding artifact visibility check.
-  // Cache-only downloads must rebuild it as a complete version before use.
-  if (options.allowLegacy === false) return null;
-  return normalizeCompiledManifest(await readKvJson<unknown>(env, compiledRuleSetMetaKey(outputName)));
+  return null;
 }
 
 export async function readCompiledRuleSetBucket(
@@ -407,11 +373,12 @@ export async function readCompiledRuleSetBucket(
   manifest?: CompiledRuleSetManifest
 ): Promise<string | null> {
   const selectedManifest = manifest ?? await readCompiledRuleSetManifest(env, outputName);
-  const key = compiledRuleSetContentKey(outputName, bucket, target, selectedManifest?.storageId);
+  if (!selectedManifest?.storageId) return null;
+  const key = compiledRuleSetContentKey(outputName, bucket, target, selectedManifest.storageId);
   const stored = await env.SUBPILOT_CONFIG.get(key);
   if (stored === null) return null;
   try {
-    return await readEncryptedCacheContent(env, key, stored);
+    return await readEncryptedCacheContent(env, stored);
   } catch {
     // Versioned artifacts are immutable. Do not delete a corrupt value here:
     // it may have been published less than a second ago, and a delete would
@@ -488,8 +455,7 @@ export async function deleteCompiledRuleSet(env: Env, outputName: string): Promi
   ]);
   const keys = [...new Set([
     ...metaKeys,
-    ...contentKeys,
-    compiledRuleSetMetaKey(outputName)
+    ...contentKeys
   ])];
   await deleteKvKeys(env, keys);
 }
@@ -498,18 +464,13 @@ export function compiledRuleSetContentKey(
   outputName: string,
   bucket: RuleSetDownloadBucket,
   target: RuleSetOutputTarget,
-  storageId?: string
+  storageId: string
 ): string {
-  const version = storageId ? `${storageId}:` : "";
-  return `${compiledRuleSetContentOutputPrefix(outputName)}${version}${bucket}:${target}`;
-}
-
-export function compiledRuleSetMetaKey(outputName: string): string {
-  return `${COMPILED_RULE_SET_META_PREFIX}${encodeURIComponent(outputName)}`;
+  return `${compiledRuleSetContentOutputPrefix(outputName)}${storageId}:${bucket}:${target}`;
 }
 
 function compiledRuleSetMetaOutputPrefix(outputName: string): string {
-  return `${compiledRuleSetMetaKey(outputName)}:`;
+  return `${COMPILED_RULE_SET_META_PREFIX}${encodeURIComponent(outputName)}:`;
 }
 
 function compiledRuleSetVersionMetaPrefix(outputName: string): string {
@@ -573,12 +534,6 @@ async function pruneOldCompiledRuleSetVersions(
   for (const metaKey of staleMetaKeys) {
     await deleteCompiledRuleSetVersion(env, outputName, metaKey);
   }
-  if (sortedKeys.length) {
-    const legacyKeys = (await listKvKeys(env, compiledRuleSetContentOutputPrefix(outputName)))
-      .filter((key) => compiledStorageIdFromContentKey(key, outputName) === null);
-    if (await env.SUBPILOT_CONFIG.get(compiledRuleSetMetaKey(outputName)) !== null) legacyKeys.push(compiledRuleSetMetaKey(outputName));
-    await deleteKvKeys(env, legacyKeys);
-  }
   await pruneOrphanCompiledRuleSetContents(env, outputName, currentStorageId, now);
 }
 
@@ -614,7 +569,7 @@ async function pruneOrphanCompiledRuleSetContents(
 }
 
 async function compiledManifestContentIsVisible(env: Env, manifest: CompiledRuleSetManifest): Promise<boolean> {
-  if (!manifest.storageId) return true;
+  if (!manifest.storageId) return false;
   const keys = compiledManifestContentKeys(manifest);
   for (const key of keys) {
     const stream = await env.SUBPILOT_CONFIG.get(key, "stream");
@@ -675,13 +630,8 @@ export async function ruleSetSourceCacheKey(url: string): Promise<string> {
 
 /** Read only metadata; checking refresh eligibility must not load source bodies. */
 export async function readRuleSetSourceCacheMetadata(env: Env, key: string): Promise<RuleSetSourceCacheEntry | null> {
-  const metadata = normalizeRuleSetSourceCacheEntry(await readKvJson<unknown>(env, ruleSetSourceCacheMetaKey(key)))
-    .find((entry) => entry.key === key);
-  if (metadata) return metadata;
-  const indexed = await readKvJson<unknown>(env, RULE_SET_SOURCE_CACHE_META_INDEX_KEY);
-  return Array.isArray(indexed)
-    ? dedupeRuleSetSourceCacheEntries(indexed.flatMap(normalizeRuleSetSourceCacheEntry)).find((entry) => entry.key === key) ?? null
-    : null;
+  return normalizeRuleSetSourceCacheEntry(await readKvJson<unknown>(env, ruleSetSourceCacheMetaKey(key)))
+    .find((entry) => entry.key === key) ?? null;
 }
 
 async function writeRuleSetSourceCacheEntry(
@@ -697,7 +647,7 @@ async function writeRuleSetSourceCacheEntry(
   let unchanged = false;
   if (stored !== null) {
     try {
-      const cached = await readEncryptedCacheContent(env, entry.key, stored, { migratePlaintext: false });
+      const cached = await readEncryptedCacheContent(env, stored);
       unchanged = await sha256Hex(cached) === contentHash;
     } catch { /* Missing or unreadable content must be repaired even if metadata hashes match. */ }
   }
@@ -708,9 +658,8 @@ async function writeRuleSetSourceCacheEntry(
     contentHash,
     contentAvailable: true
   };
-  // Unchanged encrypted bodies keep their original value. Historical plaintext
-  // still migrates on a successful refresh, and missing/corrupt bodies rebuild.
-  if (!unchanged || !stored?.startsWith(ENCRYPTED_CACHE_STORAGE_PREFIX)) {
+  // Unchanged encrypted bodies keep their original value; unreadable bodies rebuild.
+  if (!unchanged) {
     await env.SUBPILOT_CONFIG.put(entry.key, await encryptCacheContent(env, content));
   }
   // Publish the hash/check time only after its corresponding body was stored.
@@ -718,47 +667,12 @@ async function writeRuleSetSourceCacheEntry(
   return meta;
 }
 
-async function writeRuleSetSourceCacheIndex(env: Env, entries: RuleSetSourceCacheEntry[]): Promise<string | null> {
-  // Individual metadata records are authoritative. This compatibility index
-  // must not prevent compilation when another request just updated the key.
-  const content = JSON.stringify([...entries].sort((a, b) => a.key.localeCompare(b.key)));
-  try {
-    if (await env.SUBPILOT_CONFIG.get(RULE_SET_SOURCE_CACHE_META_INDEX_KEY) !== content) {
-      await env.SUBPILOT_CONFIG.put(RULE_SET_SOURCE_CACHE_META_INDEX_KEY, content);
-    }
-    return null;
-  } catch {
-    const warning = "规则来源缓存索引更新失败，将使用独立缓存元数据。";
-    console.warn(JSON.stringify({ level: "warn", message: warning }));
-    return warning;
-  }
-}
-
-async function migrateRetainedRuleSetSourceCacheContents(env: Env, expectedKeys: Set<string>): Promise<void> {
-  for (const key of [...expectedKeys].slice(0, MAX_RULE_SET_SOURCE_CACHE_MIGRATIONS_PER_PRUNE)) {
-    const stored = await env.SUBPILOT_CONFIG.get(key);
-    if (stored === null || stored.startsWith(ENCRYPTED_CACHE_STORAGE_PREFIX)) continue;
-    await readEncryptedCacheContent(env, key, stored);
-  }
-}
-
-async function readEncryptedCacheContent(
-  env: Env,
-  key: string,
-  stored: string,
-  options: { migratePlaintext?: boolean } = {}
-): Promise<string> {
-  if (stored.startsWith(ENCRYPTED_CACHE_STORAGE_PREFIX)) {
-    return decryptText(
-      requireSecret(env, "CONFIG_ENCRYPTION_KEY"),
-      stored.slice(ENCRYPTED_CACHE_STORAGE_PREFIX.length)
-    );
-  }
-
-  if (options.migratePlaintext === false) return stored;
-  const encrypted = await encryptCacheContent(env, stored);
-  await env.SUBPILOT_CONFIG.put(key, encrypted).catch(() => undefined);
-  return stored;
+async function readEncryptedCacheContent(env: Env, stored: string): Promise<string> {
+  if (!stored.startsWith(ENCRYPTED_CACHE_STORAGE_PREFIX)) throw new Error("Unsupported rule-set cache format");
+  return decryptText(
+    requireSecret(env, "CONFIG_ENCRYPTION_KEY"),
+    stored.slice(ENCRYPTED_CACHE_STORAGE_PREFIX.length)
+  );
 }
 
 async function encryptCacheContent(env: Env, content: string): Promise<string> {
@@ -827,15 +741,10 @@ function looksLikeHtmlDocument(content: string): boolean {
 }
 
 async function readRuleSetSourceCacheEntries(env: Env): Promise<RuleSetSourceCacheEntry[]> {
-  const indexed = await readKvJson<unknown>(env, RULE_SET_SOURCE_CACHE_META_INDEX_KEY);
-  const indexedEntries = Array.isArray(indexed) ? indexed.flatMap(normalizeRuleSetSourceCacheEntry) : [];
   const metaKeys = (await listKvKeys(env, RULE_SET_SOURCE_CACHE_META_PREFIX))
-    .filter((key) => key !== RULE_SET_SOURCE_CACHE_META_INDEX_KEY);
+    .filter((key) => /^[a-f0-9]{64}$/.test(key.slice(RULE_SET_SOURCE_CACHE_META_PREFIX.length)));
   const entries = await Promise.all(metaKeys.map((key) => readKvJson<unknown>(env, key)));
-  return dedupeRuleSetSourceCacheEntries([
-    ...indexedEntries,
-    ...entries.flatMap(normalizeRuleSetSourceCacheEntry)
-  ]);
+  return entries.flatMap(normalizeRuleSetSourceCacheEntry);
 }
 
 async function ruleSetSourceCacheKeysForEnabledSources(config: RenderConfig): Promise<Set<string>> {
@@ -905,79 +814,73 @@ function safeDecodeURIComponent(value: string): string | null {
   }
 }
 
-function dedupeRuleSetSourceCacheEntries(entries: RuleSetSourceCacheEntry[]): RuleSetSourceCacheEntry[] {
-  const selected = new Map<string, RuleSetSourceCacheEntry>();
-  for (const entry of entries) {
-    const existing = selected.get(entry.key);
-    if (!existing || Date.parse(entry.checkedAt ?? entry.fetchedAt) >= Date.parse(existing.checkedAt ?? existing.fetchedAt)) {
-      selected.set(entry.key, entry);
-    }
-  }
-  return [...selected.values()];
-}
-
 function normalizeRuleSetSourceCacheEntry(value: unknown): RuleSetSourceCacheEntry[] {
-  if (!value || typeof value !== "object") return [];
+  if (!value || typeof value !== "object" || Array.isArray(value)) return [];
   const entry = value as Partial<RuleSetSourceCacheEntry>;
   if (typeof entry.key !== "string" || !entry.key.startsWith(RULE_SET_SOURCE_CACHE_PREFIX)) return [];
   if (typeof entry.fetchedAt !== "string" || Number.isNaN(new Date(entry.fetchedAt).getTime())) return [];
+  if (typeof entry.checkedAt !== "string" || !Number.isFinite(Date.parse(entry.checkedAt))
+    || typeof entry.contentHash !== "string" || !/^[a-f0-9]{64}$/.test(entry.contentHash)
+    || typeof entry.sourceId !== "string" || typeof entry.sourceName !== "string" || typeof entry.contentAvailable !== "boolean") return [];
   return [{
     key: entry.key,
     fetchedAt: entry.fetchedAt,
-    ...(typeof entry.checkedAt === "string" && Number.isFinite(Date.parse(entry.checkedAt)) ? { checkedAt: entry.checkedAt } : {}),
-    ...(typeof entry.contentHash === "string" && /^[a-f0-9]{64}$/.test(entry.contentHash) ? { contentHash: entry.contentHash } : {}),
-    sourceId: typeof entry.sourceId === "string" ? entry.sourceId : "",
-    sourceName: typeof entry.sourceName === "string" ? entry.sourceName : "",
-    contentAvailable: typeof entry.contentAvailable === "boolean" ? entry.contentAvailable : true
+    checkedAt: entry.checkedAt,
+    contentHash: entry.contentHash,
+    sourceId: entry.sourceId,
+    sourceName: entry.sourceName,
+    contentAvailable: entry.contentAvailable
   }];
 }
 
 function normalizeCompiledManifest(value: unknown): CompiledRuleSetManifest | null {
-  if (!value || typeof value !== "object") return null;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const record = value as Partial<CompiledRuleSetManifest>;
-  if (typeof record.outputName !== "string") return null;
+  if (typeof record.outputName !== "string" || typeof record.storageId !== "string" || compiledStorageIdTimestamp(record.storageId) === null) return null;
+  if (typeof record.outputFingerprint !== "string" || !/^[a-f0-9]{64}$/.test(record.outputFingerprint)
+    || typeof record.policy !== "string" || typeof record.updatedAt !== "string" || !Number.isFinite(Date.parse(record.updatedAt))
+    || !Array.isArray(record.sourceIds) || record.sourceIds.some((item) => typeof item !== "string")
+    || !record.sourceContentHashes || typeof record.sourceContentHashes !== "object" || Array.isArray(record.sourceContentHashes)
+    || typeof record.ruleCount !== "number" || !Number.isSafeInteger(record.ruleCount) || record.ruleCount < 0
+    || typeof record.duplicateCount !== "number" || !Number.isSafeInteger(record.duplicateCount) || record.duplicateCount < 0
+    || !Array.isArray(record.buckets) || !Array.isArray(record.warnings) || record.warnings.some((item) => typeof item !== "string")) return null;
+  const buckets = record.buckets.flatMap(normalizeBucketMeta);
+  if (buckets.length !== record.buckets.length) return null;
   return {
     outputName: record.outputName,
-    outputFingerprint: typeof record.outputFingerprint === "string" ? record.outputFingerprint : "",
-    policy: typeof record.policy === "string" ? record.policy : "Proxy",
-    updatedAt: typeof record.updatedAt === "string" ? record.updatedAt : "",
-    sourceIds: Array.isArray(record.sourceIds) ? record.sourceIds.filter((item): item is string => typeof item === "string") : [],
-    ...(record.sourceContentHashes && typeof record.sourceContentHashes === "object" && !Array.isArray(record.sourceContentHashes)
-      ? { sourceContentHashes: Object.fromEntries(Object.entries(record.sourceContentHashes).filter(([key, hash]) =>
-        key.startsWith(RULE_SET_SOURCE_CACHE_PREFIX) && /^[a-f0-9]{64}$/.test(key.slice(RULE_SET_SOURCE_CACHE_PREFIX.length))
-        && typeof hash === "string" && /^[a-f0-9]{64}$/.test(hash))) }
-      : {}),
-    ruleCount: typeof record.ruleCount === "number" ? record.ruleCount : 0,
+    outputFingerprint: record.outputFingerprint,
+    policy: record.policy,
+    updatedAt: record.updatedAt,
+    sourceIds: record.sourceIds,
+    sourceContentHashes: Object.fromEntries(Object.entries(record.sourceContentHashes).filter(([key, hash]) =>
+      key.startsWith(RULE_SET_SOURCE_CACHE_PREFIX) && /^[a-f0-9]{64}$/.test(key.slice(RULE_SET_SOURCE_CACHE_PREFIX.length))
+      && typeof hash === "string" && /^[a-f0-9]{64}$/.test(hash))),
+    ruleCount: record.ruleCount,
     ...(typeof record.dnsRuleCount === "number" ? { dnsRuleCount: record.dnsRuleCount } : {}),
-    duplicateCount: typeof record.duplicateCount === "number" ? record.duplicateCount : 0,
+    duplicateCount: record.duplicateCount,
     ...(record.provider && RULE_SET_BUCKETS.includes(record.provider.behavior) && Number.isSafeInteger(record.provider.interval) && record.provider.interval > 0 ? { provider: record.provider } : {}),
     ...(["RULE-SET", "DOMAIN-SET"].includes(record.surgeType ?? "") ? { surgeType: record.surgeType } : {}),
     ...(typeof record.asnExpiresAt === "number" && Number.isFinite(record.asnExpiresAt) ? { asnExpiresAt: record.asnExpiresAt } : {}),
-    buckets: Array.isArray(record.buckets) ? record.buckets.flatMap(normalizeBucketMeta) : [],
-    warnings: Array.isArray(record.warnings) ? record.warnings.filter((item): item is string => typeof item === "string") : [],
-    ...(typeof record.storageId === "string" && /^[A-Za-z0-9_-]+$/.test(record.storageId)
-      ? { storageId: record.storageId }
-      : {})
+    buckets,
+    warnings: record.warnings,
+    storageId: record.storageId
   };
 }
 
 function normalizeBucketMeta(value: unknown): CompiledRuleSetBucketMeta[] {
-  if (!value || typeof value !== "object") return [];
+  if (!value || typeof value !== "object" || Array.isArray(value)) return [];
   const record = value as Partial<CompiledRuleSetBucketMeta>;
   if (!record.bucket || !RULE_SET_BUCKETS.includes(record.bucket)) return [];
+  if (typeof record.count !== "number" || !Number.isSafeInteger(record.count) || record.count < 0
+    || !Array.isArray(record.targets) || record.targets.some((target) => !RULE_SET_TARGETS.includes(target))
+    || !record.targetCounts || typeof record.targetCounts !== "object" || Array.isArray(record.targetCounts)) return [];
   return [{
     bucket: record.bucket,
-    count: typeof record.count === "number" ? record.count : 0,
-    targets: Array.isArray(record.targets)
-      ? record.targets.filter((item): item is RuleSetOutputTarget => RULE_SET_TARGETS.some((target) => target === item))
-      : [],
-    ...(record.targetCounts && typeof record.targetCounts === "object"
-      ? {
-        targetCounts: Object.fromEntries(RULE_SET_TARGETS.flatMap((target) => {
-          const count = record.targetCounts?.[target];
-          return typeof count === "number" && count >= 0 ? [[target, count]] : [];
-        }))
-      }
-      : {})
+    count: record.count,
+    targets: record.targets,
+    targetCounts: Object.fromEntries(RULE_SET_TARGETS.flatMap((target) => {
+      const count = record.targetCounts?.[target];
+      return typeof count === "number" && count >= 0 ? [[target, count]] : [];
+    }))
   }];
 }

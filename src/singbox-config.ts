@@ -10,9 +10,12 @@ export function defaultSingboxConfig(): AppConfig["clients"]["singbox"] {
   return {
     coreVersion: "1.15.0-alpha.8",
     log: { level: "info", timestamp: true },
-    dns: { servers: [{ type: "udp", tag: "dns-direct", server: "1.1.1.1" }], final: "dns-direct" },
+    dns: { servers: [{ type: "udp", tag: "dns-direct", server: "1.1.1.1" }], final: "dns-direct", reverse_mapping: true },
     inbounds: [{ type: "tun", tag: "tun-in", address: ["172.19.0.1/30", "fdfe:dcba:9876::1/126"], auto_route: true }],
-    route: { auto_detect_interface: true, default_domain_resolver: "dns-direct", final: "Proxy" },
+    route: {
+      auto_detect_interface: true, default_domain_resolver: "dns-direct",
+      rules: [{ action: "sniff" }, { protocol: "dns", action: "hijack-dns" }], final: "Proxy"
+    },
     experimental: {},
     groups: { Proxy: "select, {all}, DIRECT" },
     disabledGroups: [],

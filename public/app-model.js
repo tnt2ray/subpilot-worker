@@ -138,7 +138,8 @@ const CLIENT_SECTIONS = {
   clash: {
     network: ["port", "socksPort", "mixedPort", "allowLan", "mode", "logLevel", "ipv6", "unifiedDelay", "tcpConcurrent", "externalController", "tun"],
     dns: ["dnsEnabled", "dnsListen", "dnsListenRoutingMark", "dnsFallbackLazyQuery", "dnsIpv6", "dnsEnhancedMode", "dnsFakeIpRange", "defaultNameservers", "nameservers", "fallbackNameservers", "fallbackFilterGeoip", "fallbackFilterIpcidr", "fakeIpFilter"],
-    rules: ["rules", "ruleProviders"]
+    rules: ["rules", "ruleProviders"],
+    tailscale: ["tailscaleNodes"]
   },
   singbox: { network: ["inbounds"], dns: ["dns"], rules: ["route"], tailscale: ["endpoints"], advanced: ["log", "experimental"] }
 };

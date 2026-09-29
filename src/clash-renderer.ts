@@ -30,8 +30,13 @@ export function buildClash(
     if (!data.dns) throw new Error("规则集指定 DNS 需要启用 Clash DNS。");
     (data.dns as Record<string, unknown>)["nameserver-policy"] = compiledPlan!.clashDnsPolicy;
   }
-  data.proxies = nodes.map(toClashProxy);
-  data["proxy-groups"] = buildClashGroups(config, nodes);
+  const tailscale = config.clash.tailscaleNodes ?? [];
+  data.proxies = [...nodes.map(toClashProxy), ...structuredClone(tailscale)];
+  // Tailnet-only nodes are selectable explicitly, not automatic public exits.
+  const localNodes: ProxyNode[] = tailscale.map((node) => ({
+    name: node.name, type: "tailscale", server: "", params: {}, raw: node, manual: true, includeInGroups: false
+  }));
+  data["proxy-groups"] = buildClashGroups(config, [...nodes, ...localNodes]);
   data.rules = compiledPlan?.clashRules ?? config.clash.rules;
   return `# Last Updated: ${beijingTimestamp()} (UTC+8)\n${new YAML.Document(data)}`;
 }

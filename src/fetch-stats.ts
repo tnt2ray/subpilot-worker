@@ -3,7 +3,6 @@ import { readSourceCacheStatus, type SourceCacheStatus } from "./source-cache";
 import type { RenderConfig, Target } from "./types";
 
 const LAST_FETCH_PREFIX = "stats:config:lastFetched:";
-const RECENT_FETCHES_KEY = "stats:config:recentFetches";
 const RECENT_FETCH_PREFIX = "stats:config:recentFetch:";
 export type ConfigFetchTarget = Target;
 
@@ -73,28 +72,11 @@ function lastFetchKey(target: ConfigFetchTarget): string {
 }
 
 async function readRecentFetches(env: Env): Promise<ConfigFetchRecord[]> {
-  const [records, legacyRecords] = await Promise.all([
-    readRecentFetchRecordKeys(env).then(async (keys) => {
-      const values = await Promise.all(keys.map((key) => env.SUBPILOT_CONFIG.get(key)));
-      return values.flatMap(readFetchRecordFromString);
-    }),
-    readLegacyRecentFetches(env)
-  ]);
-  return [...records, ...legacyRecords]
+  const keys = await readRecentFetchRecordKeys(env);
+  const values = await Promise.all(keys.map((key) => env.SUBPILOT_CONFIG.get(key)));
+  return values.flatMap(readFetchRecordFromString)
     .sort((left, right) => right.fetchedAt.localeCompare(left.fetchedAt))
     .slice(0, MAX_RECENT_FETCH_ROWS);
-}
-
-async function readLegacyRecentFetches(env: Env): Promise<ConfigFetchRecord[]> {
-  const value = await env.SUBPILOT_CONFIG.get(RECENT_FETCHES_KEY);
-  if (!value) return [];
-  try {
-    const parsed = JSON.parse(value) as unknown;
-    if (!Array.isArray(parsed)) return [];
-    return parsed.flatMap(normalizeFetchRecord).slice(0, MAX_STORED_FETCH_RECORDS);
-  } catch {
-    return [];
-  }
 }
 
 function readFetchRecordFromString(value: string | null): ConfigFetchRecord[] {

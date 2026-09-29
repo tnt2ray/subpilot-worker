@@ -2,13 +2,10 @@ import { STATIC_EXIT_GROUP_NAME, type RenderConfig } from "./types";
 import { DEFAULT_DISPLAY_TIME_ZONE } from "./util";
 
 export const DEFAULT_CONFIG: RenderConfig = {
-  version: 1,
   settings: {
     managedBaseUrl: "",
     userAgentSurge: "Surge iOS/3727",
     userAgentClash: "clash-verge/v2.5.1",
-    userAgentStash: "Stash/2.7.1",
-    userAgentShadowrocket: "Shadowrocket/2.2.68",
     excludeKeywords: ["过期", "剩余", "官网", "直接连接", "购买", "漏洞", "备用", "登陆", "工作室", "客服"],
     geoipRenameEnabled: true,
     featureTagRules: [
@@ -189,6 +186,7 @@ export const DEFAULT_CONFIG: RenderConfig = {
     ]
   },
   clash: {
+    tailscaleNodes: [],
     port: 7890,
     socksPort: 7891,
     mixedPort: 7892,

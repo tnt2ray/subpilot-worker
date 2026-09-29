@@ -8,16 +8,16 @@ import { decryptJson, encryptJson } from "./crypto-store";
 import { sealGitHubSecret } from "./github-secret-seal";
 import { requireSecret } from "./secrets";
 import { readActionsCredentials, actionsCredentialStatus } from "./actions-compiler-credentials";
-import { ACTIONS_CALLBACK_ORIGIN_KEY, expireSupersededActionsRecord, readActionsIntegrationRecord } from "./actions-compiler-migration";
 import type { ActionsCompilationSettings } from "./types";
 import { jsonResponse, readRequestJsonWithLimit, readResponseTextWithLimit } from "./util";
 
 class InstallError extends Error {}
+const ACTIONS_CALLBACK_ORIGIN_KEY = "integration:actions-compiler:callback-origin:v1";
 const headers = { "cache-control": "no-store, private" };
 const sha = (value: unknown): value is string => typeof value === "string" && /^[a-f0-9]{40}$/.test(value);
 
 async function readCallbackOrigin(env: Env): Promise<string | null> {
-  const stored = await readActionsIntegrationRecord(env, "callbackOrigin");
+  const stored = await env.SUBPILOT_CONFIG.get(ACTIONS_CALLBACK_ORIGIN_KEY);
   if (stored === null) return null;
   try {
     const value = await decryptJson<{ version?: unknown; origin?: unknown }>(requireSecret(env, "CONFIG_ENCRYPTION_KEY"), stored);
@@ -156,7 +156,6 @@ export async function handleActionsCompilationInstall(request: Request, env: Env
     stage = "保存工作流访问地址 / Saving callback address";
     const encryptedCallbackOrigin = await encryptJson(requireSecret(env, "CONFIG_ENCRYPTION_KEY"), { version: 1, origin: callbackOrigin });
     await env.SUBPILOT_CONFIG.put(ACTIONS_CALLBACK_ORIGIN_KEY, encryptedCallbackOrigin);
-    await expireSupersededActionsRecord(env, "callbackOrigin", encryptedCallbackOrigin);
     await env.SUBPILOT_CONFIG.put(actionsCompilerProtocolKey(settings), ACTIONS_COMPILER_PROTOCOL);
     return jsonResponse({ ok: true, completed, ...status, callbackOrigin }, { headers });
   } catch (error) {

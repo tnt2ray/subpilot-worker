@@ -34,11 +34,6 @@ function countProtocols(protocols: string[]): SourceCacheProtocolCount[] {
   return sortProtocolCounts(counts);
 }
 
-export function normalizeSourceCacheNodeCount(value: unknown, protocolCounts: SourceCacheProtocolCount[]): number {
-  if (typeof value === "number" && Number.isFinite(value) && value >= 0) return Math.floor(value);
-  return protocolCounts.reduce((total, item) => total + item.count, 0);
-}
-
 export function normalizeSourceCacheProtocolCounts(value: unknown): SourceCacheProtocolCount[] {
   if (!Array.isArray(value)) return [];
   const counts = new Map<string, number>();

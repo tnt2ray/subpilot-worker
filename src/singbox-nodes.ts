@@ -146,7 +146,7 @@ export function toSingboxOutbound(node: ProxyNode, canonical: JsonObject): JsonO
 
 /** Reject unsupported URI transports and lossy native-node conversions before rendering. */
 export function nativeNodeCompatibility(node: ProxyNode, target: Target): string | null {
-  if (target === "clash" && ["easytier", "zerotier", "wireguard", "openvpn"].includes(node.type) && !node.raw) return "此协议需要 Mihomo 原生 YAML/JSON 节点配置";
+  if (target === "clash" && ["easytier", "zerotier", "tailscale", "wireguard", "openvpn"].includes(node.type) && !node.raw) return "此协议需要 Mihomo 原生 YAML/JSON 节点配置";
   if (node.type === "masque" && ((target === "clash" && !node.raw) || (target === "surge" && node.raw))) return "Surge 与 Mihomo 的 MASQUE 格式无法等价转换，请使用对应客户端的原生节点配置";
   if (node.uriTransport) {
     const transports = target === "clash" ? ["tcp", "ws", "grpc", "h2"] : target === "surge" ? ["tcp", "ws"] : ["tcp", "ws", "grpc"];

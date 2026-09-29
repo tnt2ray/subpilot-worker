@@ -1,4 +1,5 @@
 import { DEFAULT_CONFIG } from "./default-config";
+import { normalizeClashTailscaleNodes } from "./clash-tailscale";
 import { splitGroupSpec } from "./policy-group-spec";
 import {
   RULE_SET_SOURCE_FORMATS,
@@ -10,7 +11,7 @@ import {
 } from "./rule-set-types";
 import { ruleSetPathName } from "./managed-url";
 import { inferUrlRewriteMitmHostnames } from "./surge-url-rewrite";
-import { CHAIN_EXIT_PROTOCOLS, type RenderConfig, type ChainExitProtocol, type NotificationChannel, type ActionsCompilationSettings, type SourceConfig, type StaticProxyNodeConfig, type SurgeIpv6VifMode, type Target } from "./types";
+import { type RenderConfig, type NotificationChannel, type ActionsCompilationSettings, type SourceConfig, type StaticProxyNodeConfig, type SurgeIpv6VifMode, type Target } from "./types";
 import { normalizeDisplayTimeZone } from "./util";
 
 const SURGE_IPV6_VIF_MODES = ["off", "auto", "always"] as const satisfies readonly SurgeIpv6VifMode[];
@@ -21,7 +22,6 @@ function notificationChannelFromTelegramToken(token: string): NotificationChanne
 
 export function normalizeTarget(value: string | null | undefined): Target | null {
   const lowered = String(value ?? "").toLowerCase();
-  if (lowered === "mihomo") return "clash";
   if (lowered === "surge" || lowered === "clash" || lowered === "sing-box") return lowered;
   return null;
 }
@@ -30,16 +30,12 @@ export function normalizeConfig(input: RenderConfig): RenderConfig {
   const groups = normalizeGroups(typeof input.groups === "object" && input.groups ? input.groups : DEFAULT_CONFIG.groups);
   const notificationTelegramBotToken = stringValue(input.settings?.notificationTelegramBotToken, "");
   return {
-    version: 1,
     ...(input.document ? { document: input.document } : {}),
     ...(input.renderTarget ? { renderTarget: input.renderTarget } : {}),
-    ...(input.migrationRequired ? { migrationRequired: true } : {}),
     settings: {
       managedBaseUrl: stringValue(input.settings?.managedBaseUrl, DEFAULT_CONFIG.settings.managedBaseUrl),
       userAgentSurge: input.settings?.userAgentSurge || DEFAULT_CONFIG.settings.userAgentSurge,
       userAgentClash: input.settings?.userAgentClash || DEFAULT_CONFIG.settings.userAgentClash,
-      userAgentStash: input.settings?.userAgentStash || DEFAULT_CONFIG.settings.userAgentStash,
-      userAgentShadowrocket: input.settings?.userAgentShadowrocket || DEFAULT_CONFIG.settings.userAgentShadowrocket,
       excludeKeywords: stringArray(input.settings?.excludeKeywords, []),
       geoipRenameEnabled: input.settings?.geoipRenameEnabled !== false,
       featureTagRules: stringArray(input.settings?.featureTagRules, DEFAULT_CONFIG.settings.featureTagRules),
@@ -62,14 +58,12 @@ export function normalizeConfig(input: RenderConfig): RenderConfig {
   };
 }
 
-/** Resolve renamed settings before defaults can hide a legacy value. */
 export function withDefaultConfigSettings(input: unknown): RenderConfig["settings"] & { actionsCompilation: ActionsCompilationSettings } {
   const raw = input && typeof input === "object" && !Array.isArray(input) ? input as Record<string, unknown> : {};
-  const { singboxSrs, ...current } = raw;
   return {
     ...DEFAULT_CONFIG.settings,
-    ...current,
-    actionsCompilation: normalizeActionsCompilationSettings(Object.hasOwn(current, "actionsCompilation") ? current.actionsCompilation : singboxSrs)
+    ...raw,
+    actionsCompilation: normalizeActionsCompilationSettings(raw.actionsCompilation)
   };
 }
 
@@ -133,14 +127,13 @@ export function normalizeSource(source: SourceConfig): SourceConfig {
     id: source.id || crypto.randomUUID(),
     name: source.name || "source",
     url: source.url || "",
-    urlEncrypted: source.urlEncrypted,
     fetchUserAgent: normalizeSourceFetchUserAgent(source.fetchUserAgent),
     enabled: source.enabled !== false
   };
 }
 
 function normalizeSourceFetchUserAgent(value: unknown): SourceConfig["fetchUserAgent"] {
-  return typeof value === "string" && value.trim() ? value.trim() : "surge";
+  return typeof value === "string" && value.trim() ? value.trim() : DEFAULT_CONFIG.settings.userAgentSurge;
 }
 
 export function normalizeRuleSets(input: Partial<RuleSetConfig> | undefined): RuleSetConfig {
@@ -238,18 +231,17 @@ function compareByOrder<T extends { order: number }>(left: T, right: T): number 
 
 function normalizeProxyNodes(nodes: StaticProxyNodeConfig[]): StaticProxyNodeConfig[] {
   const seenIds = new Set<string>();
-  const seenNames = new Set<string>();
   return nodes.flatMap((node, index) => {
-    const normalized = normalizeProxyNode(node, index, seenNames);
+    const normalized = normalizeProxyNode(node, index);
     if (!normalized || seenIds.has(normalized.id)) return [];
     seenIds.add(normalized.id);
     return [normalized];
   });
 }
 
-function normalizeProxyNode(value: unknown, index: number, seenNames: Set<string>): StaticProxyNodeConfig | null {
+function normalizeProxyNode(value: unknown, index: number): StaticProxyNodeConfig | null {
   const record = value && typeof value === "object" ? value as Record<string, unknown> : {};
-  const config = normalizeProxyNodeConfig(record, index, seenNames);
+  const config = typeof record.config === "string" ? record.config.trim() : "";
   if (!config) return null;
   const id = normalizeProxyNodeId(record.id, index);
   const chainExit = record.chainExit === true;
@@ -263,60 +255,10 @@ function normalizeProxyNode(value: unknown, index: number, seenNames: Set<string
   };
 }
 
-function normalizeProxyNodeConfig(record: Record<string, unknown>, index: number, seenNames: Set<string>): string {
-  const config = typeof record.config === "string" ? record.config.trim() : "";
-  if (config) return config;
-  const protocol = chainExitProtocol(record.protocol, "socks5");
-  const outputProtocol = protocol === "tuic" ? "tuic-v5" : protocol;
-  const rawName = typeof record.name === "string" ? record.name.trim() : "";
-  const name = uniqueProxyNodeName(rawName || `Proxy Node ${index + 1}`, seenNames);
-  const legacy = legacyProxyNodeParams({ ...record, protocol: outputProtocol });
-  return legacy ? `${name} = ${outputProtocol}, ${legacy}` : "";
-}
-
-function legacyProxyNodeParams(record: Record<string, unknown>): string {
-  const server = typeof record.server === "string" ? record.server.trim() : "";
-  const port = clampNumber(record.port, 1, 65535, 0);
-  if (!server || !port) return "";
-  const protocol = chainExitProtocol(record.protocol, "socks5");
-  const username = typeof record.username === "string" ? record.username.trim() : "";
-  const password = typeof record.password === "string" ? record.password.trim() : "";
-  const parts = [server, String(port)];
-  if (protocol === "ss") {
-    if (username) parts.push(`encrypt-method=${username}`);
-    if (password) parts.push(`password=${password}`);
-  } else if (protocol === "snell") {
-    if (password) parts.push(`psk=${password}`);
-    parts.push("version=4");
-  } else if (protocol === "tuic-v5") {
-    if (username) parts.push(`uuid=${username}`);
-    if (password) parts.push(`password=${password}`);
-  } else if (protocol === "tuic") {
-    if (password) parts.push(`token=${password}`);
-  } else if (["trojan", "hysteria2", "anytls"].includes(protocol)) {
-    if (password) parts.push(`password=${password}`);
-  } else {
-    if (username) parts.push(`username=${username}`);
-    if (password) parts.push(`password=${password}`);
-  }
-  return parts.join(", ");
-}
-
 function normalizeProxyNodeId(value: unknown, index: number): string {
   const raw = typeof value === "string" ? value.trim() : "";
   const cleaned = raw.replace(/[^A-Za-z0-9_-]/g, "-").replace(/-+/g, "-").replace(/^-+|-+$/g, "");
   return cleaned || `proxy-node-${index + 1}`;
-}
-
-function uniqueProxyNodeName(name: string, seenNames: Set<string>): string {
-  let candidate = name;
-  let suffix = 2;
-  while (seenNames.has(candidate)) {
-    candidate = `${name} ${suffix}`;
-    suffix += 1;
-  }
-  seenNames.add(candidate);
-  return candidate;
 }
 
 export function normalizeSurge(input: Partial<RenderConfig["surge"]> | undefined): RenderConfig["surge"] {
@@ -455,6 +397,7 @@ export function normalizeClash(input: Partial<RenderConfig["clash"]> | undefined
     fallbackFilterGeoip: clash.fallbackFilterGeoip !== false,
     fallbackFilterIpcidr: stringArray(clash.fallbackFilterIpcidr, defaults.fallbackFilterIpcidr),
     fakeIpFilter: stringArray(clash.fakeIpFilter, defaults.fakeIpFilter),
+    tailscaleNodes: normalizeClashTailscaleNodes(clash.tailscaleNodes),
     ruleProviders: normalizeRuleProviders(clash.ruleProviders, defaults.ruleProviders),
     rules: stringArray(clash.rules, defaults.rules)
   };
@@ -467,12 +410,6 @@ function normalizeDnsEnhancedMode(value: unknown, fallback: string): string {
 function normalizeRuleProviders(input: unknown, fallback: string): string {
   if (input === undefined || input === null) return fallback;
   return typeof input === "string" ? input.trimEnd() : fallback;
-}
-
-function chainExitProtocol(value: unknown, fallback: ChainExitProtocol): ChainExitProtocol {
-  return typeof value === "string" && CHAIN_EXIT_PROTOCOLS.includes(value as ChainExitProtocol)
-    ? value as ChainExitProtocol
-    : fallback;
 }
 
 function surgeIpv6VifMode(value: unknown, fallback: SurgeIpv6VifMode): SurgeIpv6VifMode {

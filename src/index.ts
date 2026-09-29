@@ -1,9 +1,7 @@
 import { handleActionsCompilationInstall } from "./actions-compiler-install";
-import { maintainActionsIntegrationMigration } from "./actions-compiler-migration";
 import { allCompiledRuleSetSources, refreshRuleSetSourceCaches } from "./rule-set-cache";
-import { configDocument, normalizeConfigDocument, renderConfig, OUTPUT_TARGETS } from "./config-document";
+import { configDocument, normalizeConfigDocument, renderConfig, OUTPUT_TARGETS, UnsupportedConfigError } from "./config-document";
 import { migrateClashRouting } from "./clash-routing-migration";
-import { exportConfigBeforeMigration, loadConfigMigration, completeDocumentMigration } from "./config-store";
 import { ruleSetEnv } from "./rule-set-scope";
 import { validateManagedBaseUrl, validateConfigEntityLimits, validateProxyPolicyNameConflicts, validateRuleSetOutputNames } from "./config-validation";
 import { assertSafeConfigText } from "./config-text-safety";
@@ -34,7 +32,7 @@ import { badRequest, forbidden, jsonResponse, notFound, payloadTooLarge, readReq
 
 const RULE_SET_REFRESH_CRON = "0 16 * * *";
 const MAX_LOGIN_REQUEST_BYTES = 4 * 1024;
-// Independent client resources may occupy up to three times the old shared document.
+// Bound the combined payload for all three clients.
 const MAX_CONFIG_REQUEST_BYTES = 6 * 1024 * 1024;
 const LOGIN_RATE_LIMIT = 10;
 const LOGIN_RATE_LIMIT_PERIOD_SECONDS = 60;
@@ -50,6 +48,7 @@ export default {
       return await route(request, env, ctx);
     } catch (error) {
       console.error(JSON.stringify({ level: "error", message: error instanceof Error ? error.message : String(error) }));
+      if (error instanceof UnsupportedConfigError) return jsonResponse({ error: error.message }, { status: 409 });
       if (isKvWriteRateLimitError(error)) return tooManyRequests("Configuration storage is busy; retry shortly", 2);
       return jsonResponse({ error: "Internal server error" }, { status: 500 });
     }
@@ -57,11 +56,6 @@ export default {
   async scheduled(controller: ScheduledController, env: Env, _ctx: ExecutionContext): Promise<void> {
     const config = await loadConfig(env);
     if (controller.cron === RULE_SET_REBUILD_CRON) {
-      try {
-        await maintainActionsIntegrationMigration(env);
-      } catch {
-        console.warn(JSON.stringify({ level: "warn", message: "Configuration upgrade remains pending; scheduled maintenance will retry." }));
-      }
       const deadline = Date.now() + SCHEDULED_REFRESH_DEADLINE_MS;
       await runRuleSetUpdateJobs(env, config, {
         deadline, loadCurrentConfig: () => loadConfig(env)
@@ -203,7 +197,7 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
 
   if (url.pathname === "/api/config" && request.method === "GET") {
     const loaded = withInferredManagedBaseUrl(await loadConfig(env), request.url);
-    return jsonResponse({ ...configDocument(loaded), migrationRequired: Boolean(loaded.migrationRequired), ruleNamesPendingSave: Boolean(loaded.ruleNamesPendingSave) });
+    return jsonResponse(configDocument(loaded));
   }
   if (url.pathname === "/api/config/check" && request.method === "POST") {
     const target = normalizeTarget(url.searchParams.get("target"));
@@ -232,22 +226,6 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
       return jsonResponse(Object.fromEntries(names));
     } catch { return badRequest("Cannot read proxy names from this configuration"); }
   }
-  if (url.pathname === "/api/config/migration" && request.method === "GET") {
-    const { config, fingerprint } = await loadConfigMigration(env);
-    return jsonResponse({ required: Boolean(config.migrationRequired), fingerprint, config: configDocument(withInferredManagedBaseUrl(config, request.url)) });
-  }
-  if (url.pathname === "/api/config/migration" && request.method === "POST") {
-    const body = await readRequestJsonWithLimit<{ config: AppConfig; fingerprint: string }>(request, MAX_CONFIG_REQUEST_BYTES);
-    const current = await exportConfigBeforeMigration(env);
-    if (await sha256Hex(JSON.stringify(current)) !== body.fingerprint) return jsonResponse({ error: "旧配置已变化，当前页面草稿未提交。请记下需要保留的修改，刷新页面后重新检查迁移。" }, { status: 409 });
-    try {
-      const document = normalizeConfigDocument(body.config);
-      const error = validateDocumentForSave(document) || await validateActionsCompilationCredentials(env, document);
-      if (error) return badRequest(error);
-      const saved = await completeDocumentMigration(env, document);
-      return jsonResponse(configDocument(saved));
-    } catch { return badRequest("迁移未完成，请检查配置或重试；旧数据尚未清理。"); }
-  }
   if (url.pathname === "/api/stats" && request.method === "GET") {
     const config = await loadConfig(env);
     return jsonResponse(await readConfigFetchStats(env, config));
@@ -260,9 +238,6 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
       },
       update: await readCachedUpdateStatus(env)
     });
-  }
-  if (url.pathname === "/api/system/migrate" && request.method === "POST") {
-    return jsonResponse({ error: "请通过配置迁移页面检查并确认迁移。" }, { status: 409 });
   }
   if (url.pathname === "/api/update-check" && request.method === "POST") {
     return jsonResponse({ update: await getUpdateStatus(env, { force: true }) });
@@ -308,11 +283,10 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
   }
   if (url.pathname === "/api/config" && (request.method === "PUT" || request.method === "PATCH")) {
     const current = await loadConfig(env);
-    if (current.migrationRequired) return jsonResponse({ error: "请先检查并完成旧配置迁移。" }, { status: 409 });
     let document: AppConfig;
     try {
       const body = await readRequestJsonWithLimit<AppConfig>(request, MAX_CONFIG_REQUEST_BYTES);
-      if ((request.method === "PUT" || body.version !== undefined) && body.version !== 3) return jsonResponse({ error: "配置格式已升级，请刷新页面后重新编辑。" }, { status: 409 });
+      if (body.version !== 3) return jsonResponse({ error: "仅支持版本 3 配置，请刷新页面后重新编辑。" }, { status: 409 });
       const existing = configDocument(current);
       const input = request.method === "PATCH" ? { ...existing, ...body, settings: { ...existing.settings, ...body.settings }, clients: { ...existing.clients, ...body.clients } } : body;
       document = normalizeConfigDocument(input);

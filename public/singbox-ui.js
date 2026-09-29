@@ -30,7 +30,7 @@ const LABELS = {
   ip_cidr: "目标网段", source_ip_cidr: "来源网段", port: "目标端口", source_port: "来源端口", protocol: "协议",
   process_name: "进程名", process_path: "进程路径", package_name: "应用包名", wifi_ssid: "Wi-Fi 名称", invert: "反向匹配",
   final: "默认目标", outbound: "出站", outbounds: "出站成员", servers: "服务器列表", strategy: "解析策略",
-  cache_capacity: "缓存容量", optimistic: "乐观 DNS 缓存", timeout: "超时", reverse_mapping: "反向映射",
+  cache_capacity: "缓存容量", optimistic: "乐观 DNS 缓存", timeout: "超时", reverse_mapping: "反向映射", sniffer: "嗅探协议",
   server_name: "TLS 服务器名", insecure: "跳过证书验证", certificate_path: "证书路径", certificate: "证书内容",
   peers: "对端", allowed_ips: "允许网段", endpoint: "关联端点", bind_interface: "绑定接口", interface_name: "接口名称",
   default: "默认成员", interrupt_exist_connections: "切换时中断连接", idle_timeout: "空闲超时", interval: "间隔", tolerance: "延迟容差",
@@ -113,8 +113,9 @@ export function createSingboxForm(root, schema, section, original, { t, esc, ref
   const selections = new Map();
   const expanded = new Set(["[]"]);
   if (Array.isArray(original) && original.length === 1) expanded.add("[0]");
+  if (section === "route" && Array.isArray(original?.rules) && original.rules.length === 1) expanded.add('["rules",0]');
   let controls = [];
-  const title = (key) => t(LABELS[key] || TITLES[key]?.[0] || key, TITLES[key]?.[1] || key.replaceAll("_", " "));
+  const title = (key) => t(LABELS[key] || TITLES[key]?.[0] || String(key), TITLES[key]?.[1] || String(key).replaceAll("_", " "));
   const deref = (node) => node?.$ref ? { ...schema.$defs[node.$ref.split("/").at(-1)], ...Object.fromEntries(Object.entries(node).filter(([key]) => key !== "$ref")) } : node || {};
   const merge = (a, b) => ({ ...a, ...b, properties: { ...a.properties, ...b.properties }, required: [...new Set([...(a.required || []), ...(b.required || [])])] });
   function variants(raw) {
@@ -140,23 +141,47 @@ export function createSingboxForm(root, schema, section, original, { t, esc, ref
   }
   function active(raw, value, path) {
     const list = variants(raw);
-    const best = list.reduce((index, item, i) => score(item, value) > score(list[index], value) ? i : index, 0);
+    let candidates = list.map((node, index) => ({ node, index }));
+    if (object(value) && list.length > 1) {
+      const discriminators = new Set(list.flatMap((node) => Object.entries(node.properties || {}).filter(([key, child]) => {
+        const field = deref(child);
+        return Object.hasOwn(field, "const") || ["type", "action", "provider"].includes(key) && field.enum;
+      }).map(([key]) => key)));
+      const compatible = candidates.filter(({ node }) => [...discriminators].every((key) => {
+        if (!Object.hasOwn(value, key)) return !node.required?.includes(key);
+        const child = node.properties?.[key];
+        return child && Math.max(...variants(child).map((part) => score(part, value[key]))) >= 0;
+      }));
+      // Incomplete fields must not outweigh an explicitly selected type/action.
+      if (compatible.length) candidates = compatible;
+    }
+    const best = candidates.reduce((best, item) => score(item.node, value) > score(best.node, value) ? item : best).index;
     const selected = selections.get(JSON.stringify(path)) ?? best;
     return { list, selected, node: list[selected] || list[0] };
   }
   function seed(node) {
     if (Object.hasOwn(node, "const")) return structuredClone(node.const);
-    if (node.enum) return node.enum[0];
+    // A schema's first enum value (or numeric minimum) is not a default.
+    if (node.enum) return node.enum.length === 1 ? node.enum[0] : "";
     if (node.type === "object" || Object.keys(node.properties || {}).length) {
       const result = {};
-      for (const key of new Set([...(node.required || []), ...["tag", "server", "server_port", "outbounds"].filter((key) => node.properties?.[key])])) {
+      const fixed = Object.keys(node.properties || {}).filter((key) => Object.hasOwn(deref(node.properties[key]), "const"));
+      for (const key of new Set([...(node.required || []), ...fixed])) {
         if (node.properties?.[key]) own(result, key, seed(variants(node.properties[key])[0]));
       }
+      // Keep common connection fields visible when creating a typed entry.
+      // Optional ports stay absent so each protocol can use its own default.
+      if (result.type) for (const key of ["tag", "server", "outbounds"]) {
+        if (node.properties?.[key] && !Object.hasOwn(result, key)) own(result, key, seed(variants(node.properties[key])[0]));
+      }
+      // The core requires a destination for route actions, even though the
+      // upstream schema does not mark it required. Never guess an outbound.
+      if (result.action === "route" && node.properties?.outbound) result.outbound = "";
+      if (result.action === "route" && node.properties?.server) result.server = "";
       return result;
     }
     if (node.type === "array") return [];
-    if (node.type === "boolean") return false;
-    if (node.type === "integer" || node.type === "number") return node.minimum ?? 0;
+    if (node.type === "boolean" || node.type === "integer" || node.type === "number") return "";
     if (node.type === "null") return null;
     return "";
   }
@@ -177,37 +202,94 @@ export function createSingboxForm(root, schema, section, original, { t, esc, ref
     return true;
   }
   function branchName(node) {
-    const parts = Object.entries(node.properties || {}).flatMap(([key, value]) => Object.hasOwn(value, "const") ? [`${key}: ${value.const}`] : ["type", "action"].includes(key) && value.enum ? [`${key}: ${value.enum[0] || "default"}`] : []);
-    return parts.join(" · ") || (Object.hasOwn(node, "const") ? String(node.const) : node.enum?.join(" / ") || t(({ object: "对象", array: "列表", string: "文本", integer: "整数", number: "数值", boolean: "开关" })[node.type] || node.type || "对象", node.type || "object"));
+    const type = deref(node.properties?.type), action = deref(node.properties?.action);
+    const typeName = type.const ?? type.enum?.[0], actionName = action.const ?? action.enum?.[0];
+    if (actionName) return `${typeName === "logical" ? t("逻辑组合 · ", "Logical group · ") : ""}${actionTitle(actionName)}`;
+    if (typeName) return typeName;
+    const fixed = Object.entries(node.properties || {}).flatMap(([key, value]) => Object.hasOwn(deref(value), "const") ? [`${title(key)}: ${deref(value).const}`] : []);
+    if (fixed.length) return fixed.join(" · ");
+    return Object.hasOwn(node, "const") ? String(node.const) : t(({ object: "自定义设置", array: "多个值", string: "文本", integer: "整数", number: "数值", boolean: "开关", null: "不设置" })[node.type] || node.type || "自定义设置", ({ object: "Custom settings", array: "Multiple values", string: "Text", integer: "Integer", number: "Number", boolean: "On / off", null: "Unset" })[node.type] || node.type || "Custom settings");
+  }
+  function actionTitle(action) {
+    const names = { sniff: ["嗅探域名", "Sniff domains"], "hijack-dns": ["接管 DNS 查询", "Handle DNS queries"], route: ["使用指定出口", "Route to outbound"], "route-options": ["调整连接参数", "Set connection options"], direct: ["直接连接", "Connect directly"], reject: ["拒绝连接", "Reject"], resolve: ["解析域名", "Resolve domains"], bypass: ["绕过代理", "Bypass"] };
+    return names[action] ? `${t(...names[action])} (${action})` : action;
+  }
+  // A scalar and a list of the same scalar share one editor. Keep the original
+  // representation until the user explicitly adds another value.
+  function scalarList(raw) {
+    const list = variants(raw);
+    if (list.length !== 2) return null;
+    const scalar = list.find((item) => ["string", "integer", "number", "boolean"].includes(item.type));
+    const array = list.find((item) => item.type === "array");
+    if (!scalar || !array || !array.items) return null;
+    const items = variants(array.items);
+    return items.length === 1 && items[0].type === scalar.type && JSON.stringify(items[0].enum) === JSON.stringify(scalar.enum) ? { scalar, array } : null;
+  }
+  const routeActions = schema.$defs.RuleAction ? variants(schema.$defs.RuleAction) : [];
+  const actionKeysFor = (value) => new Set(Object.keys(routeActions.find((item) => deref(item.properties?.action).const === (value.action || "route"))?.properties || {}));
+  const isRouteRule = (path) => section === "route" && path.length === 2 && path[0] === "rules" && typeof path[1] === "number";
+  const isRouteRuleList = (path) => section === "route" && path.length === 1 && path[0] === "rules";
+  const isDnsHijackPreset = (value) => object(value) && value.action === "hijack-dns"
+    && (value.type === undefined || value.type === "" || value.type === "default") && JSON.stringify([].concat(value.protocol)) === '["dns"]'
+    && Object.keys(value).every((key) => ["type", "action", "protocol"].includes(key));
+  const matchKeys = (value) => { const actionKeys = actionKeysFor(value); return Object.keys(value).filter((key) => !["type", "action"].includes(key) && !actionKeys.has(key)); };
+  function addFields(keys, path, node, label) {
+    if (!keys.length) return "";
+    const id = register({ path, node });
+    return `<div class="sb-add"><select data-sb-property="${id}" aria-label="${esc(label)}"><option value="" selected disabled>${esc(label)}</option>${keys.map((key) => `<option value="${esc(key)}">${esc(title(key))} · ${esc(key)}${node.required?.includes(key) ? " *" : ""}</option>`).join("")}</select>${button(esc(label), "property", id)}</div>`;
   }
   function renderValue(raw, value, path, name) {
     const { list, selected, node } = active(raw, value, path);
-    const id = register({ path, raw, node });
+    const multi = scalarList(raw);
+    const id = register({ path, raw, node, multi });
     const data = `data-sb-id="${id}" aria-label="${esc(name)}"`;
-    let html = list.length > 1 ? `<label class="sb-variant">${t("类型 / 动作", "Type / action")}<select data-sb-variant ${data}>${list.map((item, i) => !clientBranch(item, path) && i !== selected ? "" : `<option ${!clientBranch(item, path) ? "disabled" : ""} value="${i}" ${selected === i ? "selected" : ""}>${esc(branchName(item))}</option>`).join("")}</select></label>` : "";
+    const hasVariant = list.length > 1 && !multi;
+    const variantLabel = list.some((item) => item.properties?.action) ? t("规则动作", "Rule action") : list.some((item) => item.properties?.type) ? t("配置类型", "Configuration type") : t("填写方式", "Value format");
+    let html = hasVariant ? `<label class="sb-variant">${variantLabel}<select data-sb-variant data-sb-id="${id}" aria-label="${esc(variantLabel)}">${list.map((item, i) => !clientBranch(item, path) && i !== selected ? "" : `<option ${!clientBranch(item, path) ? "disabled" : ""} value="${i}" ${selected === i ? "selected" : ""}>${esc(branchName(item))}</option>`).join("")}</select></label>` : "";
     if (value === undefined) return html + button(t("配置此项", "Configure"), "create", id);
     const type = node.type || kind(value);
     if (singleItem && !path.length && type === "array") return renderValue(node.items || {}, value[0], [0], name);
     if (type === "object" && object(value)) {
       const props = node.properties || {};
+      const rule = isRouteRule(path);
+      const actionKeys = rule ? actionKeysFor(value) : new Set();
+      const discriminator = (key) => hasVariant && ["type", "action"].includes(key) && (Object.hasOwn(deref(props[key]), "const") || deref(props[key]).enum?.length === 1);
       const basicKeys = new Set(["type", "tag", "action", "address", "interface_name", "auto_route", "strict_route", "mtu", "listen", "listen_port", "server", "server_port", "outbound", "outbounds", "final", "servers", "rules"]);
       let basicHtml = "", advancedHtml = "";
-      for (const key of Object.keys(value)) {
+      const needsOutbound = rule && (value.action || "route") === "route";
+      const fieldKeys = [...new Set([...Object.keys(value), ...(needsOutbound ? ["outbound"] : [])])];
+      for (const key of fieldKeys) {
+        if (discriminator(key) && score(deref(props[key]), value[key]) >= 0) continue;
         const child = props[key] || (object(node.additionalProperties) ? node.additionalProperties : { type: kind(value[key]) });
         const childPath = [...path, key], pathKey = JSON.stringify(childPath);
         const childId = register({ path: childPath });
+        const condition = rule && !actionKeys.has(key) && !["type", "action"].includes(key);
+        const fieldTitle = condition && key === "protocol" ? t("已识别协议", "Detected protocol") : title(key);
         const complex = value[key] !== null && typeof value[key] === "object";
-        if (complex && ["address", "outbounds"].includes(key)) expanded.add(pathKey);
-        const body = complex && !expanded.has(pathKey) ? `<div data-sb-lazy="${register({ path: childPath, raw: child, name: title(key) })}"></div>` : renderValue(child, value[key], childPath, title(key));
-        const required = node.required?.includes(key);
-        const fieldHtml = `<div class="sb-field">${complex ? `<details data-sb-path="${esc(pathKey)}" ${expanded.has(pathKey) ? "open" : ""}><summary>${esc(title(key))} <code>${esc(key)}</code></summary>${body}</details>` : `<label class="sb-label">${esc(title(key))} <code>${esc(key)}</code></label><div class="sb-control">${body}</div>`}<div class="sb-remove">${button(t("移除", "Remove"), "remove", childId, required)}</div></div>`;
-        if (basicKeys.has(key) || required || node.propertyNames?.["x-tag-reference"]) basicHtml += fieldHtml;
+        const ruleList = section === "route" && path.length === 0 && key === "rules";
+        const inline = rule || ruleList || scalarList(child) || Array.isArray(value[key]) && value[key].every((item) => item === null || typeof item !== "object");
+        const collapsible = complex && !inline;
+        if (collapsible && ["address", "outbounds"].includes(key)) expanded.add(pathKey);
+        const body = collapsible && !expanded.has(pathKey) ? `<div data-sb-lazy="${register({ path: childPath, raw: child, name: fieldTitle })}"></div>` : renderValue(child, needsOutbound && key === "outbound" ? value[key] ?? "" : value[key], childPath, fieldTitle);
+        const required = node.required?.includes(key) || needsOutbound && key === "outbound";
+        const removeLabel = condition ? t("移除条件", "Remove condition") : t("移除设置", "Remove setting");
+        const remove = required || ruleList ? "" : `<div class="sb-remove">${button(removeLabel, "remove", childId)}</div>`;
+        const fieldHtml = `<div class="sb-field${ruleList ? " sb-rule-list" : ""}${!remove ? " sb-field-required" : ""}">${collapsible ? `<details data-sb-path="${esc(pathKey)}" ${expanded.has(pathKey) ? "open" : ""}><summary>${esc(fieldTitle)} <code>${esc(key)}</code></summary>${body}</details>` : `<label class="sb-label">${esc(fieldTitle)} <code>${esc(key)}</code></label><div class="sb-control">${body}</div>`}${remove}</div>`;
+        if (rule ? !condition : basicKeys.has(key) || required || node.propertyNames?.["x-tag-reference"]) basicHtml += fieldHtml;
         else advancedHtml += fieldHtml;
       }
-      html += `<div class="sb-basic-fields">${basicHtml}</div>`;
-      if (advancedHtml) html += `<details class="sb-advanced-fields"><summary>${t("高级设置（已配置）", "Advanced settings (configured)")}</summary>${advancedHtml}</details>`;
-      const missing = Object.keys(props).filter((key) => !Object.hasOwn(value, key));
-      if (missing.length) html += `<details class="sb-more-options"><summary>${t("添加可选设置", "Add optional settings")}</summary><div class="sb-add"><select data-sb-property="${id}" aria-label="${esc(t("选择配置字段", "Choose a field"))}">${missing.map((key) => `<option value="${esc(key)}">${esc(title(key))} · ${esc(key)}${node.required?.includes(key) ? " *" : ""}</option>`).join("")}</select>${button(t("添加", "Add"), "property", id)}</div></details>`;
+      const missing = Object.keys(props).filter((key) => !fieldKeys.includes(key) && !discriminator(key));
+      if (rule) {
+        const action = value.action || "route";
+        const note = action === "sniff" ? `<p class="help">${t("在分流前识别连接中的域名。通常无需设置匹配条件。", "Identify domains before routing. Matching conditions are usually unnecessary.")}</p>` : "";
+        html += note + `<div class="sb-rule-section"><h3>${t("动作参数", "Action settings")}</h3><div class="sb-basic-fields">${basicHtml || `<p class="help">${t("此动作无需额外参数。", "No additional settings are needed.")}</p>`}</div>${addFields(missing.filter((key) => actionKeys.has(key)), path, node, t("添加动作参数", "Add action setting"))}</div>`;
+        const warning = action === "sniff" && Object.hasOwn(value, "protocol") ? `<p class="notice warning">${t("“已识别协议”会限制哪些连接执行嗅探。常规域名嗅探请移除此条件；指定嗅探方式请在动作参数中添加“嗅探协议”。", "Detected protocol limits which connections are sniffed. Remove this condition for general domain sniffing; use Sniffer in action settings to choose sniffing methods.")}</p>` : "";
+        html += `<div class="sb-rule-section"><h3>${t("匹配条件", "Match conditions")}</h3><p class="help">${matchKeys(value).length ? t("仅匹配这些条件的连接执行此动作。", "This action applies only to connections matching these conditions.") : t("未设置条件：应用于所有连接。", "No conditions: applies to all connections.")}</p>${warning}<div class="sb-basic-fields">${advancedHtml}</div>${addFields(missing.filter((key) => !actionKeys.has(key)), path, node, t("添加匹配条件", "Add match condition"))}</div>`;
+      } else {
+        html += `<div class="sb-basic-fields">${basicHtml}</div>`;
+        if (advancedHtml) html += `<details class="sb-advanced-fields"><summary>${t("其他已配置设置", "Other configured settings")}</summary>${advancedHtml}</details>`;
+        if (missing.length) html += `<details class="sb-more-options"><summary>${t("添加可选设置", "Add optional settings")}</summary>${addFields(missing, path, node, t("添加设置", "Add setting"))}</details>`;
+      }
       if (node.additionalProperties !== false && (node.additionalProperties || !Object.keys(props).length)) {
         const keySchema = deref(node.propertyNames), reference = keySchema["x-tag-reference"];
         if (reference) {
@@ -220,14 +302,19 @@ export function createSingboxForm(root, schema, section, original, { t, esc, ref
         const childPath = [...path, index], key = JSON.stringify(childPath);
         const childId = register({ path: childPath });
         if (item === null || typeof item !== "object") return `<div class="sb-scalar-item"><span class="sb-scalar-index">${index + 1}</span><div>${renderValue(node.items || {}, item, childPath, `${name} ${index + 1}`)}</div>${button(t("删除", "Delete"), "remove", childId)}</div>`;
-        const summary = object(item) ? [item.tag, item.type, item.action].filter(Boolean).join(" · ") : t("条目", "Item");
+        const rule = isRouteRule(childPath);
+        const conditions = rule ? matchKeys(item) : [];
+        const summary = rule ? `${item.type === "logical" ? t("逻辑组合 · ", "Logical group · ") : ""}${actionTitle(item.action || "route")} · ${conditions.length ? conditions.map((key) => `${title(key)}${["protocol", "network"].includes(key) ? `: ${[].concat(item[key]).join(", ")}` : ""}`).join(" / ") : t("所有连接", "All connections")}` : object(item) ? [item.tag, item.type, item.action].filter(Boolean).join(" · ") : t("条目", "Item");
         const body = expanded.has(key) ? renderValue(node.items || {}, item, childPath, `${name} ${index + 1}`) : `<div data-sb-lazy="${register({ path: childPath, raw: node.items || {}, name: `${name} ${index + 1}` })}"></div>`;
-        return `<details class="sb-item" data-sb-path="${esc(key)}" ${expanded.has(key) ? "open" : ""}><summary>${index + 1}. ${esc(summary || t("条目", "Item"))}</summary><div class="sb-item-actions">${button(t("上移", "Move up"), "up", childId, index === 0)}${button(t("下移", "Move down"), "down", childId, index === value.length - 1)}${button(t("删除", "Delete"), "remove", childId)}</div>${body}</details>`;
-      }).join("")}</div>${button((!path.length && section === "inbounds" ? t("添加入站", "Add inbound") : t("添加条目", "Add item")), "append", id)}`;
+        return `<details class="sb-item" data-sb-path="${esc(key)}" ${expanded.has(key) ? "open" : ""}><summary>${index + 1}. ${esc(summary || t("条目", "Item"))}</summary><div class="sb-item-actions">${button(t("上移", "Move up"), "up", childId, index === 0)}${button(t("下移", "Move down"), "down", childId, index === value.length - 1)}${button(rule ? t("删除规则", "Delete rule") : t("删除条目", "Delete item"), "remove", childId)}</div>${body}</details>`;
+      }).join("")}</div>`;
+      html += isRouteRuleList(path)
+        ? `<div class="sb-add"><select data-sb-new-rule="${id}" aria-label="${t("选择新规则动作", "Choose new rule action")}"><option value="" selected disabled>${t("选择新规则动作", "Choose new rule action")}</option>${variants(node.items || {}).map((item, index) => `<option value="${index}">${esc(branchName(item))}</option>`).join("")}</select>${button(t("添加规则", "Add rule"), "append", id)}</div><p class="help">${t("通用域名嗅探添加 sniff，DNS 接管另加 hijack-dns。两者是独立规则，请将嗅探放在 DNS 接管和分流规则之前。", "Add sniff for general domain sniffing and a separate hijack-dns rule for DNS handling. Place sniffing before DNS handling and routing rules.")}</p>`
+        : button(!path.length && section === "inbounds" ? t("添加入站", "Add inbound") : multi ? t("添加值", "Add value") : t("添加条目", "Add item"), "append", id);
     } else if (Object.hasOwn(node, "const")) html += `<input ${data} value="${esc(value)}" readonly>`;
     else if (node.enum || type === "boolean") {
       const choices = node.enum || [false, true];
-      html += `<select data-sb-value ${data}>${!choices.includes(value) ? `<option value="-1" selected disabled>${t("原值无效，请选择", "Invalid existing value; choose an option")}</option>` : ""}${choices.map((item, i) => `<option value="${i}" ${item === value ? "selected" : ""}>${esc(typeof item === "boolean" ? item ? t("启用", "Enabled") : t("关闭", "Disabled") : item)}</option>`).join("")}</select>`;
+      html += `<select data-sb-value ${data}>${!choices.includes(value) ? `<option value="-1" selected disabled>${value === "" ? t("请选择", "Choose an option") : t("原值无效，请选择", "Invalid existing value; choose an option")}</option>` : ""}${choices.map((item, i) => `<option value="${i}" ${item === value ? "selected" : ""}>${esc(typeof item === "boolean" ? item ? t("启用", "Enabled") : t("关闭", "Disabled") : item)}</option>`).join("")}</select>`;
     } else if (type === "number" || type === "integer") html += `<input type="number" data-sb-value ${data} value="${esc(value)}" step="${type === "integer" ? 1 : "any"}" ${node.minimum !== undefined ? `min="${node.minimum}"` : ""} ${node.maximum !== undefined ? `max="${node.maximum}"` : ""}>`;
     else if (type === "null") html += `<span>null</span>`;
     else {
@@ -237,7 +324,9 @@ export function createSingboxForm(root, schema, section, original, { t, esc, ref
       html += multiline ? `<textarea ${sensitive ? 'class="sb-secret"' : ""} data-sb-value ${data} rows="5" spellcheck="false" autocomplete="off">${esc(value)}</textarea>` : sensitive ? `<input type="password" data-sb-value ${data} value="${esc(value)}" autocomplete="new-password">` : `<input type="text" data-sb-value ${data} value="${esc(value)}" autocomplete="off" spellcheck="false" ${ref.length ? `list="sb-refs-${id}"` : ""}>`;
       if (ref.length) html += `<datalist id="sb-refs-${id}">${ref.map((tag) => `<option value="${esc(tag)}"></option>`).join("")}</datalist>`;
     }
+    if (multi && !Array.isArray(value)) html += `<div class="sb-value-add">${button(t("添加另一个值", "Add another value"), "multiple", id)}</div>`;
     const help = {
+      reverse_mapping: ["记录经由 sing-box 解析的域名与 IP 对应关系，帮助 TUN 连接按域名分流。", "Remember domain-to-IP mappings from sing-box DNS responses for domain-based TUN routing."],
       dns_server_address: ["选择 DNS 服务器，填写要匹配的 IP 或 CIDR；匹配它从系统、DHCP 或 VPN 获得的 DNS 地址。支持 local、dhcp、resolved、tailscale、openvpn、openconnect。", "Choose a DNS server and enter IP addresses or CIDRs to match the DNS addresses it obtains from the system, DHCP or VPN. Supports local, dhcp, resolved, tailscale, openvpn and openconnect."],
       dns_search_domain: ["选择 DNS 服务器，填写要匹配的搜索域；匹配当前网络的 DNS 搜索域，不是查询域名。支持 local、dhcp、resolved、tailscale、openvpn、openconnect。", "Choose a DNS server and enter search domains to match its current network DNS search domains. Supports local, dhcp, resolved, tailscale, openvpn and openconnect."],
       on_demand: ["允许客户端在需要时断开此端点；留空沿用内核默认行为。", "Allows the client to disconnect this endpoint when needed; omit to use the core default."],
@@ -259,14 +348,15 @@ export function createSingboxForm(root, schema, section, original, { t, esc, ref
     root.innerHTML = `<div class="sb-form">${renderValue(schema.properties[section], draft, [], singboxTitle(section, t))}</div><p class="notice warning" data-sb-error hidden role="alert"></p>`;
   }
   function error(message) { const el = root.querySelector("[data-sb-error]"); el.textContent = message; el.hidden = !message; }
-  function readInputs() {
+  function readInputs(discardPath) {
     for (const input of root.querySelectorAll("[data-sb-value]")) {
       // Untouched controls must not coerce imported values or normalize PEM lines.
       if (!input.dataset.sbChanged) continue;
       const { path, node } = controls[Number(input.dataset.sbId)];
+      if (discardPath && discardPath.every((key, index) => path[index] === key)) continue;
       const choices = node.enum || (node.type === "boolean" ? [false, true] : null);
       let value = choices ? choices[Number(input.value)] : input.value;
-      if (node.type === "integer" || node.type === "number") {
+      if (!choices && (node.type === "integer" || node.type === "number")) {
         if (!input.value.trim() || !input.checkValidity() || !Number.isFinite(Number(input.value))) {
           input.setAttribute("aria-invalid", "true"); input.focus();
           throw Error(`${path.join(" / ")}: ${t("请输入范围内的有效数值", "Enter a valid number within the allowed range")}`);
@@ -305,6 +395,10 @@ export function createSingboxForm(root, schema, section, original, { t, esc, ref
           const child = next.properties?.[key];
           if (child && Math.max(...variants(child).map((part) => score(part, item))) >= 0) own(value, key, item);
         }
+        // A stock DNS handler carries a DNS match, not a sniffing preference.
+        // Only discard this inherited condition for that exact preset.
+        if (isRouteRule(path) && value.action === "sniff" && value.type !== "logical" && isDnsHijackPreset(current)) delete value.protocol;
+        if (isRouteRule(path) && value.action === "hijack-dns" && value.type !== "logical" && !matchKeys(value).length) value.protocol = "dns";
       }
       for (const key of selections.keys()) if (key !== JSON.stringify(path)) selections.delete(key);
       selections.set(JSON.stringify(path), Number(input.value));
@@ -315,17 +409,34 @@ export function createSingboxForm(root, schema, section, original, { t, esc, ref
     const target = event.target.closest("[data-sb-op]");
     if (!target || target.disabled) return;
     try {
-      readInputs();
       const { path, node } = controls[Number(target.dataset.sbId)], op = target.dataset.sbOp;
+      readInputs(op === "remove" ? path : undefined);
       const current = get(path);
       if (op === "create") set(path, seed(node));
+      if (op === "multiple") {
+        const { multi } = controls[Number(target.dataset.sbId)];
+        set(path, [current, seed(variants(multi.array.items)[0])]);
+        selections.delete(JSON.stringify(path));
+      }
       if (op === "property" || op === "entry") {
         const key = root.querySelector(`[data-sb-${op === "property" ? "property" : "key"}="${target.dataset.sbId}"]`).value;
+        if (op === "property" && !key) throw Error(t("请先选择要添加的设置。", "Choose a setting to add first."));
         if (!key.trim() || Object.hasOwn(current, key)) throw Error(t("键名不能为空或重复", "Keys must be nonempty and unique"));
         const raw = node.properties?.[key] || (object(node.additionalProperties) ? node.additionalProperties : { type: "string" });
         own(current, key, seed(variants(raw)[0])); expanded.add(JSON.stringify([...path, key]));
       }
-      if (op === "append") { current.push(seed(variants(node.items || {}).find((variant) => clientBranch(variant, [...path, current.length])) || variants(node.items || {})[0])); expanded.add(JSON.stringify([...path, current.length - 1])); }
+      if (op === "append") {
+        const list = variants(node.items || {});
+        let next = list.find((variant) => clientBranch(variant, [...path, current.length])) || list[0];
+        if (isRouteRuleList(path)) {
+          const choice = root.querySelector(`[data-sb-new-rule="${target.dataset.sbId}"]`).value;
+          if (choice === "") throw Error(t("请先选择新规则的动作。", "Choose the new rule's action first."));
+          next = list[Number(choice)];
+        }
+        const value = seed(next);
+        if (isRouteRuleList(path) && value.action === "hijack-dns" && value.type !== "logical") value.protocol = "dns";
+        current.push(value); expanded.add(JSON.stringify([...path, current.length - 1]));
+      }
       if (["remove", "up", "down"].includes(op)) {
         const parent = get(path.slice(0, -1)), key = path.at(-1);
         if (op === "remove") Array.isArray(parent) ? parent.splice(key, 1) : delete parent[key];
@@ -336,5 +447,19 @@ export function createSingboxForm(root, schema, section, original, { t, esc, ref
     } catch (reason) { error(reason.message); }
   });
   render();
-  return { read() { readInputs(); return structuredClone(draft); }, error };
+  function validateChoices(raw, value, path) {
+    const { node } = active(raw, value, path);
+    if (object(value)) {
+      if (isRouteRule(path) && (value.action || "route") === "route" && (typeof value.outbound !== "string" || !value.outbound.trim())) {
+        throw Error(`${t("规则", "Rule")} ${path[1] + 1}: ${t("请选择出站。", "Choose an outbound.")}`);
+      }
+      for (const [key, item] of Object.entries(value)) validateChoices(node.properties?.[key] || (object(node.additionalProperties) ? node.additionalProperties : {}), item, [...path, key]);
+    } else if (Array.isArray(value)) value.forEach((item, index) => validateChoices(node.items || {}, item, [...path, index]));
+    else if (node.enum && !node.enum.includes(value) || node.type === "boolean" && typeof value !== "boolean") {
+      throw Error(`${path.map(title).join(" / ")}: ${t("请选择一个值，或移除此可选设置以使用内核默认值。", "Choose a value, or remove this optional setting to use the core default.")}`);
+    } else if (["number", "integer"].includes(node.type) && (typeof value !== "number" || !Number.isFinite(value))) {
+      throw Error(`${path.map(title).join(" / ")}: ${t("请填写数值，或移除此可选设置以使用内核默认值。", "Enter a number, or remove this optional setting to use the core default.")}`);
+    }
+  }
+  return { read() { readInputs(); validateChoices(schema.properties[section], draft, []); return structuredClone(draft); }, error };
 }

@@ -2,14 +2,7 @@ import { parseClashRuleProvidersYaml, validateClashRuleProvidersYaml } from "./c
 import { parseRuleSetContent } from "./rule-set-parser";
 import { splitRuleLine } from "./rule-line";
 import type { AppConfig } from "./types";
-import type { RuleSetSourceFormat, RuleSetOutput, RuleSetBucket, RuleSetDirectRule } from "./rule-set-types";
-
-/** Remove inactive migration leftovers only when an active fallback exists. */
-export function cleanClashFallbacks(rules: RuleSetDirectRule[]): RuleSetDirectRule[] {
-  const isFallback = (item: RuleSetDirectRule): boolean => /^(MATCH|FINAL)(,|$)/i.test(item.rule.trim());
-  if (!rules.some((item) => item.enabled !== false && isFallback(item))) return rules;
-  return rules.filter((item) => item.enabled !== false || !isFallback(item));
-}
+import type { RuleSetSourceFormat, RuleSetOutput, RuleSetBucket } from "./rule-set-types";
 
 /** Build a draft only. Unconvertible providers never disappear from saved configuration. */
 export function migrateClashRouting(original: AppConfig["clients"]["clash"]): {
@@ -23,13 +16,12 @@ export function migrateClashRouting(original: AppConfig["clients"]["clash"]): {
   if (invalid) return { client, issues: [invalid] };
   const providers = parseClashRuleProvidersYaml(client.ruleProviders);
   const plan = client.ruleSets;
-  // Native rules are authoritative during this migration. Discard the dormant
-  // shared/Surge plan instead of keeping incompatible, unreachable resources.
+  // Build the plan from the client's active native rules.
   plan.sources = [];
   plan.outputs = [];
   plan.directRules = [];
   plan.aggregateByPolicy = false;
-  const ids = new Set([...plan.sources, ...plan.directRules].map((item) => item.id));
+  const ids = new Set<string>();
   const nextId = (kind: string): string => {
     let index = 1;
     while (ids.has(`clash-${kind}-${index}`)) index += 1;
@@ -119,7 +111,6 @@ export function migrateClashRouting(original: AppConfig["clients"]["clash"]): {
   const last = original.rules.filter((line) => line.trim() && !line.trim().startsWith("#")).at(-1) || "";
   if (!/^(MATCH|FINAL)\s*,/i.test(last.trim())) issues.push("兜底规则必须位于最后，请先修正原生规则顺序。");
   if (issues.length) return { client: structuredClone(original), issues };
-  plan.directRules = cleanClashFallbacks(plan.directRules);
   plan.mode = "compiled";
   client.rules = [];
   client.ruleProviders = "";

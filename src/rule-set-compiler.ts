@@ -22,7 +22,6 @@ import { planRuleSetArtifacts } from "./rule-set-artifacts";
 import { compiledRuleProviderName } from "./rule-provider-name";
 import { splitRuleLine } from "./rule-line";
 import {
-  configuredTailscalePolicyNames,
   isRulePolicyCompatibleWithTarget,
   renderDirectRuleForTarget
 } from "./rule-targets";
@@ -112,7 +111,7 @@ async function compileRuleSetSourceOutput(
 ): Promise<{ manifest: CompiledRuleSetManifest; stale: boolean; unchanged?: boolean }> {
   const outputFingerprint = await ruleSetOutputFingerprint(config, output);
   const previous = options.skipUnchangedSources
-    ? await readCompiledRuleSetManifest(env, output.name, { allowLegacy: false }).catch(() => null)
+    ? await readCompiledRuleSetManifest(env, output.name).catch(() => null)
     : null;
   if (previous) {
     const refreshed = await refreshedSourceHashes(config, output, options);
@@ -395,7 +394,6 @@ export async function buildCompiledRuleSetReferencePlan(
   };
   const directRules = config.ruleSets.directRules.filter((rule) => rule.enabled);
   const outputPlans = planRuleSetOutputs(config.ruleSets);
-  const tailscalePolicies = configuredTailscalePolicyNames(config);
   const items = [
     ...outputPlans.map((outputPlan) => ({ kind: "output" as const, outputPlan, order: outputPlan.output.order })),
     ...directRules.map((rule) => ({ kind: "direct" as const, rule, order: rule.order }))
@@ -404,10 +402,6 @@ export async function buildCompiledRuleSetReferencePlan(
 
   for (const item of items) {
     if (item.kind === "direct") {
-      if (target !== "surge" && tailscalePolicies.has(item.rule.policy.trim())) {
-        plan.errors.push(`${item.rule.id}: Tailscale 策略 ${item.rule.policy} 仅支持 Surge，已从 ${targetName(target)} 输出过滤。`);
-        continue;
-      }
       if (!isRulePolicyCompatibleWithTarget(item.rule.policy, target)) {
         plan.errors.push(`${item.rule.id}: 策略 ${item.rule.policy} 不受 ${targetName(target)} 支持，已过滤。`);
         continue;
@@ -430,10 +424,6 @@ export async function buildCompiledRuleSetReferencePlan(
     try {
       const { output, includedOutputNames } = item.outputPlan;
       if (target !== "surge" && output.surgeOptions.some((option) => option !== "no-resolve")) throw new Error("规则输出含有不能等价转换的 Surge 专属选项。");
-      if (target !== "surge" && tailscalePolicies.has(output.policy.trim())) {
-        plan.errors.push(`${output.name}: Tailscale 策略 ${output.policy} 仅支持 Surge，已从 ${targetName(target)} 输出过滤。`);
-        continue;
-      }
       if (!isRulePolicyCompatibleWithTarget(output.policy, target)) {
         plan.errors.push(`${output.name}: 策略 ${output.policy} 不受 ${targetName(target)} 支持，已过滤。`);
         continue;
