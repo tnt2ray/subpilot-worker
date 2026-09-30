@@ -10,13 +10,21 @@ export function defaultSingboxConfig(): AppConfig["clients"]["singbox"] {
   return {
     coreVersion: "1.15.0-alpha.8",
     log: { level: "info", timestamp: true },
-    dns: { servers: [{ type: "udp", tag: "dns-direct", server: "1.1.1.1" }], final: "dns-direct", reverse_mapping: true },
-    inbounds: [{ type: "tun", tag: "tun-in", address: ["172.19.0.1/30", "fdfe:dcba:9876::1/126"], auto_route: true }],
+    // Queries follow the default outbound: unmatched names resolve through Proxy, so a
+    // tampered direct answer never becomes a proxied destination. Node addresses and
+    // rule sets bound to dns-direct resolve without the proxy.
+    dns: {
+      servers: [{ type: "https", tag: "dns-proxy", server: "1.1.1.1", detour: "Proxy" }, { type: "udp", tag: "dns-direct", server: "223.5.5.5" }],
+      final: "dns-proxy", reverse_mapping: true
+    },
+    inbounds: [{ type: "tun", tag: "tun-in", address: ["172.19.0.1/30", "fdfe:dcba:9876::1/126"], auto_route: true, strict_route: true }],
     route: {
       auto_detect_interface: true, default_domain_resolver: "dns-direct",
-      rules: [{ action: "sniff" }, { protocol: "dns", action: "hijack-dns" }], final: "Proxy"
+      // Private destinations stay local; FINAL would otherwise send LAN traffic to Proxy.
+      rules: [{ action: "sniff" }, { protocol: "dns", action: "hijack-dns" }, { ip_is_private: true, action: "route", outbound: "DIRECT" }], final: "Proxy"
     },
-    experimental: {},
+    // Keeps selector choices and downloaded rule sets across restarts.
+    experimental: { cache_file: { enabled: true } },
     groups: { Proxy: "select, {all}, DIRECT" },
     disabledGroups: [],
     ruleSets: {

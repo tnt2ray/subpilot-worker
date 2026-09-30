@@ -155,7 +155,7 @@ Managed Base URL must include a non-root path and cannot occupy `/api`, `/vendor
 
 Subscriptions, static nodes and chain nodes are shared. Policy groups, rule sources, routing, networking and DNS are independent for each client. Names may be reused across clients.
 
-Surge, Clash and sing-box no longer convert, copy or initialize settings from one another. Fresh installations use sing-box's own native DNS, TUN inbound, outbound interface detection, Proxy group and FINAL rule defaults, with DNS reverse mapping enabled. Native routing rules include general sniffing followed by DNS query handling to support domain-based matching. Tailscale connections start empty. Proxy outbounds come from shared nodes and the current client's groups. New defaults do not overwrite saved configurations that use the current format.
+Surge, Clash and sing-box no longer convert, copy or initialize settings from one another. Fresh installations use sing-box's own native DNS, TUN inbound, outbound interface detection, Proxy group and FINAL rule defaults, with DNS reverse mapping enabled. Native routing rules include general sniffing, DNS query handling and direct routing for private addresses, in that order, to support domain-based matching and keep LAN access working. DNS queries resolve through the `Proxy` group by default, while proxy server addresses use the direct DNS server; TUN enables strict routing, and the cache file is enabled to keep group selections and downloaded rule sets. Tailscale connections start empty. Proxy outbounds come from shared nodes and the current client's groups. New defaults do not overwrite saved configurations that use the current format.
 
 Configuration previews and modal editors include line numbers and syntax highlighting. Apply changes in the editor, then click Save configuration.
 
@@ -220,7 +220,7 @@ Category and HTTPS testing follow the [Surge Beta announcement](https://t.me/Sur
 
 ### Routing rules
 
-The sing-box DNS tab separates three purposes: **DNS server list** manages available servers; **Fallback DNS server for queries** handles queries that match neither rule-set DNS nor advanced DNS rules, using the first listed server when empty; **Default DNS for establishing connections** resolves proxy server addresses and unresolved direct-connection targets. A connection-specific resolver takes priority, and connection resolution may bypass DNS query routing rules.
+The sing-box DNS tab separates three purposes: **DNS server list** manages available servers; **Fallback DNS server for queries** handles queries that match neither rule-set DNS nor advanced DNS rules, or can be set to use the first listed server; **Default DNS for establishing connections** resolves proxy server addresses and unresolved direct-connection targets. A connection-specific resolver takes priority, and connection resolution may bypass DNS query routing rules.
 
 The sing-box DNS tab provides a **DNS reverse mapping** switch to associate DNS answers with subsequent TUN connections. Native DNS rules appear under **Advanced DNS rules**, collapsed by default with a configured-rule count. Configure rule-set DNS on the Routing rules tab; advanced DNS rules match afterward. Collapsing the section does not disable existing rules.
 

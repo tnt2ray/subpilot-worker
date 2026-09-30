@@ -1029,38 +1029,58 @@ dialog.routing-order-dialog { margin: 0 0 0 auto; width: min(600px, 100vw); max-
 .ts-networks { display: flex; flex-wrap: wrap; gap: 12px; }
 .ts-networks label { display: flex; align-items: center; gap: 6px; }
 .tailscale-table { min-width: 650px; }
-.sb-summary { overflow-wrap: anywhere; color: var(--muted, #64748b); }
+/* sing-box native forms: label | control | remove, stacked on narrow screens. */
 .sb-form { min-width: 0; }
-.sb-field { position: relative; border-bottom: 1px solid #e5e7eb; padding: 14px 0; }
-.sb-label { display: block; margin-bottom: 8px; padding-right: 100px; font-weight: 600; overflow-wrap: anywhere; }
-.sb-field code { display: inline-block; color: #64748b; font-size: 12px; font-weight: 400; overflow-wrap: anywhere; }
-.sb-field > details { margin-right: 100px; }
-.sb-field > details > summary { cursor: pointer; padding: 6px 0; }
-.sb-control { margin-right: 100px; min-width: 0; }
-.sb-field-required > .sb-control, .sb-field-required > details { margin-right: 0; }
-.sb-field-required > .sb-label { padding-right: 0; }
-.sb-remove { position: absolute; right: 0; top: 14px; }
-.sb-remove button { font-size: 12px; padding: 5px 8px; }
-.sb-variant { display: grid; gap: 6px; margin: 10px 0; color: #475569; }
-.sb-add { display: flex; gap: 8px; margin: 16px 0; align-items: center; }
-.sb-add select, .sb-add input { min-width: 0; flex: 1; }
 .sb-form input, .sb-form select, .sb-form textarea { max-width: 100%; width: 100%; }
 .sb-form button { flex-shrink: 0; }
-.sb-item { border: 1px solid #dbe2ea; border-radius: 8px; padding: 12px; margin: 12px 0; min-width: 0; }
-.sb-item > summary { cursor: pointer; overflow-wrap: anywhere; }
-.sb-item-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
-.sb-rule-section { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--border); }
-.sb-rule-section h3 { margin: 0 0 8px; font-size: 14px; }
-.sb-rule-section > .help { margin: 6px 0 12px; }
+.sb-form .help { margin: 6px 0 0; }
+.sb-form code { color: #64748b; font-size: 11px; font-weight: 400; overflow-wrap: anywhere; }
+.sb-type, .sb-field { display: grid; grid-template-columns: minmax(120px, 180px) minmax(0, 1fr) auto; align-items: start; gap: 6px 12px; padding: 10px 0; border-bottom: 1px solid #e9edf3; }
+.sb-type { align-items: center; font-size: 13px; font-weight: 600; }
+.sb-type > select { grid-column: 2 / -1; font-weight: 400; }
+.sb-label { min-width: 0; padding-top: 7px; font-size: 13px; font-weight: 600; line-height: 1.5; overflow-wrap: anywhere; }
+.sb-label code { display: block; }
+.sb-control { min-width: 0; }
+.sb-control:last-child { grid-column: 2 / -1; }
+.sb-field > details { grid-column: 1 / 3; min-width: 0; }
+.sb-field > details:last-child { grid-column: 1 / -1; }
+.sb-field > details > summary { cursor: pointer; padding: 7px 0; font-size: 13px; font-weight: 600; }
+.sb-nested { margin: 4px 0 2px 5px; padding-left: 14px; border-left: 2px solid var(--border); }
+.sb-nested > .sb-fields > .sb-field:last-child, .sb-nested > .sb-type:last-child { border-bottom: 0; }
+.sb-remove button, .sb-value-add button { height: 30px; padding: 0 9px; font-size: 12px; color: var(--muted); }
+.sb-scalar-item > .icon-button { width: 30px; height: 30px; font-size: 18px; color: var(--muted); }
+.sb-remove { padding-top: 2px; }
+.sb-field.sb-rule-list { display: block; }
+.sb-rule-list > .sb-label { display: block; padding: 0 0 4px; font-size: 14px; }
+.sb-variant { display: grid; gap: 6px; margin: 0 0 8px; color: #475569; font-size: 13px; }
+.sb-add { display: flex; gap: 8px; margin: 14px 0 4px; align-items: center; }
+.sb-add select, .sb-add input { min-width: 0; flex: 1; }
+.sb-list-add { margin-top: 8px; }
+.sb-item { border: 1px solid #dbe2ea; border-radius: 8px; padding: 10px 12px; margin: 10px 0; min-width: 0; }
+.sb-item > summary { cursor: pointer; font-weight: 600; overflow-wrap: anywhere; }
+.sb-item[open] > summary { margin-bottom: 8px; }
+.sb-item-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 4px; }
+.sb-item-actions button { height: 30px; padding: 0 10px; font-size: 12px; }
+.sb-rule-section { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }
+.sb-rule-section h3 { margin: 0 0 4px; font-size: 14px; }
+.sb-rule-section > .help { margin: 0 0 6px; }
 .sb-rule-section .notice { margin: 10px 0; }
+.sb-scalar-item { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; align-items: center; gap: 8px; margin-bottom: 6px; }
+.sb-scalar-index { font-size: 12px; color: var(--muted); text-align: right; }
 .sb-value-add { margin-top: 6px; }
-.sb-value-add button { padding: 5px 8px; font-size: 12px; }
 .sb-secret { -webkit-text-security: disc; }
+.sb-form + .notice { margin-bottom: 0; }
 @media (max-width: 600px) {
+  .sb-type, .sb-field { grid-template-columns: minmax(0, 1fr) auto; }
+  .sb-type > span, .sb-type > select { grid-column: 1 / -1; }
+  .sb-label { grid-area: 1 / 1; padding-top: 5px; }
+  .sb-control, .sb-control:last-child { grid-area: 2 / 1 / auto / -1; }
+  .sb-field > details, .sb-field > details:last-child { grid-area: 1 / 1; }
+  .sb-remove { grid-area: 1 / 2; padding-top: 0; }
+  .sb-nested { margin-left: 0; padding-left: 10px; }
   .sb-item { padding: 8px; }
   .sb-add { flex-wrap: wrap; }
   .sb-add select, .sb-add input { flex-basis: 100%; }
-  .sb-field > details { margin-right: 0; padding-top: 30px; }
 }
 
 /* Compact client settings, scoped away from rule tables and resource editors. */
@@ -1085,9 +1105,6 @@ dialog.routing-order-dialog { margin: 0 0 0 auto; width: min(600px, 100vw); max-
 .client-settings textarea { min-height: 96px; height: 132px; resize: vertical; }
 .client-settings input:not([type=checkbox]), .client-settings select { min-height: 32px; padding: 5px 9px; }
 .client-settings .help { font-size: 12px; margin: 5px 0; }
-.singbox-settings > .help { margin: 0 0 12px; }
-.singbox-settings .sb-summary { font-size: 13px; line-height: 1.5; margin: 6px 0; }
-.singbox-settings .toolbar { margin: 0; gap: 6px; }
 @media (max-width: 1200px) {
   .client-settings-basics, .client-settings-nested { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
@@ -1164,39 +1181,35 @@ dialog.routing-order-dialog { margin: 0 0 0 auto; width: min(600px, 100vw); max-
   .system-preference-fields .field:has(.toggle) { justify-self: end; }
   .feature-tag-row { grid-template-columns: minmax(0, 1fr); gap: 6px; padding: 10px 0; }
 }
-.sb-basic-fields > .sb-field { padding: 9px 0; }
-.sb-basic-fields > .sb-field:not(:has(details)) { display: grid; grid-template-columns: minmax(130px, 180px) minmax(0, 1fr); align-items: center; gap: 12px; }
-.sb-basic-fields .sb-label { margin: 0; padding-right: 0; font-size: 13px; }
-.sb-basic-fields .sb-label code { display: block; font-size: 11px; }
-.sb-basic-fields .sb-remove { top: 9px; }
-.sb-basic-fields > .sb-field.sb-rule-list { display: block; }
-.sb-rule-list > .sb-label { font-size: 14px; }
-.sb-advanced-fields, .sb-more-options { border-top: 1px solid var(--border); margin-top: 12px; padding: 10px 0; }
-.sb-advanced-fields > summary, .sb-more-options > summary { cursor: pointer; font-weight: 600; font-size: 13px; }
-.sb-scalar-item { display: grid; grid-template-columns: 24px minmax(0, 1fr) auto; align-items: center; gap: 8px; margin: 6px 0; }
-.sb-scalar-index { font-size: 12px; color: var(--muted); }
-.sb-scalar-item button { padding: 5px 8px; font-size: 12px; }
-.sb-overview-item { display: grid; gap: 4px; padding: 9px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
-.sb-overview-item span { color: var(--muted); }
-.sb-overview-item code { overflow-wrap: anywhere; font-size: 12px; }
-@media (max-width: 760px) { .sb-basic-fields > .sb-field:not(:has(details)) { grid-template-columns: minmax(0, 1fr); gap: 6px; } }
-.sb-overview-details { display: grid; grid-template-columns: 130px minmax(0, 1fr); gap: 5px 12px; margin: 4px 0; }
-.sb-overview-details dt { color: var(--muted); }
-.sb-overview-details dd { margin: 0; min-width: 0; }
-.sb-network .section-heading h2 { font-size: 16px; margin: 0; }
-.sb-network .section-heading .help { margin: 5px 0 0; }
-.sb-network table { width: 100%; min-width: 700px; }
-.sb-network th, .sb-network td { padding: 10px 14px; vertical-align: top; }
+/* sing-box settings pages share one heading size and section rhythm. */
+/* Ten tabs only fit without scrolling when packed tighter than the three-client default. */
+.client-config-page .section-tabs.sb-tabs { gap: 2px; }
+.sb-page .section { margin-bottom: 18px; padding-bottom: 18px; }
+.sb-page .section-heading { min-height: 34px; }
+.sb-page .section-heading h2 { font-size: 16px; }
+.sb-page .section-heading .toolbar { margin: 0; }
+.sb-page .section > .help { margin: 6px 0 0; }
+.sb-page .form-row { grid-template-columns: minmax(150px, 230px) minmax(180px, 420px); }
+.sb-page table { width: 100%; }
+.sb-page td { vertical-align: top; }
+.sb-summary { margin: 0; font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
+dl.sb-summary { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 4px 24px; }
+dl.sb-summary > div { display: flex; gap: 8px; min-width: 0; }
+dl.sb-summary dt { flex-shrink: 0; color: var(--muted); }
+dl.sb-summary dd { margin: 0; min-width: 0; }
+div.sb-summary { display: flex; flex-wrap: wrap; gap: 6px; }
+div.sb-summary .chip { margin: 0; }
+.sb-network table { min-width: 700px; }
+.sb-network th, .sb-network td { padding: 10px 14px; }
 .sb-network td:last-child { width: 96px; white-space: nowrap; }
 .sb-network-address { display: block; overflow-wrap: anywhere; font-size: 13px; line-height: 1.7; }
 .sb-network dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 0; font-size: 13px; }
 .sb-network dt { color: var(--muted); }
 .sb-network dd { margin: 0; }
-.sb-dns-page .section-heading h2 { font-size: 16px; }
-.sb-dns-page table { width: 100%; min-width: 640px; }
-.sb-dns-page td { vertical-align: top; }
+.sb-dns-page table { min-width: 640px; }
 .sb-dns-page .actions { white-space: nowrap; width: 168px; }
 .sb-dns-page .client-config-values { max-height: 180px; overflow: auto; }
-.sb-dns-page .section { margin-bottom: 18px; padding-bottom: 18px; }
+.sb-dns-page details > summary { cursor: pointer; font-weight: 600; }
+@media (max-width: 760px) { .sb-page .form-row { grid-template-columns: minmax(0, 1fr); } }
 
 .actions-progress-client h3 { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }

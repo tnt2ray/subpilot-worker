@@ -37,7 +37,16 @@ const LABELS = {
   url: "地址", path: "路径", format: "格式", update_interval: "更新间隔", headers: "请求头", http_client: "HTTP 客户端",
   default_http_client: "默认 HTTP 客户端", default_domain_resolver: "建立连接时的默认 DNS", find_process: "查找进程", find_neighbor: "查找邻居",
   netns: "网络命名空间", cache_file: "缓存文件", clash_api: "Clash API", v2ray_api: "V2Ray API", debug: "调试",
-  level: "日志级别", timestamp: "时间戳", output: "输出路径", disabled: "禁用", store: "信任库", secret: "密钥"
+  level: "日志级别", timestamp: "时间戳", output: "输出路径", disabled: "禁用", store: "信任库", secret: "密钥",
+  dns_mode: "DNS 处理方式", dns_address: "DNS 地址", auto_redirect: "自动重定向", loopback_address: "回环地址", udp_timeout: "UDP 超时",
+  include_interface: "包含接口", exclude_interface: "排除接口", route_address_set: "包含路由规则集", route_exclude_address_set: "排除路由规则集",
+  disable_cache: "禁用缓存", disable_expire: "缓存不过期", client_subnet: "客户端子网", rewrite_ttl: "重写 TTL", predefined: "预设记录",
+  inet4_range: "IPv4 地址段", inet6_range: "IPv6 地址段", query_type: "查询类型", ip_is_private: "目标为私有地址", source_ip_is_private: "来源为私有地址",
+  ip_version: "IP 版本", network: "网络协议", inbound: "入站", port_range: "目标端口范围", source_port_range: "来源端口范围", clash_mode: "Clash 模式",
+  method: "方式", override_address: "覆盖目标地址", override_port: "覆盖目标端口", default_interface: "默认出口网卡", default_mark: "默认路由标记",
+  default_network_strategy: "默认网络策略", override_android_vpn: "覆盖 Android VPN", path: "路径", cache_id: "缓存标识", store_fakeip: "保存 FakeIP", store_dns: "保存 DNS 缓存",
+  external_controller: "控制器监听地址", external_ui: "面板目录", default_mode: "默认模式", users: "用户", system: "使用系统接口", name: "接口名称",
+  persistent_keepalive_interval: "保活间隔", reserved: "保留字节", engine: "引擎", version: "版本", state_directory: "状态目录", hostname: "主机名"
 };
 export const singboxSections = {
   network: ["inbounds"], dns: ["dns"], rules: ["route"],
@@ -45,6 +54,19 @@ export const singboxSections = {
   advanced: ["log", "http_clients", "outbounds", "experimental", "services"]
 };
 export const singboxTitle = (key, t) => TITLES[key] ? t(...TITLES[key]) : key;
+export const singboxLabel = (key, t) => t(LABELS[key] || TITLES[key]?.[0] || String(key), TITLES[key]?.[1] || String(key).replaceAll("_", " "));
+// Settings a new entry of this type cannot work without; values only the user knows stay empty.
+const PRESETS = {
+  inbounds: {
+    tun: { address: ["172.19.0.1/30", "fdfe:dcba:9876::1/126"], auto_route: true, strict_route: true },
+    mixed: { listen: "127.0.0.1", listen_port: "" }, http: { listen: "127.0.0.1", listen_port: "" }, socks: { listen: "127.0.0.1", listen_port: "" }
+  },
+  endpoints: { wireguard: { address: [""], private_key: "", peers: [{ address: "", port: "", public_key: "", allowed_ips: [""] }] } }
+};
+const DNS_ACTIONS = {
+  route: ["使用指定服务器", "Use DNS server"], evaluate: ["查询并继续匹配", "Query and continue matching"], respond: ["返回已查询的响应", "Return the evaluated response"],
+  "route-options": ["调整查询参数", "Set query options"], reject: ["拒绝查询", "Reject query"], predefined: ["返回预设响应", "Return a predefined response"]
+};
 
 export function createSingboxGroupForm(root, spec, choices, { t, esc }) {
   const [type, ...parts] = splitPolicyGroupSpec(spec);
@@ -107,15 +129,18 @@ export function createSingboxGroupForm(root, spec, choices, { t, esc }) {
   } };
 }
 
-export function createSingboxForm(root, schema, section, original, { t, esc, references = {}, referenceTypes = {}, singleItem = false, endpointType }) {
+export function createSingboxForm(root, schema, section, original, { t, esc, references = {}, referenceTypes = {}, singleItem = false, endpointType, rootRule }) {
   let draft = structuredClone(original);
   const variantsCache = new WeakMap();
   const selections = new Map();
   const expanded = new Set(["[]"]);
-  if (Array.isArray(original) && original.length === 1) expanded.add("[0]");
-  if (section === "route" && Array.isArray(original?.rules) && original.rules.length === 1) expanded.add('["rules",0]');
+  // Nested settings and sole list entries start open; after that the user's toggling decides.
+  const seen = new Set();
+  const openOnce = (key) => { if (!seen.has(key)) { seen.add(key); expanded.add(key); } };
   let controls = [];
-  const title = (key) => t(LABELS[key] || TITLES[key]?.[0] || String(key), TITLES[key]?.[1] || String(key).replaceAll("_", " "));
+  const title = (key) => singboxLabel(key, t);
+  // Repeat the raw key only when the title is a translation of it.
+  const labelHtml = (text, key) => text.replaceAll(" ", "_") === String(key) ? esc(text) : `${esc(text)} <code>${esc(key)}</code>`;
   const deref = (node) => node?.$ref ? { ...schema.$defs[node.$ref.split("/").at(-1)], ...Object.fromEntries(Object.entries(node).filter(([key]) => key !== "$ref")) } : node || {};
   const merge = (a, b) => ({ ...a, ...b, properties: { ...a.properties, ...b.properties }, required: [...new Set([...(a.required || []), ...(b.required || [])])] });
   function variants(raw) {
@@ -174,6 +199,9 @@ export function createSingboxForm(root, schema, section, original, { t, esc, ref
       if (result.type) for (const key of ["tag", "server", "outbounds"]) {
         if (node.properties?.[key] && !Object.hasOwn(result, key)) own(result, key, seed(variants(node.properties[key])[0]));
       }
+      for (const [key, item] of Object.entries(PRESETS[section]?.[result.type] || {})) {
+        if (node.properties?.[key] && !Object.hasOwn(result, key)) own(result, key, structuredClone(item));
+      }
       // The core requires a destination for route actions, even though the
       // upstream schema does not mark it required. Never guess an outbound.
       if (result.action === "route" && node.properties?.outbound) result.outbound = "";
@@ -191,7 +219,7 @@ export function createSingboxForm(root, schema, section, original, { t, esc, ref
     else own(get(path.slice(0, -1)), path.at(-1), value);
   }
   function register(data) { controls.push(data); return controls.length - 1; }
-  const button = (label, op, id, disabled = false) => `<button type="button" data-sb-op="${op}" data-sb-id="${id}" ${disabled ? "disabled" : ""}>${label}</button>`;
+  const button = (label, op, id, disabled = false, attrs = "") => `<button type="button" data-sb-op="${op}" data-sb-id="${id}" ${disabled ? "disabled" : ""} ${attrs}>${label}</button>`;
   function clientBranch(node, path) {
     if (path.length !== 1 || typeof path[0] !== "number") return true;
     const type = deref(node.properties?.type);
@@ -201,17 +229,17 @@ export function createSingboxForm(root, schema, section, original, { t, esc, ref
     if (section === "endpoints") return endpointType ? protocol === endpointType : ["wireguard", "tailscale", "openconnect", "openvpn-client", "masque-client", "masque-server"].includes(protocol);
     return true;
   }
-  function branchName(node) {
+  function branchName(node, ruleKind) {
     const type = deref(node.properties?.type), action = deref(node.properties?.action);
     const typeName = type.const ?? type.enum?.[0], actionName = action.const ?? action.enum?.[0];
-    if (actionName) return `${typeName === "logical" ? t("逻辑组合 · ", "Logical group · ") : ""}${actionTitle(actionName)}`;
+    if (actionName) return `${typeName === "logical" ? t("逻辑组合 · ", "Logical group · ") : ""}${actionTitle(actionName, ruleKind)}`;
     if (typeName) return typeName;
     const fixed = Object.entries(node.properties || {}).flatMap(([key, value]) => Object.hasOwn(deref(value), "const") ? [`${title(key)}: ${deref(value).const}`] : []);
     if (fixed.length) return fixed.join(" · ");
     return Object.hasOwn(node, "const") ? String(node.const) : t(({ object: "自定义设置", array: "多个值", string: "文本", integer: "整数", number: "数值", boolean: "开关", null: "不设置" })[node.type] || node.type || "自定义设置", ({ object: "Custom settings", array: "Multiple values", string: "Text", integer: "Integer", number: "Number", boolean: "On / off", null: "Unset" })[node.type] || node.type || "Custom settings");
   }
-  function actionTitle(action) {
-    const names = { sniff: ["嗅探域名", "Sniff domains"], "hijack-dns": ["接管 DNS 查询", "Handle DNS queries"], route: ["使用指定出口", "Route to outbound"], "route-options": ["调整连接参数", "Set connection options"], direct: ["直接连接", "Connect directly"], reject: ["拒绝连接", "Reject"], resolve: ["解析域名", "Resolve domains"], bypass: ["绕过代理", "Bypass"] };
+  function actionTitle(action, ruleKind) {
+    const names = ruleKind === "dns" ? DNS_ACTIONS : { sniff: ["嗅探域名", "Sniff domains"], "hijack-dns": ["接管 DNS 查询", "Handle DNS queries"], route: ["使用指定出口", "Route to outbound"], "route-options": ["调整连接参数", "Set connection options"], direct: ["直接连接", "Connect directly"], reject: ["拒绝连接", "Reject"], resolve: ["解析域名", "Resolve domains"], bypass: ["绕过代理", "Bypass"] };
     return names[action] ? `${t(...names[action])} (${action})` : action;
   }
   // A scalar and a list of the same scalar share one editor. Keep the original
@@ -225,18 +253,32 @@ export function createSingboxForm(root, schema, section, original, { t, esc, ref
     const items = variants(array.items);
     return items.length === 1 && items[0].type === scalar.type && JSON.stringify(items[0].enum) === JSON.stringify(scalar.enum) ? { scalar, array } : null;
   }
-  const routeActions = schema.$defs.RuleAction ? variants(schema.$defs.RuleAction) : [];
-  const actionKeysFor = (value) => new Set(Object.keys(routeActions.find((item) => deref(item.properties?.action).const === (value.action || "route"))?.properties || {}));
-  const isRouteRule = (path) => section === "route" && path.length === 2 && path[0] === "rules" && typeof path[1] === "number";
+  const ruleActions = { route: schema.$defs.RuleAction ? variants(schema.$defs.RuleAction) : [], dns: schema.$defs.DNSRuleAction ? variants(schema.$defs.DNSRuleAction) : [] };
+  // Route rules live in the route section's list; a DNS rule is edited on its own as the form root.
+  const ruleKindAt = (path) => section === "route" && path.length === 2 && path[0] === "rules" && typeof path[1] === "number" ? "route" : rootRule && !path.length ? rootRule : null;
+  const actionKeysFor = (value, ruleKind) => new Set(Object.keys(ruleActions[ruleKind].find((item) => deref(item.properties?.action).const === (value.action || "route"))?.properties || {}));
+  const targetKey = (ruleKind) => ruleKind === "dns" ? "server" : "outbound";
+  const isRouteRule = (path) => ruleKindAt(path) === "route";
   const isRouteRuleList = (path) => section === "route" && path.length === 1 && path[0] === "rules";
   const isDnsHijackPreset = (value) => object(value) && value.action === "hijack-dns"
     && (value.type === undefined || value.type === "" || value.type === "default") && JSON.stringify([].concat(value.protocol)) === '["dns"]'
     && Object.keys(value).every((key) => ["type", "action", "protocol"].includes(key));
-  const matchKeys = (value) => { const actionKeys = actionKeysFor(value); return Object.keys(value).filter((key) => !["type", "action"].includes(key) && !actionKeys.has(key)); };
+  const matchKeys = (value, ruleKind) => { const actionKeys = actionKeysFor(value, ruleKind); return Object.keys(value).filter((key) => !["type", "action"].includes(key) && !actionKeys.has(key)); };
   function addFields(keys, path, node, label) {
     if (!keys.length) return "";
     const id = register({ path, node });
-    return `<div class="sb-add"><select data-sb-property="${id}" aria-label="${esc(label)}"><option value="" selected disabled>${esc(label)}</option>${keys.map((key) => `<option value="${esc(key)}">${esc(title(key))} · ${esc(key)}${node.required?.includes(key) ? " *" : ""}</option>`).join("")}</select>${button(esc(label), "property", id)}</div>`;
+    return `<div class="sb-add"><select data-sb-property="${id}" aria-label="${esc(label)}"><option value="" selected disabled>${esc(label)}</option>${keys.map((key) => `<option value="${esc(key)}">${esc(title(key).replaceAll(" ", "_") === key ? key : `${title(key)} · ${key}`)}${node.required?.includes(key) ? " *" : ""}</option>`).join("")}</select>${button(t("添加", "Add"), "property", id)}</div>`;
+  }
+  // The upstream address patterns are far too long to show; describe the known formats.
+  function formatHint(node) {
+    if (!node.pattern) return "";
+    const defs = schema.$defs;
+    const known = node.pattern === defs.IPPrefix?.pattern ? ["填写 CIDR 网段，例如 172.19.0.1/30 或 fdfe:dcba:9876::1/126。", "Enter a CIDR prefix, for example 172.19.0.1/30 or fdfe:dcba:9876::1/126."]
+      : node.pattern === defs.IPAddress?.pattern ? ["填写 IPv4 或 IPv6 地址，例如 127.0.0.1 或 ::1。", "Enter an IPv4 or IPv6 address, for example 127.0.0.1 or ::1."]
+        : node.pattern === defs.IPAddressOrPrefix?.pattern ? ["填写 IPv4、IPv6 或 CIDR，例如 192.0.2.1、2001:db8::/32。", "Enter IPv4, IPv6 or CIDR, for example 192.0.2.1 or 2001:db8::/32."]
+          : node.pattern === defs.Duration?.pattern ? ["填写带单位的时长，例如 30s、5m、1h。", "Enter a duration with a unit, for example 30s, 5m or 1h."] : null;
+    if (known) return `<p class="help">${t(...known)}</p>`;
+    return node.pattern.length <= 80 ? `<p class="help">${t("格式", "Format")}: <code>${esc(node.pattern)}</code></p>` : "";
   }
   function renderValue(raw, value, path, name) {
     const { list, selected, node } = active(raw, value, path);
@@ -244,51 +286,56 @@ export function createSingboxForm(root, schema, section, original, { t, esc, ref
     const id = register({ path, raw, node, multi });
     const data = `data-sb-id="${id}" aria-label="${esc(name)}"`;
     const hasVariant = list.length > 1 && !multi;
-    const variantLabel = list.some((item) => item.properties?.action) ? t("规则动作", "Rule action") : list.some((item) => item.properties?.type) ? t("配置类型", "Configuration type") : t("填写方式", "Value format");
-    let html = hasVariant ? `<label class="sb-variant">${variantLabel}<select data-sb-variant data-sb-id="${id}" aria-label="${esc(variantLabel)}">${list.map((item, i) => !clientBranch(item, path) && i !== selected ? "" : `<option ${!clientBranch(item, path) ? "disabled" : ""} value="${i}" ${selected === i ? "selected" : ""}>${esc(branchName(item))}</option>`).join("")}</select></label>` : "";
+    const ruleKind = ruleKindAt(path);
+    const typed = list.some((item) => item.properties?.action || item.properties?.type);
+    const variantLabel = list.some((item) => item.properties?.action) ? t("规则动作", "Rule action") : list.some((item) => item.properties?.type) ? t("类型", "Type") : t("填写方式", "Value format");
+    let html = hasVariant ? `<label class="${typed ? "sb-type" : "sb-variant"}"><span>${variantLabel}</span><select data-sb-variant data-sb-id="${id}" aria-label="${esc(variantLabel)}">${list.map((item, i) => !clientBranch(item, path) && i !== selected ? "" : `<option ${!clientBranch(item, path) ? "disabled" : ""} value="${i}" ${selected === i ? "selected" : ""}>${esc(branchName(item, ruleKind))}</option>`).join("")}</select></label>` : "";
     if (value === undefined) return html + button(t("配置此项", "Configure"), "create", id);
     const type = node.type || kind(value);
     if (singleItem && !path.length && type === "array") return renderValue(node.items || {}, value[0], [0], name);
     if (type === "object" && object(value)) {
       const props = node.properties || {};
-      const rule = isRouteRule(path);
-      const actionKeys = rule ? actionKeysFor(value) : new Set();
+      const actionKeys = ruleKind ? actionKeysFor(value, ruleKind) : new Set();
       const discriminator = (key) => hasVariant && ["type", "action"].includes(key) && (Object.hasOwn(deref(props[key]), "const") || deref(props[key]).enum?.length === 1);
-      const basicKeys = new Set(["type", "tag", "action", "address", "interface_name", "auto_route", "strict_route", "mtu", "listen", "listen_port", "server", "server_port", "outbound", "outbounds", "final", "servers", "rules"]);
-      let basicHtml = "", advancedHtml = "";
-      const needsOutbound = rule && (value.action || "route") === "route";
-      const fieldKeys = [...new Set([...Object.keys(value), ...(needsOutbound ? ["outbound"] : [])])];
+      const leadingKeys = new Set(["type", "tag", "action", "address", "interface_name", "auto_route", "strict_route", "mtu", "listen", "listen_port", "server", "server_port", "outbound", "outbounds", "final", "servers", "rules"]);
+      let leadingHtml = "", otherHtml = "";
+      const needsTarget = ruleKind && (value.action || "route") === "route" && Object.hasOwn(props, targetKey(ruleKind));
+      const fieldKeys = [...new Set([...Object.keys(value), ...(needsTarget ? [targetKey(ruleKind)] : [])])];
       for (const key of fieldKeys) {
         if (discriminator(key) && score(deref(props[key]), value[key]) >= 0) continue;
         const child = props[key] || (object(node.additionalProperties) ? node.additionalProperties : { type: kind(value[key]) });
         const childPath = [...path, key], pathKey = JSON.stringify(childPath);
         const childId = register({ path: childPath });
-        const condition = rule && !actionKeys.has(key) && !["type", "action"].includes(key);
-        const fieldTitle = condition && key === "protocol" ? t("已识别协议", "Detected protocol") : title(key);
+        const target = needsTarget && key === targetKey(ruleKind);
+        const condition = ruleKind && !actionKeys.has(key) && !["type", "action"].includes(key);
+        const fieldTitle = condition && ruleKind === "route" && key === "protocol" ? t("已识别协议", "Detected protocol") : title(key);
         const complex = value[key] !== null && typeof value[key] === "object";
         const ruleList = section === "route" && path.length === 0 && key === "rules";
-        const inline = rule || ruleList || scalarList(child) || Array.isArray(value[key]) && value[key].every((item) => item === null || typeof item !== "object");
+        const inline = ruleKind || ruleList || scalarList(child) || Array.isArray(value[key]) && value[key].every((item) => item === null || typeof item !== "object");
         const collapsible = complex && !inline;
-        if (collapsible && ["address", "outbounds"].includes(key)) expanded.add(pathKey);
-        const body = collapsible && !expanded.has(pathKey) ? `<div data-sb-lazy="${register({ path: childPath, raw: child, name: fieldTitle })}"></div>` : renderValue(child, needsOutbound && key === "outbound" ? value[key] ?? "" : value[key], childPath, fieldTitle);
-        const required = node.required?.includes(key) || needsOutbound && key === "outbound";
+        if (collapsible) openOnce(pathKey);
+        const body = collapsible && !expanded.has(pathKey) ? `<div data-sb-lazy="${register({ path: childPath, raw: child, name: fieldTitle })}"></div>` : renderValue(child, target ? value[key] ?? "" : value[key], childPath, fieldTitle);
+        const required = node.required?.includes(key) || target;
         const removeLabel = condition ? t("移除条件", "Remove condition") : t("移除设置", "Remove setting");
-        const remove = required || ruleList ? "" : `<div class="sb-remove">${button(removeLabel, "remove", childId)}</div>`;
-        const fieldHtml = `<div class="sb-field${ruleList ? " sb-rule-list" : ""}${!remove ? " sb-field-required" : ""}">${collapsible ? `<details data-sb-path="${esc(pathKey)}" ${expanded.has(pathKey) ? "open" : ""}><summary>${esc(fieldTitle)} <code>${esc(key)}</code></summary>${body}</details>` : `<label class="sb-label">${esc(fieldTitle)} <code>${esc(key)}</code></label><div class="sb-control">${body}</div>`}${remove}</div>`;
-        if (rule ? !condition : basicKeys.has(key) || required || node.propertyNames?.["x-tag-reference"]) basicHtml += fieldHtml;
-        else advancedHtml += fieldHtml;
+        const remove = required || ruleList ? "" : `<div class="sb-remove">${button(t("移除", "Remove"), "remove", childId, false, `title="${removeLabel}" aria-label="${removeLabel}: ${esc(fieldTitle)}"`)}</div>`;
+        const fieldHtml = `<div class="sb-field${ruleList ? " sb-rule-list" : ""}">${collapsible ? `<details data-sb-path="${esc(pathKey)}" ${expanded.has(pathKey) ? "open" : ""}><summary>${labelHtml(fieldTitle, key)}</summary><div class="sb-nested">${body}</div></details>` : `<label class="sb-label">${labelHtml(fieldTitle, key)}</label><div class="sb-control">${body}</div>`}${remove}</div>`;
+        if (ruleKind ? !condition : leadingKeys.has(key) || required || node.propertyNames?.["x-tag-reference"]) leadingHtml += fieldHtml;
+        else otherHtml += fieldHtml;
       }
       const missing = Object.keys(props).filter((key) => !fieldKeys.includes(key) && !discriminator(key));
-      if (rule) {
-        const action = value.action || "route";
+      if (ruleKind) {
+        const action = value.action || "route", dns = ruleKind === "dns";
         const note = action === "sniff" ? `<p class="help">${t("在分流前识别连接中的域名。通常无需设置匹配条件。", "Identify domains before routing. Matching conditions are usually unnecessary.")}</p>` : "";
-        html += note + `<div class="sb-rule-section"><h3>${t("动作参数", "Action settings")}</h3><div class="sb-basic-fields">${basicHtml || `<p class="help">${t("此动作无需额外参数。", "No additional settings are needed.")}</p>`}</div>${addFields(missing.filter((key) => actionKeys.has(key)), path, node, t("添加动作参数", "Add action setting"))}</div>`;
+        html += note + `<div class="sb-rule-section"><h3>${t("动作参数", "Action settings")}</h3><div class="sb-fields">${leadingHtml || `<p class="help">${t("此动作无需额外参数。", "No additional settings are needed.")}</p>`}</div>${addFields(missing.filter((key) => actionKeys.has(key)), path, node, t("添加动作参数", "Add action setting"))}</div>`;
         const warning = action === "sniff" && Object.hasOwn(value, "protocol") ? `<p class="notice warning">${t("“已识别协议”会限制哪些连接执行嗅探。常规域名嗅探请移除此条件；指定嗅探方式请在动作参数中添加“嗅探协议”。", "Detected protocol limits which connections are sniffed. Remove this condition for general domain sniffing; use Sniffer in action settings to choose sniffing methods.")}</p>` : "";
-        html += `<div class="sb-rule-section"><h3>${t("匹配条件", "Match conditions")}</h3><p class="help">${matchKeys(value).length ? t("仅匹配这些条件的连接执行此动作。", "This action applies only to connections matching these conditions.") : t("未设置条件：应用于所有连接。", "No conditions: applies to all connections.")}</p>${warning}<div class="sb-basic-fields">${advancedHtml}</div>${addFields(missing.filter((key) => !actionKeys.has(key)), path, node, t("添加匹配条件", "Add match condition"))}</div>`;
+        const scope = matchKeys(value, ruleKind).length
+          ? dns ? t("仅匹配这些条件的查询执行此动作。", "This action applies only to queries matching these conditions.") : t("仅匹配这些条件的连接执行此动作。", "This action applies only to connections matching these conditions.")
+          : dns ? t("未设置条件：应用于所有查询。", "No conditions: applies to all queries.") : t("未设置条件：应用于所有连接。", "No conditions: applies to all connections.");
+        html += `<div class="sb-rule-section"><h3>${t("匹配条件", "Match conditions")}</h3><p class="help">${scope}</p>${warning}<div class="sb-fields">${otherHtml}</div>${addFields(missing.filter((key) => !actionKeys.has(key)), path, node, t("添加匹配条件", "Add match condition"))}</div>`;
       } else {
-        html += `<div class="sb-basic-fields">${basicHtml}</div>`;
-        if (advancedHtml) html += `<details class="sb-advanced-fields"><summary>${t("其他已配置设置", "Other configured settings")}</summary>${advancedHtml}</details>`;
-        if (missing.length) html += `<details class="sb-more-options"><summary>${t("添加可选设置", "Add optional settings")}</summary>${addFields(missing, path, node, t("添加设置", "Add setting"))}</details>`;
+        // Configured settings stay visible: hiding them behind a toggle also hid what was just added.
+        if (leadingHtml || otherHtml) html += `<div class="sb-fields">${leadingHtml}${otherHtml}</div>`;
+        html += addFields(missing, path, node, t("添加可选设置", "Add optional setting"));
       }
       if (node.additionalProperties !== false && (node.additionalProperties || !Object.keys(props).length)) {
         const keySchema = deref(node.propertyNames), reference = keySchema["x-tag-reference"];
@@ -301,16 +348,18 @@ export function createSingboxForm(root, schema, section, original, { t, esc, ref
       html += `<div class="sb-list">${value.map((item, index) => {
         const childPath = [...path, index], key = JSON.stringify(childPath);
         const childId = register({ path: childPath });
-        if (item === null || typeof item !== "object") return `<div class="sb-scalar-item"><span class="sb-scalar-index">${index + 1}</span><div>${renderValue(node.items || {}, item, childPath, `${name} ${index + 1}`)}</div>${button(t("删除", "Delete"), "remove", childId)}</div>`;
+        if (item === null || typeof item !== "object") return `<div class="sb-scalar-item"><span class="sb-scalar-index">${index + 1}</span><div>${renderValue(node.items || {}, item, childPath, `${name} ${index + 1}`)}</div>${button("×", "remove", childId, false, `class="icon-button" title="${t("删除此值", "Delete this value")}" aria-label="${t("删除此值", "Delete this value")}"`)}</div>`;
+        if (value.length === 1) openOnce(key);
         const rule = isRouteRule(childPath);
-        const conditions = rule ? matchKeys(item) : [];
+        const conditions = rule ? matchKeys(item, "route") : [];
         const summary = rule ? `${item.type === "logical" ? t("逻辑组合 · ", "Logical group · ") : ""}${actionTitle(item.action || "route")} · ${conditions.length ? conditions.map((key) => `${title(key)}${["protocol", "network"].includes(key) ? `: ${[].concat(item[key]).join(", ")}` : ""}`).join(" / ") : t("所有连接", "All connections")}` : object(item) ? [item.tag, item.type, item.action].filter(Boolean).join(" · ") : t("条目", "Item");
         const body = expanded.has(key) ? renderValue(node.items || {}, item, childPath, `${name} ${index + 1}`) : `<div data-sb-lazy="${register({ path: childPath, raw: node.items || {}, name: `${name} ${index + 1}` })}"></div>`;
-        return `<details class="sb-item" data-sb-path="${esc(key)}" ${expanded.has(key) ? "open" : ""}><summary>${index + 1}. ${esc(summary || t("条目", "Item"))}</summary><div class="sb-item-actions">${button(t("上移", "Move up"), "up", childId, index === 0)}${button(t("下移", "Move down"), "down", childId, index === value.length - 1)}${button(rule ? t("删除规则", "Delete rule") : t("删除条目", "Delete item"), "remove", childId)}</div>${body}</details>`;
+        return `<details class="sb-item" data-sb-path="${esc(key)}" ${expanded.has(key) ? "open" : ""}><summary>${index + 1}. ${esc(summary || t("未命名条目", "Unnamed item"))}</summary><div class="sb-item-actions">${button(t("上移", "Move up"), "up", childId, index === 0)}${button(t("下移", "Move down"), "down", childId, index === value.length - 1)}${button(rule ? t("删除规则", "Delete rule") : t("删除条目", "Delete item"), "remove", childId)}</div>${body}</details>`;
       }).join("")}</div>`;
+      if (value.length && value.every((item) => item === null || typeof item !== "object")) html += formatHint(variants(node.items || {})[0]);
       html += isRouteRuleList(path)
-        ? `<div class="sb-add"><select data-sb-new-rule="${id}" aria-label="${t("选择新规则动作", "Choose new rule action")}"><option value="" selected disabled>${t("选择新规则动作", "Choose new rule action")}</option>${variants(node.items || {}).map((item, index) => `<option value="${index}">${esc(branchName(item))}</option>`).join("")}</select>${button(t("添加规则", "Add rule"), "append", id)}</div><p class="help">${t("通用域名嗅探添加 sniff，DNS 接管另加 hijack-dns。两者是独立规则，请将嗅探放在 DNS 接管和分流规则之前。", "Add sniff for general domain sniffing and a separate hijack-dns rule for DNS handling. Place sniffing before DNS handling and routing rules.")}</p>`
-        : button(!path.length && section === "inbounds" ? t("添加入站", "Add inbound") : multi ? t("添加值", "Add value") : t("添加条目", "Add item"), "append", id);
+        ? `<div class="sb-add"><select data-sb-new-rule="${id}" aria-label="${t("选择新规则动作", "Choose new rule action")}"><option value="" selected disabled>${t("选择新规则动作", "Choose new rule action")}</option>${variants(node.items || {}).map((item, index) => `<option value="${index}">${esc(branchName(item, "route"))}</option>`).join("")}</select>${button(t("添加规则", "Add rule"), "append", id)}</div><p class="help">${t("通用域名嗅探添加 sniff，DNS 接管另加 hijack-dns。两者是独立规则，请将嗅探放在 DNS 接管和分流规则之前。", "Add sniff for general domain sniffing and a separate hijack-dns rule for DNS handling. Place sniffing before DNS handling and routing rules.")}</p>`
+        : `<div class="sb-list-add">${button(!path.length && section === "inbounds" ? t("添加入站", "Add inbound") : !path.length && section === "endpoints" ? t("添加连接", "Add connection") : multi || value.every((item) => item === null || typeof item !== "object") && !variants(node.items || {}).some((item) => item.type === "object") ? t("添加值", "Add value") : t("添加条目", "Add item"), "append", id)}</div>`;
     } else if (Object.hasOwn(node, "const")) html += `<input ${data} value="${esc(value)}" readonly>`;
     else if (node.enum || type === "boolean") {
       const choices = node.enum || [false, true];
@@ -320,7 +369,8 @@ export function createSingboxForm(root, schema, section, original, { t, esc, ref
     else {
       const sensitive = path.some((key) => /password|secret|token|(^|_)key$|(^|_)psk$|authorization|cookie/i.test(String(key)));
       const ref = references[node["x-tag-reference"]] || [];
-      const multiline = /\n/.test(String(value)) || /certificate$|private_key$|client_key$/.test(String(path.at(-1)));
+      // PEM material accepts a line list upstream; WireGuard-style keys are a single line.
+      const multiline = /\n/.test(String(value)) || /certificate$|client_key$/.test(String(path.at(-1))) || /private_key$/.test(String(path.at(-1))) && Boolean(multi);
       html += multiline ? `<textarea ${sensitive ? 'class="sb-secret"' : ""} data-sb-value ${data} rows="5" spellcheck="false" autocomplete="off">${esc(value)}</textarea>` : sensitive ? `<input type="password" data-sb-value ${data} value="${esc(value)}" autocomplete="new-password">` : `<input type="text" data-sb-value ${data} value="${esc(value)}" autocomplete="off" spellcheck="false" ${ref.length ? `list="sb-refs-${id}"` : ""}>`;
       if (ref.length) html += `<datalist id="sb-refs-${id}">${ref.map((tag) => `<option value="${esc(tag)}"></option>`).join("")}</datalist>`;
     }
@@ -338,16 +388,19 @@ export function createSingboxForm(root, schema, section, original, { t, esc, ref
       derp_servers: ["不能与 derp_map_url 或 derp_region 同时设置。", "Cannot be combined with derp_map_url or derp_region."]
     }[String(path.at(-1))];
     if (help) html += `<p class="help">${esc(t(...help))}</p>`;
-    if (node.pattern) html += path.includes("dns_server_address")
-      ? `<p class="help">${t("填写 IPv4、IPv6 或 CIDR，例如 192.0.2.1、2001:db8::/32。", "Enter IPv4, IPv6 or CIDR, for example 192.0.2.1 or 2001:db8::/32.")}</p>`
-      : `<p class="help">${t("格式", "Format")}: <code>${esc(node.pattern)}</code></p>`;
+    // A list states its item format once, below the items.
+    if (typeof path.at(-1) !== "number") html += formatHint(node);
     return html;
   }
   function render() {
     controls = [];
     root.innerHTML = `<div class="sb-form">${renderValue(schema.properties[section], draft, [], singboxTitle(section, t))}</div><p class="notice warning" data-sb-error hidden role="alert"></p>`;
   }
-  function error(message) { const el = root.querySelector("[data-sb-error]"); el.textContent = message; el.hidden = !message; }
+  function error(message) {
+    const el = root.querySelector("[data-sb-error]");
+    el.textContent = message; el.hidden = !message;
+    if (message) el.scrollIntoView({ block: "nearest" });
+  }
   function readInputs(discardPath) {
     for (const input of root.querySelectorAll("[data-sb-value]")) {
       // Untouched controls must not coerce imported values or normalize PEM lines.
@@ -374,7 +427,7 @@ export function createSingboxForm(root, schema, section, original, { t, esc, ref
     if (!root.contains(event.target)) return;
     const path = event.target.dataset.sbPath;
     if (path) event.target.open ? expanded.add(path) : expanded.delete(path);
-    const lazy = event.target.querySelector(":scope > [data-sb-lazy]");
+    const lazy = event.target.querySelector(":scope > [data-sb-lazy], :scope > .sb-nested > [data-sb-lazy]");
     if (event.target.open && lazy) {
       const { path, raw, name } = controls[Number(lazy.dataset.sbLazy)];
       lazy.outerHTML = renderValue(raw, get(path), path, name);
@@ -395,10 +448,17 @@ export function createSingboxForm(root, schema, section, original, { t, esc, ref
           const child = next.properties?.[key];
           if (child && Math.max(...variants(child).map((part) => score(part, item))) >= 0) own(value, key, item);
         }
+        // A name generated from the previous type would mislabel the new one.
+        if (section === "inbounds" && current.type && value.type && value.tag === current.tag && String(current.tag).startsWith(`${current.type}-in`)) {
+          const used = (references.inbound || []).filter((tag) => tag !== current.tag);
+          let tag = `${value.type}-in`;
+          for (let count = 2; used.includes(tag); count++) tag = `${value.type}-in-${count}`;
+          value.tag = tag;
+        }
         // A stock DNS handler carries a DNS match, not a sniffing preference.
         // Only discard this inherited condition for that exact preset.
         if (isRouteRule(path) && value.action === "sniff" && value.type !== "logical" && isDnsHijackPreset(current)) delete value.protocol;
-        if (isRouteRule(path) && value.action === "hijack-dns" && value.type !== "logical" && !matchKeys(value).length) value.protocol = "dns";
+        if (isRouteRule(path) && value.action === "hijack-dns" && value.type !== "logical" && !matchKeys(value, "route").length) value.protocol = "dns";
       }
       for (const key of selections.keys()) if (key !== JSON.stringify(path)) selections.delete(key);
       selections.set(JSON.stringify(path), Number(input.value));
@@ -447,18 +507,26 @@ export function createSingboxForm(root, schema, section, original, { t, esc, ref
     } catch (reason) { error(reason.message); }
   });
   render();
+  const pathName = (path) => path.map((key) => typeof key === "number" ? `#${key + 1}` : title(key)).join(" / ");
   function validateChoices(raw, value, path) {
     const { node } = active(raw, value, path);
     if (object(value)) {
-      if (isRouteRule(path) && (value.action || "route") === "route" && (typeof value.outbound !== "string" || !value.outbound.trim())) {
-        throw Error(`${t("规则", "Rule")} ${path[1] + 1}: ${t("请选择出站。", "Choose an outbound.")}`);
+      const ruleKind = ruleKindAt(path);
+      if (ruleKind && (value.action || "route") === "route" && (typeof value[targetKey(ruleKind)] !== "string" || !value[targetKey(ruleKind)].trim())) {
+        throw Error(ruleKind === "dns" ? t("请选择 DNS 服务器。", "Choose a DNS server.") : `${t("规则", "Rule")} ${path[1] + 1}: ${t("请选择出站。", "Choose an outbound.")}`);
       }
+      // An empty condition is not "unset": an empty domain suffix matches every name.
+      const empty = ruleKind && matchKeys(value, ruleKind).find((key) => value[key] === "");
+      if (empty) throw Error(`${pathName([...path, empty])}: ${t("请填写匹配值，或移除此条件。", "Enter a value, or remove this condition.")}`);
+      if (value.tag === "") throw Error(`${pathName([...path, "tag"])}: ${t("请填写名称。", "Enter a name.")}`);
       for (const [key, item] of Object.entries(value)) validateChoices(node.properties?.[key] || (object(node.additionalProperties) ? node.additionalProperties : {}), item, [...path, key]);
     } else if (Array.isArray(value)) value.forEach((item, index) => validateChoices(node.items || {}, item, [...path, index]));
     else if (node.enum && !node.enum.includes(value) || node.type === "boolean" && typeof value !== "boolean") {
-      throw Error(`${path.map(title).join(" / ")}: ${t("请选择一个值，或移除此可选设置以使用内核默认值。", "Choose a value, or remove this optional setting to use the core default.")}`);
+      throw Error(`${pathName(path)}: ${t("请选择一个值，或移除此可选设置以使用内核默认值。", "Choose a value, or remove this optional setting to use the core default.")}`);
     } else if (["number", "integer"].includes(node.type) && (typeof value !== "number" || !Number.isFinite(value))) {
-      throw Error(`${path.map(title).join(" / ")}: ${t("请填写数值，或移除此可选设置以使用内核默认值。", "Enter a number, or remove this optional setting to use the core default.")}`);
+      throw Error(`${pathName(path)}: ${t("请填写数值，或移除此可选设置以使用内核默认值。", "Enter a number, or remove this optional setting to use the core default.")}`);
+    } else if (value === "" && typeof path.at(-1) === "number") {
+      throw Error(`${pathName(path)}: ${t("请填写此项，或将其从列表中删除。", "Enter a value, or delete it from the list.")}`);
     }
   }
   return { read() { readInputs(); validateChoices(schema.properties[section], draft, []); return structuredClone(draft); }, error };

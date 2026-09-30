@@ -1,9 +1,11 @@
 import { newTailscaleNode, tailscaleForm, readTailscaleForm, updateTailscaleForm } from "./tailscale-ui.js";
-import { createSingboxForm, singboxSections, singboxTitle } from "./singbox-ui.js";
+import { createSingboxForm, singboxLabel, singboxSections, singboxTitle } from "./singbox-ui.js";
 import { CLIENT_SECTIONS, getPath, splitRule } from "./app-model.js";
 
 export function createClientUi({ state, $, t, esc, label, btn, icon, iconButton, smallButton, isObject, isTextList, field, section, renderConfigLines, clientTabs, currentClient, basePath, target, modal, closeModal, changed, render, api, getProxyNames, getClashRouting }) {
 let singboxSchema = null;
+const SINGBOX_DNS_DEDICATED = ["servers", "rules", "final", "reverse_mapping"];
+const SINGBOX_VPN = { wireguard: ["WireGuard", "WireGuard"], openconnect: ["OpenConnect", "OpenConnect"], "openvpn-client": ["OpenVPN", "OpenVPN"], "masque-client": ["MASQUE 客户端", "MASQUE Client"], "masque-server": ["MASQUE 服务端", "MASQUE Server"] };
 function validateNativeShape(value, path = "clients.singbox") {
   const objects = ["clients.singbox", "clients.singbox.dns", "clients.singbox.route", "clients.singbox.log", "clients.singbox.experimental"];
   const arrays = ["clients.singbox.inbounds", "clients.singbox.endpoints", "clients.singbox.dns.servers", "clients.singbox.dns.rules", "clients.singbox.route.rules", "clients.singbox.route.rule_set"];
@@ -43,13 +45,13 @@ function renderGroups() {
 function renderClient() {
   const client = state.config.clients[state.client];
   const fields = CLIENT_SECTIONS[state.client][state.section] || [];
-  const tabs = [["network", "网络与 TUN", "Network & TUN"], ["dns", "DNS", "DNS"], ["rules", "分流规则", "Routing rules"], ["tailscale", "Tailscale", "Tailscale"], ...state.client === "singbox" ? [["wireguard", "WireGuard", "WireGuard"], ["openconnect", "OpenConnect", "OpenConnect"], ["openvpn-client", "OpenVPN", "OpenVPN"], ["masque-client", "MASQUE 客户端", "MASQUE Client"], ["masque-server", "MASQUE 服务端", "MASQUE Server"]] : [], ...state.client !== "clash" ? [["advanced", "高级设置", "Advanced"]] : [], ...state.client === "surge" ? [["mitm", "MITM 证书", "MITM certificates"]] : []];
+  const tabs = [["network", "网络与 TUN", "Network & TUN"], ["dns", "DNS", "DNS"], ["rules", "分流规则", "Routing rules"], ["tailscale", "Tailscale", "Tailscale"], ...state.client === "singbox" ? Object.entries(SINGBOX_VPN).map(([id, names]) => [id, ...names]) : [], ...state.client !== "clash" ? [["advanced", "高级设置", "Advanced"]] : [], ...state.client === "surge" ? [["mitm", "MITM 证书", "MITM certificates"]] : []];
   let content = "";
   if (state.client === "surge" && state.section === "mitm") content = renderMitm();
   else if (state.section === "tailscale") content = renderTailscale();
   else if (state.section === "rules") content = renderRules();
-  else if (state.client === "singbox" && state.section === "dns") content = renderSingboxDns() + renderSingboxConnectionSettings("dns");
-  else if (state.client === "singbox" && ["wireguard", "openconnect", "openvpn-client", "masque-client", "masque-server"].includes(state.section)) content = renderSingboxVpn(state.section);
+  else if (state.client === "singbox" && state.section === "dns") content = renderSingboxDns();
+  else if (state.client === "singbox" && Object.hasOwn(SINGBOX_VPN, state.section)) content = renderSingboxVpn(state.section);
   else if (state.client === "singbox" && state.section === "network") content = renderSingboxNetwork() + renderSingboxConnectionSettings("network");
   else if (state.client === "singbox") content = renderSingboxSections(singboxSections[state.section] || []);
   else {
@@ -67,7 +69,8 @@ function renderClient() {
     content = `<div class="client-settings ${state.section === "advanced" ? "client-settings-advanced" : ""}">${basics}<div class="client-settings-details">${details}</div></div>`;
   }
   if (!content) content = `<p class="empty">${t("此客户端的设置均在其他分栏中提供。", "All settings for this client are available in the other tabs.")}</p>`;
-  return `<div class="client-config-page">` + clientTabs() + `<div class="section-tabs">${tabs.map(([id, zh, en]) => btn(t(zh, en), "section", `data-section="${id}"`, state.section === id ? "selected" : "")).join("")}</div>` + content + `</div>`;
+  if (state.client === "singbox") content = `<div class="sb-page">${content}</div>`;
+  return `<div class="client-config-page">` + clientTabs() + `<div class="section-tabs${state.client === "singbox" ? " sb-tabs" : ""}">${tabs.map(([id, zh, en]) => btn(t(zh, en), "section", `data-section="${id}"`, state.section === id ? "selected" : "")).join("")}</div>` + content + `</div>`;
 }
 function renderSingboxDns() {
   const dns = currentClient().dns;
@@ -82,27 +85,35 @@ function renderSingboxDns() {
     return `<tr><td>${index + 1}</td><td>${Object.keys(match).length ? renderConfigLines(JSON.stringify(match, null, 2).split("\n")) : t("所有请求", "All requests")}</td><td>${esc(rule.server || rule.action || "route")}</td><td class="actions">${iconButton("up", "move-sb-dns", `data-index="${index}" data-direction="-1" ${index === 0 ? "disabled" : ""}`, t("上移", "Move up"))}${iconButton("down", "move-sb-dns", `data-index="${index}" data-direction="1" ${index === rules.length - 1 ? "disabled" : ""}`, t("下移", "Move down"))}${actions("rules", index)}</td></tr>`;
   }).join("");
   const table = (headers, rows) => `<div class="table-wrap"><table><thead><tr>${headers.map((heading) => `<th>${heading}</th>`).join("")}</tr></thead><tbody>${rows || `<tr><td colspan="${headers.length}" class="empty">${t("尚未配置", "Not configured")}</td></tr>`}</tbody></table></div>`;
-  return `<div class="sb-dns-page">${section(t("DNS 服务器列表", "DNS server list"), table([t("名称", "Name"), t("协议", "Protocol"), t("服务器地址", "Server address"), t("连接出口", "Connection outbound"), t("操作", "Actions")], serverRows), btn(t("添加服务器", "Add server"), "edit-sb-dns", 'data-kind="servers"', "primary"))}${section(t("DNS 查询兜底服务器", "Fallback DNS server for queries"), field("clients.singbox.dns.final", dns.final || "", { label: t("兜底 DNS 服务器", "Fallback DNS server"), options: [...servers.map((server) => server.tag).filter(Boolean), ""] }) + `<p class="help">${t("收到的 DNS 查询未命中规则集 DNS 或高级 DNS 规则时使用。留空使用 DNS 服务器列表中的第一个服务器。", "Used when an incoming DNS query matches neither rule-set DNS nor advanced DNS rules. Leave empty to use the first server in the DNS server list.")}</p>`)}${section(t("域名分流", "Domain-based routing"), field("clients.singbox.dns.reverse_mapping", dns.reverse_mapping ?? false, { label: t("DNS 反向映射", "DNS reverse mapping") }) + `<p class="help">${t("记录经由 sing-box 解析的域名与 IP 对应关系，让 TUN 连接可以按域名分流。浏览器自行使用加密 DNS 时，可能无法建立映射。", "Remember domain-to-IP mappings from sing-box DNS responses so TUN connections can match domain rules. Browser-managed encrypted DNS may bypass this mapping.")}</p>`)}${section("", `<details><summary>${t("高级 DNS 规则", "Advanced DNS rules")} · ${rules.length}</summary><p class="help">${t("规则集 DNS 请在“分流规则”Tab 配置。此处用于查询类型匹配、拒绝查询等高级设置，在规则集 DNS 规则之后匹配。折叠不影响已配置规则生效。", "Configure rule-set DNS on the Routing rules tab. Use this section for advanced settings such as query-type matching and query rejection. These rules match after rule-set DNS rules; collapsing this section does not disable them.")}</p>${table([t("顺序", "Order"), t("匹配条件", "Match conditions"), t("解析目标 / 动作", "DNS target / action"), t("操作", "Actions")], ruleRows)}<div class="toolbar">${btn(t("添加规则", "Add rule"), "edit-sb-dns", 'data-kind="rules"')}</div></details>`)}<div class="toolbar">${btn(t("缓存与其他设置", "Cache and other settings"), "edit-sb-dns", 'data-kind="options"')}</div></div>`;
+  const tags = servers.map((server) => server.tag).filter(Boolean), final = dns.final || "";
+  const finalChoices = [...tags.map((tag) => [tag, tag]), ...(final && !tags.includes(final) ? [[final, `${final}${t("（不存在）", " (missing)")}`]] : []), ["", t("列表中的第一个服务器", "First server in the list")]];
+  const finalField = `<div class="form-row"><label for="sb-dns-final">${t("兜底 DNS 服务器", "Fallback DNS server")}</label><div class="field"><select id="sb-dns-final" data-field="clients.singbox.dns.final">${finalChoices.map(([value, text]) => `<option value="${esc(value)}" ${value === final ? "selected" : ""}>${esc(text)}</option>`).join("")}</select></div></div>`;
+  const options = Object.fromEntries(Object.entries(dns).filter(([key]) => !SINGBOX_DNS_DEDICATED.includes(key)));
+  return `<div class="sb-dns-page">${section(t("DNS 服务器列表", "DNS server list"), table([t("名称", "Name"), t("协议", "Protocol"), t("服务器地址", "Server address"), t("连接出口", "Connection outbound"), t("操作", "Actions")], serverRows), btn(t("添加服务器", "Add server"), "edit-sb-dns", 'data-kind="servers"', "primary"))}${section(t("DNS 查询兜底服务器", "Fallback DNS server for queries"), finalField + `<p class="help">${t("收到的 DNS 查询未命中规则集 DNS 或高级 DNS 规则时使用。", "Used when an incoming DNS query matches neither rule-set DNS nor advanced DNS rules.")}</p>`)}${renderSingboxConnectionSettings("dns")}${section(t("域名分流", "Domain-based routing"), field("clients.singbox.dns.reverse_mapping", dns.reverse_mapping ?? false, { label: t("DNS 反向映射", "DNS reverse mapping") }) + `<p class="help">${t("记录经由 sing-box 解析的域名与 IP 对应关系，让 TUN 连接可以按域名分流。浏览器自行使用加密 DNS 时，可能无法建立映射。", "Remember domain-to-IP mappings from sing-box DNS responses so TUN connections can match domain rules. Browser-managed encrypted DNS may bypass this mapping.")}</p>`)}${section("", `<details><summary>${t("高级 DNS 规则", "Advanced DNS rules")} · ${rules.length}</summary><p class="help">${t("规则集 DNS 请在“分流规则”Tab 配置。此处用于查询类型匹配、拒绝查询等高级设置，在规则集 DNS 规则之后匹配。折叠不影响已配置规则生效。", "Configure rule-set DNS on the Routing rules tab. Use this section for advanced settings such as query-type matching and query rejection. These rules match after rule-set DNS rules; collapsing this section does not disable them.")}</p>${table([t("顺序", "Order"), t("匹配条件", "Match conditions"), t("解析目标 / 动作", "DNS target / action"), t("操作", "Actions")], ruleRows)}<div class="toolbar">${btn(t("添加规则", "Add rule"), "edit-sb-dns", 'data-kind="rules"')}</div></details>`)}${section(t("缓存与其他设置", "Cache and other settings"), singboxSummary(options) || `<p class="help">${t("使用内核默认值", "Using core defaults")}</p>`, btn(t("配置", "Configure"), "edit-sb-dns", 'data-kind="options"'))}</div>`;
 }
 async function editSingboxDns(kind, index) {
   singboxSchema ||= await api("/api/singbox/schema");
   const raw = singboxSchema.properties.dns;
   const dnsSchema = raw.$ref ? singboxSchema.$defs[raw.$ref.split("/").at(-1)] : raw;
   const dns = currentClient().dns;
-  const options = kind === "options";
-  const dedicated = ["servers", "rules", "final", "reverse_mapping"];
+  const options = kind === "options", dedicated = SINGBOX_DNS_DEDICATED;
   const original = options ? Object.fromEntries(Object.entries(dns).filter(([key]) => !dedicated.includes(key))) : index === null ? (kind === "servers" ? { type: "udp", tag: "", server: "" } : { domain_suffix: [""], action: "route", server: dns.final || dns.servers?.[0]?.tag || "" }) : dns[kind][index];
   const property = options ? { ...dnsSchema, properties: Object.fromEntries(Object.entries(dnsSchema.properties).filter(([key]) => !dedicated.includes(key))), required: (dnsSchema.required || []).filter((key) => !dedicated.includes(key)) } : dnsSchema.properties[kind].items;
   let form;
-  modal(options ? t("DNS 缓存与其他设置", "DNS cache and other settings") : kind === "servers" ? t("DNS 服务器", "DNS server") : t("DNS 分流规则", "DNS routing rule"), '<div id="singbox-form"></div>', async () => {
-    const value = form.read(), next = structuredClone(dns);
+  const help = options ? t("只需添加要调整的设置，未添加的设置使用内核默认值。应用后请保存配置。", "Add only the settings you want to change; anything not added uses the core default. Save configuration after applying.")
+    : kind === "servers" ? t("先选择类型，再填写名称和服务器地址。名称用于兜底服务器、规则和规则集 DNS 的引用。", "Choose a type, then enter a name and server address. The name is referenced by the fallback server, rules and rule-set DNS.")
+      : t("先选择动作，再设置匹配条件；不设置条件时应用于所有查询。", "Choose an action, then set match conditions; without conditions the rule applies to all queries.");
+  modal(options ? t("DNS 缓存与其他设置", "DNS cache and other settings") : kind === "servers" ? t("DNS 服务器", "DNS server") : t("DNS 分流规则", "DNS routing rule"), `<p class="help">${help}</p><div id="singbox-form"></div>`, async () => {
+    let value;
+    try { value = form.read(); } catch (reason) { form.error(reason.message); return; }
+    const next = structuredClone(dns);
     if (options) { for (const key of Object.keys(next)) if (!dedicated.includes(key)) delete next[key]; Object.assign(next, value); }
     else { next[kind] ||= []; if (index === null) next[kind].push(value); else next[kind][index] = value; }
     const result = await api("/api/singbox/validate", { method: "POST", body: JSON.stringify({ section: "dns", value: next }) });
     if (!result.valid) { form.error(result.errors.join("; ")); return; }
     currentClient().dns = next; closeModal(); changed(); render();
   });
-  form = createSingboxForm($("#singbox-form"), { ...singboxSchema, properties: { ...singboxSchema.properties, dns: property } }, "dns", original, { t, esc, references: { dns_server: (dns.servers || []).map((server) => server.tag), outbound: policyChoices(), endpoint: (currentClient().endpoints || []).map((endpoint) => endpoint.tag) }, referenceTypes: { dns_server: Object.fromEntries((dns.servers || []).map((server) => [server.tag, server.type])) } });
+  form = createSingboxForm($("#singbox-form"), { ...singboxSchema, properties: { ...singboxSchema.properties, dns: property } }, "dns", original, { t, esc, references: { dns_server: (dns.servers || []).map((server) => server.tag), outbound: policyChoices(), endpoint: (currentClient().endpoints || []).map((endpoint) => endpoint.tag) }, referenceTypes: { dns_server: Object.fromEntries((dns.servers || []).map((server) => [server.tag, server.type])) }, rootRule: kind === "rules" ? "dns" : undefined });
 }
 function renderSingboxNetwork() {
   const inbounds = currentClient().inbounds || [];
@@ -112,59 +123,69 @@ function renderSingboxNetwork() {
     const route = item.auto_route === undefined ? t("未指定", "Not specified") : item.auto_route ? t("开启", "On") : t("关闭", "Off");
     return `<tr><td><strong>${esc(item.tag || t("未命名入站", "Unnamed inbound"))}</strong><div class="help">${esc(item.type || "—")}</div></td><td>${tun ? t("接管设备流量", "Capture device traffic") : ["mixed", "http", "socks"].includes(item.type) ? t("本地代理端口", "Local proxy port") : t("接收入站连接", "Accept inbound connections")}</td><td><div class="help">${tun ? t("虚拟网卡地址", "Virtual interface addresses") : t("监听地址 / 端口", "Listen address / port")}</div>${address.length ? address.map((value) => `<code class="sb-network-address">${esc(value)}</code>`).join("") : "—"}</td><td>${tun ? `<dl><dt>${t("自动路由", "Automatic routing")}</dt><dd>${route}</dd>${item.interface_name ? `<dt>${t("接口", "Interface")}</dt><dd>${esc(item.interface_name)}</dd>` : ""}</dl>` : "—"}</td><td class="actions">${iconButton("edit", "edit-singbox-inbound", `data-index="${index}"`, t("编辑入站", "Edit inbound"))}${iconButton("trash", "delete-singbox-inbound", `data-index="${index}"`, t("删除入站", "Delete inbound"))}</td></tr>`;
   }).join("");
-  return `<section class="sb-network"><div class="section-heading"><div><h2>${t("入站管理", "Inbound connections")}</h2><p class="help" data-help>${t("TUN 接管设备流量；HTTP / SOCKS 端口供应用连接代理；Tailcat 通过 DERP 建立点对点隧道。", "TUN captures device traffic; HTTP / SOCKS ports accept proxy connections from apps; Tailcat establishes peer-to-peer tunnels through DERP.")}</p></div>${btn(t("添加入站", "Add inbound"), "edit-singbox-inbound", "", "primary")}</div><div class="table-wrap"><table><thead><tr><th>${t("入站", "Inbound")}</th><th>${t("用途", "Purpose")}</th><th>${t("地址", "Address")}</th><th>${t("网络设置", "Network settings")}</th><th>${t("操作", "Actions")}</th></tr></thead><tbody>${rows || `<tr><td colspan="5" class="empty">${t("尚未配置入站，点击「添加入站」设置流量入口。", "No inbounds configured. Add an inbound to receive traffic.")}</td></tr>`}</tbody></table></div></section>`;
+  return `<section class="section sb-network"><div class="section-heading"><div><h2>${t("入站管理", "Inbound connections")}</h2><p class="help" data-help>${t("TUN 接管设备流量；HTTP / SOCKS 端口供应用连接代理；Tailcat 通过 DERP 建立点对点隧道。", "TUN captures device traffic; HTTP / SOCKS ports accept proxy connections from apps; Tailcat establishes peer-to-peer tunnels through DERP.")}</p></div>${btn(t("添加入站", "Add inbound"), "edit-singbox-inbound", "", "primary")}</div><div class="table-wrap"><table><thead><tr><th>${t("入站", "Inbound")}</th><th>${t("用途", "Purpose")}</th><th>${t("地址", "Address")}</th><th>${t("网络设置", "Network settings")}</th><th>${t("操作", "Actions")}</th></tr></thead><tbody>${rows || `<tr><td colspan="5" class="empty">${t("尚未配置入站，点击「添加入站」设置流量入口。", "No inbounds configured. Add an inbound to receive traffic.")}</td></tr>`}</tbody></table></div></section>`;
 }
 function singboxConnectionDnsHelp() {
   return t("用于解析代理节点地址，以及直连时尚未解析的目标域名。连接单独指定 DNS 时优先使用其设置；此处指定的服务器可能绕过 DNS 查询分流规则。", "Resolves proxy server addresses and target domains still unresolved when connecting directly. A connection-specific DNS resolver takes priority; a server selected here may bypass DNS query routing rules.");
 }
+// Route options are edited where they take effect: connection DNS on the DNS tab,
+// native rules on the routing tab, and the rest with the network settings.
+function routeGroupKeys(group, keys) {
+  if (group === "dns") return keys.filter((key) => key === "default_domain_resolver");
+  // A compiled plan owns the final outbound through its FINAL row.
+  const rules = ["rules", "rule_set", ...(currentClient().ruleSets.mode === "compiled" ? [] : ["final"])];
+  return keys.filter((key) => group === "rules" ? rules.includes(key) : !["rules", "rule_set", "final", "default_domain_resolver"].includes(key));
+}
+// A readable digest of configured native settings; raw keys say little to most users.
+function singboxSummary(value, names = {}) {
+  const flag = (item) => item ? t("开启", "On") : t("关闭", "Off");
+  if (Array.isArray(value)) return value.length ? `<div class="sb-summary">${value.map((item) => `<span class="chip">${esc(isObject(item) ? [item.tag, item.type].filter(Boolean).join(" · ") || t("未命名", "Unnamed") : item)}</span>`).join("")}</div>` : "";
+  const rows = Object.entries(isObject(value) ? value : {}).map(([key, item]) => {
+    const text = typeof item === "boolean" ? flag(item) : Array.isArray(item) ? t(`${item.length} 项`, `${item.length} items`)
+      : isObject(item) ? (typeof item.enabled === "boolean" ? flag(item.enabled) : typeof item.server === "string" ? item.server : t("已配置", "Configured"))
+        : /password|secret|token|key$/i.test(key) ? t("已设置", "Set") : String(item);
+    return `<div><dt>${esc(names[key] || singboxLabel(key, t))}</dt><dd>${esc(text)}</dd></div>`;
+  }).join("");
+  return rows ? `<dl class="sb-summary">${rows}</dl>` : "";
+}
 function renderSingboxConnectionSettings(group) {
   const title = group === "dns" ? t("建立连接时的默认 DNS", "Default DNS for establishing connections") : t("出口连接设置", "Outbound connection settings");
   const route = currentClient().route;
-  const keys = group === "dns" ? ["default_domain_resolver"] : ["auto_detect_interface", "default_interface", "default_network_strategy"];
   const names = { default_domain_resolver: t("连接解析服务器", "Connection resolver"), auto_detect_interface: t("自动检测出口网卡", "Detect outbound interface"), default_interface: t("指定出口网卡", "Outbound interface"), default_network_strategy: t("网络选择策略", "Network strategy") };
-  const summary = keys.filter((key) => route[key] !== undefined).map((key) => `<div><span class="muted">${names[key]}：</span>${esc(typeof route[key] === "boolean" ? route[key] ? t("开启", "On") : t("关闭", "Off") : typeof route[key] === "object" ? JSON.stringify(route[key]) : route[key])}</div>`).join("");
-  return section(title, (summary || `<p class="help">${t("使用默认设置", "Using defaults")}</p>`) + (group === "dns" ? `<p class="help" data-help>${singboxConnectionDnsHelp()}</p>` : ""), btn(t("配置", "Configure"), "edit-singbox-section", `data-key="route" data-route-group="${group}"`));
+  const summary = singboxSummary(Object.fromEntries(routeGroupKeys(group, Object.keys(route)).map((key) => [key, route[key]])), names);
+  return section(title, (summary || `<p class="help">${t("使用内核默认值", "Using core defaults")}</p>`) + (group === "dns" ? `<p class="help" data-help>${singboxConnectionDnsHelp()}</p>` : ""), btn(t("配置", "Configure"), "edit-singbox-section", `data-key="route" data-route-group="${group}"`));
 }
 function renderSingboxVpn(type) {
-  const title = { wireguard: "WireGuard", openconnect: "OpenConnect", "openvpn-client": "OpenVPN", "masque-client": "MASQUE 客户端", "masque-server": "MASQUE 服务端" }[type];
   const items = (currentClient().endpoints || []).filter((item) => item.type === type);
   const locationLabel = type === "masque-server" ? t("监听地址", "Listen address") : t("服务器 / 地址", "Server / Address");
   const help = type === "masque-client" ? t("通过 MASQUE 连接远端代理，可在策略组和分流规则中选择。", "Connect to a remote proxy with MASQUE and use it in policy groups and routing rules.")
     : type === "masque-server" ? t("配置 MASQUE 服务端 endpoint；监听与证书选项由客户端内核管理。", "Configure a MASQUE server endpoint; the client core manages its listen and certificate options.")
       : t("连接 VPN 服务器，可在策略组和分流规则中选择此连接。", "Connect to a VPN server and use the connection in policy groups and routing rules.");
-  return section(title, `<p class="help" data-help>${help}</p><div class="table-wrap"><table><thead><tr><th>${t("名称", "Name")}</th><th>${locationLabel}</th></tr></thead><tbody>${items.map((item) => `<tr><td>${esc(item.tag || "—")}</td><td>${esc(item.server || item.listen || (item.address || []).join(", ") || "—")}</td></tr>`).join("") || `<tr><td colspan="2" class="empty">${t("尚未配置连接", "No connections configured")}</td></tr>`}</tbody></table></div>`, btn(t("配置连接", "Configure connections"), "edit-singbox-section", `data-key="endpoints" data-endpoint-type="${type}"`));
+  return section(t(...SINGBOX_VPN[type]), `<p class="help" data-help>${help}</p><div class="table-wrap"><table><thead><tr><th>${t("名称", "Name")}</th><th>${locationLabel}</th></tr></thead><tbody>${items.map((item) => `<tr><td>${esc(item.tag || "—")}</td><td>${esc(item.server || item.listen || [].concat(item.address || []).join(", ") || "—")}</td></tr>`).join("") || `<tr><td colspan="2" class="empty">${t("尚未配置连接", "No connections configured")}</td></tr>`}</tbody></table></div>`, btn(t("配置连接", "Configure connections"), "edit-singbox-section", `data-key="endpoints" data-endpoint-type="${type}"`, "primary"));
 }
 function renderSingboxSections(keys) {
   const client = currentClient();
   const notes = {
-    inbounds: t("Android / Apple 的 TUN 由系统 VPN 接口管理；接口名、进程匹配等能力受平台权限限制。应用选择、Always On 等客户端自身设置需在客户端中操作。", "Android / Apple TUN uses the system VPN interface. Interface names and process matching depend on platform permissions. App selection overrides and Always On are configured in the client itself."),
-    endpoints: t("配置 WireGuard、Tailscale、OpenConnect、OpenVPN 和 MASQUE 端点。", "Configure WireGuard, Tailscale, OpenConnect, OpenVPN and MASQUE endpoints."),
     route: client.ruleSets.mode === "compiled" ? t("来源编排模式下，原生规则先匹配，再匹配编排规则；原生规则集与生成规则集合并，标签不可重复。", "In compiled mode, native rules match before compiled rules. Native and generated rule sets are merged; tags must be unique.") : "",
     outbounds: t("可添加 Tailcat 等本端原生出站，再在策略组和规则中引用。Tailcat 使用公钥和 DERP，不填写服务器地址与端口。", "Add client-native outbounds such as Tailcat, then reference them in groups and rules. Tailcat uses keys and DERP rather than a server address and port."),
     experimental: t("cache_file 中可设置写缓冲大小和定时刷新间隔，留空使用客户端默认值。", "Configure write buffering and periodic flushing under cache_file, or omit them to use client defaults."),
     services: t("DERP 客户端验证可引用 Tailcat 入站或允许的公钥。", "DERP client verification can reference Tailcat inbounds or allowed public keys."),
     http_clients: t("Apple HTTP 引擎仅 Apple 平台可用，支持字段与 Go 引擎不同。", "The Apple HTTP engine is available only on Apple platforms and supports a different set of options from Go.")
   };
-  return `<div class="client-settings singbox-settings"><div class="client-settings-details">` + keys.map((key) => {
-    const value = client[key];
-    const summary = value === undefined ? t("使用默认值", "Using defaults") : Array.isArray(value) ? t(`已配置 ${value.length} 项`, `${value.length} items configured`) : isObject(value) ? Object.keys(value).join(" · ") || t("使用默认值", "Using defaults") : t("已配置", "Configured");
-    const purpose = {
-      inbounds: t("接管设备流量或开放本地代理端口", "Capture device traffic or expose a local proxy port"),
-      dns: t("配置域名解析服务器和解析规则", "Configure DNS servers and resolution rules"),
-      route: t("设置流量匹配条件和默认出口", "Configure traffic matching and the default outbound"),
-      endpoints: t("配置 VPN 隧道连接", "Configure VPN tunnel connections"),
-      log: t("设置日志级别和输出位置", "Set log verbosity and destination")
-    };
-    const items = Array.isArray(value) ? value : null;
-    const overview = items ? (items.length ? `<div class="sb-overview-list">${items.map((item, index) => {
-      const type = item.type || "—";
-      const role = type === "tun" ? t("设备流量接管", "Device traffic capture") : ["mixed", "http", "socks"].includes(type) ? t("本地代理入口", "Local proxy listener") : type;
-      const details = [[t("虚拟网卡地址", "Virtual interface addresses"), (Array.isArray(item.address) ? item.address : []).join(" · ")], [t("接口名称", "Interface name"), item.interface_name], [t("监听地址", "Listen address"), item.listen], [t("监听端口", "Listen port"), item.listen_port]].filter(([, value]) => value !== undefined && value !== "");
-      return `<div class="sb-overview-item"><div class="section-heading"><strong>${esc(item.tag || role)}</strong>${key === "inbounds" ? `<div class="toolbar">${iconButton("edit", "edit-singbox-inbound", `data-index="${index}"`, t("编辑入站", "Edit inbound"))}${iconButton("trash", "delete-singbox-inbound", `data-index="${index}"`, t("删除入站", "Delete inbound"))}</div>` : ""}</div><span>${esc(role)} · ${esc(type)}</span><dl class="sb-overview-details">${details.map(([label, value]) => `<dt>${esc(label)}</dt><dd><code>${esc(value)}</code></dd>`).join("")}</dl></div>`;
-    }).join("")}</div>` : `<p class="help">${t("尚未配置", "Not configured")}</p>`) : `<p class="sb-summary">${esc(summary)}</p>`;
+  const purpose = {
+    route: t("设置流量匹配条件和默认出口", "Configure traffic matching and the default outbound"),
+    log: t("设置日志级别和输出位置", "Set log verbosity and destination")
+  };
+  return `<div class="sb-sections">` + keys.map((key) => {
+    const value = client[key], route = key === "route";
+    const summary = route
+      ? singboxSummary(Object.fromEntries(routeGroupKeys("rules", ["rules", "rule_set", "final"]).map((name) => [name, name === "final" ? value.final || t("内核默认（第一个出站）", "Core default (first outbound)") : value[name] ?? []])), { rules: t("原生规则", "Native rules"), rule_set: t("原生规则集", "Native rule sets"), final: t("默认出口", "Default outbound") })
+      : singboxSummary(value);
     const removable = value !== undefined && !["inbounds", "dns", "route", "log", "experimental"].includes(key);
-    return section(singboxTitle(key, t), `<p class="help" data-help>${purpose[key] || ""}</p>${overview}${notes[key] ? `<p class="help" data-help>${notes[key]}</p>` : ""}`, `<div class="toolbar">${key === "inbounds" ? btn(t("添加入站", "Add inbound"), "edit-singbox-inbound") : btn(t("配置", "Configure"), "edit-singbox-section", `data-key="${key}"`)}${removable ? btn(t("恢复默认", "Use defaults"), "remove-singbox-section", `data-key="${key}"`) : ""}</div>`);
-  }).join("") + `</div></div>`;
+    const help = [purpose[key], notes[key]].filter(Boolean).map((text) => `<p class="help" data-help>${text}</p>`).join("");
+    const empty = ["http_clients", "outbounds", "services"].includes(key) ? t("尚未配置", "Not configured") : t("使用内核默认值", "Using core defaults");
+    return section(singboxTitle(key, t), help + (summary || `<p class="help">${empty}</p>`), `<div class="toolbar">${btn(t("配置", "Configure"), "edit-singbox-section", `data-key="${key}"${route ? ' data-route-group="rules"' : ""}`)}${removable ? btn(t("恢复默认", "Use defaults"), "remove-singbox-section", `data-key="${key}"`) : ""}</div>`);
+  }).join("") + `</div>`;
 }
 async function editSingboxSection(key, inboundIndex, endpointType, routeGroup) {
   singboxSchema ||= await api("/api/singbox/schema");
@@ -180,12 +201,19 @@ async function editSingboxSection(key, inboundIndex, endpointType, routeGroup) {
   let routeKeys;
   if (routeGroup) {
     const node = singboxSchema.$defs.RouteOptions;
-    routeKeys = Object.keys(node.properties).filter((name) => routeGroup === "dns" ? name === "default_domain_resolver" : !["rules", "rule_set", "final", "default_domain_resolver"].includes(name));
+    routeKeys = routeGroupKeys(routeGroup, Object.keys(node.properties));
     viewSchema = { ...singboxSchema, properties: { ...singboxSchema.properties, route: { ...node, properties: Object.fromEntries(routeKeys.map((name) => [name, node.properties[name]])), required: (node.required || []).filter((name) => routeKeys.includes(name)) } } };
   }
+  const list = singboxSchema.properties[key].type === "array";
+  const title = endpointType ? t(...SINGBOX_VPN[endpointType]) : routeGroup === "dns" ? t("建立连接时的默认 DNS", "Default DNS for establishing connections") : routeGroup === "network" ? t("出口连接设置", "Outbound connection settings") : singboxTitle(key, t);
+  const help = routeGroup === "dns" ? singboxConnectionDnsHelp()
+    : routeGroup === "rules" ? t("每条规则先选择动作，再按需添加匹配条件。不设置条件时应用于所有连接；规则按列表顺序执行。应用后请保存配置。", "Choose an action for each rule, then add conditions if needed. Rules without conditions apply to all connections and run in list order. Save configuration after applying.")
+      : list ? t("先选择类型，再填写设置；其他参数通过“添加可选设置”添加。应用后请保存配置。", "Choose a type, then edit its settings. Use Add optional setting for other parameters. Save configuration after applying.")
+        : t("只需添加要调整的设置，未添加的设置使用内核默认值。应用后请保存配置。", "Add only the settings you want to change; anything not added uses the core default. Save configuration after applying.");
   let form;
-  modal(endpointType ? { wireguard: "WireGuard", openconnect: "OpenConnect", "openvpn-client": "OpenVPN" }[endpointType] : routeGroup ? (routeGroup === "dns" ? t("建立连接时的默认 DNS", "Default DNS for establishing connections") : t("出口连接设置", "Outbound connection settings")) : singboxTitle(key, t), `<p class="help">${routeGroup === "dns" ? singboxConnectionDnsHelp() : key === "route" && !routeGroup ? t("每条规则先选择动作，再按需添加匹配条件。不设置条件时应用于所有连接；规则按列表顺序执行。应用后请保存配置。", "Choose an action for each rule, then add conditions if needed. Rules without conditions apply to all connections and run in list order. Save configuration after applying.") : t("先选择配置类型，再填写设置。其他参数可通过“添加可选设置”添加；应用后请保存配置。", "Choose a configuration type and edit its settings. Use Add optional settings for other parameters. Save configuration after applying.")}</p><div id="singbox-form"></div>`, async () => {
-    const edited = form.read();
+  modal(title, `<p class="help">${help}</p><div id="singbox-form"></div>`, async () => {
+    let edited;
+    try { edited = form.read(); } catch (reason) { form.error(reason.message); return; }
     let value = inboundIndex === undefined ? edited : [...client.inbounds];
     if (routeKeys) {
       value = { ...client.route };
@@ -208,12 +236,23 @@ async function editSingboxSection(key, inboundIndex, endpointType, routeGroup) {
       const result = await api("/api/singbox/validate", { method: "POST", body: JSON.stringify({ section: key, value }) });
       if (!root.isConnected || !$("#modal").open) return;
       if (!result.valid) { form.error(t("请检查以下字段：", "Check these fields: ") + result.errors.join("; ")); return; }
-      client[key] = value;
+      // An emptied optional list is the same as leaving the section unset.
+      if (Array.isArray(value) && !value.length && key !== "inbounds") delete client[key];
+      else client[key] = value;
       for (const path of state.invalid.keys()) if (path === `clients.singbox.${key}` || path.startsWith(`clients.singbox.${key}.`)) state.invalid.delete(path);
       closeModal(); changed(); render();
     } finally { root.inert = false; saveButton.disabled = false; }
   });
-  const original = routeKeys ? Object.fromEntries(routeKeys.filter((name) => client.route[name] !== undefined).map((name) => [name, client.route[name]])) : endpointType ? (client.endpoints || []).filter((item) => item.type === endpointType) : inboundIndex === undefined ? client[key] : [inboundIndex === null ? { type: "mixed", tag: "mixed-in", listen: "127.0.0.1", listen_port: 7890 } : client.inbounds[inboundIndex]];
+  const newInbound = () => {
+    const used = new Set(tags(client.inbounds)), ports = new Set((client.inbounds || []).map((item) => item.listen_port));
+    let tag = "mixed-in", port = 7890;
+    for (let count = 2; used.has(tag); count++) tag = `mixed-in-${count}`;
+    while (ports.has(port)) port++;
+    return { type: "mixed", tag, listen: "127.0.0.1", listen_port: port };
+  };
+  const original = routeKeys ? { ...(routeGroup === "rules" ? { rules: [] } : {}), ...Object.fromEntries(routeKeys.filter((name) => client.route[name] !== undefined).map((name) => [name, client.route[name]])) }
+    : endpointType ? (client.endpoints || []).filter((item) => item.type === endpointType)
+      : inboundIndex === undefined ? client[key] ?? (list ? [] : {}) : [inboundIndex === null ? newInbound() : client.inbounds[inboundIndex]];
   form = createSingboxForm($("#singbox-form"), viewSchema, key, original, { t, esc, references, referenceTypes: { dns_server: Object.fromEntries((client.dns.servers || []).map((server) => [server.tag, server.type])) }, endpointType, singleItem: inboundIndex !== undefined });
 }
 function tailscaleCollection() {
