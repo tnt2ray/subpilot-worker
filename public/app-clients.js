@@ -1,6 +1,6 @@
 import { newTailscaleNode, tailscaleForm, readTailscaleForm, updateTailscaleForm } from "./tailscale-ui.js";
 import { createSingboxForm, singboxSections, singboxTitle } from "./singbox-ui.js";
-import { CLIENTS, CLIENT_SECTIONS, getPath, splitRule } from "./app-model.js";
+import { CLIENT_SECTIONS, getPath, splitRule } from "./app-model.js";
 
 export function createClientUi({ state, $, t, esc, label, btn, icon, iconButton, smallButton, isObject, isTextList, field, section, renderConfigLines, clientTabs, currentClient, basePath, target, modal, closeModal, changed, render, api, getProxyNames, getClashRouting }) {
 let singboxSchema = null;

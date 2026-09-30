@@ -11,7 +11,6 @@ import { createGeoipUi } from "./app-geoip.js";
 import { createClientUi } from "./app-clients.js";
 import { createEditorsUi } from "./app-editors.js";
 import { createActionsUi } from "./app-actions.js";
-import { createLiveSync } from "./app-sync.js";
 const state = { config: null, saved: "", page: "status", client: "surge", section: "network", lang: localStorage.getItem("subpilot-language") || "zh", invalid: /* @__PURE__ */ new Map(), busy: false, stats: null, requestPage: 0, refreshingSources: false, system: null };
 
 let subscriptionCheck = null;
@@ -34,19 +33,12 @@ const dirty = () => state.config && JSON.stringify(state.config) !== state.saved
 const { $, esc, t, label, icon, btn, iconButton, smallButton, isObject, toast, isTextList, field, section, clearHeadingTip, mountHelpTips, positionHelpTip, renderConfigLines, localField, readLocal } = createUi(state);
 const api = createApi({ t });
 const { acceptSavedConfig } = createConfigState(state);
-const { renderSidebarVersion, renderStatus, updateSourceRefreshButtons, renderSourceRefreshResult, formatDate, updateStatusView, refreshStatus, refreshSystem, refreshRequests } = createStatusUi({ state, $, t, esc, section, btn, api, mountHelpTips });
+const { renderSidebarVersion, renderStatus, updateSourceRefreshButtons, renderSourceRefreshResult, formatDate, updateStatusView, refreshStatus, refreshSystem } = createStatusUi({ state, $, t, esc, section, btn, api, mountHelpTips });
 const { mmdb, render: renderMmdbSettings, load: loadMmdbStatus, update: updateMmdbView, upload: uploadMmdb } = createGeoipUi({ $, t, esc, btn, formatDate, api, toast });
-const { validateNativeShape, renderGroups, renderClient, renderSingboxDns, editSingboxDns, renderSingboxNetwork, renderSingboxConnectionSettings, renderSingboxVpn, renderSingboxSections, editSingboxSection, tailscaleCollection, renderTailscale, editTailscale, renderMitm, renderRules, orderedPlan, isFinalRule, nextPlanOrder, appendPlanItem, outputSourceUrls, pruneUnusedRuleSources, sourcesForUrls, policyChoices, selectOptions, SURGE_RULE_TYPES, SURGE_RULE_SET_TYPES, SURGE_DIRECT_RULE_TYPES, surgeOptionChoices, compiledFinalOptions, renderRulePlan, isFinalEntry } = createClientUi({ state, $, t, esc, label, btn, icon, iconButton, smallButton, isObject, isTextList, field, section, renderConfigLines, clientTabs, currentClient, basePath, target, modal, closeModal, changed, render, api, getProxyNames: () => sharedProxyNames, getClashRouting: () => clashRouting });
+const { validateNativeShape, renderGroups, renderClient, editSingboxDns, editSingboxSection, tailscaleCollection, editTailscale, orderedPlan, isFinalRule, nextPlanOrder, appendPlanItem, outputSourceUrls, pruneUnusedRuleSources, sourcesForUrls, policyChoices, selectOptions, SURGE_RULE_TYPES, SURGE_RULE_SET_TYPES, SURGE_DIRECT_RULE_TYPES, surgeOptionChoices, compiledFinalOptions, isFinalEntry } = createClientUi({ state, $, t, esc, label, btn, icon, iconButton, smallButton, isObject, isTextList, field, section, renderConfigLines, clientTabs, currentClient, basePath, target, modal, closeModal, changed, render, api, getProxyNames: () => sharedProxyNames, getClashRouting: () => clashRouting });
 const clashRouting = createClashRoutingUi({ state, t, esc, btn, iconButton, field, section, modal, closeModal, localField, readLocal, policyChoices, selectOptions, orderedPlan, isFinalRule, splitRule, appendPlanItem, changed, render, api });
 const { updateChainFilterVisibility, editEntity, editGroup, editJson, updateSurgeRuleForm, editSurgeRule, editSurgeRuleText, editOutput, confirmDelete, editDirect } = createEditorsUi({ state, $, t, esc, label, collection, currentClient, localField, readLocal, modal, closeModal, changed, render, policyChoices, validateNativeShape, isObject, isFinalRule, selectOptions, surgeOptionChoices, compiledFinalOptions, SURGE_RULE_TYPES, SURGE_RULE_SET_TYPES, SURGE_DIRECT_RULE_TYPES, nextPlanOrder, appendPlanItem, outputSourceUrls, sourcesForUrls, pruneUnusedRuleSources, clashPolicyField: (...args) => clashRouting.policyField(...args), checkClashPolicy: (...args) => clashRouting.checkPolicy(...args) });
-const { renderActionsCompilationSettings, showActionsProgress, skipActionsUpgrade, checkActionsUpgrade, showActionsSetup, refreshVisibleProgress, hasPendingProgress } = createActionsUi({ state, $, t, esc, btn, field, formatDate, api, modal, closeModal, updateStatus, toast, acceptSavedConfig });
-
-const liveSync = createLiveSync({
-  refreshRequests, refreshActions: refreshVisibleProgress,
-  hasRequestsView: () => state.page === "status" && !$("#modal").open,
-  hasActionsProgress: hasPendingProgress,
-  onError: (error) => toast(error.status === 401 ? error.message : t("暂时无法更新状态，稍后自动重试。", "Status updates are temporarily unavailable. Retrying shortly."))
-});
+const { renderActionsCompilationSettings, showActionsProgress, skipActionsUpgrade, checkActionsUpgrade, showActionsSetup } = createActionsUi({ state, $, t, esc, btn, field, formatDate, api, modal, closeModal, updateStatus, toast, acceptSavedConfig });
 
 function updateStatus() {
   const invalid = state.invalid.size;
@@ -87,8 +79,6 @@ function render() {
   updateMmdbView();
   if (state.page === "links") loadLinks().catch((error) => toast(error.message));
 }
-
-const MAX_VISIBLE_REQUESTS = 50;
 
 function collectionPath(kind) {
   return kind === "nodes" ? "proxyNodes" : "sources";
@@ -153,7 +143,6 @@ function modal(title, body, onSave, saveLabel = t("应用更改", "Apply changes
   $("#modal-actions").innerHTML = btn(t("取消", "Cancel"), "close-modal") + (onSave ? btn(saveLabel, "modal-save", "", "primary") : "");
   modal.save = onSave;
   $("#modal").showModal();
-  void liveSync.refresh();
   modal.editors = [...$("#modal-body").querySelectorAll("textarea.code-editor")].map((textarea) => window.createConfigCodeEditor(textarea, { policyTokens: policyChoices, label: title }));
 }
 function closeModal() {
@@ -376,7 +365,6 @@ async function action(button) {
   }
   if (name === "modal-save") {
     await modal.save?.();
-    void liveSync.refresh();
     return;
   }
   if (name === "add-entity" || name === "edit-entity") {
@@ -668,7 +656,6 @@ $("#save").addEventListener("click", () => save().catch((error) => toast(error.m
 $("#modal").addEventListener("close", () => {
   clearInterval(modal.autoCloseTimer);
   for (const input of document.querySelectorAll("#actions-setup-token")) input.value = "";
-  void liveSync.refresh();
 });
 $("#modal").addEventListener("cancel", destroyModalEditors);
 $("#close-modal").addEventListener("click", closeModal);
@@ -682,7 +669,6 @@ $("#language").addEventListener("click", () => {
 $("#logout").addEventListener("click", () => {
   const logout = async () => {
     await api("/api/logout", { method: "POST" });
-    liveSync.stop();
     location.reload();
   };
   if (dirty()) modal(t("退出登录", "Sign out"), `<p>${t("未保存的更改将丢失。", "Unsaved changes will be lost.")}</p>`, logout, t("退出", "Sign out"));
@@ -698,7 +684,6 @@ window.addEventListener("hashchange", async () => {
   if (["clients", "groups"].includes(state.page)) await loadSharedProxyNames().catch((error) => toast(error.message));
   render();
   $("#content").scrollTo(0, 0);
-  void liveSync.refresh();
   if (state.page === "status") void refreshStatus().catch((error) => toast(error.message));
   if (state.page === "system") void loadMmdbStatus().catch((error) => toast(error.message));
 });
@@ -712,13 +697,12 @@ async function load() {
   const config = await api("/api/config");
   state.config = config;
   state.saved = JSON.stringify(config);
-  await loadSharedProxyNames().catch((error) => toast(error.message));
   state.page = navigationPage();
+  if (["clients", "groups"].includes(state.page)) await loadSharedProxyNames().catch((error) => toast(error.message));
   render();
   await checkActionsUpgrade();
   await (state.page === "status" ? refreshStatus() : refreshSystem()).catch((error) => toast(error.message));
   if (state.page === "system") void loadMmdbStatus().catch((error) => toast(error.message));
-  liveSync.start();
 }
 load().catch((error) => {
   $("#content").innerHTML = `<div class="notice warning">${esc(error.message)}</div>`;

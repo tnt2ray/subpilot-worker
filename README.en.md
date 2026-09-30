@@ -117,7 +117,7 @@ The page header and bottom action bar remain visible. Long content scrolls withi
 
 Headings group their text with a question mark immediately after it, with action buttons outside this group. Feature introductions and longer usage instructions appear in these help tips. Click to read, then click outside or press Escape to dismiss. Errors, progress, required inputs and save reminders remain directly visible.
 
-Subscription access records update automatically on the overview page. Opening the Actions progress dialog keeps unfinished task status up to date. Updates pause when you leave the relevant page, close the dialog, switch to the background, or go offline. Configuration is still loaded when you open the admin UI, and edits are saved manually.
+Each page loads its latest data when you open it and does not update automatically while it stays open. To see newer status, open the page again, or select Refresh status in the Actions compilation progress dialog. Configuration is loaded when you open the admin UI, and edits are saved manually.
 
 Drafts stay in the current page's memory while navigating between pages and clients. Reloading or closing the page loses unsaved edits. Subscription requests use saved configuration and check compatibility before generating output.
 

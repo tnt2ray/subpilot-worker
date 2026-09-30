@@ -65,32 +65,22 @@ export function createGeoipUi({ $, t, esc, btn, formatDate, api, toast }) {
     $("#mmdb-transfer").innerHTML = selected + (mmdb.uploading ? `<progress max="100" ${mmdb.progress < 100 ? `value="${mmdb.progress}"` : ""} aria-label="${t("MMDB 上传进度", "MMDB upload progress")}"></progress>` : "") + (message ? `<p class="${["error", "invalid"].includes(mmdb.outcome) ? "danger-text" : "muted"}">${esc(message)}</p>` : "");
     $("#mmdb-transfer").setAttribute("aria-busy", String(mmdb.uploading));
   }
-  async function loadMmdbStatus({ background = false, signal } = {}) {
-    if (signal?.aborted) throw signal.reason || new DOMException("Request aborted", "AbortError");
+  async function loadMmdbStatus() {
     if (mmdb.uploading) return;
     const request = ++mmdb.request;
     const view = $("#mmdb-status");
-    let aborted = false;
-    if (!background) {
-      mmdb.loading = true;
-      mmdb.statusError = false;
-      updateMmdbStatusView();
-    }
+    mmdb.loading = true;
+    mmdb.statusError = false;
+    updateMmdbStatusView();
     try {
-      const status = await api("/api/geoip/mmdb", { background, signal });
-      if (signal?.aborted) throw signal.reason || new DOMException("Request aborted", "AbortError");
-      if (request === mmdb.request && view === $("#mmdb-status")) {
-        mmdb.status = status;
-        mmdb.statusError = false;
-      }
-    } catch (error) {
-      aborted = signal?.aborted || error?.name === "AbortError";
-      if (request === mmdb.request && view === $("#mmdb-status") && !aborted) mmdb.statusError = true;
-      if (background || aborted) throw error;
+      const status = await api("/api/geoip/mmdb");
+      if (request === mmdb.request && view === $("#mmdb-status")) mmdb.status = status;
+    } catch {
+      if (request === mmdb.request && view === $("#mmdb-status")) mmdb.statusError = true;
     } finally {
       if (request === mmdb.request) {
         mmdb.loading = false;
-        if (!aborted && !signal?.aborted && view === $("#mmdb-status")) updateMmdbStatusView();
+        if (view === $("#mmdb-status")) updateMmdbStatusView();
       }
     }
   }

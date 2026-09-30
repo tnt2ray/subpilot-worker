@@ -95,47 +95,27 @@ export function createStatusUi({ state, $, t, esc, section, btn, api, mountHelpT
     updateSourceRefreshButtons();
   }
 
-  let statusRequest = 0, systemRequest = 0, requestsRequest = 0;
-  async function refreshRequests({ background = true, signal } = {}) {
-    if (signal?.aborted) throw signal.reason || new DOMException("Request aborted", "AbortError");
-    const request = ++requestsRequest;
-    const result = await api("/api/stats/requests", { background, signal });
-    if (signal?.aborted) throw signal.reason || new DOMException("Request aborted", "AbortError");
-    if (request !== requestsRequest) return;
-    state.stats = { ...state.stats, recentUserAgents: result.recentUserAgents };
-    updateStatusSection("#recent-requests", renderRecentRequests);
-  }
-  async function refreshSystem({ background = true, signal } = {}) {
-    if (signal?.aborted) throw signal.reason || new DOMException("Request aborted", "AbortError");
+  let statusRequest = 0, systemRequest = 0;
+  async function refreshSystem() {
     const request = ++systemRequest;
-    const system = await api("/api/system/status", { background, signal });
-    if (signal?.aborted) throw signal.reason || new DOMException("Request aborted", "AbortError");
+    const system = await api("/api/system/status");
     if (request === systemRequest) {
       state.system = system;
       renderSidebarVersion();
     }
   }
-  async function refreshStatus({ background = true, signal } = {}) {
-    if (signal?.aborted) throw signal.reason || new DOMException("Request aborted", "AbortError");
+  async function refreshStatus() {
     const request = ++statusRequest;
-    const recentRequest = ++requestsRequest;
-    const values = await Promise.allSettled([
-      api("/api/stats", { background, signal }),
-      refreshSystem({ background, signal })
-    ]);
-    if (request === statusRequest && !signal?.aborted) {
-      if (values[0].status === "fulfilled") {
-        state.stats = recentRequest === requestsRequest ? values[0].value
-          : { ...values[0].value, recentUserAgents: state.stats?.recentUserAgents || [] };
-      }
+    const values = await Promise.allSettled([api("/api/stats"), refreshSystem()]);
+    if (request === statusRequest) {
+      if (values[0].status === "fulfilled") state.stats = values[0].value;
       renderSidebarVersion();
       updateStatusView();
     }
     const failures = values.filter((value) => value.status === "rejected");
     const failure = failures.find((value) => value.reason?.status === 401) || failures[0];
     if (failure) throw failure.reason;
-    if (signal?.aborted) throw signal.reason || new DOMException("Request aborted", "AbortError");
   }
 
-  return { renderSidebarVersion, renderStatus, renderSourceCache, renderRecentRequests, updateSourceRefreshButtons, renderSourceRefreshResult, formatDate, updateStatusView, refreshStatus, refreshSystem, refreshRequests };
+  return { renderSidebarVersion, renderStatus, renderSourceCache, renderRecentRequests, updateSourceRefreshButtons, renderSourceRefreshResult, formatDate, updateStatusView, refreshStatus, refreshSystem };
 }

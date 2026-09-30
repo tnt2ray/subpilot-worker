@@ -5,18 +5,8 @@ export function createActionsUi(context) {
   const { state, $, t, esc, btn, field, formatDate, api, modal, closeModal, updateStatus, toast, acceptSavedConfig } = context;
   let progressRequest = 0;
   let refreshingProgress = false;
-  let progressStatus = null;
   let progressContent = "";
 
-  function hasPendingCompilation(status) {
-    return Boolean(status?.enabled && status.workflowReady !== false && status.outputs?.some((output) =>
-      ["pending", "awaiting", "accepted", "retrying"].includes(output.state)
-      // A dispatch timeout does not prove that GitHub rejected the request.
-      || output.state === "dispatch_failed" && !output.httpStatus));
-  }
-  function hasPendingProgress() {
-    return Boolean($("#modal").open && $("#modal-body > .actions-progress") && hasPendingCompilation(progressStatus));
-  }
   function renderActionsCompilationSettings() {
     const options = state.config.settings.actionsCompilation || { enabled: false, repository: "", ref: "main" };
     const path = "settings.actionsCompilation";
@@ -93,7 +83,7 @@ export function createActionsUi(context) {
         <div class="actions-progress-overview" role="status"><div class="actions-progress-heading"><h3>${heading}</h3>${hasOutputs ? `<p class="actions-progress-count"><strong>${status.completed} / ${status.total}</strong><span>${t("Actions 产物已就绪", "Actions artifacts ready")}</span></p>` : ""}</div><p>${description}</p></div>
         ${hasOutputs ? rows : ""}
         ${retryable ? `<div class="actions-progress-retry">${btn(t("重新提交编译", "Resubmit compilation"), "actions-force-retry", `data-output="${esc(retryable.name)}" data-target="${esc(retryable.target)}" aria-describedby="actions-retry-help"`)}<p class="help" id="actions-retry-help">${t("重新提交后，GitHub 将检查全部规则集，跳过已就绪且未变化的规则集。无需等待 60 分钟重试间隔，但可能新增一个排队批次。", "After resubmission, GitHub checks all rule sets and skips unchanged ready ones. This bypasses the 60-minute retry interval, but may queue an extra batch.")}</p></div>` : ""}
-        <p class="help actions-progress-note">${hasPendingCompilation(status) ? t("显示已保存配置的状态。编译尚未完成时，进度窗口可见即每 5 秒自动更新；也可点击“刷新状态”。", "Shows the saved configuration. While compilation is pending, this visible dialog updates every 5 seconds. You can also select Refresh status.") : t("自动更新已停止。点击“刷新状态”可查看后续任务或重试后的结果。", "Automatic updates have stopped. Select Refresh status to check later tasks or results after retrying.")}</p>
+        <p class="help actions-progress-note">${t("显示已保存配置的状态。点击“刷新状态”获取最新结果。", "Shows the saved configuration. Select Refresh status for the latest result.")}</p>
       `;
   }
   async function showActionsProgress() {
@@ -105,27 +95,23 @@ export function createActionsUi(context) {
     const request = ++progressRequest;
     const status = await api("/api/actions-compilation/status");
     if (request !== progressRequest || dialog.open !== wasOpen || body.firstChild !== previousContent || modal.save !== previousSave) return;
-    progressStatus = status;
     progressContent = renderActionsProgress(status);
     modal(t("Actions 编译进度", "Actions compilation progress"),
       `<div class="actions-progress">${progressContent}</div>`, refreshVisibleProgress, t("刷新状态", "Refresh status"));
     $('#modal-actions [data-action="close-modal"]').textContent = t("关闭", "Close");
   }
-  async function refreshVisibleProgress({ background = false, signal } = {}) {
-    signal?.throwIfAborted();
+  async function refreshVisibleProgress() {
     const dialog = $("#modal");
     const progress = $("#modal-body > .actions-progress");
-    if (refreshingProgress || !dialog.open || !progress || background && !hasPendingProgress()
+    if (refreshingProgress || !dialog.open || !progress
       || modal.retryingActions || modal.installingActions || modal.skippingActionsUpgrade) return;
     refreshingProgress = true;
     const request = ++progressRequest;
     try {
-      const status = await api("/api/actions-compilation/status", { background, signal });
-      signal?.throwIfAborted();
+      const status = await api("/api/actions-compilation/status");
       // A completed request must never reopen a dialog or replace another form's inputs.
       if (request !== progressRequest || !dialog.open || $("#modal-body > .actions-progress") !== progress
         || modal.retryingActions || modal.installingActions || modal.skippingActionsUpgrade) return;
-      progressStatus = status;
       const content = renderActionsProgress(status);
       if (content !== progressContent) {
         progress.innerHTML = content;
@@ -292,5 +278,5 @@ export function createActionsUi(context) {
     }
   }
 
-  return { renderActionsCompilationSettings, showActionsProgress, applyActionsSettings, skipActionsUpgrade, checkActionsUpgrade, showActionsSetup, refreshVisibleProgress, hasPendingProgress };
+  return { renderActionsCompilationSettings, showActionsProgress, applyActionsSettings, skipActionsUpgrade, checkActionsUpgrade, showActionsSetup };
 }

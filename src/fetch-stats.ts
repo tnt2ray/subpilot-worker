@@ -71,7 +71,7 @@ function lastFetchKey(target: ConfigFetchTarget): string {
   return `${LAST_FETCH_PREFIX}${target}`;
 }
 
-export async function readRecentConfigFetches(env: Env): Promise<ConfigFetchRecord[]> {
+async function readRecentConfigFetches(env: Env): Promise<ConfigFetchRecord[]> {
   const keys = (await readRecentFetchRecordKeys(env)).slice(0, MAX_RECENT_FETCH_ROWS);
   const values = await Promise.all(keys.map((key) => env.SUBPILOT_CONFIG.get(key)));
   return values.flatMap(readFetchRecordFromString)

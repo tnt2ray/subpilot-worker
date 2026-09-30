@@ -1,8 +1,7 @@
 /** Auth failures must leave the current editor and its unsaved draft intact. */
 export function createApi({ t }) {
   let writing = 0;
-  async function api(path, options = {}) {
-    const { background: _background, ...request } = options;
+  async function api(path, request = {}) {
     const method = (request.method || "GET").toUpperCase();
     const configWrite = path === "/api/config" && ["PUT", "PATCH"].includes(method);
     const mutation = configWrite || ["/api/telegram/unbind", "/api/telegram/bind-code"].includes(path);
